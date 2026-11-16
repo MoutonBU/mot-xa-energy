@@ -17269,6 +17269,7 @@ class LoginDialog(QDialog):
         self.show_pw.toggled.connect(lambda on: [f_.setEchoMode(QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password) for f_ in (self.f_pw, self.f_pw2)])
         lay.addWidget(self.show_pw)
         self.keep = QCheckBox("Keep me signed in on this PC")
+        self.keep.setChecked(True)
         lay.addWidget(self.keep)
         self.err = QLabel("")
         self.err.setWordWrap(True)
@@ -17468,28 +17469,56 @@ class LoginDialog(QDialog):
                 self.err.setText("The email or the recovery key is not right.")
 
 
+def _gate_log(msg):
+    try:
+        with open(os.path.join(tempfile.gettempdir(), "mot_login.log"), "a", encoding="utf-8") as f:
+            f.write(datetime.datetime.now().strftime("%d %H:%M:%S ") + str(msg) + "\n")
+    except Exception:
+        pass
+
+
+def _off_touch():
+    d = _acc_load()
+    if d.get("offline"):
+        d["offline"]["last_ok"] = datetime.date.today().isoformat()
+        _acc_save(d)
+
+
 def sign_in_gate(app):
-    """True when the person may continue. Skipped for the user who chose 'Keep me signed in'."""
+    """The person who chose 'Keep me signed in' goes straight in. Only a licence that is really switched off (or a
+    refresh that is really refused with no recent successful sign-in on this PC) sends them back to the sign-in screen."""
     if sb_conf():
         rt = SETTINGS.get("sb_refresh", "")
-        if rt:                                              # "Keep me signed in": check the account again, quietly
+        if rt:
+            o = _acc_load().get("offline")
+            cached = {"name": o["name"], "email": o["email"], "status": "ok"} if (o and _off_fresh(o)) else None
             try:
                 u = sb_refresh(rt)
-                u["status"] = sb_licence(u["token"])
-                if u["status"] == "ok":
-                    SETTINGS["sb_refresh"] = u["refresh"]
-                    save_settings()
-                    return u
-                SETTINGS["sb_refresh"] = ""                 # approval taken away or period over
-                save_settings()
             except SbError as ex:
-                if ex.offline:
-                    o = _acc_load().get("offline")
-                    if o and _off_fresh(o):
-                        return {"name": o["name"], "email": o["email"], "status": "ok"}
-                else:
+                _gate_log("refresh failed (offline=%s status=%s): %s" % (ex.offline, ex.status, ex))
+                if not ex.offline:                          # refused: that saved session is no good any more
                     SETTINGS["sb_refresh"] = ""
                     save_settings()
+                if cached:                                  # no internet, or the token was just used by a quick restart
+                    return cached
+            else:
+                SETTINGS["sb_refresh"] = u["refresh"]       # keep the new token before anything else can go wrong
+                save_settings()
+                try:
+                    st = sb_licence(u["token"])
+                except SbError as ex:
+                    _gate_log("licence check failed: %s" % ex)
+                    st = "ok" if cached else "?"
+                _gate_log("kept session, licence: %s" % st)
+                if st == "ok":
+                    _off_touch()
+                    u["status"] = "ok"
+                    return u
+                if st in ("revoked", "expired", "none"):
+                    SETTINGS["sb_refresh"] = ""
+                    save_settings()
+        else:
+            _gate_log("no saved session")
     else:
         u = acc_remembered()
         if u:
