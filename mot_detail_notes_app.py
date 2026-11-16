@@ -19,9 +19,9 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from PySide6.QtCore import QBuffer, QPointF, QRectF, QByteArray, QIODevice, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import QEventLoop, QBuffer, QPointF, QRectF, QVariantAnimation, QEasingCurve, QByteArray, QIODevice, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QIcon, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QComboBox, QGraphicsPathItem, QGraphicsRectItem, QRubberBand, QInputDialog, QCheckBox, QFrame, QTabWidget, QDialog, QDialogButtonBox, QDoubleSpinBox,
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QComboBox, QGraphicsLineItem, QGraphicsPathItem, QGraphicsRectItem, QRubberBand, QInputDialog, QCheckBox, QFrame, QTabWidget, QDialog, QDialogButtonBox, QDoubleSpinBox,
                                QFileDialog, QFormLayout, QGraphicsEllipseItem, QGraphicsScene,
                                QGraphicsSimpleTextItem, QGraphicsView, QHBoxLayout, QHeaderView,
                                QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QSplitter,
@@ -65,7 +65,24 @@ QLineEdit, QDoubleSpinBox {{ background:#151517; border:1px solid #34343a; paddi
 QCheckBox::indicator {{ width:17px; height:17px; border:1px solid #4a4a52; border-radius:4px; background:#151517; }}
 QCheckBox::indicator:checked {{ background:{RED}; border:1px solid {RED}; }}
 QGraphicsView {{ border:1px solid #2c2c30; border-radius:8px; }}
-QSplitter::handle {{ background:transparent; }}
+QSplitter::handle {{ background:#232326; border-radius:3px; margin:2px 1px; }}
+QSplitter::handle:hover {{ background:{RED}; }}
+QPushButton[compact="true"] {{ padding:6px 12px; border-radius:8px; }}
+QPushButton:checked {{ background:#3a1018; border:1px solid {RED}; color:white; }}
+QPushButton#canvasbtn {{ background:rgba(24,24,26,215); border:1px solid #3a3a40; padding:0; border-radius:8px; min-width:30px; max-width:30px; min-height:30px; max-height:30px; font-size:16px; font-weight:700; }}
+QPushButton#canvasbtn:hover {{ border:1px solid {RED}; background:rgba(50,20,26,230); }}
+QLabel#canvaschip {{ background:rgba(24,24,26,215); border:1px solid #3a3a40; border-radius:8px; padding:5px 10px; color:#cfcfd4; }}
+QLabel#busychip {{ background:rgba(209,31,58,235); border-radius:8px; padding:5px 12px; color:white; font-weight:700; }}
+QTableWidget {{ alternate-background-color:#1f1f22; }}
+QTableWidget::item {{ padding:4px 6px; }}
+QTableWidget::item:hover {{ background:#26262b; }}
+QScrollBar:vertical {{ background:transparent; width:12px; margin:2px; }}
+QScrollBar::handle:vertical {{ background:#3a3a40; border-radius:5px; min-height:30px; }}
+QScrollBar::handle:vertical:hover {{ background:{RED}; }}
+QScrollBar:horizontal {{ background:transparent; height:12px; margin:2px; }}
+QScrollBar::handle:horizontal {{ background:#3a3a40; border-radius:5px; min-width:30px; }}
+QScrollBar::handle:horizontal:hover {{ background:{RED}; }}
+QScrollBar::add-line, QScrollBar::sub-line {{ width:0; height:0; }}
 """
 
 
@@ -172,7 +189,13 @@ class View(QGraphicsView):
 
     def __init__(self):
         super().__init__()
-        self.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.SmoothPixmapTransform)
+        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.SmartViewportUpdate)
+        self.setOptimizationFlags(QGraphicsView.OptimizationFlag.DontAdjustForAntialiasing |
+                                  QGraphicsView.OptimizationFlag.DontSavePainterState)
+        self.setCacheMode(QGraphicsView.CacheModeFlag.CacheBackground)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setDragMode(QGraphicsView.DragMode.NoDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
@@ -197,6 +220,14 @@ class View(QGraphicsView):
         self._band0 = None
         self._shift = False
         self._dragn = None                   # (note id, press point in the scene) while a note is being dragged
+        self._ghost = None
+        self._fit_scale = None
+        self._zoom_goal = None
+        self._zoom_anim = None
+        self._aa_timer = QTimer(self)
+        self._aa_timer.setSingleShot(True)
+        self._aa_timer.timeout.connect(lambda: self.setRenderHint(QPainter.RenderHint.Antialiasing, True))
+        self._build_controls()
 
     def set_tool(self, on):
         self.tool = on
@@ -204,9 +235,101 @@ class View(QGraphicsView):
         self.show_snap(0, 0, False)
         self.rubber(None)
 
+    # ---- smooth, clamped zoom; no antialiasing while things move, so panning and zooming stay fluid
+    def _fast(self):
+        self.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        self._aa_timer.start(160)
+
+    def zoom_by(self, factor):
+        cur = abs(self.transform().m11())
+        base = self._fit_scale or cur
+        goal = (self._zoom_goal or cur) * factor
+        goal = max(base * 0.25, min(base * 120, goal))
+        self._zoom_goal = goal
+        if self._zoom_anim is None:
+            self._zoom_anim = QVariantAnimation(self)
+            self._zoom_anim.setDuration(130)
+            self._zoom_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+            self._zoom_anim.valueChanged.connect(self._zoom_step)
+            self._zoom_anim.finished.connect(self._zoom_done)
+        self._zoom_anim.stop()
+        self._zoom_anim.setStartValue(cur)
+        self._zoom_anim.setEndValue(goal)
+        self._fast()
+        self._zoom_anim.start()
+
+    def _zoom_step(self, v):
+        cur = abs(self.transform().m11())
+        if cur > 0 and v > 0:
+            self.scale(v / cur, v / cur)
+            self._update_chip()
+
+    def _zoom_done(self):
+        self._zoom_goal = None
+        self._update_chip()
+
     def wheelEvent(self, e):
-        f = 1.2 if e.angleDelta().y() > 0 else 1 / 1.2
-        self.scale(f, f)
+        self.zoom_by(1.25 if e.angleDelta().y() > 0 else 1 / 1.25)
+
+    # ---- small controls on the canvas: zoom, fit, busy badge
+    def _build_controls(self):
+        vp = self.viewport()
+        self._chip = QLabel("100%", vp)
+        self._chip.setObjectName("canvaschip")
+        self._btns = []
+        for txt, tip, fn in (("+", "Zoom in", lambda: self.zoom_by(1.4)), ("\u2212", "Zoom out", lambda: self.zoom_by(1 / 1.4)),
+                             ("\u2922", "Show the whole detail (F)", lambda: self.fit())):
+            b = QPushButton(txt, vp)
+            b.setObjectName("canvasbtn")
+            b.setToolTip(tip)
+            b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            b.clicked.connect(fn)
+            self._btns.append(b)
+        self._busy = QLabel("Updating\u2026", vp)
+        self._busy.setObjectName("busychip")
+        self._busy.hide()
+        self._place_controls()
+
+    def _place_controls(self):
+        vp = self.viewport()
+        x = vp.width() - 12
+        for b in reversed(self._btns):
+            x -= b.width() or 30
+            b.move(x, 12)
+            x -= 6
+        self._chip.adjustSize()
+        self._chip.move(max(8, x - self._chip.width()), 14)
+        self._busy.adjustSize()
+        self._busy.move(14, 14)
+
+    def _update_chip(self):
+        base = self._fit_scale or abs(self.transform().m11())
+        self._chip.setText(f"{abs(self.transform().m11()) / base * 100:.0f}%" if base else "")
+        self._place_controls()
+
+    def set_busy(self, on):
+        self._busy.setVisible(bool(on))
+        self._busy.raise_()
+        if on:
+            self._place_controls()
+            QApplication.processEvents(QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._place_controls()
+
+    def drawForeground(self, painter, rect):
+        sc = self.scene()
+        if sc is not None and not sc.items():
+            painter.save()
+            painter.resetTransform()
+            painter.setPen(QColor("#6a6a72"))
+            f = painter.font()
+            f.setPointSize(13)
+            painter.setFont(f)
+            painter.drawText(self.viewport().rect(), Qt.AlignmentFlag.AlignCenter,
+                             "Drop a DWG or DXF of your detail here\nor use Open detail")
+            painter.restore()
 
     # ---- notes on the drawing: highlight, hit test
     def set_boxes(self, boxes, targets):
@@ -216,7 +339,10 @@ class View(QGraphicsView):
         if sc is None:
             return
         for iid, (x0, y0, x1, y1) in self.boxes.items():
-            r = QGraphicsRectItem(QRectF(x0, y0, x1 - x0, y1 - y0))
+            rp = QPainterPath()
+            rad = min(x1 - x0, y1 - y0) * 0.06
+            rp.addRoundedRect(QRectF(x0, y0, x1 - x0, y1 - y0), rad, rad)
+            r = QGraphicsPathItem(rp)
             r.setZValue(9e6)
             ring = None
             if iid in self.targets:
@@ -273,7 +399,11 @@ class View(QGraphicsView):
     def fit(self):
         sc = self.scene()
         if sc and not sc.itemsBoundingRect().isEmpty():
-            self.fitInView(sc.itemsBoundingRect().adjusted(-40, -40, 40, 40), Qt.AspectRatioMode.KeepAspectRatio)
+            r = sc.itemsBoundingRect()
+            self.fitInView(r.adjusted(-r.width() * 0.03, -r.height() * 0.03, r.width() * 0.03, r.height() * 0.03),
+                           Qt.AspectRatioMode.KeepAspectRatio)
+            self._fit_scale = abs(self.transform().m11())
+            self._update_chip()
 
     # ---- snapping to the drawing's own points
     def snap(self, sp):
@@ -363,6 +493,7 @@ class View(QGraphicsView):
         super().mousePressEvent(e)
 
     def _scroll_by(self, d):
+        self._fast()
         self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - int(d.x()))
         self.verticalScrollBar().setValue(self.verticalScrollBar().value() - int(d.y()))
 
@@ -385,7 +516,21 @@ class View(QGraphicsView):
                 p1 = self.mapToScene(e.position().toPoint())
                 it = self._ov.get(nid)
                 if it:
-                    it[0].setPos(p1.x() - p0.x(), p1.y() - p0.y())
+                    dx, dy = p1.x() - p0.x(), p1.y() - p0.y()
+                    it[0].setPos(dx, dy)
+                    it[0].setBrush(QColor(255, 214, 0, 110))
+                    x0, y0, x1, y1 = self.boxes[nid]
+                    tgt = self.targets.get(nid)
+                    if tgt:
+                        if self._ghost is None or self._ghost.scene() is not self.scene():
+                            self._ghost = QGraphicsLineItem()
+                            gp = QPen(QColor("#ffd600"), 1.5, Qt.PenStyle.DashLine)
+                            gp.setCosmetic(True)
+                            self._ghost.setPen(gp)
+                            self._ghost.setZValue(9e6)
+                            self.scene().addItem(self._ghost)
+                        self._ghost.setLine(x0 + dx, (y0 + y1) / 2 + dy, tgt[0], tgt[1])
+                        self._ghost.setVisible(True)
                     self.viewport().setCursor(Qt.CursorShape.SizeAllCursor)
                 return
             if self._moved:
@@ -421,6 +566,8 @@ class View(QGraphicsView):
                 p1 = self.mapToScene(e.position().toPoint())
                 x0, y0, x1, y1 = self.boxes[nid]
                 self._dragn = None
+                if self._ghost is not None:
+                    self._ghost.setVisible(False)
                 self.note_moved.emit(nid, x0 + p1.x() - p0.x(), y1 + p1.y() - p0.y())
                 self._press = None
                 self._moved = False
@@ -477,9 +624,9 @@ class View(QGraphicsView):
         elif k == Qt.Key.Key_A and m & Qt.KeyboardModifier.ControlModifier:
             self.box_selected.emit(list(self.boxes), False)
         elif k in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):
-            self.scale(1.2, 1.2)
+            self.zoom_by(1.3)
         elif k == Qt.Key.Key_Minus:
-            self.scale(1 / 1.2, 1 / 1.2)
+            self.zoom_by(1 / 1.3)
         else:
             super().keyPressEvent(e)
 
@@ -1154,7 +1301,13 @@ class Win(QMainWindow):
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.itemSelectionChanged.connect(self.on_table_sel)
         split.addWidget(self.table)
-        split.setSizes([760, 600])
+        split.setSizes([800, 560])
+        split.setHandleWidth(8)
+        split.setChildrenCollapsible(False)
+        self.table.setAlternatingRowColors(True)
+        self.table.setShowGrid(False)
+        self.table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         nl.addWidget(split, 1)
         self.lbl_checks = QLabel("")
         self.lbl_checks.setObjectName("muted")
@@ -1190,6 +1343,8 @@ class Win(QMainWindow):
         self.btn_gen.setVisible(False)
         br.addWidget(self.btn_apply)
         nl.addLayout(br)
+        for b_ in nt.findChildren(QPushButton):
+            b_.setProperty("compact", True)
         self.tabs.addTab(nt, "Detail")
         self.tabs.tabBar().moveTab(1, 0)          # the workspace comes first, the settings second
         self.tabs.setCurrentIndex(0)
@@ -1725,8 +1880,16 @@ class Win(QMainWindow):
         if ver:
             msgs.append(("warn", "VERIFY on #" + ", #".join(str(v) for v in ver) + " (size read from the drawing or part drawn by the tool)"))
         col = {"warn": "#ffb300", "info": "#9aa0a6"}
-        html = "<br>".join(f"<span style='color:{col[k]}'>{'&#9888;' if k == 'warn' else '&bull;'} {m}</span>" for k, m in msgs)
-        self.lbl_checks.setText(html or "<span style='color:#43a047'>&#10004; No problems found.</span>")
+        parts = [f"<span style='color:{col[k]}'>{'&#9888;' if k == 'warn' else '&bull;'} {m}</span>" for k, m in msgs]
+        msgs = sorted(msgs, key=lambda m: m[0] != "warn")          # warnings first
+        parts = [f"<span style='color:{col[k]}'>{'&#9888;' if k == 'warn' else '&bull;'} {m}</span>" for k, m in msgs]
+        self.lbl_checks.setToolTip("<br>".join(parts))
+        if not parts:
+            self.lbl_checks.setText("<span style='color:#43a047'>&#10004; No problems found.</span>")
+        else:
+            more = f" <span style='color:#9aa0a6'>(+{len(parts) - 2} more - hover)</span>" if len(parts) > 2 else ""
+            self.lbl_checks.setText("&nbsp;&nbsp;".join(parts[:2]) + more)
+        self.lbl_checks.setMaximumHeight(44)
 
     def export_schedule(self, path=None):
         if not self.items or not self.table.rowCount():
@@ -2246,6 +2409,9 @@ class Win(QMainWindow):
 
     # ---- apply
     def auto_apply(self):
+        if self.view._press is not None or self.view._dragn is not None:
+            self.timer.start()                 # never redraw under your hand while you are dragging
+            return
         if self.items and self.btn_apply.isEnabled():
             self.apply_and_save()
 
@@ -2257,6 +2423,13 @@ class Win(QMainWindow):
         self.generate()
 
     def apply_and_save(self):
+        self.view.set_busy(True)
+        try:
+            self._apply_and_save()
+        finally:
+            self.view.set_busy(False)
+
+    def _apply_and_save(self):
         try:
             import ezdxf
             from ezdxf import bbox as ezbbox
@@ -2332,7 +2505,9 @@ class Win(QMainWindow):
                                               "manual": "NOT in detail - add by hand"}[st] + "\n")
             keep = None if self.first_apply else (self.view.transform(),
                                                   self.view.mapToScene(self.view.viewport().rect().center()))
-            self.view.setScene(build_scene(doc))
+            sc_ = build_scene(doc)
+            sc_.setItemIndexMethod(QGraphicsScene.ItemIndexMethod.BspTreeIndex)
+            self.view.setScene(sc_)
             self.view.set_boxes(self.note_boxes, self.note_targets)
             self.view.set_selected(self.sel_ids())
             if keep:
