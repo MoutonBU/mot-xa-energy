@@ -2,6 +2,10 @@
 [Setup]
 AppName=MOT XA Energy
 AppVersion={#AppVer}
+AppVerName=MOT XA Energy {#AppVer}
+VersionInfoVersion={#AppVer}.0
+VersionInfoProductVersion={#AppVer}.0
+UninstallDisplayName=MOT XA Energy {#AppVer}
 AppPublisher=MCP Architecture & Interiors
 DefaultDirName={autopf}\MOT XA Energy
 DefaultGroupName=MOT XA Energy
@@ -92,7 +96,17 @@ begin
 end;
 
 procedure InitializeWizard;
+var
+  V: TNewStaticText;
 begin
+  WizardForm.Caption := 'MOT XA Energy {#AppVer} - Setup';
+  V := TNewStaticText.Create(WizardForm);
+  V.Parent := WizardForm;
+  V.Caption := 'Version {#AppVer}';
+  V.Font.Style := [fsBold];
+  V.Left := ScaleX(20);
+  V.Top := WizardForm.NextButton.Top + (WizardForm.NextButton.Height - V.Height) div 2;
+  V.Font.Color := SUB;
   ThemeAll;
 end;
 
