@@ -17267,7 +17267,7 @@ class LoginDialog(QDialog):
                            "activate": "Enter your licence key"}.get(m, ""))
         self.f_name.setVisible(reg)
         act = m == "activate"
-        self.f_rec.setVisible(res or act or (reg and self.online))
+        self.f_rec.setVisible(res or act)
         self.f_rec.setPlaceholderText("Licence key (MCP-XXXX-XXXX-XXXX)" if (act or reg) and self.online
                                       else "Code from the email" if self.online else "Recovery key (XXXX-XXXX-XXXX-XXXX)")
         self.f_pw.setPlaceholderText("New password (at least 8 characters)" if (reg or res) else "Password")
@@ -17320,7 +17320,7 @@ class LoginDialog(QDialog):
             self.err.setText("This licence has expired. Contact MCP Architecture & Interiors for a new key.")
             return
         _off_set(u["email"], pw, u["name"])
-        if self.keep.isChecked() or self.mode == "activate":
+        if self.keep.isChecked() or self.mode in ("activate", "register"):
             SETTINGS["sb_refresh"] = u["refresh"]
             save_settings()
         self.user = u
@@ -17369,20 +17369,9 @@ class LoginDialog(QDialog):
                 if not self.f_name.text().strip():
                     self.err.setText("Enter your name.")
                     return
-                if not self.f_rec.text().strip():
-                    self.err.setText("Enter the licence key you were given.")
-                    return
-                sb_signup(self.f_name.text(), em, pw)
+                sb_signup(self.f_name.text(), em, pw)          # the service issues the licence by itself
                 u = sb_login(em, pw)
-                try:
-                    u["status"] = sb_redeem(u["token"], self.f_rec.text())
-                except SbError as ex:
-                    self._u, self._pw = u, pw
-                    self.set_mode("activate")
-                    self.err.setText("Your account was created, but: %s" % ex)
-                    return
-                self.mode = "login"
-                self._finish_login(u, pw, checked=True)
+                self._finish_login(u, pw)
             else:
                 sb_reset(em, self.f_rec.text(), pw)
                 QMessageBox.information(self, APP_NAME, "Your password was changed. Sign in with the new one.")
