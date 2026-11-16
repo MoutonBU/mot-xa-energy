@@ -1,6 +1,6 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.11.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.12.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
@@ -19,6 +19,7 @@ Current version: **1.11.0**. You can read these notes in the program: File > Rel
 - **Updates**: the red "Update available" button and Menu > Check for updates download and install the new version in
   one click, with no token. Your work is saved and restored after the update.
 - **Dark / light mode** switch that changes the interface at once, without restarting. The installer matches the dark theme.
+- **Site plan sheets (1.12.0):** Coverage & FAR has a new button, "Site plan sheets", that saves small PDFs with no cover page: one for each block (its footprint, levels, floor area, coverage and FAR on the stand) and one for all the blocks together (with the carport roofs and both results). Each page is cut to the size of its content so it can be placed straight onto the site plan.
 - **Detail Notes redesigned (1.11.0):** nothing is added automatically any more. Open a detail, click a part of it (concrete, brick, insulation, timber...) and choose its specification from a built-in catalog of 268 SA specifications in 18 groups (slabs 85 to 255 mm, purlins 76 x 50 / 50 x 50 / 38 x 38 and more, insulation, roof covering, walls, ceilings, gutters, steel, stairs...). The thickness measured from the drawing pre-selects the closest option. Search the whole catalog, edit the wording, and save your own wording under "My specs". Your choices are kept with the detail and come back when you reopen it. Double-click a note in the list to change its spec. The Detail workspace is now the first tab and the settings are on the second ("Setup"). "Draw missing elements" is off by default, and "Suggest notes for everything" is optional.
 - **Detail Notes improved (1.10.0):**
   - Numbered callouts: tick "Number the notes" and each callout carries the same number as the saved notes list.

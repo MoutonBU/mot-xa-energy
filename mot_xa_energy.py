@@ -12400,7 +12400,11 @@ class MainWindow(QMainWindow):
         be.clicked.connect(self.export_cov_pdf)
         bs = QPushButton("Export each calculation as its own PDF...")
         bs.clicked.connect(lambda: self.export_subject_pdfs("cov"))
-        for b_ in (bp, be, bs):
+        bsp = QPushButton("Site plan sheets (one per block + all blocks)...")
+        bsp.setToolTip("Small PDFs with no cover page: one for each block and one for all the blocks together, cut to the size of "
+                       "their content so they can be placed on the site plan.")
+        bsp.clicked.connect(self.export_cov_sheets)
+        for b_ in (bp, be, bs, bsp):
             bot.addWidget(b_)
         bot.addStretch()
         lay.addLayout(bot)
@@ -12718,6 +12722,118 @@ class MainWindow(QMainWindow):
             painter.drawText(QRectF(0, ph - 22, pw, 16), int(Qt.AlignmentFlag.AlignRight), f"Page {i + 1} of {len(pages)}")
             painter.restore()
         painter.end()
+
+    def _write_cov_sheet(self, path, only=None, list_only=False):
+        """Compact site-plan sheets: one per block (that block's footprint, levels, coverage and FAR on the stand) and one
+        for all the blocks together. No cover page and no footer; the page is cut to the size of its content so it can be
+        placed straight onto the site plan."""
+        import datetime, html as _h
+        from PySide6.QtGui import QPdfWriter, QPageSize, QPageLayout, QTextDocument, QFont
+        from PySide6.QtCore import QMarginsF, QSizeF, QUrl
+        e = lambda x: _h.escape(str(x))
+        RED, DARK = "#C8102E", "#DCDCDC"
+        st = self.cov_state()
+        scen = cov_scenarios(st)
+        singles = [r for r in scen if r["name"].startswith("Single block - ")]
+        alls = [r for r in scen if r["name"].startswith("All blocks")]
+        names = [r["name"] for r in singles] + (["All blocks"] if alls else [])
+        if list_only:
+            return names
+        if only is None:
+            only = names[0] if names else None
+        if not only:
+            return
+        blocks_by_name = {(b.get("name") or "").strip() or f"Block {i}": b for i, b in enumerate(st["blocks"], 1)}
+
+        def cell(txt, align="left", color=None, bold=False, bg=None, span=1):
+            sty = f"padding:3px 6px; text-align:{align}; vertical-align:middle;" + (f"color:{color};" if color else "") + \
+                  ("font-weight:bold;" if bold else "")
+            return f'<td{" colspan=" + chr(34) + str(span) + chr(34) if span > 1 else ""}{" bgcolor=" + chr(34) + bg + chr(34) if bg else ""} style="{sty}">{e(txt)}</td>'
+
+        def table(head, rows, widths):
+            h = "".join(f'<th bgcolor="{DARK}" width="{widths[i]}%" style="padding:4px 6px;">{e(x)}</th>' for i, x in enumerate(head))
+            return (f'<table width="100%" cellspacing="0" cellpadding="0" border="0.6" style="border-color:#bbbbbb; '
+                    f'font-size:9pt;"><tr>{h}</tr>' + "".join("<tr>" + "".join(r) + "</tr>" for r in rows) + "</table>")
+
+        def verdict(ok, limit):
+            if limit <= 0:
+                return cell("no limit set", "center", "#555555", False, bg="#EDEDED")
+            return cell("WITHIN LIMIT" if ok else "EXCEEDS LIMIT", "center", "#1B7F3B" if ok else RED, True,
+                        bg="#E7F5EB" if ok else "#FCE8EB")
+
+        def results(r, tag=""):
+            f = f"{r['foot']:.2f}" + (f" + {r['roof']:.2f}" if r["roof"] else "")
+            return [[cell("Coverage" + tag, bold=True), cell(f"({f}) / {r['stand']:.2f} = {r['cov']:.2f}%" if r["roof"] else
+                                                               f"{r['foot']:.2f} / {r['stand']:.2f} = {r['cov']:.2f}%", "right"),
+                     cell(f"{r['max_cov']:.1f}%" if r["max_cov"] > 0 else "-", "right"), verdict(r["cov_ok"], r["max_cov"])],
+                    [cell("FAR" + tag, bold=True), cell(f"{r['floor']:.2f} / {r['stand']:.2f} = {r['far']:.3f}", "right"),
+                     cell(f"{r['max_far']:.2f}" if r["max_far"] > 0 else "-", "right"), verdict(r["far_ok"], r["max_far"])]]
+        proj = (self.rd.get("project") or "").strip()
+        site = (self.rd.get("details") or "").strip()
+        sub = " | ".join(x for x in (proj, site, f"Stand {st['stand']:.2f} m2", datetime.date.today().strftime("%d %B %Y")) if x)
+        frags = []
+        if only == "All blocks":
+            title = "ALL BLOCKS - Coverage and FAR"
+            rows = []
+            r0 = alls[0]
+            for bn in r0["blocks"]:
+                b = blocks_by_name.get(bn, {})
+                rows.append([cell(bn, bold=True), cell(f"{cov_num(b.get('fp')):.2f}", "right"),
+                             cell(f"{cov_num(b.get('storeys', 1)):g}", "center"), cell(f"{cov_block_floor(b):.2f}", "right")])
+            rows.append([cell("Total buildings", "right", bold=True), cell(f"{r0['foot']:.2f}", "right", bold=True), cell(""),
+                         cell(f"{r0['floor']:.2f}", "right", bold=True)])
+            frags.append(table(["Block", "Footprint m2", "Storeys", "Floor area m2"], rows, [40, 22, 16, 22]))
+            res = [[cell("Stand area", bold=True), cell(f"{r0['stand']:.2f} m2", "right"), cell(""), cell("")]]
+            res += results(r0, " (buildings)" if len(alls) > 1 else "")
+            if len(alls) > 1:
+                rr = alls[1]
+                rl = [[cell(x.get("name", ""), bold=True), cell(f"{cov_num(x.get('area')):.2f}", "right")]
+                      for x in st["roofs"] if x.get("on", True) and x.get("name", "") in rr["roofs"]]
+                rl.append([cell("Carport / roof area counted", "right", bold=True), cell(f"{rr['roof']:.2f}", "right", bold=True)])
+                frags.append('<p style="font-size:9pt; font-weight:bold; margin-top:6px; margin-bottom:2px;">Carports and other roofs</p>')
+                frags.append(table(["Roof", "Area m2"], rl, [70, 30]))
+                res += results(rr, " (with carport roofs)")[:1]
+            frags.append('<p style="font-size:9pt; font-weight:bold; margin-top:6px; margin-bottom:2px;">Result</p>')
+            frags.append(table(["", "Calculation", "Limit", "Result"], res, [24, 38, 14, 24]))
+        else:
+            r = next(x for x in singles if x["name"] == only)
+            bn = only.replace("Single block - ", "", 1)
+            b = blocks_by_name.get(bn, {})
+            title = f"{bn.upper()} - Coverage and FAR"
+            rows = [[cell("Stand area", bold=True), cell(f"{r['stand']:.2f} m2", "right")],
+                    [cell("Footprint (coverage)", bold=True), cell(f"{cov_num(b.get('fp')):.2f} m2", "right")],
+                    [cell("Storeys", bold=True), cell(f"{cov_num(b.get('storeys', 1)):g}", "right")]]
+            for ln, la in (b.get("levels") or []):
+                rows.append([cell(f"      {ln}", color="#555555"), cell(f"{la:.2f} m2", "right", "#555555")])
+            rows.append([cell("Floor area (all storeys)", bold=True), cell(f"{cov_block_floor(b):.2f} m2", "right", bold=True)])
+            frags.append(table(["", "Area"], rows, [60, 40]))
+            frags.append('<p style="font-size:9pt; font-weight:bold; margin-top:6px; margin-bottom:2px;">Result (this block alone on the stand)</p>')
+            frags.append(table(["", "Calculation", "Limit", "Result"], results(r), [18, 44, 14, 24]))
+        html_ = (f'<table width="100%" cellspacing="0" cellpadding="5" border="0"><tr><td bgcolor="{DARK}" style="color:#111111;">'
+                 f'<span style="font-size:13pt; font-weight:bold;">{e(title)}</span><br>'
+                 f'<span style="font-size:8pt; color:#444444;">{e(sub)}</span></td></tr></table>'
+                 f'<table width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td bgcolor="{RED}" height="2"></td></tr></table>'
+                 + "".join(frags) +
+                 '<p style="font-size:7pt; color:#777777; margin-top:4px;">Coverage = footprint / stand area. FAR = floor area of all storeys / stand area.</p>')
+        W = 600.0                                              # content width in px at 96 dpi (about 159 mm)
+        d_ = QTextDocument()
+        d_.setDefaultFont(QFont("Arial", 9))
+        d_.setHtml('<html><body style="font-family:Arial; color:#111111;">' + html_ + "</body></html>")
+        d_.setPageSize(QSizeF(W, 1e7))
+        H = float(d_.size().height())
+        mm = lambda px: px / 96.0 * 25.4
+        w = QPdfWriter(path)
+        w.setPageLayout(QPageLayout(QPageSize(QSizeF(mm(W) + 8, mm(H) + 8), QPageSize.Unit.Millimeter), QPageLayout.Orientation.Portrait,
+                                    QMarginsF(4, 4, 4, 4), QPageLayout.Unit.Millimeter))
+        w.setResolution(96)
+        w.setTitle("Coverage and FAR - " + only)
+        painter = QPainter(w)
+        _draw_doc_rounded(painter, d_)
+        painter.end()
+
+    def export_cov_sheets(self):
+        """One compact PDF per block and one for all blocks together, ready to place on the site plan."""
+        self.export_subject_pdfs("covs")
 
     def export_cov_pdf(self):
         path, _ = QFileDialog.getSaveFileName(self, "Export coverage and FAR report",
@@ -15673,7 +15789,8 @@ class MainWindow(QMainWindow):
         label, prep, writer = {"lv": ("Light and Ventilation", self.run_check, self._write_report_pdf),
                                "xa": ("Energy XA", self._run_xa, self._write_xa_pdf),
                                "rd": ("Rational Design", self._run_xa_quiet, self._write_rd_pdf),
-                               "cov": ("Coverage and FAR", lambda: None, self._write_cov_pdf)}[kind]
+                               "cov": ("Coverage and FAR", lambda: None, self._write_cov_pdf),
+                               "covs": ("Coverage and FAR site plan sheet", lambda: None, self._write_cov_sheet)}[kind]
         prep()
         names = writer(None, list_only=True)
         if not names:
