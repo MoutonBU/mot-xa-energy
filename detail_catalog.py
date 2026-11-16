@@ -357,8 +357,18 @@ try:                                   # the extra groups live in their own file
 except Exception:
     pass
 
+try:                                   # South African products
+    from detail_catalog_products import EXTRA as _PROD
+    for _k, _v in _PROD.items():
+        CATALOG.setdefault(_k, [])
+        CATALOG[_k] = list(CATALOG[_k]) + list(_v)
+except Exception:
+    pass
+
 # ------------------------------------------------------------------ guess the category from the material
 GUESS = [
+    (r"a\.?b\.?e\.?\b|laycryl|mariseal|brixeal|abeproof", "SA products: waterproofing (a.b.e.)"),
+    (r"iso.?board|isotherm|aerolite", "SA products: insulation"),
     (r"parapet|flat.?roof|torch|roof.?outlet", "Roofs: flat roofs and waterproofing"),
     (r"shower|bath|basin|toilet|soil|drain|sewer|plumb", "Wet areas and plumbing"),
     (r"driveway|kerb|retaining|boundary|deck|pergola|stormwater", "External works"),

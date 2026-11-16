@@ -64,6 +64,10 @@ def _r(name, rx, default, tmpl, noun=None):
     R.append((name, re.compile(rx), default, tmpl, noun or name))
 
 
+_r("isoboard", r"iso.?board", "",
+   "{lead} polystyrene insulation board (or similar approved), thickness to achieve min. R-value per SANS 10400-XA, joints tightly butted, fixed per manufacturer's spec", "IsoBoard")
+_r("abe", r"\ba\.?b\.?e\.?\b", "",
+   "a.b.e. waterproofing system (or similar approved) in the coats and thickness per manufacturer's data sheet, turned up min. 150 mm at walls and terminated under flashing", "a.b.e.")
 _r("coping", r"coping|cap\b", "precast concrete",
    "{lead} with drip grooves (throatings) on both sides, sloped to fall to the roof side, bedded in mortar over DPC, "
    "joints sealed to manufacturer's spec")
@@ -205,7 +209,7 @@ def smart_note(text):
             if name == "coping" and re.search(r"garden|boundary|free.?standing|wall coping", low) and "parapet" not in low:
                 note = note.replace("sloped to fall to the roof side", "sloped to shed water to one side")
             note = re.sub(r"\s+", " ", note).strip()
-            return note[0].upper() + note[1:], name
+            return (note if note.startswith("a.b.e.") else note[0].upper() + note[1:]), name
     words = re.sub(r"\d+(?:\.\d+)?\s*(?:mm|m)?\b", "", t).strip()
     note = (size + " " if size else "") + (words or t) + " to Eng. design / manufacturer's spec"
     note = re.sub(r"\s+", " ", note).strip()

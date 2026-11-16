@@ -35,6 +35,8 @@ REFS = {
     "Wet areas and plumbing": ("SANS 10400-P", "SANS 10400 Part P (drainage)"),
     "Services: energy, solar, electrical": ("SANS 10400-XA", "SANS 10400 Part XA; electrical wiring: SANS 10142-1"),
     "External works": ("SANS 10400-R/P", "SANS 10400 Parts R (stormwater) and P (drainage)"),
+    "SA products: insulation": ("SANS 10400-XA", "SANS 10400 Part XA (energy usage in buildings); check the product's Agrement certificate"),
+    "SA products: waterproofing (a.b.e.)": ("SANS 10400-J/K/L", "SANS 10400 Parts J, K and L depending on the element; follow the manufacturer's data sheet"),
     "Fire and safety": ("SANS 10400-T", "SANS 10400 Part T (fire protection)"),
 }
 

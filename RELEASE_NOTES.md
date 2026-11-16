@@ -1,6 +1,6 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.18.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.19.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
@@ -19,6 +19,7 @@ Current version: **1.18.0**. You can read these notes in the program: File > Rel
 - **Updates**: the red "Update available" button and Menu > Check for updates download and install the new version in
   one click, with no token. Your work is saved and restored after the update.
 - **Dark / light mode** switch that changes the interface at once, without restarting. The installer matches the dark theme.
+- **South African products in the catalog (1.19.0):** three new groups in the spec picker, 32 specifications that name real products and say "or similar approved". **Insulation:** IsoBoard (cavity wall 30 mm, nail-up ceiling 30 mm, over purlin 40 mm, inverted roof 50 mm, under floor / foundation perimeter 25 mm, over rafter and truss, surface bed), Isotherm and Aerolite glasswool. **Waterproofing (a.b.e.):** abeproof liquid membrane, super laycryl, peel and stick membrane, Mariseal 250, Duraslurry, brixeal, wallseal, dura proof cem block, silvakote eco, duraroof acrylic roof paint, bituseal Plastic, flexothane 27 and dura grout GP. **Boards, cement and masonry:** Nutec fibre-cement, Rhinoboard and Gyproc, Corobrik face and plaster brick, PPC / AfriSam cement, TAL / Ardex adhesive, Plascon / Dulux paint. Typing "isoboard" or "abe waterproofing" in the picker also writes a note. Thicknesses are only the ones the maker lists; the rest say "per manufacturer's spec". Insulation notes still pick up the XA minimum R-value for your climate zone. Please check the current data sheet and Agrement certificate before specifying.
 - **Detail Notes: drag notes, batch folder, XA R-values (1.18.0):**
   - **Drag a note** by its text on the drawing to put it where you want; its leader follows. Positions are saved with the detail and are part of Undo. "Auto-arrange notes" puts them back in a column. To move the drawing itself, drag empty space.
   - **Batch: whole folder** writes the standard notes for every detail in a folder, saves each noted drawing and a notes schedule PDF, and keeps what you already did on details you opened before.
