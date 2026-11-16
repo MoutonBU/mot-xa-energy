@@ -2347,22 +2347,21 @@ def gh_download_asset(repo, token, asset_id, dest, progress=None, timeout=60):
 
 
 class _GhThread(QThread):
-    """Runs one GitHub call off the screen thread. kind 'check' -> result dict or error text; 'download' -> file path or error text."""
+    """Runs one update call off the screen thread. kind 'check' -> result dict or error text; 'download' -> file path or error text."""
     done = Signal(object, str)
     prog = Signal(int, int)
 
-    def __init__(self, kind, repo, token, asset_id=0, dest="", parent=None):
+    def __init__(self, kind, info=None, dest="", parent=None):
         super().__init__(parent)
-        self.kind, self.repo, self.token, self.asset_id, self.dest = kind, repo, token, asset_id, dest
+        self.kind, self.info, self.dest = kind, info, dest
         self.stop = False
 
     def run(self):
         try:
             if self.kind == "check":
-                self.done.emit(gh_latest_release(self.repo, self.token), "")
+                self.done.emit(sb_latest_release(), "")
             else:
-                gh_download_asset(self.repo, self.token, self.asset_id, self.dest,
-                                  lambda g, t: (self.prog.emit(g, t), not self.stop)[1])
+                sb_download_release(self.info, self.dest, lambda g, t: (self.prog.emit(g, t), not self.stop)[1])
                 self.done.emit(self.dest, "")
         except Exception as ex:
             self.done.emit(None, str(ex))
@@ -9755,7 +9754,7 @@ class MainWindow(QMainWindow):
         add(m, "Sign out (ask for the password next time)", self.sign_out)
         if FROZEN:
             add(m, "Check for updates now", lambda: self.gh_check(manual=True))
-            add(m, "Update settings (GitHub)...", self.gh_settings)
+            add(m, "Check for updates...", self.gh_settings)
             va_ = add(m, "Version %s" % vtext(app_version()), lambda: None)
             va_.setEnabled(False)
         m.addSeparator()
@@ -10455,17 +10454,6 @@ class MainWindow(QMainWindow):
             self.update_btn.show()
 
     def gh_settings(self):
-        repo, ok = QInputDialog.getText(self, APP_NAME, "GitHub repository that holds the releases (owner/name):", text=gh_repo_name())
-        if not ok:
-            return
-        tok, ok = QInputDialog.getText(self, APP_NAME, "GitHub token with read access to that repository\n(Settings > Developer settings > Fine-grained tokens > Contents: Read-only).\nLeave blank to keep the saved one.",
-                                       QLineEdit.EchoMode.Password)
-        if not ok:
-            return
-        SETTINGS["gh_repo"] = repo.strip()
-        if tok.strip():
-            SETTINGS["gh_token"] = tok.strip()
-        save_settings()
         self._gh_next = 0.0
         self.gh_check(manual=True)
 
@@ -10473,7 +10461,7 @@ class MainWindow(QMainWindow):
         import time
         self._gh_busy = True
         self._gh_next = time.time() + 3 * 3600
-        th = _GhThread("check", gh_repo_name(), SETTINGS.get("gh_token", ""), parent=self)
+        th = _GhThread("check", parent=self)
         self._gh_th = th
 
         def done(res, err):
@@ -10521,7 +10509,7 @@ class MainWindow(QMainWindow):
         dlg = QProgressDialog("Downloading version %s..." % vtext(info["ver"]), "Cancel", 0, 100, self)
         dlg.setWindowModality(Qt.WindowModality.WindowModal)
         dlg.setMinimumDuration(0)
-        th = _GhThread("download", gh_repo_name(), SETTINGS.get("gh_token", ""), info["asset_id"], dest, parent=self)
+        th = _GhThread("download", info, dest, parent=self)
         self._gh_th = th
         loop = {"err": None, "path": None, "fin": False}
         th.prog.connect(lambda g, t: dlg.setValue(int(100 * g / t)) if t else None)
@@ -17794,6 +17782,84 @@ def sb_redeem(token, key):
     return d.get("state", "none") if isinstance(d, dict) else "none"
 
 
+SB_SESSION = {}          # the signed-in person's tokens, kept in memory so updates can be fetched with them
+
+
+def sb_session_set(u):
+    import time
+    if u and u.get("token"):
+        SB_SESSION.update(token=u["token"], refresh=u.get("refresh", ""), t=time.time())
+
+
+def sb_session_token():
+    """A valid access token for the signed-in person (refreshed when it is getting old), or ''."""
+    import time
+    s_ = SB_SESSION
+    if s_.get("token") and time.time() - s_.get("t", 0) < 2700:
+        return s_["token"]
+    rt = s_.get("refresh") or SETTINGS.get("sb_refresh", "")
+    if rt:
+        try:
+            u = sb_refresh(rt)
+            s_.update(token=u["token"], refresh=u["refresh"], t=time.time())
+            if SETTINGS.get("sb_refresh"):
+                SETTINGS["sb_refresh"] = u["refresh"]
+                save_settings()
+            return u["token"]
+        except SbError:
+            pass
+    return s_.get("token", "")
+
+
+def _sb_store_get(path, timeout=30):
+    c = sb_conf()
+    tok = sb_session_token()
+    if not c or not tok:
+        raise RuntimeError("Sign in to check for updates.")
+    req = urllib.request.Request(c[0] + "/storage/v1/object/authenticated/releases/" + path,
+                                 headers={"apikey": c[1], "Authorization": "Bearer " + tok, "User-Agent": "MOT-XA-Energy"})
+    try:
+        return urllib.request.urlopen(req, timeout=timeout)
+    except urllib.error.HTTPError as ex:
+        if ex.code in (400, 404):
+            raise RuntimeError("No update has been published yet.")
+        if ex.code in (401, 403):
+            raise RuntimeError("Your licence does not allow updates (sign in again, or contact MCP Architecture & Interiors).")
+        raise RuntimeError("The update server answered %s." % ex.code)
+    except Exception as ex:
+        raise RuntimeError("Could not reach the update server: %s" % ex)
+
+
+def sb_latest_release():
+    with _sb_store_get("latest.json") as r:
+        d = json.loads(r.read().decode("utf-8"))
+    ver = tuple(int(x) for x in re.findall(r"\d+", str(d.get("version", ""))))
+    parts = d.get("parts") or []
+    if not ver or not parts:
+        raise RuntimeError("The published update is incomplete.")
+    return {"ver": ver, "name": "MOT_XA_Energy_Setup_%s.exe" % vtext(ver), "parts": parts,
+            "size": sum(int(p.get("size", 0)) for p in parts), "notes": ""}
+
+
+def sb_download_release(info, dest, progress=None):
+    """Download the installer part by part (the update store keeps it in pieces) and join the pieces."""
+    total, got = int(info.get("size", 0)), 0
+    with open(dest, "wb") as out:
+        for p in info["parts"]:
+            with _sb_store_get(p["f"], timeout=60) as r:
+                while True:
+                    b = r.read(1 << 20)
+                    if not b:
+                        break
+                    out.write(b)
+                    got += len(b)
+                    if progress and progress(got, total) is False:
+                        raise RuntimeError("Cancelled.")
+    if total and got != total:
+        raise RuntimeError("The download was incomplete. Try again.")
+    return dest
+
+
 def _sb_pack(d):
     u = d.get("user") or {}
     return {"name": (u.get("user_metadata") or {}).get("name") or (u.get("email") or ""), "email": u.get("email", ""),
@@ -17979,6 +18045,7 @@ class LoginDialog(QDialog):
             self.err.setText("This licence has expired. Contact MCP Architecture & Interiors for a new key.")
             return
         _off_set(u["email"], pw, u["name"])
+        sb_session_set(u)
         if self.keep.isChecked() or self.mode in ("activate", "register"):
             SETTINGS["sb_refresh"] = u["refresh"]
             save_settings()
@@ -18137,6 +18204,7 @@ def sign_in_gate(app):
                 if st == "ok":
                     _off_touch()
                     u["status"] = "ok"
+                    sb_session_set(u)
                     return u
                 if st in ("revoked", "expired", "none"):
                     SETTINGS["sb_refresh"] = ""
