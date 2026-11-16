@@ -2594,15 +2594,30 @@ from PySide6 import QtWidgets as _QtW
 
 
 class QLabel(_QtW.QLabel):
+    """Keeps the text as it was written, so the light/dark switch can colour it again without a restart."""
+
     def __init__(self, *a, **k):
+        if a and isinstance(a[0], str):
+            self._raw_txt = a[0]
         super().__init__(*[_lt(x) for x in a], **k)
 
     def setText(self, t):
+        self._raw_txt = t if isinstance(t, str) else None
         super().setText(_lt(t))
 
 
 _orig_setSS = _QtW.QWidget.setStyleSheet
-_QtW.QWidget.setStyleSheet = lambda self, t: _orig_setSS(self, _lt(t))
+
+
+def _set_ss(self, t):
+    try:
+        self._raw_ss = t
+    except Exception:
+        pass
+    _orig_setSS(self, _lt(t))
+
+
+_QtW.QWidget.setStyleSheet = _set_ss
 
 
 # ---------- floor-plan screenshots: rooms, areas and the windows that belong to them ----------
@@ -3880,7 +3895,7 @@ _ICON_CACHE = {}
 
 
 def icon_pixmap(name, color="#eceef0", size=18):
-    key = (name, color, size)
+    key = (name, color, size, light())
     if key in _ICON_CACHE:
         return _ICON_CACHE[key]
     from PySide6.QtGui import QPixmap
@@ -3936,11 +3951,11 @@ def _icon_for(text):
     return None
 
 
-def decorate_icons(root):
+def decorate_icons(root, force=False):
     """Give every button / menu entry under root an icon, chosen from its text."""
     from PySide6.QtWidgets import QPushButton as _PB, QTableWidget as _TW, QMenu as _MN
     for b in root.findChildren(_PB):
-        if not b.icon().isNull() or not b.text():
+        if (not force and not b.icon().isNull()) or not b.text():
             continue
         par, in_table = b.parent(), False
         while par is not None:
@@ -3956,7 +3971,7 @@ def decorate_icons(root):
             b.setIconSize(QSize(18, 18))
     if isinstance(root, _MN):
         for a in root.actions():
-            if a.icon().isNull() and a.text():
+            if (force or a.icon().isNull()) and a.text():
                 n = _icon_for(a.text())
                 if n:
                     a.setIcon(make_icon(n, "#eceef0", 16))
@@ -3976,7 +3991,7 @@ class _IconFilter(QObject):
         return False
 
 
-def apply_icons(win):
+def apply_icons(win, force=False):
     """Tab icons, button icons and big icons on the home cards."""
     mt = getattr(win, "main_tabs", None)
     if mt is not None:
@@ -3990,7 +4005,7 @@ def apply_icons(win):
             if i < st.count():
                 st.setTabIcon(i, make_icon(n, "#eceef0", 17))
         st.setIconSize(QSize(17, 17))
-    decorate_icons(win)
+    decorate_icons(win, force)
 
 
 GROUP_ICON_KEYS = [
@@ -9606,7 +9621,7 @@ class MainWindow(QMainWindow):
         add(tl, "Online mode (API key)...", self.online_settings)
         add(tl, "Save icon pack (SVG files)...", self.save_icon_pack)
         vm = m.addMenu("Appearance")
-        add(vm, "Switch to dark mode" if light() else "Switch to light mode", self.toggle_mode)
+        self.mode_act = add(vm, "Switch to dark mode" if light() else "Switch to light mode", self.toggle_mode)
         vm.addSeparator()
         add(vm, "Dark Studio (flat, crisp)" + ("   \u2713" if studio() else ""), lambda: self.set_theme("studio"))
         add(vm, "Liquid glass (old look)" + ("" if studio() else "   \u2713"), lambda: self.set_theme("glass"))
@@ -10482,10 +10497,51 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, APP_NAME, f"{n} icon files saved in:\n{os.path.join(d, 'MCP_icons')}")
 
     def toggle_mode(self):
+        """Swap the dark and light look on the spot: no restart, nothing is reloaded."""
+        global _logo_pm
         SETTINGS["theme"] = "studio"
         SETTINGS["mode"] = "dark" if light() else "light"
         save_settings()
-        self.restart_app(seamless=True)
+        app = QApplication.instance()
+        _logo_pm = None
+        _ICON_CACHE.clear()
+        self.__dict__.pop("_thumb_cache", None)
+        app.setStyleSheet(light_qss(STUDIO_QSS).replace("@TICK@", _tick_png()) if light() else STUDIO_QSS.replace("@TICK@", _tick_png()))
+        for w_ in app.allWidgets():                 # colours written inside labels and style sheets
+            try:
+                if isinstance(w_, QLabel) and getattr(w_, "_raw_txt", None) is not None:
+                    _QtW.QLabel.setText(w_, _lt(w_._raw_txt))
+                raw_ = w_.__dict__.get("_raw_ss") if hasattr(w_, "__dict__") else None
+                if raw_:
+                    _orig_setSS(w_, _lt(raw_))
+            except Exception:
+                pass
+        try:
+            apply_icons(self, True)
+            for m_ in self.findChildren(QMenu):
+                decorate_icons(m_, True)
+        except Exception:
+            pass
+        try:
+            if getattr(self, "logo_mark", None) is not None:
+                self.logo_mark.setPixmap(logo_pixmap().scaledToHeight(64, Qt.TransformationMode.SmoothTransformation))
+            if getattr(self, "mode_btn", None) is not None:
+                self.mode_btn.setText("\u263E  Dark" if light() else "\u2600  Light")
+            if getattr(self, "mode_act", None) is not None:
+                self.mode_act.setText("Switch to dark mode" if light() else "Switch to light mode")
+            self.refresh_mode_pill()
+        except Exception:
+            pass
+        try:
+            self._xa_refresh()
+        except Exception:
+            pass
+        for w_ in app.allWidgets():                 # re-draw everything that paints itself
+            try:
+                w_.style().unpolish(w_); w_.style().polish(w_)
+                w_.update()
+            except Exception:
+                pass
 
     def set_theme(self, name):
         if SETTINGS.get("theme", "studio") == name:
@@ -16841,11 +16897,13 @@ def apply_glass_theme(app, win):
     spacer.setToolTip("Switch between the dark and the light look")
     spacer.setCursor(Qt.CursorShape.PointingHandCursor)
     spacer.clicked.connect(win.toggle_mode)
+    win.mode_btn = spacer
     mid = QVBoxLayout()
     mid.setSpacing(4)
     mark = QLabel()
     mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
     mark.setPixmap(logo_pixmap().scaledToHeight(64, Qt.TransformationMode.SmoothTransformation))
+    win.logo_mark = mark
     title = QLabel("<span style='font-size:19px;font-weight:700;letter-spacing:2px'>"
                    "MCP ARCHITECTURE &amp; INTERIORS</span><br>"
                    "<span style='font-size:12px;color:rgba(255,255,255,175);letter-spacing:1px'>"
