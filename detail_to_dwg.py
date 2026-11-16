@@ -93,17 +93,36 @@ def clean_name(pattern):
     return t
 
 
-def rule_note(layer, pattern):
+LAYERED = r"insul|aerolite|glasswool|rockwool|iso.?board|polystyrene|eps|xps|pir|slab|conc|screed|plaster|render|gypsum|ceiling"
+
+
+def measured_mm(item, mmu):
+    """Thickness of a layer-like item (long and thin) measured from the drawing, to the nearest 5 mm. None otherwise."""
+    try:
+        w, h = item["bbox"]
+        lo, hi = min(w, h) * mmu, max(w, h) * mmu
+        if lo >= 8 and hi / lo >= 2.5:
+            return int(5 * round(lo / 5))
+    except Exception:
+        pass
+    return None
+
+
+def rule_note(layer, pattern, thick=None):
     name = clean_name(pattern)
     size = re.search(r"(\d+)\s*mm", name)
     sz = f"{size.group(1)} mm " if size else ""
+    measured = False
+    if not sz and thick and re.search(LAYERED, f"{layer} {name}".lower().replace("_", " ")):
+        sz = f"{thick} mm "              # no size in the material name: use what is drawn
+        measured = True
     # material (hatch) name first, layer name only as a fallback
     for hay in (name.lower(), f"{layer} {name}".lower().replace("_", " ")):
         for rx, note in RULES:
             if re.search(rx, hay):
                 if sz and not re.search(r"\d+\s*mm", note):
                     note = sz + note[0].lower() + note[1:]
-                return note, False
+                return note, measured       # a size measured from the drawing is flagged VERIFY
     if name and name.upper() not in ("SOLID", "WOOD"):
         return f"{name} - confirm specification", True
     return f"{layer}: describe element and specification", True
@@ -356,7 +375,7 @@ def make_notes(items, png, texts, mmu, use_ai):
         for it in items:
             if max(it["bbox"]) * mmu < 15:
                 continue  # ignore tiny specks (under 15 mm)
-            txt, ver = rule_note(it["layer"], it["pattern"])
+            txt, ver = rule_note(it["layer"], it["pattern"], measured_mm(it, mmu))
             notes.append({"id": it["id"], "note": txt, "verify": ver, "item": it})
     notes = dedupe_notes(notes)
     return notes
@@ -516,6 +535,9 @@ TIMBER_RGB, MEMBRANE_RGB, BLACK_RGB = (255, 255, 0), (84, 104, 158), (0, 0, 0)
 
 NOTE_PURLIN = "76 x 50 SA Pine purlins to SANS 1783, H3 treated (SANS 10005), @ 1 200 mm max. centres, fixed to trusses per engineer's design (SANS 10400-L)"
 NOTE_BRICKFORCE = "Brickforce reinforcing in every 4th course of masonry (SANS 10400-K)"
+NOTE_DPC = "DPC min. 150 mm above finished ground level, lapped 150 mm at joints, to SANS 248 / SANS 952 (SANS 10400-K)"
+NOTE_WALLPLATE = "114 x 38 SA Pine wall plate, H3 treated (SANS 10005), anchored to trusses with galvanised strap at 2 m centres, embedded 300 mm into masonry (SANS 10400-K, SANS 10400-L)"
+NOTE_CEILINS = "135 mm Aerolite or similar glasswool insulation above ceiling, achieving min. R-value per SANS 10400-XA"
 NOTE_DPM = "250 µm DPM below slab with 150 mm taped overlaps, turned up at wall (SANS 952, SANS 10400-J)"
 
 # (label, regex that shows it is already in the detail, what to do if missing)
@@ -523,8 +545,8 @@ ROOF_CHECKS = [
     ("Roof covering", r"sheet|ibr|widedek|chromadek|tile|roof", None),
     ("Purlins / battens", r"purlin|batten", "purlins"),
     ("Trusses / rafters", r"truss|rafter|timber|wood", None),
-    ("Wall plate", r"wall.?plate", None),
-    ("Ceiling insulation", r"insul|aerolite|glasswool|isotherm|rockwool", None),
+    ("Wall plate", r"wall.?plate", "wallplate"),
+    ("Ceiling insulation", r"insul|aerolite|glasswool|isotherm|rockwool", "ceilins"),
     ("Ceiling board / brandering", r"ceiling|brander|gypsum|board", None),
     ("Fascia", r"fascia", None),
     ("Gutter", r"gutter", None),
@@ -533,7 +555,7 @@ WALL_CHECKS = [
     ("Masonry", r"brick|masonry|block", None),
     ("Floor slab", r"slab|conc", None),
     ("DPM under slab", r"dpm|membrane|polythene|damp|waterproof", "dpm"),
-    ("DPC in wall", r"dpc|damp.?proof course", None),
+    ("DPC in wall", r"dpc|damp.?proof course", "dpc"),
     ("Brickforce", r"brickforce|brick.?force|reinforc", "brickforce"),
     ("Wall ties", r"\bties\b|wall.?tie", None),
 ]
@@ -652,6 +674,78 @@ def plan_dpm(doc, mmu):
     return _add("dpm", "DPM", [box(min(xs), y0 - 3 / mmu, max(xs), y0)], MEMBRANE_RGB, NOTE_DPM, outline=False)
 
 
+def _brick_polys(doc, mmu):
+    out = []
+    for h, g, name in _hatches(doc, "brick"):
+        for poly in _polys(g):
+            x0, y0, x1, y1 = poly.bounds
+            if x1 - x0 >= 60 / mmu and y1 - y0 >= 150 / mmu:
+                out.append(poly)
+    return out
+
+
+def plan_dpc(doc, mmu):
+    """DPC through the masonry: at the top of the slab when that is inside the wall, otherwise 150 mm above the bottom of the wall."""
+    from shapely.geometry import box
+    walls = _brick_polys(doc, mmu)
+    if not walls:
+        return None
+    low = min(walls, key=lambda p: p.bounds[1])
+    x0, y0, x1, y1 = low.bounds
+    y = y0 + 150 / mmu
+    for h, g, name in _hatches(doc, "concrete"):
+        if re.search(r"slab|conc", name):
+            for sl in _polys(g):
+                sx0, sy0, sx1, sy1 = sl.bounds
+                if (sx1 - sx0) >= 1.5 * (sy1 - sy0) and y0 < sy1 < y1 and sx0 <= x1 + 1 / mmu and sx1 >= x0 - 1 / mmu:
+                    y = sy1
+    if not y0 < y < y1:
+        return None
+    return _add("dpc", "DPC", [box(x0, y - 2 / mmu, x1, y + 2 / mmu).intersection(low)], MEMBRANE_RGB, NOTE_DPC, outline=False)
+
+
+def plan_wallplate(doc, mmu):
+    """114 x 38 wall plate on the highest masonry wall, unless timber already sits there."""
+    from shapely.geometry import box
+    walls = _brick_polys(doc, mmu)
+    if not walls:
+        return None
+    top = max(walls, key=lambda p: p.bounds[3])
+    x0, y0, x1, y1 = top.bounds
+    w = min(x1 - x0, 114 / mmu)
+    cx = (x0 + x1) / 2
+    plate = box(cx - w / 2, y1, cx + w / 2, y1 + 38 / mmu)
+    for h, g, name in _hatches(doc, "timber"):
+        for t in _polys(g):
+            if t.intersection(plate).area > 0.3 * plate.area:
+                return None                      # a timber member is already there
+    return _add("wallplate", "Wall plate", [plate], TIMBER_RGB, NOTE_WALLPLATE)
+
+
+def plan_ceilins(doc, mmu):
+    """135 mm insulation lying on the ceiling board."""
+    from shapely.geometry import box
+    best = None
+    for h in doc.modelspace().query("HATCH"):
+        if h.dxf.layer.startswith("MOT_"):
+            continue
+        pattern = "SOLID" if h.dxf.solid_fill else (h.dxf.pattern_name or "")
+        if not re.search(r"ceiling|gypsum|brander|drywall|ceil", f"{h.dxf.layer} {clean_name(pattern)}".lower().replace("_", " ")):
+            continue
+        try:
+            g = hatch_geometry(h)
+        except Exception:
+            g = None
+        for poly in (_polys(g) if g is not None and not g.is_empty else []):
+            x0, y0, x1, y1 = poly.bounds
+            if (x1 - x0) >= 4 * (y1 - y0) and (best is None or poly.area > best[0].area):
+                best = (poly, (x0, y0, x1, y1))
+    if not best:
+        return None
+    x0, y0, x1, y1 = best[1]
+    return _add("ceilins", "Ceiling insulation", [box(x0, y1, x1, y1 + 135 / mmu)], (237, 134, 255), NOTE_CEILINS)
+
+
 def completeness(doc, texts, items, mmu, brick_mm=85.0, joint_mm=10.0, coursing=True):
     """Check the detail against SA practice. Returns {"report": [(label, state)], "adds": [...]}.
     state: ok | added | manual. Missing elements whose position can be derived are drawn."""
@@ -663,7 +757,10 @@ def completeness(doc, texts, items, mmu, brick_mm=85.0, joint_mm=10.0, coursing=
     wall = have(r"brick|masonry|block") or have(r"slab|conc")
     makers = {"purlins": lambda: plan_purlins(doc, mmu),
               "brickforce": lambda: plan_brickforce(doc, mmu, brick_mm, joint_mm) if coursing else None,
-              "dpm": lambda: plan_dpm(doc, mmu)}
+              "dpm": lambda: plan_dpm(doc, mmu),
+              "dpc": lambda: plan_dpc(doc, mmu),
+              "wallplate": lambda: plan_wallplate(doc, mmu),
+              "ceilins": lambda: plan_ceilins(doc, mmu)}
     for enabled, checks in ((roof, ROOF_CHECKS), (wall, WALL_CHECKS)):
         if not enabled:
             continue
@@ -963,7 +1060,7 @@ def _layout(notes, heights, ax, y_top, h, dmin, iters=6000):
     return best, cands
 
 
-def place_notes(doc, notes, extents, mmu, scale, text_mm, width_mm, gap_mm):
+def place_notes(doc, notes, extents, mmu, scale, text_mm, width_mm, gap_mm, number=False):
     msp = doc.modelspace()
     h = text_mm * scale / mmu                # text height, drawing units
     width = width_mm * scale / mmu
@@ -979,8 +1076,9 @@ def place_notes(doc, notes, extents, mmu, scale, text_mm, width_mm, gap_mm):
     cpl = max(10, int(width / (0.78 * h)))   # chars per line estimate
     dot_r = 0.35 * h
     heights = []
-    for n in notes:
-        lines = max(1, sum(math.ceil(max(1, len(p)) / cpl) for p in n["note"].split("\n")))
+    for n in notes:      # the number is only added to what is drawn: the note text itself stays clean
+        extra = 5 if number else 0
+        lines = max(1, sum(math.ceil(max(1, len(p) + extra) / cpl) for p in n["note"].split("\n")))
         heights.append(lines * h * 1.4 + 1.2 * h)
     ax = x - 0.4 * h
     best, cands = _layout(notes, heights, ax, y_top, h, dmin=0.9 * h)
@@ -992,7 +1090,7 @@ def place_notes(doc, notes, extents, mmu, scale, text_mm, width_mm, gap_mm):
         n = notes[k]
         tx, ty = cands[k][pick[k]]
         n["target"] = (tx, ty)
-        msp.add_mtext(n["note"], dxfattribs={
+        msp.add_mtext((f"{len(ordered) + 1}.  " if number else "") + n["note"], dxfattribs={
             "layer": NOTE_LAYER, "style": "MOT_NOTE", "char_height": h, "width": width,
             "insert": (x, y), "attachment_point": 1,
             "color": 1 if n["verify"] else 256})

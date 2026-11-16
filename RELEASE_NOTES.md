@@ -1,6 +1,6 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.9.1**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.10.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
@@ -19,6 +19,11 @@ Current version: **1.9.1**. You can read these notes in the program: File > Rele
 - **Updates**: the red "Update available" button and Menu > Check for updates download and install the new version in
   one click, with no token. Your work is saved and restored after the update.
 - **Dark / light mode** switch that changes the interface at once, without restarting. The installer matches the dark theme.
+- **Detail Notes improved (1.10.0):**
+  - Numbered callouts: tick "Number the notes" and each callout carries the same number as the saved notes list.
+  - Editing: Redo button, Ctrl+Z / Ctrl+Y, Esc back to Pan, and Undo now also brings back something you deleted.
+  - Draws more missing parts to SA practice: DPC in the wall, wall plate on the highest wall, and 135 mm ceiling insulation (wall ties and fascia are still added by hand).
+  - Better note text: when a material name has no size, the thickness is measured from the drawing (to the nearest 5 mm) and the note is flagged VERIFY.
 - **Detail Notes (1.9.1):** an element the tool draws itself (for example purlins) no longer gets a second callout when the same note is already on the drawing.
 - **Detail Notes (WIP) tab (1.9.0):** your Detailmakker tool is now a tab in the suite with its own icon. Open a DWG/DXF of a construction detail and it writes the callout notes, draws brickwork and house colours, checks for missing elements and saves the noted drawing. Work in progress. It needs the ODA File Converter for .dwg files (set under its Settings); .dxf works without it. Saved files go to your MCP_XA_Energy\\DetailNotes_outputs folder.
 - **Add block from IFC (1.8.5):** Coverage & FAR has a new button that reads one more block from its own IFC (levels, storeys, floor areas) and adds it to the table. Typing blocks in by hand still works.

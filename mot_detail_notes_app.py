@@ -515,7 +515,10 @@ class Win(QMainWindow):
         self.note_w.setValue(65)
         self.note_w.setSuffix(" mm wide")
         self.clear_old = QCheckBox("Clear existing text && leaders first")
-        for w_ in (self.scale, self.text_mm, self.note_w, self.clear_old):
+        self.number_notes = QCheckBox("Number the notes")
+        self.number_notes.setChecked(True)
+        self.number_notes.setToolTip("Put 1, 2, 3... in front of each callout, the same numbers as the saved notes list.")
+        for w_ in (self.scale, self.text_mm, self.note_w, self.clear_old, self.number_notes):
             r3.addWidget(w_)
         r3.addStretch()
         l3.addLayout(r3)
@@ -567,6 +570,16 @@ class Win(QMainWindow):
         self.btn_undo = QPushButton("Undo")
         self.btn_undo.clicked.connect(self.undo_user)
         tb.addWidget(self.btn_undo)
+        self.btn_redo = QPushButton("Redo")
+        self.btn_redo.clicked.connect(self.redo_user)
+        tb.addWidget(self.btn_redo)
+        self.hist, self.redo = [], []
+        from PySide6.QtGui import QKeySequence, QShortcut
+        for keys_, fn_ in (("Ctrl+Z", self.undo_user), ("Ctrl+Y", self.redo_user), ("Ctrl+Shift+Z", self.redo_user),
+                           ("Esc", lambda: (self.tool_btns["pan"].setChecked(True), self.set_tool("pan")))):
+            sc_ = QShortcut(QKeySequence(keys_), self)
+            sc_.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            sc_.activated.connect(fn_)
         self.btn_clear_user = QPushButton("Clear mine")
         self.btn_clear_user.clicked.connect(self.clear_user)
         tb.addWidget(self.btn_clear_user)
@@ -611,7 +624,7 @@ class Win(QMainWindow):
         self.timer.timeout.connect(self.auto_apply)
         for sp in (self.scale, self.text_mm, self.note_w, self.brick_h, self.joint):
             sp.valueChanged.connect(lambda *_: self.timer.start())
-        for cb_ in (self.clear_old, self.house_cols, self.do_brick, self.draw_missing):
+        for cb_ in (self.clear_old, self.number_notes, self.house_cols, self.do_brick, self.draw_missing):
             cb_.toggled.connect(lambda *_: self.timer.start())
         self.table.itemChanged.connect(lambda *_: self.timer.start())
         self.status = QLabel("Drag a DWG or DXF of your detail into this window.")
@@ -839,7 +852,10 @@ class Win(QMainWindow):
         elif t == "del":
             self.delete_near(x, y)
 
-    def add_user(self, el):
+    def add_user(self, el, rec=True):
+        if rec:
+            self.hist.append(("add", el))
+            self.redo = []
         self.uid += 1
         el["uid"] = self.uid
         self.user.append(el)
@@ -906,19 +922,45 @@ class Win(QMainWindow):
             if d <= tol and (best is None or d < best[0]):
                 best = (d, el["uid"])
         if best:
+            el_ = next((e for e in self.user if e["uid"] == best[1]), None)
+            if el_ is not None:
+                self.hist.append(("del", el_))
+                self.redo = []
             self.remove_user(best[1])
             self.user_changed()
 
     def undo_user(self):
-        if self.user:
+        """Undo the last thing you drew or deleted (Ctrl+Z)."""
+        if self.hist:
+            kind, el = self.hist.pop()
+            if kind == "add":
+                self.remove_user(el["uid"])
+            else:
+                self.add_user(el, rec=False)
+            self.redo.append((kind, el))
+            self.user_changed()
+        elif self.user:                       # elements loaded from the saved edits file
             self.remove_user(self.user[-1]["uid"])
             self.user_changed()
+
+    def redo_user(self):
+        """Put back what Undo took away (Ctrl+Y)."""
+        if not self.redo:
+            return
+        kind, el = self.redo.pop()
+        if kind == "add":
+            self.add_user(el, rec=False)
+        else:
+            self.remove_user(el["uid"])
+        self.hist.append((kind, el))
+        self.user_changed()
 
     def clear_user(self):
         if self.user and QMessageBox.question(self, "Clear", "Remove everything you drew by hand?") \
                 == QMessageBox.StandardButton.Yes:
             for el in list(self.user):
                 self.remove_user(el["uid"])
+            self.hist, self.redo = [], []
             self.user_changed()
 
     def sync_rows(self):
@@ -1000,7 +1042,7 @@ class Win(QMainWindow):
             for it in sorted(orig, key=lambda i: -i["area"]):
                 if max(it["bbox"]) * self.mmu < 15:
                     continue                       # specks under 15 mm
-                txt, ver = core.rule_note(it["layer"], it["pattern"])
+                txt, ver = core.rule_note(it["layer"], it["pattern"], core.measured_mm(it, self.mmu))
                 if txt.strip().lower() in seen:    # one callout per identical note
                     continue
                 seen[txt.strip().lower()] = True
@@ -1092,7 +1134,7 @@ class Win(QMainWindow):
             ext = ezbbox.extents(msp)
             extents = (ext.extmin.x, ext.extmin.y, ext.extmax.x, ext.extmax.y)
             ordered = core.place_notes(doc, notes, extents, self.mmu, self.scale.value(),
-                                       self.text_mm.value(), self.note_w.value(), 12)
+                                       self.text_mm.value(), self.note_w.value(), 12, self.number_notes.isChecked())
             OUT_DIR.mkdir(parents=True, exist_ok=True)
             self.save_edits()
             stem = self.src.stem + "_noted"
