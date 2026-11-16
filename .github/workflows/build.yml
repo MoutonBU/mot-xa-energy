@@ -28,7 +28,7 @@ jobs:
       - run: choco install innosetup -y --no-progress
       - run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss'
       - uses: actions/upload-artifact@v4
-        with: { name: installer, path: installer_out/MCP_XA_Energy_Setup.exe }
+        with: { name: installer, path: installer_out/MCP_XA_Energy_Setup_${{ env.APP_VER }}.exe }
       - name: Release
         if: github.ref_type == 'branch'
         shell: bash
@@ -38,4 +38,5 @@ jobs:
         run: |
           EXTRA=""
           [ "$REL_REPO" = "$GITHUB_REPOSITORY" ] && EXTRA="--target $GITHUB_SHA"
-          gh release create "v${APP_VER}" installer_out/MCP_XA_Energy_Setup.exe --repo "$REL_REPO" $EXTRA --title "Version ${APP_VER}" --notes "MCP Architecture and Interiors XA Energy ${APP_VER}"
+          cp "installer_out/MCP_XA_Energy_Setup_${APP_VER}.exe" installer_out/MCP_XA_Energy_Setup.exe
+          gh release create "v${APP_VER}" "installer_out/MCP_XA_Energy_Setup_${APP_VER}.exe" installer_out/MCP_XA_Energy_Setup.exe --repo "$REL_REPO" $EXTRA --title "Version ${APP_VER}" --notes "MCP Architecture and Interiors XA Energy ${APP_VER}"
