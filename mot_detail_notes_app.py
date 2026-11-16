@@ -231,6 +231,7 @@ class View(QGraphicsView):
         self._dragn = None                   # (note id, press point in the scene) while a note is being dragged
         self._ghost = None
         self._dragd = None                   # (note id) while a leader dot is being dragged
+        self.last_free = False
         self._fit_scale = None
         self._zoom_goal = None
         self._zoom_anim = None
@@ -626,6 +627,7 @@ class View(QGraphicsView):
                 x0, y0, x1, y1 = self.boxes[nid]
                 self._dragn = None
                 self._hide_ghost()
+                self.last_free = bool(e.modifiers() & Qt.KeyboardModifier.AltModifier)
                 self.note_moved.emit(nid, x0 + p1.x() - p0.x(), y1 + p1.y() - p0.y())
                 self._press = None
                 self._moved = False
@@ -1447,6 +1449,17 @@ class Win(QMainWindow):
         self.btn_tpl_stop.setVisible(False)
         self.btn_tpl_stop.clicked.connect(self.stop_template)
         tbm.addWidget(self.btn_tpl_stop)
+        self.chk_align = QCheckBox("Keep notes in line")
+        self.chk_align.setChecked(True)
+        self.chk_align.setToolTip("A note you move snaps to the straight column of the others. Hold Alt while dropping to place it freely.")
+        tbm.addWidget(self.chk_align)
+        self.ptr_combo = QComboBox()
+        for lab_, key_ in (("Pointer: dot", "dot"), ("Pointer: arrow", "arrow"), ("Pointer: ring", "ring"),
+                           ("Pointer: tick", "tick"), ("Pointer: none", "none")):
+            self.ptr_combo.addItem(lab_, key_)
+        self.ptr_combo.setToolTip("The end of the leader. With notes selected it changes those notes; with none selected it changes all of them.")
+        self.ptr_combo.activated.connect(self.on_pointer_pick)
+        tbm.addWidget(self.ptr_combo)
         self.btn_arrange = QPushButton("Reset note positions")
         self.btn_arrange.setToolTip("Drag any note on the drawing to move it. This puts them all back in a neat column.")
         self.btn_arrange.clicked.connect(self.auto_arrange)
@@ -1476,6 +1489,7 @@ class Win(QMainWindow):
         self.view.note_moved.connect(self.on_note_moved)
         self.view.target_moved.connect(self.on_target_moved)
         self.note_pos, self.note_tgt = {}, {}
+        self.ptr_default, self.note_ptr = "dot", {}
         self.note_boxes, self.note_targets = {}, {}
         self.xa_provider = None              # set by the suite: returns {'zone','roof','heavy','light'}
         self._syncing = False
@@ -1693,6 +1707,10 @@ class Win(QMainWindow):
             self.specs = {}
             self.note_pos = {k: tuple(v) for k, v in (read_json(self.edits_path()).get("note_pos", {}) or {}).items()}
             self.note_tgt = {k: tuple(v) for k, v in (read_json(self.edits_path()).get("note_tgt", {}) or {}).items()}
+            _e = read_json(self.edits_path())
+            self.ptr_default = _e.get("pointer", "dot")
+            self.note_ptr = dict(_e.get("note_ptr", {}) or {})
+            self.ptr_combo.setCurrentIndex(max(0, self.ptr_combo.findData(self.ptr_default)))
             self.table.setRowCount(0)
             for hid, sp in (read_json(self.edits_path()).get("specs", {}) or {}).items():
                 try:
@@ -1882,9 +1900,9 @@ class Win(QMainWindow):
 
     def snap(self):
         st = {"rows": self._rows_state(), "specs": copy.deepcopy(self.specs), "user": copy.deepcopy(self.user),
-              "overrides": copy.deepcopy(self.overrides), "uid": self.uid, "pos": dict(self.note_pos), "tgt": dict(self.note_tgt),
+              "overrides": copy.deepcopy(self.overrides), "uid": self.uid, "pos": dict(self.note_pos), "tgt": dict(self.note_tgt), "ptr": (self.ptr_default, dict(self.note_ptr)),
               "items": [(i, i.get("point")) for i in self.items]}
-        st["sig"] = json.dumps([st["rows"], st["specs"], st["user"], st["overrides"], st["pos"], st["tgt"]], sort_keys=True, default=str)
+        st["sig"] = json.dumps([st["rows"], st["specs"], st["user"], st["overrides"], st["pos"], st["tgt"], st["ptr"]], sort_keys=True, default=str)
         return st
 
     def commit(self):
@@ -1929,6 +1947,8 @@ class Win(QMainWindow):
             self.overrides = copy.deepcopy(st["overrides"])
             self.note_pos = dict(st["pos"])
             self.note_tgt = dict(st["tgt"])
+            self.ptr_default, self.note_ptr = st["ptr"][0], dict(st["ptr"][1])
+            self.ptr_combo.setCurrentIndex(max(0, self.ptr_combo.findData(self.ptr_default)))
             self.uid = max(self.uid, st["uid"])
             self.items = []
             for i, pt in st["items"]:
@@ -2252,7 +2272,8 @@ class Win(QMainWindow):
             OUT_DIR.mkdir(parents=True, exist_ok=True)
             write_json(self.edits_path(), {"elements": self.user, "overrides": self.overrides, "specs": self.specs,
                                            "note_pos": {k: list(v) for k, v in self.note_pos.items()},
-                                           "note_tgt": {k: list(v) for k, v in self.note_tgt.items()}})
+                                           "note_tgt": {k: list(v) for k, v in self.note_tgt.items()},
+                                           "pointer": self.ptr_default, "note_ptr": self.note_ptr})
         except Exception:
             traceback.print_exc()
 
@@ -2426,6 +2447,11 @@ class Win(QMainWindow):
         it = next((i for i in self.items if i["id"] == iid), None)
         if it is None:
             return
+        colx = core.LAST_COLUMN_X[0]
+        if self.chk_align.isChecked() and colx is not None and not self.view.last_free:
+            w_ = (self.note_boxes[iid][2] - self.note_boxes[iid][0]) if iid in self.note_boxes else 0
+            if abs(x - colx) <= 1.5 * w_:
+                x = colx                      # close to the column: line up with the other notes
         self.note_pos[self.item_key(it)] = (x, y)
         self.commit()
         self.save_edits()
@@ -2441,6 +2467,19 @@ class Win(QMainWindow):
         self.save_edits()
         self.timer.start()
         self.say("Pointer moved. Drag the dot again to adjust it.")
+
+    def on_pointer_pick(self, _i):
+        style = self.ptr_combo.currentData()
+        ids = self.sel_ids()
+        if ids:
+            for it in self.items:
+                if it["id"] in ids:
+                    self.note_ptr[self.item_key(it)] = style
+        else:
+            self.ptr_default, self.note_ptr = style, {}
+        self.commit()
+        self.save_edits()
+        self.timer.start()
 
     def auto_arrange(self):
         if self.note_pos or self.note_tgt:
@@ -2686,7 +2725,10 @@ class Win(QMainWindow):
                                        manual={i["id"]: self.note_pos[self.item_key(i)] for i in self.items
                                                if self.item_key(i) in self.note_pos},
                                        targets={i["id"]: self.note_tgt[self.item_key(i)] for i in self.items
-                                                if self.item_key(i) in self.note_tgt})
+                                                if self.item_key(i) in self.note_tgt},
+                                       pointer=self.ptr_default,
+                                       pointers={i["id"]: self.note_ptr[self.item_key(i)] for i in self.items
+                                                 if self.item_key(i) in self.note_ptr})
             self.note_boxes = {n["id"]: n["box"] for n in ordered if "box" in n}
             self.note_targets = {n["id"]: n["target"] for n in ordered if "target" in n}
             OUT_DIR.mkdir(parents=True, exist_ok=True)

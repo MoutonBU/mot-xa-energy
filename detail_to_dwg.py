@@ -1065,7 +1065,35 @@ def _layout(notes, heights, ax, y_top, h, dmin, iters=6000):
     return best, cands
 
 
-def place_notes(doc, notes, extents, mmu, scale, text_mm, width_mm, gap_mm, number=False, manual=None, targets=None):
+LAST_COLUMN_X = [None]
+
+
+def _pointer(msp, style, tx, ty, fx, fy, h, dot_r):
+    """end marker of a leader: dot, ring, arrow, tick or none. (fx, fy) is where the leader comes from."""
+    lay = {"layer": LEADER_LAYER}
+    if style == "none":
+        return
+    if style == "ring":
+        msp.add_circle((tx, ty), dot_r * 1.15, dxfattribs=lay)
+        return
+    if style == "tick":
+        d = 0.7 * h
+        msp.add_line((tx - d, ty - d), (tx + d, ty + d), dxfattribs=lay)
+        return
+    if style == "arrow":
+        dx, dy = tx - fx, ty - fy
+        L = math.hypot(dx, dy) or 1.0
+        ux, uy = dx / L, dy / L
+        al, aw = 1.5 * h, 0.4 * h
+        bx, by = tx - ux * al, ty - uy * al
+        hatch = msp.add_hatch(color=7, dxfattribs=lay)
+        hatch.paths.add_polyline_path([(tx, ty), (bx - uy * aw, by + ux * aw), (bx + uy * aw, by - ux * aw)], is_closed=True)
+        return
+    hatch = msp.add_hatch(color=7, dxfattribs=lay)
+    hatch.paths.add_polyline_path([(tx - dot_r, ty, 1), (tx + dot_r, ty, 1)], is_closed=True)
+
+
+def place_notes(doc, notes, extents, mmu, scale, text_mm, width_mm, gap_mm, number=False, manual=None, targets=None, pointer="dot", pointers=None):
     if not notes:
         return []
     msp = doc.modelspace()
@@ -1079,6 +1107,7 @@ def place_notes(doc, notes, extents, mmu, scale, text_mm, width_mm, gap_mm, numb
         if name not in doc.layers:
             doc.layers.add(name, color=col)
     x = maxx + gap
+    LAST_COLUMN_X[0] = x
     y_top = maxy + h
     cpl = max(10, int(width / (0.78 * h)))   # chars per line estimate
     dot_r = 0.35 * h
@@ -1120,8 +1149,7 @@ def place_notes(doc, notes, extents, mmu, scale, text_mm, width_mm, gap_mm, numb
             "color": 1 if n["verify"] else 256})
         ymid = py - 0.6 * h
         msp.add_lwpolyline([(px - 0.4 * h, ymid), (tx, ymid), (tx, ty)], dxfattribs={"layer": LEADER_LAYER})
-        hatch = msp.add_hatch(color=7, dxfattribs={"layer": LEADER_LAYER})
-        hatch.paths.add_polyline_path([(tx - dot_r, ty, 1), (tx + dot_r, ty, 1)], is_closed=True)
+        _pointer(msp, (pointers or {}).get(n.get("id"), pointer), tx, ty, tx, ymid, h, dot_r)
         if not mp:
             y -= heights[k]
         ordered.append(n)

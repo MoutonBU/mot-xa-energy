@@ -1,6 +1,6 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.23.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.25.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
@@ -19,6 +19,7 @@ Current version: **1.23.0**. You can read these notes in the program: File > Rel
 - **Updates**: the red "Update available" button and Menu > Check for updates download and install the new version in
   one click, with no token. Your work is saved and restored after the update.
 - **Dark / light mode** switch that changes the interface at once, without restarting. The installer matches the dark theme.
+- **Straight note column and leader end styles (1.25.0):** a note you move now snaps back into the straight column of the other notes when you drop it close to the column (tick "Keep notes in line" off, or hold Alt while dropping, to place it freely). New "Pointer" list: dot, arrow, ring, tick or none for the end of the leader. With notes selected it changes those notes, with none selected it changes all of them. Saved with the detail and covered by undo/redo.
 - **Friendlier spec picker (1.23.0):** the 34 groups are folded into 8 families with icons (foundations and floors, walls, roof and ceiling, waterproofing and insulation, windows and doors, services and outside, finishes, South African products) and each group has its own icon. Each option shows a short preview of its note under its name. Click-to-try chips under the search box ("concrete coping", "stone cill", "170 slab"...). Approve, Save to My specs and Remember moved under "More options", so the main view is just: search, pick, check your note, Use this note.
 - **Other notes adjust around the ones you move (1.22.0):** when you drag a note, the remaining notes close the gap it left and flow around its new spot, so nothing overlaps. Move one and the whole column re-arranges itself.
 - **Place notes anywhere (1.21.0):** drag a note's text to any spot, on or off the drawing, and drag its white dot to change exactly what it points at. The leader follows both, with a live dashed line while you drag. Both are saved with the detail, are part of Undo, and "Reset note positions" puts everything back in a neat column.
