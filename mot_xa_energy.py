@@ -4724,6 +4724,18 @@ def _slices(doc, avail):
     return out
 
 
+class _TagList(list):
+    """A list of report fragments that remembers which subject each one belongs to."""
+    def __init__(self, *a):
+        super().__init__(*a)
+        self.sec = "Header"
+        self.tags = [self.sec] * len(self)
+
+    def append(self, x):
+        super().append(x)
+        self.tags.append(self.sec)
+
+
 def _pack_pages(mkdoc, frags, avail, head_px=46.0):
     """Greedy A4 flow with no shrinking: [(html, y0, y1 or None)]. Short blocks (headings) stay with the block after them;
     a block taller than a page is cut between table rows."""
@@ -9637,15 +9649,18 @@ class MainWindow(QMainWindow):
         lv = rp.addMenu("Light && Ventilation".replace("&&", "&&"))
         add(lv, "Preview PDF report", self.preview_pdf_report)
         add(lv, "Export PDF report...", self.export_pdf_report)
+        add(lv, "Export each subject as its own PDF...", lambda: self.export_subject_pdfs("lv"))
         add(lv, "Export report CSV...", self.export_report)
         add(lv, "Export pages as PNG (for Archicad)...", lambda: self.export_pages_png("lv"))
         xa = rp.addMenu("Energy (XA)")
         add(xa, "Export XA energy report...", self.export_xa_pdf)
+        add(xa, "Export each subject as its own PDF...", lambda: self.export_subject_pdfs("xa"))
         add(xa, "Export pages as PNG (for Archicad)...", lambda: self.export_pages_png("xa"))
         rd = rp.addMenu("Rational design")
         add(rd, "Report details...", self.rd_dialog)
         add(rd, "Preview report", lambda: self.preview_pdf_report(self._write_rd_pdf, self._run_xa_quiet))
         add(rd, "Export report...", self.export_rd_pdf)
+        add(rd, "Export each subject as its own PDF...", lambda: self.export_subject_pdfs("rd"))
         add(rd, "Export pages as PNG (for Archicad)...", lambda: self.export_pages_png("rd"))
         add(rp, "Compliance summary sheet (PNG / PDF for Archicad)...", self.export_summary_block)
         add(rp, "Simulation export for DesignBuilder / EnergyPlus (gbXML + IDF + weather)...", self.export_simulation)
@@ -14994,6 +15009,37 @@ class MainWindow(QMainWindow):
         self.main_tabs.setCurrentWidget(self.xa_page)
 
     # ---- XA report (one A4 portrait page) ----
+    def export_subject_pdfs(self, kind, folder=None, quiet=False):
+        """Save every subject of a report (walls, roofs, fenestration, lighting ...) as a PDF of its own."""
+        import re as _re
+        label, prep, writer = {"lv": ("Light and Ventilation", self.run_check, self._write_report_pdf),
+                               "xa": ("Energy XA", self._run_xa, self._write_xa_pdf),
+                               "rd": ("Rational Design", self._run_xa_quiet, self._write_rd_pdf)}[kind]
+        prep()
+        names = writer(None, list_only=True)
+        if not names:
+            if not quiet:
+                QMessageBox.information(self, APP_NAME, "There is nothing to export yet.")
+            return []
+        if folder is None:
+            start = os.path.dirname(self.pdf_default_path(label)) or ""
+            folder = QFileDialog.getExistingDirectory(self, f"Folder for the {label} PDFs (one per subject)", start)
+            if not folder:
+                return []
+        proj = (self.rd.get("project") or "").strip()
+        out = []
+        for i, nm in enumerate(names, start=1):
+            safe = _re.sub(r'[\\/:*?"<>|]+', " ", nm).strip(" .")[:60] or f"Subject {i}"
+            fn = f"{proj + ' - ' if proj else ''}{label} - {i:02d} {safe}.pdf"
+            fn = _re.sub(r'[\\/:*?"<>|]+', " ", fn)
+            path = os.path.join(folder, fn)
+            writer(path, only=nm)
+            out.append(path)
+        self._remember_pdf_dir(out[-1])
+        if not quiet:
+            QMessageBox.information(self, APP_NAME, f"{len(out)} PDFs saved in:\n{folder}")
+        return out
+
     def pdf_default_path(self, kind):
         """File name like 'Block A - Erf 14243 - Light and Ventilation Report.pdf', in the folder
         of the saved project (or the last folder a PDF was saved to)."""
@@ -15119,7 +15165,7 @@ class MainWindow(QMainWindow):
         self._write_xa_pdf(path)
         QMessageBox.information(self, APP_NAME, f"PDF saved:\n{path}")
 
-    def _write_xa_pdf(self, path):
+    def _write_xa_pdf(self, path, only=None, list_only=False):
         import datetime, html as _h
         from PySide6.QtGui import QPdfWriter, QPageSize, QPageLayout, QTextDocument, QFont
         from PySide6.QtCore import QMarginsF, QSizeF, QUrl
@@ -15152,6 +15198,7 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
  &nbsp;|&nbsp; {today}</span></td></tr></table>
 <table width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td bgcolor="{RED}" height="3"></td></tr></table>
 {self._project_info_html()}"""]
+        body = _TagList(body)
         rows = []
         for el in self.xa_elements:
             r = xa_check_element(el, zone)
@@ -15162,6 +15209,7 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
                           cell("COMPLIES" if r["ok"] else "TOO LOW", "center", "#1B7F3B" if r["ok"] else RED, True,
                                bg="#E7F5EB" if r["ok"] else "#FCE8EB")),
                          cell(r["notes"], color="#555555")])
+        body.sec = 'Walls, roofs, floors and pipes - total R-value'
         body.append(f'<p style="font-size:12pt; font-weight:bold; color:{RED}; margin-left:10px; margin-top:10px;">Walls, roof, floors and pipes - total R-value (m2K/W)</p>')
         body.append(table(["Element", "Type", "Total R", "Required R", "Result", "Notes"], rows, [24, 20, 8, 9, 11, 28])
                     if rows else "<p style='font-size:9pt;'>No elements entered.</p>")
@@ -15174,10 +15222,12 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
                                "#1B7F3B" if f["within"] else RED, True, bg="#E7F5EB" if f["within"] else "#FCE8EB"),
                           cell(f"{c['agg_u']:.2f} / {c['max_u']:.2f}", "right", None if c["agg_u"] <= c["max_u"] else RED),
                           cell(f"{c['agg_s']:.2f} / {c['max_s']:.2f}", "right", None if c["agg_s"] <= c["max_s"] else RED)])
+        body.sec = 'Fenestration'
         body.append(f'<p style="font-size:12pt; font-weight:bold; color:{RED}; margin-left:10px; margin-top:12px;">Fenestration (windows and glazed doors) per storey</p>')
         body.append(table(["Floor", "Net floor area m2", "Fenestration m2", "% of floor", "Screening",
                            "Conductance actual / max", "Solar gain actual / max"], frows, [16, 13, 13, 9, 17, 16, 16])
                     if frows else "<p style='font-size:9pt;'>Run the check first.</p>")
+        body.sec = 'Orientation and shading'
         op_ = self._orient_report_parts(cell, "#1B7F3B", RED)
         if op_:
             body.append(f'<p style="font-size:12pt; font-weight:bold; color:{RED}; margin-left:10px; margin-top:12px;">Orientation and shading (SANS 10400-XA clause 5)</p>')
@@ -15186,16 +15236,19 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
                 body.append(table(op_[1], op_[2], op_[3]))
             for n_ in op_[4]:
                 body.append(f'<p style="font-size:8pt; color:#8a5a00; margin-left:10px;">{e(n_)}</p>')
+        body.sec = 'Shading from the IFC model'
         sp_ = self._shade_report_parts(cell, "#1B7F3B", RED)
         if sp_:
             body.append(f'<p style="font-size:12pt; font-weight:bold; color:{RED}; margin-left:10px; margin-top:12px;">Shading measured from the IFC model (SANS 10400-XA 5.2)</p>')
             body.append(f'<p style="font-size:8.5pt; color:#222222; margin-left:10px;">{e(sp_[0])}</p>')
             body.append(table(sp_[1], sp_[2], sp_[3]))
+        body.sec = 'Air infiltration and leakage'
         ap_ = self._air_report_parts(cell, "#1B7F3B", RED)
         if ap_:
             body.append(f'<p style="font-size:12pt; font-weight:bold; color:{RED}; margin-left:10px; margin-top:12px;">Air infiltration and leakage (SANS 204 clause 4.4)</p>')
             body.append(f'<p style="font-size:8.5pt; color:#222222; margin-left:10px;">{e(ap_[0])}</p>')
             body.append(table(ap_[1], ap_[2], ap_[3]))
+        body.sec = 'Lighting and power'
         lp_ = self._lt_report_parts(cell, "#1B7F3B", RED)
         if lp_:
             body.append(f'<p style="font-size:12pt; font-weight:bold; color:{RED}; margin-left:10px; margin-top:12px;">Lighting and power</p>')
@@ -15203,6 +15256,7 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
             body.append(table(lp_[1], lp_[2], lp_[3]))
             body.append('<p style="font-size:9pt; font-weight:bold; color:#222222; margin-left:10px; margin-top:10px;">Lighting compliance check:</p>')
             body.append(table(lp_[4], lp_[5], lp_[6]))
+        body.sec = 'Hot water and solar'
         hp_ = self._hw_report_parts(cell, "#1B7F3B", RED)
         if hp_:
             body.append(f'<p style="font-size:12pt; font-weight:bold; color:{RED}; margin-left:10px; margin-top:12px;">Hot water and solar (SANS 10400-XA clause 6.1)</p>')
@@ -15215,6 +15269,7 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
                 body.append(table(pp_[1], pp_[2], pp_[3]))
                 body.append('<p style="font-size:9pt; font-weight:bold; color:#222222; margin-left:10px; margin-top:10px;">Total panels and what they are for</p>')
                 body.append(table(pp_[4], pp_[5], pp_[6]))
+        body.sec = 'Note'
         body.append('<p style="font-size:7.5pt; color:#777777; margin-top:14px;">Screening: fenestration within the limit '
                     'of the net floor area, with compliant orientation and shading, satisfies XA. Conductance and solar '
                     'gain use the SANS 204:2011 deemed-to-satisfy method and the glass values entered. Typical material '
@@ -15225,15 +15280,19 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
             return (f'<p style="font-size:13pt; font-weight:bold; color:{RED}; margin-left:10px; margin-top:6px;">'
                     f'{e(txt)}</p>')
 
-        frags = [h_section("Building element assemblies"),
+        frags = _TagList([h_section("Building element assemblies"),
                  '<p style="font-size:8.5pt; color:#444444; margin-left:10px;">Each build-up is listed from the outside '
                  'to the inside with its thickness, conductivity and thermal resistance (R = thickness / conductivity). '
                  'Surface films are added where applicable. Total R is the sum of all layers.</p>',
                  f'<p style="font-size:7.5pt; color:#666666; margin-left:10px;">{e(LAYER_NOTE)}</p>',
-                 assembly_key_html(self.xa_elements)]
+                 assembly_key_html(self.xa_elements)])
+        frags.sec = 'Building elements'
+        for _i in range(4):
+            frags.tags[_i] = 'AsmIntro'
         order = [("walls", "Walls"), ("roof", "Roofs and ceilings"), ("floors", "Floors"), ("pipes", "Hot water pipes")]
         for ci, (ckey, cname) in enumerate(order, start=1):
             els = [el for el in self.xa_elements if xa_category(el.get("type", "")) == ckey]
+            frags.sec = cname
             for ni, el in enumerate(els, start=1):
                 c = xa_check_element(el, zone)
                 f_out, f_in = element_film_rows(el)
@@ -15277,6 +15336,7 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
                       + (f'<br><i>{e(xa_reference_r(zone, el.get("type", ""))[1])}</i>' if nomin and xa_reference_r(zone, el.get("type", ""))[0] else "")
                       + '</td></tr></table>')
         if len(frags) == 4:
+            frags.sec = 'Building elements'
             frags.append("<p style='font-size:9pt; margin-left:10px;'>No walls, roofs, floors or pipes entered.</p>")
 
         logo = logo_pixmap().toImage().convertToFormat(QImage.Format.Format_ARGB32)
@@ -15285,7 +15345,7 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
                 c = logo.pixelColor(xx, yy)
                 if c.alpha() and c.red() > 200 and c.green() > 200 and c.blue() > 200:
                     logo.setPixelColor(xx, yy, QColor(17, 17, 17, c.alpha()))
-        w = QPdfWriter(path)
+        w = QPdfWriter(path if path else "/dev/null")
         w.setPageLayout(QPageLayout(QPageSize(QPageSize.A4), QPageLayout.Orientation.Portrait,
                                     QMarginsF(10, 10, 10, 10), QPageLayout.Unit.Millimeter))
         w.setResolution(96)
@@ -15301,6 +15361,18 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
             d_.setHtml('<html><body style="font-family:Arial; color:#111111;">' + html_ + "</body></html>")
             d_.setPageSize(QSizeF(pw, 1e7))
             return d_
+        _common = ("Header", "Note", "AsmIntro")
+        names = []
+        for t_ in list(body.tags) + list(frags.tags):
+            if t_ not in _common and t_ not in names:
+                names.append(t_)
+        if list_only:
+            return names
+        if only:
+            asm_ = only in frags.tags
+            body = [h_ for h_, t_ in zip(body, body.tags) if t_ in ("Header", "Note") or t_ == only]
+            frags = [h_ for h_, t_ in zip(frags, frags.tags) if t_ == only or (asm_ and t_ == "AsmIntro")]
+            w.setTitle(f"SANS 10400-XA - {only}")
         pages = _pack_pages(mkdoc, ["".join(body)] + list(frags), avail)
         painter = QPainter(w)
         total = len(pages)
@@ -15321,7 +15393,7 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
             painter.setFont(QFont("Arial", 7))
             painter.drawLine(0, int(ph - 24), int(pw), int(ph - 24))
             painter.drawText(QRectF(0, ph - 22, pw * 0.8, 16), int(Qt.AlignmentFlag.AlignLeft),
-                             f"{company}  |  {self.rd.get('project') or 'Energy efficiency report'}  |  SANS 10400-XA")
+                             f"{company}  |  {self.rd.get('project') or 'Energy efficiency report'}  |  SANS 10400-XA" + (f"  |  {only}" if only else ""))
             painter.drawText(QRectF(0, ph - 22, pw, 16), int(Qt.AlignmentFlag.AlignRight), f"Page {i + 1} of {total}")
             painter.restore()
         painter.end()
@@ -15690,7 +15762,7 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
         self._write_rd_pdf(path)
         QMessageBox.information(self, APP_NAME, f"PDF saved:\n{path}")
 
-    def _write_rd_pdf(self, path):
+    def _write_rd_pdf(self, path, only=None, list_only=False):
         import datetime, html as _h
         from PySide6.QtGui import QPdfWriter, QPageSize, QPageLayout, QTextDocument, QFont
         from PySide6.QtCore import QMarginsF, QSizeF, QUrl, QRectF
@@ -16127,6 +16199,21 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
               ], [30, 70]),
               para(f"Generated by {e(APP_NAME)}.", "7.5pt", "#777777")]
 
+        # ---------- the subjects (each can be saved as its own PDF) ----------
+        import re as _re0
+        _secs = []
+        for _sc in (s1, s2, s3, s4, s5, s_mc, s_sm, s6, s7):
+            if not _sc:
+                continue
+            _f0 = _sc[0]
+            while isinstance(_f0, list) and _f0:
+                _f0 = _f0[0]
+            _f0 = str(_f0)
+            _nm = _re0.sub(r"\s+", " ", _re0.sub(r"<[^>]+>|&nbsp;", " ", _f0)).strip()[:70]
+            if _nm and _nm not in [x[0] for x in _secs]:
+                _secs.append((_nm, _sc))
+        if list_only:
+            return [x[0] for x in _secs]
         # ---------- layout: pack blocks into A4 pages ----------
         w = QPdfWriter(path)
         w.setPageLayout(QPageLayout(QPageSize(QPageSize.A4), QPageLayout.Orientation.Portrait,
@@ -16150,8 +16237,13 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
         def height(html):
             return mkdoc(html).size().height()
         pages = [("cover", "".join(cover), 0, None)]
+        _use = (s1, s2, s3, s4, s5, s_mc, s_sm, s6, s7)
+        if only:
+            _use = [x[1] for x in _secs if x[0] == only]
+            pages = []
+            w.setTitle(f"Rational design report - {only}")
         frags_all = []
-        for sec in (s1, s2, s3, s4, s5, s_mc, s_sm, s6, s7):
+        for sec in _use:
             for it in sec:
                 frags_all.append(("<!--u-->" if isinstance(it, list) else "") + "".join(it if isinstance(it, list) else [it]))
 
@@ -16242,7 +16334,7 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
                 painter.setFont(QFont("Arial", 7))
                 painter.drawLine(0, int(ph - 24), int(pw), int(ph - 24))
                 painter.drawText(QRectF(0, ph - 22, pw * 0.8, 16), int(Qt.AlignmentFlag.AlignLeft),
-                                 f"{rd['company']}  |  {rd['project'] or 'Rational design report'}  |  Rev {rd['rev']}")
+                                 f"{rd['company']}  |  {rd['project'] or 'Rational design report'}  |  Rev {rd['rev']}" + (f"  |  {only}" if only else ""))
                 painter.drawText(QRectF(0, ph - 22, pw, 16), int(Qt.AlignmentFlag.AlignRight),
                                  f"Page {i + 1} of {total}")
                 painter.restore()
@@ -16433,7 +16525,7 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
         render()
         d.exec()
 
-    def _write_report_pdf(self, path):
+    def _write_report_pdf(self, path, only=None, list_only=False):
         """A clean white A4 landscape PDF: results per floor, the window/door schedules and
         which windows sit in which room."""
         import datetime, html as _h
@@ -16489,6 +16581,8 @@ at least {MIN_LIGHT_M2:g} m&sup2;). Ventilation = openable area / floor area (mi
 Passages and circulation spaces need neither.
 Glazing limit: glazing may not exceed {GLAZE_LIMIT[0]:g}% of the net floor area, otherwise a rational design is needed.</p>
 <p style="font-size:9pt; font-weight:bold;">{e(glazing_summary(self.results))}</p>"""]
+        body = _TagList(body)
+        body.sec = 'Building totals'
         hrows = []
         for g in house_totals(self.results):
             row = [cell(g["scope"], bold=True), cell(f"{g['area']:.2f}", "right")]
@@ -16515,6 +16609,7 @@ Glazing limit: glazing may not exceed {GLAZE_LIMIT[0]:g}% of the net floor area,
                     verdict(r["vent_ok"]),
                     cell(f"{r['glaze_pct']:.1f}%", "right", None if r["glaze_ok"] else RED, not r["glaze_ok"]),
                     cell(" + ".join(r.get("detail", [])), color="#555555")])
+            body.sec = str(fl)
             body.append(f'<p style="font-size:12pt; font-weight:bold; color:{RED}; margin-left:10px; margin-top:10px;">{e(fl)}</p>')
             body.append(table(["Room", "Area m2", "Glazed m2", "Light %", "Min m2", "Light",
                                "Open m2", "Vent %", "Min m2", "Ventil.", "Glazing %",
@@ -16532,9 +16627,11 @@ Glazing limit: glazing may not exceed {GLAZE_LIMIT[0]:g}% of the net floor area,
         for title, isdoor in (("Window schedule", False), ("Glazed door schedule", True)):
             rows = sched_rows(isdoor)
             if rows:
+                body.sec = title
                 body.append(f'<p style="font-size:12pt; font-weight:bold; color:{RED}; margin-left:10px; margin-top:12px;">{title}</p>')
                 body.append(table(["Tag", "Size mm", "Glazed m2 (each)", "Openable m2 (each)",
                                    "Opening style", "Qty"], rows))
+        body.sec = 'Note'
         body.append(f'<p style="font-size:7.5pt; color:#777777; margin-top:14px;">Generated by '
                     f'{e(APP_NAME)}. Glazed areas are taken from the drawing schedule where available. '
                     f'This report supports, and does not replace, the competent person\'s rational design.</p>')
@@ -16545,11 +16642,19 @@ Glazing limit: glazing may not exceed {GLAZE_LIMIT[0]:g}% of the net floor area,
                 c = logo.pixelColor(xx, yy)
                 if c.alpha() and c.red() > 200 and c.green() > 200 and c.blue() > 200:
                     logo.setPixelColor(xx, yy, QColor(17, 17, 17, c.alpha()))
+        names = []
+        for t_ in body.tags:
+            if t_ not in ("Header", "Note") and t_ not in names:
+                names.append(t_)
+        if list_only:
+            return names
+        if only:
+            body = [h_ for h_, t_ in zip(body, body.tags) if t_ in ("Header", "Note") or t_ == only]
         w = QPdfWriter(path)
         w.setPageLayout(QPageLayout(QPageSize(QPageSize.A4), QPageLayout.Orientation.Portrait,
                                     QMarginsF(10, 10, 10, 10), QPageLayout.Unit.Millimeter))
         w.setResolution(96)
-        w.setTitle("Light & Ventilation Report")
+        w.setTitle("Light & Ventilation Report" + (f" - {only}" if only else ""))
         pw, ph = float(w.width()), float(w.height())
         avail = ph - 30.0
 
