@@ -17113,7 +17113,9 @@ class SbError(Exception):
 
 def _sb(method, path, body=None, token=None, timeout=15):
     u, k = sb_conf()
-    hdr = {"apikey": k, "Content-Type": "application/json", "Authorization": "Bearer " + (token or k)}
+    hdr = {"apikey": k, "Content-Type": "application/json"}
+    if token:                      # the new "publishable" keys are not tokens, so they go in apikey only
+        hdr["Authorization"] = "Bearer " + token
     req = urllib.request.Request(u + path, data=json.dumps(body).encode("utf-8") if body is not None else None, headers=hdr, method=method)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
