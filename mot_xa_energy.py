@@ -2283,6 +2283,9 @@ def gh_repo_name():
     return (SETTINGS.get("gh_repo") or "").strip()
 
 
+GH_API = "https://api.github.com"
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *a, **k):
         return None
@@ -2292,7 +2295,7 @@ def gh_latest_release(repo, token, timeout=15):
     """The newest release of a (private) repository: {'ver', 'tag', 'name', 'asset_id', 'size', 'notes'}. Raises RuntimeError with a plain message."""
     if not repo:
         raise RuntimeError("No GitHub repository is set (Menu > Update settings).")
-    req = urllib.request.Request("https://api.github.com/repos/%s/releases/latest" % repo,
+    req = urllib.request.Request(GH_API + "/repos/%s/releases/latest" % repo,
                                  headers={"Accept": "application/vnd.github+json", "User-Agent": "MOT-XA-Energy",
                                           **({"Authorization": "Bearer " + token} if token else {})})
     try:
@@ -2318,7 +2321,7 @@ def gh_latest_release(repo, token, timeout=15):
 def gh_download_asset(repo, token, asset_id, dest, progress=None, timeout=60):
     """Download a release file of a private repository. The signed link GitHub redirects to must not receive the token."""
     hdr = {"Accept": "application/octet-stream", "User-Agent": "MOT-XA-Energy", **({"Authorization": "Bearer " + token} if token else {})}
-    url = "https://api.github.com/repos/%s/releases/assets/%s" % (repo, asset_id)
+    url = GH_API + "/repos/%s/releases/assets/%s" % (repo, asset_id)
     op = urllib.request.build_opener(_NoRedirect)
     try:
         resp = op.open(urllib.request.Request(url, headers=hdr), timeout=timeout)
@@ -10403,9 +10406,17 @@ class MainWindow(QMainWindow):
         th.done.connect(done)
         th.start()
 
+    def _upd_log(self, msg):
+        try:
+            with open(os.path.join(tempfile.gettempdir(), "mot_update.log"), "a", encoding="utf-8") as f:
+                f.write(datetime.datetime.now().strftime("%H:%M:%S ") + str(msg) + "\n")
+        except Exception:
+            pass
+
     def _gh_install(self):
         """Save the work, download the installer, run it quietly and leave. The new program opens with the work restored."""
         info = self._gh_new
+        self._upd_log("update to %s clicked" % vtext(info["ver"]))
         try:
             data = self.project_data()
             data["_current_file"] = self.current_file
@@ -10439,10 +10450,18 @@ class MainWindow(QMainWindow):
             if loop["err"] and loop["err"] != "Cancelled.":
                 QMessageBox.warning(self, APP_NAME, "The update could not be downloaded:\n" + loop["err"])
             return
-        if QProcess.startDetached(loop["path"], ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS"]):
+        self._upd_log("downloaded %s" % loop["path"])
+        # /SILENT shows the installer's progress window, so it is clear that the update is running
+        ok_ = QProcess.startDetached(loop["path"], ["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS",
+                                                    "/LOG=" + os.path.join(tempfile.gettempdir(), "mot_setup.log")])
+        self._upd_log("installer started: %s" % ok_)
+        if ok_:
             self._autosave_clear()
-            QApplication.instance().quit()
+            self.hide()
+            QTimer.singleShot(600, lambda: os._exit(0))     # make sure no file of the old program stays locked
         else:
+            self.update_btn.setEnabled(True)
+            self.update_btn.setText("\u27F3  Update failed - click to retry")
             QMessageBox.warning(self, APP_NAME, "The installer could not be started:\n" + loop["path"])
 
     def update_now(self):
@@ -10452,7 +10471,15 @@ class MainWindow(QMainWindow):
                 self.update_btn.setEnabled(False)
                 self.update_btn.setText("Updating...")
                 QApplication.processEvents()
-                self._gh_install()
+                try:
+                    self._gh_install()
+                except Exception as ex:
+                    self._upd_log("error: %r" % ex)
+                    self.update_btn.setEnabled(True)
+                    self.update_btn.setText("\u27F3  Update failed - click to retry")
+                    QMessageBox.warning(self, APP_NAME, "The update failed:\n%s" % ex)
+            else:
+                QMessageBox.information(self, APP_NAME, "No update information yet. Use Menu > Check for updates now.")
             return
         self.update_btn.setEnabled(False)
         self.update_btn.setText("Updating...")
