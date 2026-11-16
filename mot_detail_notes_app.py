@@ -1380,7 +1380,16 @@ class Win(QMainWindow):
         self.number_notes = QCheckBox("Number the notes")
         self.number_notes.setChecked(True)
         self.number_notes.setToolTip("Put 1, 2, 3... in front of each callout, the same numbers as the saved notes list.")
-        for w_ in (self.scale, self.text_mm, self.note_w, self.clear_old, self.number_notes):
+        self.town_box = QLineEdit()
+        self.town_box.setPlaceholderText("Town (sets the XA zone)")
+        self.town_box.setMinimumWidth(170)
+        self.town_box.setToolTip("Type the nearest town from SANS 10400-XA Annex C and press Enter. The insulation R-values on the notes follow its climate zone.")
+        self.town_box.setVisible(False)
+        self.town_box.returnPressed.connect(lambda: self.xa_pick_town(self.town_box.text()))
+        self.zone_lbl = QLabel("")
+        self.zone_lbl.setObjectName("muted")
+        self.zone_lbl.setVisible(False)
+        for w_ in (self.scale, self.text_mm, self.note_w, self.clear_old, self.number_notes, self.town_box, self.zone_lbl):
             r3.addWidget(w_)
         r3.addStretch()
         l3.addLayout(r3)
@@ -1530,6 +1539,7 @@ class Win(QMainWindow):
         self.ptr_default, self.note_ptr = "dot", {}
         self.side, self.font = "right", "arial.ttf"
         self.note_boxes, self.note_targets = {}, {}
+        self.xa_set_town, self.xa_towns = None, []
         self.xa_provider = None              # set by the suite: returns {'zone','roof','heavy','light'}
         self._syncing = False
         self.view.setScene(QGraphicsScene())
@@ -2031,6 +2041,71 @@ class Win(QMainWindow):
                 return sp["cat"]
             return cat.guess_category(it["layer"], it["pattern"])
         return ""
+
+    def xa_sync_ui(self):
+        """show the town / zone the suite has, once it has told us how to reach it"""
+        if not self.xa_provider:
+            return
+        try:
+            from PySide6.QtWidgets import QCompleter
+            d = self.xa_provider()
+            if self.xa_towns and self.town_box.completer() is None:
+                c = QCompleter(self.xa_towns, self.town_box)
+                c.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+                c.setFilterMode(Qt.MatchFlag.MatchContains)
+                c.activated.connect(self.xa_pick_town)
+                self.town_box.setCompleter(c)
+            self.town_box.setVisible(True)
+            self.zone_lbl.setVisible(True)
+            if d.get("town") and not self.town_box.hasFocus():
+                self.town_box.setText(d["town"])
+            self.zone_lbl.setText(f"Zone {d['zone']}:  roof R {d['roof']:g}  /  wall R {d['heavy']:g}" if d.get("roof") and d.get("heavy") else f"Zone {d['zone']}")
+        except Exception:
+            pass
+
+    def xa_pick_town(self, t):
+        if self.xa_set_town and self.xa_set_town(t):
+            self.say(f"Town set: {t.strip()}. Insulation notes now use that climate zone.")
+        elif t.strip():
+            self.say(f"\u201c{t.strip()}\u201d is not in the SANS 10400-XA Annex C list: choose a listed town, or set the zone on the Energy tab.")
+        self.xa_resync()
+
+    _XA_NOTE = re.compile(r"min\. total R-value ([\d.]+) m\u00b2K/W for the (roof / ceiling|masonry wall|light-weight wall) "
+                          r"\(SANS 10400-XA, climate zone (\w+)\)")
+
+    def xa_resync(self):
+        """insulation notes already on the detail take the R-values of the zone that is set now"""
+        self.xa_sync_ui()
+        if not self.xa_provider or not self.table.rowCount():
+            return
+        try:
+            d = self.xa_provider()
+        except Exception:
+            return
+        key = {"roof / ceiling": "roof", "masonry wall": "heavy", "light-weight wall": "light"}
+        changed = 0
+        self.table.blockSignals(True)
+        for r in range(self.table.rowCount()):
+            n = self.table.item(r, 1)
+            if n is None:
+                continue
+
+            def sub(m):
+                v = d.get(key[m.group(2)])
+                if not v:
+                    return m.group(0)
+                return f"min. total R-value {v:g} m\u00b2K/W for the {m.group(2)} (SANS 10400-XA, climate zone {d['zone']})"
+            new = self._XA_NOTE.sub(sub, n.text())
+            if new != n.text():
+                n.setText(new)
+                changed += 1
+        self.table.blockSignals(False)
+        if changed:
+            self.refresh_refs()
+            self.commit()
+            self.save_edits()
+            self.timer.start()
+            self.say(f"{changed} insulation note(s) updated to climate zone {d['zone']}.")
 
     def xa_fill(self, note, it):
         """When the suite knows the climate zone, put the real XA minimum R-value into insulation notes."""

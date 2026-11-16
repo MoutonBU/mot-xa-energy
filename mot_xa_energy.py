@@ -12307,8 +12307,23 @@ class MainWindow(QMainWindow):
             w.setStyleSheet(dn.QSS)
             def _xa_info():
                 z = self.xa_zone.currentText()
-                return {"zone": z, "roof": XA_ROOF_R.get(z), "heavy": XA_HEAVY_WALL_R.get(z), "light": XA_LIGHT_WALL_R.get(z)}
+                t = self.xa_town.currentText()
+                return {"zone": z, "roof": XA_ROOF_R.get(z), "heavy": XA_HEAVY_WALL_R.get(z), "light": XA_LIGHT_WALL_R.get(z),
+                        "town": t if t in XA_TOWNS else ""}
+            def _xa_set_town(t):
+                t = (t or "").strip()
+                if t not in XA_TOWNS:
+                    return False
+                pv = next((k for k, v_ in XA_PROVINCES.items() if t in v_), None)
+                if pv and pv in XA_REGIONS:
+                    self.xa_prov.setCurrentText(pv)
+                self.xa_town.setCurrentText(t)          # also sets the energy zone, same as picking it on the Energy tab
+                return True
             w.xa_provider = _xa_info
+            w.xa_set_town = _xa_set_town
+            w.xa_towns = sorted(XA_TOWNS)
+            self.xa_zone.currentTextChanged.connect(lambda _z: w.xa_resync())   # zone changed on the Energy tab: notes follow
+            w.xa_sync_ui()
             self._det_lay.addWidget(w)
             self._det_win = w
         except Exception as ex:
