@@ -4010,7 +4010,7 @@ def apply_icons(win, force=False):
     """Tab icons, button icons and big icons on the home cards."""
     mt = getattr(win, "main_tabs", None)
     if mt is not None:
-        for i, n in enumerate(("home", "lightvent", "bolt", "building")):
+        for i, n in enumerate(("home", "lightvent", "bolt", "building", "ruler")):
             if i < mt.count():
                 mt.setTabIcon(i, make_icon(n, "#eceef0", 18))
         mt.setIconSize(QSize(18, 18))
@@ -8582,6 +8582,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(res_widget, "4  Results")
         self._build_xa_tab()
         self._build_cov_tab()
+        self._build_detail_tab()
         self._build_home()
 
         self.assign_table = QTableWidget(0, 8)
@@ -12283,6 +12284,36 @@ class MainWindow(QMainWindow):
                                    + " The zone decides the minimum insulation (R-values) and glazing limits used in the report.</span>")
         finally:
             self._zone_busy = False
+
+    # ---------------- Detail Notes tab (work in progress) ----------------
+    def _build_detail_tab(self):
+        """Detailmakker inside the suite: opens a DWG/DXF of a construction detail, writes the callout notes and saves
+        the noted drawing. It is built the first time the tab is opened, so the rest of the program starts as fast as before."""
+        page = QWidget()
+        self._det_lay = QVBoxLayout(page)
+        self._det_lay.setContentsMargins(0, 0, 0, 0)
+        self._det_win = None
+        self.main_tabs.addTab(page, "Detail Notes (WIP)")
+        self.main_tabs.currentChanged.connect(lambda i: self._detail_open() if self.main_tabs.widget(i) is page else None)
+
+    def _detail_open(self):
+        if self._det_win is not None:
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            import mot_detail_notes_app as dn
+            w = dn.Win(embedded=True)
+            w.setWindowFlags(Qt.WindowType.Widget)
+            w.setStyleSheet(dn.QSS)
+            self._det_lay.addWidget(w)
+            self._det_win = w
+        except Exception as ex:
+            lb = QLabel("The Detail Notes tool could not start:\n%s\n\nIt needs the ezdxf and matplotlib packages." % ex)
+            lb.setWordWrap(True)
+            self._det_lay.addWidget(lb)
+            self._det_win = lb
+        finally:
+            QApplication.restoreOverrideCursor()
 
     # ---------------- Coverage and FAR tab ----------------
     def _build_cov_tab(self):

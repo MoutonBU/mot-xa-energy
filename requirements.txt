@@ -7,3 +7,5 @@ rapidocr_onnxruntime
 onnxruntime
 pymupdf
 pyinstaller
+ezdxf
+matplotlib
