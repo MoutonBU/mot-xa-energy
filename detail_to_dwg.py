@@ -1094,6 +1094,9 @@ def place_notes(doc, notes, extents, mmu, scale, text_mm, width_mm, gap_mm, numb
     ordered = []
     y = y_top
     manual = manual or {}
+    mboxes = [(manual[notes[k]["id"]][0], manual[notes[k]["id"]][1] - heights[k],
+               manual[notes[k]["id"]][0] + width, manual[notes[k]["id"]][1])
+              for k in range(len(notes)) if notes[k].get("id") in manual]
     for k in order:
         n = notes[k]
         tx, ty = cands[k][pick[k]]
@@ -1102,6 +1105,13 @@ def place_notes(doc, notes, extents, mmu, scale, text_mm, width_mm, gap_mm, numb
             tx, ty = tp                                   # you moved the dot: it points where you put it
         n["target"] = (tx, ty)
         mp = manual.get(n.get("id"))
+        if not mp:                                        # the other notes close ranks around the ones you placed
+            while True:
+                bottom = y - heights[k]
+                hit = [b for b in mboxes if not (b[2] <= x or b[0] >= x + width or b[3] <= bottom or b[1] >= y)]
+                if not hit:
+                    break
+                y = min(b[1] for b in hit) - 0.3 * h
         px, py = (mp if mp else (x, y))                  # a note you dragged keeps your position and takes no slot in the stack
         n["box"] = (px, py - heights[k], px + width, py)
         msp.add_mtext((f"{len(ordered) + 1}.  " if number else "") + n["note"], dxfattribs={
