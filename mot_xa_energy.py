@@ -4724,6 +4724,48 @@ def _slices(doc, avail):
     return out
 
 
+def cov_num(x):
+    try:
+        return float(str(x).replace(",", ".").replace(" ", "").strip() or 0)
+    except ValueError:
+        return 0.0
+
+
+def cov_block_floor(b):
+    """Floor area counted for the FAR: the typed total, or footprint x storeys when it is left empty."""
+    fa = cov_num(b.get("floor", ""))
+    return fa if fa > 0 else cov_num(b.get("fp", 0)) * max(cov_num(b.get("storeys", 1)), 1.0)
+
+
+def cov_scenario(st, name, blocks, with_roofs):
+    """Coverage and FAR of a set of blocks (and, optionally, the roofs that are ticked) on the stand."""
+    stand = cov_num(st.get("stand", 0))
+    foot = sum(cov_num(b.get("fp", 0)) for b in blocks)
+    floor = sum(cov_block_floor(b) for b in blocks)
+    roofs = [r for r in st.get("roofs", []) if r.get("on", True)] if with_roofs else []
+    roof = sum(cov_num(r.get("area", 0)) for r in roofs)
+    mc, mf = cov_num(st.get("max_cov", 0)), cov_num(st.get("max_far", 0))
+    cov = (foot + roof) / stand * 100 if stand > 0 else 0.0
+    far = floor / stand if stand > 0 else 0.0
+    return {"name": name, "blocks": [b.get("name", "") for b in blocks], "roofs": [r.get("name", "") for r in roofs],
+            "foot": foot, "roof": roof, "floor": floor, "cov": cov, "far": far, "max_cov": mc, "max_far": mf,
+            "cov_ok": (mc <= 0 or cov <= mc + 1e-9), "far_ok": (mf <= 0 or far <= mf + 1e-9), "stand": stand}
+
+
+def cov_scenarios(st):
+    """Every calculation the tab shows: each block alone, all the blocks, and all the blocks with the carport roofs."""
+    blocks = [dict(b, name=(b.get("name") or "").strip() or f"Block {i}") for i, b in enumerate(st.get("blocks", []), 1)]
+    on = [b for b in blocks if b.get("on", True)]
+    out = []
+    for b in blocks:
+        out.append(cov_scenario(st, f"Single block - {b['name']}", [b], False))
+    if on:
+        out.append(cov_scenario(st, f"All blocks ({len(on)})", on, False))
+        if any(r.get("on", True) and cov_num(r.get("area", 0)) > 0 for r in st.get("roofs", [])):
+            out.append(cov_scenario(st, f"All blocks ({len(on)}) with carport roofs", on, True))
+    return out
+
+
 class _TagList(list):
     """A list of report fragments that remembers which subject each one belongs to."""
     def __init__(self, *a):
@@ -8466,6 +8508,7 @@ class MainWindow(QMainWindow):
         rl.addWidget(self.summary)
         self.tabs.addTab(res_widget, "4  Results")
         self._build_xa_tab()
+        self._build_cov_tab()
         self._build_home()
 
         self.assign_table = QTableWidget(0, 8)
@@ -9834,6 +9877,7 @@ class MainWindow(QMainWindow):
         self.xa_elements = []
         self.xa_glass = {}
         self.rd = dict(RD_DEFAULTS)
+        self.cov_load({})
         self._rd_to_widgets()
         self._xa_refresh()
         self.current_file = None
@@ -9860,6 +9904,7 @@ class MainWindow(QMainWindow):
                    "limit": self.xa_limit.value(), "zone11": self.xa_zone11.currentText(),
                    "elements": self.xa_elements, "glass": self.xa_glass, "air": self.air_state(), "hw": self.hw_state(), "lt": self.lt_state()},
             "rd": self.rd,
+            "cov": self.cov_state(),
             "ifc": getattr(self, "ifc_data", None),
             "unit_mode": UNIT_MODE[0],
             "panes": self.sched_panes,
@@ -10302,6 +10347,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Project opened: {path}", 8000)
 
     def _apply_project_data(self, data):
+        self.cov_load(data.get("cov") or {})
         if data.get("floors"):
             self.floors = list(data["floors"])
             self._refresh_floor_widgets(select="All floors")
@@ -12155,6 +12201,279 @@ class MainWindow(QMainWindow):
                                    + " The zone decides the minimum insulation (R-values) and glazing limits used in the report.</span>")
         finally:
             self._zone_busy = False
+
+    # ---------------- Coverage and FAR tab ----------------
+    def _build_cov_tab(self):
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(10, 10, 10, 10)
+        top = QHBoxLayout()
+        self.cov_stand = QDoubleSpinBox(); self.cov_stand.setRange(0, 10_000_000); self.cov_stand.setDecimals(2)
+        self.cov_stand.setSuffix(" m2"); self.cov_stand.setMinimumWidth(140)
+        self.cov_maxcov = QDoubleSpinBox(); self.cov_maxcov.setRange(0, 100); self.cov_maxcov.setDecimals(1)
+        self.cov_maxcov.setSuffix(" %"); self.cov_maxcov.setSpecialValueText("no limit")
+        self.cov_maxfar = QDoubleSpinBox(); self.cov_maxfar.setRange(0, 20); self.cov_maxfar.setDecimals(2)
+        self.cov_maxfar.setSpecialValueText("no limit")
+        for lab, wdg in (("Stand (erf) area:", self.cov_stand), ("Maximum coverage:", self.cov_maxcov),
+                         ("Maximum FAR:", self.cov_maxfar)):
+            top.addWidget(QLabel(lab)); top.addWidget(wdg); top.addSpacing(14)
+        top.addStretch()
+        lay.addLayout(top)
+        info = QLabel("Coverage = footprint of the buildings (plus the roofs you tick) / stand area.  "
+                      "FAR (floor area ratio) = total floor area of all storeys / stand area.  "
+                      "Floor area left empty = footprint x storeys.  Use the limits from the zoning scheme / title deed.")
+        info.setWordWrap(True)
+        lay.addWidget(info)
+        self.cov_blocks = QTableWidget(0, 5)
+        self.cov_blocks.setHorizontalHeaderLabels(["Block", "Footprint m2 (coverage)", "Storeys",
+                                                   "Floor area m2 (all storeys, optional)", "Count"])
+        self.cov_roofs = QTableWidget(0, 3)
+        self.cov_roofs.setHorizontalHeaderLabels(["Carport / roof", "Roof area m2", "Count in coverage"])
+        for t_, h_ in ((self.cov_blocks, 170), (self.cov_roofs, 130)):
+            t_.horizontalHeader().setStretchLastSection(True)
+            t_.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+            t_.setMinimumHeight(h_)
+            t_.itemChanged.connect(lambda *_: self._cov_refresh())
+        for lab, t_, add_, ph in (("Blocks (buildings)", self.cov_blocks, self._cov_add_block, "Add block"),
+                                  ("Carports and other roofs (optional extra for the coverage)", self.cov_roofs,
+                                   self._cov_add_roof, "Add carport / roof")):
+            hl = QHBoxLayout()
+            hl.addWidget(QLabel(f"<b>{lab}</b>")); hl.addStretch()
+            b1 = QPushButton(ph); b1.clicked.connect(lambda _=False, f=add_: f())
+            b2 = QPushButton("Remove selected")
+            b2.clicked.connect(lambda _=False, t=t_: (t.removeRow(t.currentRow()) if t.currentRow() >= 0 else None,
+                                                      self._cov_refresh()))
+            hl.addWidget(b1); hl.addWidget(b2)
+            lay.addLayout(hl)
+            lay.addWidget(t_)
+        self.cov_result = QLabel("")
+        self.cov_result.setWordWrap(True)
+        self.cov_result.setTextFormat(Qt.TextFormat.RichText)
+        lay.addWidget(self.cov_result)
+        bot = QHBoxLayout()
+        bp = QPushButton("Preview coverage and FAR report")
+        bp.clicked.connect(lambda: self.preview_pdf_report(self._write_cov_pdf, lambda: None))
+        be = QPushButton("Export report...")
+        be.clicked.connect(self.export_cov_pdf)
+        bs = QPushButton("Export each calculation as its own PDF...")
+        bs.clicked.connect(lambda: self.export_subject_pdfs("cov"))
+        for b_ in (bp, be, bs):
+            bot.addWidget(b_)
+        bot.addStretch()
+        lay.addLayout(bot)
+        for sp in (self.cov_stand, self.cov_maxcov, self.cov_maxfar):
+            sp.valueChanged.connect(lambda *_: self._cov_refresh())
+        self._cov_busy = False
+        self.cov_page = page
+        self.main_tabs.addTab(page, "Coverage && FAR")
+        self._cov_add_block(); self._cov_refresh()
+
+    def _cov_add_block(self, name=None, fp="", storeys=1, floor="", on=True):
+        t = self.cov_blocks
+        self._cov_busy = True
+        r = t.rowCount(); t.insertRow(r)
+        vals = [name if name is not None else f"Block {chr(65 + r % 26)}", str(fp), str(storeys), str(floor)]
+        for c, v in enumerate(vals):
+            t.setItem(r, c, QTableWidgetItem(v))
+        ck = QTableWidgetItem(); ck.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+        ck.setCheckState(Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
+        t.setItem(r, 4, ck)
+        self._cov_busy = False
+        self._cov_refresh()
+
+    def _cov_add_roof(self, name=None, area="", on=True):
+        t = self.cov_roofs
+        self._cov_busy = True
+        r = t.rowCount(); t.insertRow(r)
+        t.setItem(r, 0, QTableWidgetItem(name if name is not None else f"Carport {r + 1}"))
+        t.setItem(r, 1, QTableWidgetItem(str(area)))
+        ck = QTableWidgetItem(); ck.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+        ck.setCheckState(Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
+        t.setItem(r, 2, ck)
+        self._cov_busy = False
+        self._cov_refresh()
+
+    def cov_state(self):
+        def tx(t, r, c):
+            it = t.item(r, c)
+            return it.text().strip() if it else ""
+
+        def on(t, r, c):
+            it = t.item(r, c)
+            return bool(it and it.checkState() == Qt.CheckState.Checked)
+        return {"stand": self.cov_stand.value(), "max_cov": self.cov_maxcov.value(), "max_far": self.cov_maxfar.value(),
+                "blocks": [{"name": tx(self.cov_blocks, r, 0), "fp": tx(self.cov_blocks, r, 1),
+                            "storeys": tx(self.cov_blocks, r, 2), "floor": tx(self.cov_blocks, r, 3),
+                            "on": on(self.cov_blocks, r, 4)} for r in range(self.cov_blocks.rowCount())],
+                "roofs": [{"name": tx(self.cov_roofs, r, 0), "area": tx(self.cov_roofs, r, 1),
+                           "on": on(self.cov_roofs, r, 2)} for r in range(self.cov_roofs.rowCount())]}
+
+    def cov_load(self, st):
+        st = st or {}
+        self._cov_busy = True
+        self.cov_stand.setValue(cov_num(st.get("stand", 0)))
+        self.cov_maxcov.setValue(cov_num(st.get("max_cov", 0)))
+        self.cov_maxfar.setValue(cov_num(st.get("max_far", 0)))
+        self.cov_blocks.setRowCount(0)
+        self.cov_roofs.setRowCount(0)
+        self._cov_busy = False
+        for b in st.get("blocks", []):
+            self._cov_add_block(b.get("name", ""), b.get("fp", ""), b.get("storeys", 1), b.get("floor", ""), b.get("on", True))
+        for r in st.get("roofs", []):
+            self._cov_add_roof(r.get("name", ""), r.get("area", ""), r.get("on", True))
+        if not st.get("blocks"):
+            self._cov_add_block()
+        self._cov_refresh()
+
+    def _cov_refresh(self):
+        if getattr(self, "_cov_busy", True) or not hasattr(self, "cov_result"):
+            return
+        sc = cov_scenarios(self.cov_state())
+        if not sc or sc[0]["stand"] <= 0:
+            self.cov_result.setText("<i>Enter the stand area and the block footprints to see the coverage and FAR.</i>")
+            return
+        rows = []
+        for r in sc:
+            def lim(ok, val, mx, fmt):
+                col = "#1B9F4B" if ok else "#E03050"
+                return (f"<td align='right'><b style='color:{col}'>{fmt % val}</b>"
+                        + (f" <span style='color:#999'>/ {fmt % mx}</span>" if mx > 0 else "") + "</td>")
+            rows.append(f"<tr><td>{r['name']}</td><td align='right'>{r['foot'] + r['roof']:.2f}</td>"
+                        f"<td align='right'>{r['floor']:.2f}</td>"
+                        + lim(r["cov_ok"], r["cov"], r["max_cov"], "%.2f%%") + lim(r["far_ok"], r["far"], r["max_far"], "%.3f")
+                        + "</tr>")
+        self.cov_result.setText(
+            "<table cellspacing='0' cellpadding='4' width='100%'><tr><th align='left'>Calculation</th>"
+            "<th align='right'>Covered m2</th><th align='right'>Floor area m2</th>"
+            "<th align='right'>Coverage</th><th align='right'>FAR</th></tr>" + "".join(rows) + "</table>")
+
+    def _write_cov_pdf(self, path, only=None, list_only=False):
+        import datetime, html as _h
+        from PySide6.QtGui import QPdfWriter, QPageSize, QPageLayout, QTextDocument, QFont
+        from PySide6.QtCore import QMarginsF, QSizeF, QUrl
+        e = lambda x: _h.escape(str(x))
+        RED, DARK, GREY = "#C8102E", "#DCDCDC", "#F4F4F4"
+        st = self.cov_state()
+        scen = cov_scenarios(st)
+        if list_only:
+            return [r["name"] for r in scen]
+        if only:
+            scen = [r for r in scen if r["name"] == only]
+
+        def cell(txt, align="left", color=None, bold=False, bg=None):
+            sty = f"padding:3px; text-align:{align}; vertical-align:middle;" + (f"color:{color};" if color else "") + \
+                  ("font-weight:bold;" if bold else "")
+            return f'<td{" bgcolor=" + chr(34) + bg + chr(34) if bg else ""} style="{sty}">{e(txt)}</td>'
+
+        def table(head, rows, widths):
+            h = "".join(f'<th bgcolor="{DARK}" width="{widths[i]}%" style="padding:4px;">{e(x)}</th>' for i, x in enumerate(head))
+            return (f'<table width="100%" cellspacing="0" cellpadding="0" border="0.6" style="border-color:#bbbbbb; '
+                    f'font-size:8.5pt;"><tr>{h}</tr>' + "".join("<tr>" + "".join(r) + "</tr>" for r in rows) + "</table>")
+
+        def verdict(ok, limit):
+            if limit <= 0:
+                return cell("NO LIMIT SET", "center", "#555555", True, bg="#EDEDED")
+            return cell("WITHIN LIMIT" if ok else "EXCEEDS LIMIT", "center", "#1B7F3B" if ok else RED, True,
+                        bg="#E7F5EB" if ok else "#FCE8EB")
+        head = (f'<table width="100%" cellspacing="0" cellpadding="8" border="0"><tr><td bgcolor="{DARK}" width="9%">'
+                f'<img src="logo" height="46"></td><td bgcolor="{DARK}" style="color:#111111;">'
+                f'<span style="font-size:17pt; font-weight:bold;">Coverage and Floor Area Ratio</span><br>'
+                f'<span style="font-size:9pt; color:#444444;">Stand area {st["stand"]:.2f} m2 &nbsp;|&nbsp; '
+                f'{datetime.date.today().strftime("%d %B %Y")}</span></td></tr></table>'
+                f'<table width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td bgcolor="{RED}" height="3"></td></tr></table>'
+                f'{self._project_info_html()}')
+        frags = [head]
+        frags.append(f'<p style="font-size:8.5pt; color:#444444;">Coverage = footprint of the buildings'
+                     f'{" and carport roofs" if any("carport" in r["name"] for r in scen) else ""} / stand area. '
+                     f'FAR = total floor area of all storeys / stand area. Limits used: coverage '
+                     f'{(str(round(cov_num(st["max_cov"]), 1)) + "%") if cov_num(st["max_cov"]) > 0 else "none set"}, FAR '
+                     f'{round(cov_num(st["max_far"]), 2) if cov_num(st["max_far"]) > 0 else "none set"}.</p>')
+        blocks_by_name = {(b.get("name") or "").strip() or f"Block {i}": b for i, b in enumerate(st["blocks"], 1)}
+        for r in scen:
+            frags.append(f'<p style="font-size:12pt; font-weight:bold; color:{RED}; margin-left:10px; margin-top:12px;">{e(r["name"])}</p>')
+            rows = []
+            for bn in r["blocks"]:
+                b = blocks_by_name.get(bn, {})
+                rows.append([cell(bn, bold=True), cell(f"{cov_num(b.get('fp')):.2f}", "right"),
+                             cell(f"{cov_num(b.get('storeys', 1)):g}", "center"),
+                             cell(f"{cov_block_floor(b):.2f}", "right")])
+            rows.append([cell("Total buildings", "right", bold=True), cell(f"{r['foot']:.2f}", "right", bold=True), cell(""),
+                         cell(f"{r['floor']:.2f}", "right", bold=True)])
+            frags.append(table(["Block", "Footprint m2", "Storeys", "Floor area m2"], rows, [40, 20, 15, 25]))
+            if r["roofs"]:
+                rr = [[cell(x.get("name", ""), bold=True), cell(f"{cov_num(x.get('area')):.2f}", "right")]
+                      for x in st["roofs"] if x.get("on", True) and x.get("name", "") in r["roofs"]]
+                rr.append([cell("Total carport / roof area", "right", bold=True), cell(f"{r['roof']:.2f}", "right", bold=True)])
+                frags.append('<p style="font-size:9pt; font-weight:bold; margin-left:10px; margin-top:8px;">Carports and other roofs counted in the coverage</p>')
+                frags.append(table(["Roof", "Area m2"], rr, [70, 30]))
+            res = [[cell("Stand area", bold=True), cell(f"{r['stand']:.2f} m2", "right"), cell(""), cell("")],
+                   [cell("Coverage", bold=True),
+                    cell(f"({r['foot']:.2f} + {r['roof']:.2f}) / {r['stand']:.2f} = {r['cov']:.2f}%" if r["roof"] else
+                         f"{r['foot']:.2f} / {r['stand']:.2f} = {r['cov']:.2f}%", "right"),
+                    cell(f"{r['max_cov']:.1f}%" if r["max_cov"] > 0 else "-", "right"), verdict(r["cov_ok"], r["max_cov"])],
+                   [cell("Floor area ratio (FAR)", bold=True), cell(f"{r['floor']:.2f} / {r['stand']:.2f} = {r['far']:.3f}", "right"),
+                    cell(f"{r['max_far']:.2f}" if r["max_far"] > 0 else "-", "right"), verdict(r["far_ok"], r["max_far"])]]
+            frags.append('<p style="font-size:9pt; font-weight:bold; margin-left:10px; margin-top:8px;">Result</p>')
+            frags.append(table(["", "Calculation", "Limit", "Result"], res, [22, 40, 14, 24]))
+        frags.append('<p style="font-size:7.5pt; color:#777777; margin-top:14px;">Areas are the figures entered on the Coverage and FAR tab. '
+                     'Check the coverage and FAR limits and what the zoning scheme counts (eaves, basements, covered balconies) '
+                     f'before submission. Generated by {e(APP_NAME)}.</p>')
+        logo = logo_pixmap().toImage().convertToFormat(QImage.Format.Format_ARGB32)
+        for yy in range(logo.height()):
+            for xx in range(logo.width()):
+                c = logo.pixelColor(xx, yy)
+                if c.alpha() and c.red() > 200 and c.green() > 200 and c.blue() > 200:
+                    logo.setPixelColor(xx, yy, QColor(17, 17, 17, c.alpha()))
+        w = QPdfWriter(path)
+        w.setPageLayout(QPageLayout(QPageSize(QPageSize.A4), QPageLayout.Orientation.Portrait,
+                                    QMarginsF(10, 10, 10, 10), QPageLayout.Unit.Millimeter))
+        w.setResolution(96)
+        w.setTitle("Coverage and FAR" + (f" - {only}" if only else ""))
+        pw, ph = float(w.width()), float(w.height())
+        avail = ph - 30.0
+
+        def mkdoc(html_):
+            d_ = QTextDocument()
+            d_.addResource(QTextDocument.ImageResource, QUrl("logo"), logo)
+            d_.setDefaultFont(QFont("Arial", 9))
+            d_.setHtml('<html><body style="font-family:Arial; color:#111111;">' + html_ + "</body></html>")
+            d_.setPageSize(QSizeF(pw, 1e7))
+            return d_
+        pages = _pack_pages(mkdoc, frags, avail)
+        pages = [(self._report_cover("COVERAGE AND<br>FAR REPORT", "Stand coverage and floor area ratio", only), 0, None)] + list(pages)
+        painter = QPainter(w)
+        company = self.rd.get("company", "") or APP_NAME
+        for i, (html_, y0, y1) in enumerate(pages):
+            if i:
+                w.newPage()
+            painter.save()
+            painter.translate(0, -y0)
+            if y1 is not None:
+                painter.setClipRect(QRectF(-5, y0, pw + 10, y1 - y0 + 1))
+            _draw_doc_rounded(painter, mkdoc(html_))
+            painter.restore()
+            if i == 0:
+                continue
+            painter.save()
+            painter.setPen(QColor("#9A9A9A"))
+            painter.setFont(QFont("Arial", 7))
+            painter.drawLine(0, int(ph - 24), int(pw), int(ph - 24))
+            painter.drawText(QRectF(0, ph - 22, pw * 0.8, 16), int(Qt.AlignmentFlag.AlignLeft),
+                             f"{company}  |  {self.rd.get('project') or 'Coverage and FAR'}  |  Coverage and FAR")
+            painter.drawText(QRectF(0, ph - 22, pw, 16), int(Qt.AlignmentFlag.AlignRight), f"Page {i + 1} of {len(pages)}")
+            painter.restore()
+        painter.end()
+
+    def export_cov_pdf(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Export coverage and FAR report",
+                                              self.pdf_default_path("Coverage and FAR Report"), "PDF (*.pdf)")
+        if not path:
+            return
+        if not path.lower().endswith(".pdf"):
+            path += ".pdf"
+        self._remember_pdf_dir(path)
+        self._write_cov_pdf(path)
+        QMessageBox.information(self, APP_NAME, f"PDF saved:\n{path}")
 
     def _build_xa_tab(self):
         from PySide6.QtWidgets import QMenu
@@ -15062,7 +15381,8 @@ class MainWindow(QMainWindow):
         import re as _re
         label, prep, writer = {"lv": ("Light and Ventilation", self.run_check, self._write_report_pdf),
                                "xa": ("Energy XA", self._run_xa, self._write_xa_pdf),
-                               "rd": ("Rational Design", self._run_xa_quiet, self._write_rd_pdf)}[kind]
+                               "rd": ("Rational Design", self._run_xa_quiet, self._write_rd_pdf),
+                               "cov": ("Coverage and FAR", lambda: None, self._write_cov_pdf)}[kind]
         prep()
         names = writer(None, list_only=True)
         if not names:
