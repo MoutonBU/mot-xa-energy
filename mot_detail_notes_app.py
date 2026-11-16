@@ -1005,8 +1005,12 @@ class Win(QMainWindow):
                     continue
                 seen[txt.strip().lower()] = True
                 rows.append((it["id"], txt, ver))
+        have_txt = {r[1].strip().lower() for r in rows}
         for it in self.items:                       # elements the tool adds itself
             if it.get("synthetic"):
+                if it["note"].strip().lower() in have_txt:
+                    continue                        # that note is already on the drawing: no second callout
+                have_txt.add(it["note"].strip().lower())
                 rows.append((it["id"], it["note"], False))
         # top-to-bottom like the drawing
         rows.sort(key=lambda r: -by_id[r[0]]["point"][1])
