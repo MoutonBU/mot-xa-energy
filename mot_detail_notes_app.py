@@ -23,8 +23,9 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QComboBox, QGraphicsP
                                QFileDialog, QFormLayout, QGraphicsEllipseItem, QGraphicsScene,
                                QGraphicsSimpleTextItem, QGraphicsView, QHBoxLayout, QHeaderView,
                                QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QSplitter,
-                               QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+                               QListWidget, QListWidgetItem, QTextEdit, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
+import detail_catalog as cat
 import detail_to_dwg as core
 
 HERE = Path(__file__).resolve().parent
@@ -355,6 +356,148 @@ class SettingsDialog(QDialog):
 
 
 # ---------------------------------------------------------------- main window
+def load_custom():
+    return [d for d in read_json(OWN_SETTINGS).get("custom_specs", []) if d.get("label") and d.get("note")]
+
+
+def save_custom(entry):
+    o = read_json(OWN_SETTINGS)
+    lst = [d for d in o.get("custom_specs", []) if d.get("label") != entry["label"]]
+    lst.append(entry)
+    o["custom_specs"] = lst
+    write_json(OWN_SETTINGS, o)
+
+
+class SpecDialog(QDialog):
+    """Pick a specification from the catalog for one part of the detail. The note can be edited before it is used."""
+
+    def __init__(self, parent, title, cat_name, measured=None, current=""):
+        super().__init__(parent)
+        self.setWindowTitle("Choose specification")
+        self.resize(980, 640)
+        self.note = ""
+        self.custom = load_custom()
+        self.measured = measured
+        v = QVBoxLayout(self)
+        head = QLabel("<b>%s</b>" % title + (f"  &middot;  drawn thickness about <b>{measured} mm</b>" if measured else ""))
+        v.addWidget(head)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search the whole catalog, e.g. 170, purlin, DPC, gutter, 50 x 50...")
+        self.search.setClearButtonEnabled(True)
+        v.addWidget(self.search)
+        row = QHBoxLayout()
+        self.cats = QListWidget()
+        self.cats.setMaximumWidth(250)
+        self.opts = QListWidget()
+        row.addWidget(self.cats)
+        row.addWidget(self.opts, 1)
+        v.addLayout(row, 1)
+        v.addWidget(QLabel("Note on the drawing (you can change the wording):"))
+        self.text = QTextEdit()
+        self.text.setMaximumHeight(90)
+        self.text.setAcceptRichText(False)
+        v.addWidget(self.text)
+        br = QHBoxLayout()
+        self.cnt = QLabel(f"{cat.count()} specifications in the catalog")
+        self.cnt.setObjectName("muted")
+        br.addWidget(self.cnt)
+        br.addStretch()
+        bs = QPushButton("Save this note to My specs...")
+        bs.clicked.connect(self.save_mine)
+        bo = QPushButton("Use this note")
+        bo.setObjectName("primary")
+        bo.setDefault(True)
+        bo.clicked.connect(self.use)
+        bc = QPushButton("Cancel")
+        bc.clicked.connect(self.reject)
+        for b_ in (bs, bc, bo):
+            br.addWidget(b_)
+        v.addLayout(br)
+        self._cur = current
+        self._fill_cats()
+        names = [self.cats.item(i).text() for i in range(self.cats.count())]
+        self.cats.setCurrentRow(names.index(cat_name) if cat_name in names else 0)
+        self.cats.currentRowChanged.connect(lambda *_: self._fill_opts())
+        self.opts.currentRowChanged.connect(self._pick)
+        self.opts.itemDoubleClicked.connect(lambda *_: self.use())
+        self.search.textChanged.connect(self._search)
+        self._fill_opts(select=True)
+        if current:
+            self.text.setPlainText(current)
+
+    def _all(self):
+        d = {k: list(v) for k, v in cat.CATALOG.items()}
+        if self.custom:
+            d["My specs"] = [(c["label"], c["note"]) for c in self.custom]
+        return d
+
+    def _fill_cats(self):
+        self.cats.clear()
+        for k in self._all():
+            self.cats.addItem(k)
+
+    def _fill_opts(self, select=False):
+        if self.search.text().strip():
+            return
+        k = self.cats.currentItem().text() if self.cats.currentItem() else None
+        opts = self._all().get(k, [])
+        self._show(opts, [None] * len(opts))
+        if select and opts:
+            self.opts.setCurrentRow(cat.nearest_index(opts, self.measured) if self.measured else 0)
+
+    def _show(self, opts, cats):
+        self.opts.blockSignals(True)
+        self.opts.clear()
+        self._notes = []
+        for (lab, note), c in zip(opts, cats):
+            it = QListWidgetItem(lab if not c else f"{lab}   [{c}]")
+            it.setToolTip(note)
+            self.opts.addItem(it)
+            self._notes.append(note)
+        self.opts.blockSignals(False)
+
+    def _search(self, txt):
+        t = txt.strip().lower()
+        if not t:
+            self._fill_opts()
+            return
+        words = t.split()
+        hits, cats = [], []
+        for k, lst in self._all().items():
+            for lab, note in lst:
+                hay = (lab + " " + note + " " + k).lower()
+                if all(w in hay for w in words):
+                    hits.append((lab, note))
+                    cats.append(k)
+        self._show(hits, cats)
+        self.cnt.setText(f"{len(hits)} found")
+        if hits:
+            self.opts.setCurrentRow(0)
+
+    def _pick(self, r):
+        if 0 <= r < len(self._notes):
+            self.text.setPlainText(self._notes[r])
+
+    def save_mine(self):
+        txt = " ".join(self.text.toPlainText().split())
+        if not txt:
+            return
+        lab, ok = QInputDialog.getText(self, "My specs", "Short name for this spec in the list:")
+        if ok and lab.strip():
+            e = {"label": lab.strip(), "note": txt}
+            save_custom(e)
+            self.custom = load_custom()
+            self.search.clear()
+            self._fill_cats()
+            names = [self.cats.item(i).text() for i in range(self.cats.count())]
+            self.cats.setCurrentRow(names.index("My specs"))
+
+    def use(self):
+        self.note = " ".join(self.text.toPlainText().split())
+        if self.note:
+            self.accept()
+
+
 class Win(QMainWindow):
     def __init__(self, embedded=False):
         super().__init__()
@@ -495,8 +638,8 @@ class Win(QMainWindow):
             r2.addWidget(w_)
         r2.addStretch()
         l2.addLayout(r2)
-        self.draw_missing = QCheckBox("Draw missing elements to SA practice (purlins, brickforce, DPM)")
-        self.draw_missing.setChecked(True)
+        self.draw_missing = QCheckBox("Also draw missing elements to SA practice (purlins, brickforce, DPM, DPC...)")
+        self.draw_missing.setChecked(False)
         l2.addWidget(self.draw_missing)
         hl.addWidget(w2)
 
@@ -535,12 +678,26 @@ class Win(QMainWindow):
         l4.addWidget(self.lbl_report)
         hl.addWidget(w4)
         hl.addStretch()
-        self.tabs.addTab(home, "Home")
+        self.tabs.addTab(home, "Setup")
 
         # ---- tab 2: preview + notes
         nt = QWidget()
         nl = QVBoxLayout(nt)
         nl.setContentsMargins(0, 14, 0, 0)
+        top = QHBoxLayout()
+        b_open = QPushButton("Open DWG / DXF...")
+        b_open.setObjectName("primary")
+        b_open.clicked.connect(self.pick_file)
+        b_fold = QPushButton("Outputs folder")
+        b_fold.clicked.connect(self.open_outputs)
+        b_set = QPushButton("Settings...")
+        b_set.clicked.connect(self.settings)
+        for b_ in (b_open, b_fold, b_set):
+            top.addWidget(b_)
+        self.lbl_file2 = QLabel("Open a detail, then click a part of it to choose its specification.")
+        self.lbl_file2.setObjectName("muted")
+        top.addWidget(self.lbl_file2, 1)
+        nl.addLayout(top)
         tb = QHBoxLayout()
         self.user = []
         self.uid = 0
@@ -548,12 +705,13 @@ class Win(QMainWindow):
         self.hgeo = {}
         self.edit_doc = None
         self.tool = None
+        self.specs = {}
         self.pend = []
         self.roof_dir = None
         self.tool_group = QButtonGroup(self)
         self.tool_group.setExclusive(True)
         self.tool_btns = {}
-        for key, label in (("pan", "Pan"), ("sheet", "Roof sheet"), ("purlin", "Purlin"), ("box", "Fill box"),
+        for key, label in (("spec", "Choose spec"), ("pan", "Pan"), ("sheet", "Roof sheet"), ("purlin", "Purlin"), ("box", "Fill box"),
                            ("line", "Line"), ("note", "Note"), ("edit", "Edit fill"), ("del", "Delete")):
             b = QPushButton(label)
             b.setCheckable(True)
@@ -561,7 +719,7 @@ class Win(QMainWindow):
             self.tool_group.addButton(b)
             self.tool_btns[key] = b
             tb.addWidget(b)
-        self.tool_btns["pan"].setChecked(True)
+        self.tool_btns["spec"].setChecked(True)
         self.mat_combo = QComboBox()
         for k, (lab, _rgb, _n) in core.USER_MATS.items():
             self.mat_combo.addItem(lab, k)
@@ -604,18 +762,26 @@ class Win(QMainWindow):
         split.setSizes([760, 600])
         nl.addWidget(split, 1)
         br = QHBoxLayout()
-        self.btn_gen = QPushButton("Write notes again")
+        self.btn_gen = QPushButton("Suggest notes for everything (optional)")
         self.btn_gen.clicked.connect(self.generate)
         self.btn_gen.setEnabled(False)
         self.btn_apply = QPushButton("Save now")
         self.btn_apply.setObjectName("primary")
         self.btn_apply.clicked.connect(lambda: self.apply_and_save())
         self.btn_apply.setEnabled(False)
+        self.btn_choose = QPushButton("Choose spec for selected note")
+        self.btn_choose.clicked.connect(lambda: self.row_spec(self.table.currentRow()))
+        self.btn_remove = QPushButton("Remove selected note")
+        self.btn_remove.clicked.connect(self.remove_note)
+        br.addWidget(self.btn_choose)
+        br.addWidget(self.btn_remove)
         br.addStretch()
         br.addWidget(self.btn_gen)
         br.addWidget(self.btn_apply)
         nl.addLayout(br)
-        self.tabs.addTab(nt, "Detail Notes")
+        self.tabs.addTab(nt, "Detail")
+        self.tabs.tabBar().moveTab(1, 0)          # the workspace comes first, the settings second
+        self.tabs.setCurrentIndex(0)
 
         # auto-update: any change redraws + saves after a short pause
         self.timer = QTimer(self)
@@ -627,10 +793,16 @@ class Win(QMainWindow):
         for cb_ in (self.clear_old, self.number_notes, self.house_cols, self.do_brick, self.draw_missing):
             cb_.toggled.connect(lambda *_: self.timer.start())
         self.table.itemChanged.connect(lambda *_: self.timer.start())
+        self.table.cellDoubleClicked.connect(lambda r, c: self.row_spec(r) if c != 1 else None)
+        from PySide6.QtGui import QKeySequence as _QKS, QShortcut as _QSC
+        _del = _QSC(_QKS("Delete"), self.table)
+        _del.setContext(Qt.ShortcutContext.WidgetShortcut)
+        _del.activated.connect(self.remove_note)
         self.status = QLabel("Drag a DWG or DXF of your detail into this window.")
         self.status.setObjectName("status")
         outer.addWidget(self.status)
         self.refresh_pill()
+        self.set_tool("spec")
 
     # ---- helpers
     def show_report(self, report, drawing=True):
@@ -762,17 +934,25 @@ class Win(QMainWindow):
                         nid += 1
             except Exception:
                 pass
+            self.specs = {}
+            self.table.setRowCount(0)
+            for hid, sp in (read_json(self.edits_path()).get("specs", {}) or {}).items():
+                try:
+                    self.restore_spec(hid, sp)
+                except Exception:
+                    traceback.print_exc()
             self.roof_dir = core.roof_direction(doc)
             self.view.snaps = collect_snaps(doc)
             self.view.setScene(build_scene(doc))
             self.view.fit()
             self.first_apply = True
-            self.table.setRowCount(0)
             self.btn_gen.setEnabled(True)
-            self.btn_apply.setEnabled(False)
+            self.btn_apply.setEnabled(self.table.rowCount() > 0)
             self.lbl_file.setText(f"Opened: {self.src}")
-            self.say(f"{self.src.name}: {len(self.items)} materials found. Writing notes...")
-            self.generate()
+            self.lbl_file2.setText(f"Opened: {self.src.name}   -   click a part of the detail to choose its specification")
+            self.say(f"{self.src.name}: {len(self.items)} materials found. Click a part of the detail to choose its specification.")
+            if self.table.rowCount() > 0:
+                self.timer.start()
         except Exception as ex:
             traceback.print_exc()
             QMessageBox.warning(self, "Could not open", str(ex))
@@ -780,6 +960,7 @@ class Win(QMainWindow):
 
     # ---- your own detailing
     HINTS = {
+        "spec": "Choose spec: click a part of the detail (concrete, brick, insulation, timber...) and pick its specification from the catalog. Double-click a note in the list to change it.",
         "pan": "Pan: drag to move, wheel to zoom. Pick a tool to draw your own detail.",
         "sheet": "Roof sheet: click the start, then the end of the roof line. The sheet profile snaps to the drawing and gets its own note.",
         "purlin": "Purlin: click where the 76 x 50 purlin goes (it follows the roof slope).",
@@ -809,6 +990,10 @@ class Win(QMainWindow):
     def on_click(self, x, y, btn):
         t = self.tool
         if not self.items:
+            return
+        if t == "spec":
+            if btn == 1 or btn == 0 or btn is None:
+                self.pick_spec(x, y)
             return
         if btn == 2:
             if t == "line" and len(self.pend) >= 2:
@@ -1003,9 +1188,169 @@ class Win(QMainWindow):
     def save_edits(self):
         try:
             OUT_DIR.mkdir(parents=True, exist_ok=True)
-            write_json(self.edits_path(), {"elements": self.user, "overrides": self.overrides})
+            write_json(self.edits_path(), {"elements": self.user, "overrides": self.overrides, "specs": self.specs})
         except Exception:
             traceback.print_exc()
+
+    # ---- catalog: choose the specification of a part of the detail
+    def hatch_at(self, x, y):
+        """smallest original fill under the point -> (hatch, geometry) or None"""
+        from shapely.geometry import Point
+        if self.edit_doc is None:
+            return None
+        pt, best = Point(x, y), None
+        for h in self.edit_doc.modelspace().query("HATCH"):
+            if h.dxf.layer.startswith("MOT_"):
+                continue
+            hid = str(h.dxf.handle)
+            if hid not in self.hgeo:
+                try:
+                    self.hgeo[hid] = core.hatch_geometry(h)
+                except Exception:
+                    self.hgeo[hid] = None
+            g = self.hgeo[hid]
+            if g is not None and g.contains(pt) and (best is None or g.area < best[1].area):
+                best = (h, g)
+        return best
+
+    def _piece(self, g, pt):
+        polys = core._polys(g)
+        return next((p for p in polys if p.contains(pt)), polys[0] if polys else g)
+
+    def _new_item(self, h, piece, x, y, hid):
+        pattern = "SOLID" if h.dxf.solid_fill else (h.dxf.pattern_name or "")
+        x0, y0, x1, y1 = piece.bounds
+        nid = max([i["id"] for i in self.items] + [0]) + 1
+        it = {"id": nid, "layer": h.dxf.layer, "pattern": pattern, "color": 7, "area": piece.area, "point": (x, y),
+              "bbox": (x1 - x0, y1 - y0), "count": 1, "poly": piece, "picked": hid}
+        self.items.append(it)
+        return it
+
+    def pick_spec(self, x, y):
+        from shapely.geometry import Point
+        if not self.items:
+            return
+        pt = Point(x, y)
+        for el in reversed(self.user):                       # your own elements first
+            g = core.user_geometry(el, self.mmu)
+            if g is not None and g.contains(pt):
+                it = next((i for i in self.items if i.get("user") == el["uid"]), None)
+                if it:
+                    self.spec_for_item(it)
+                    return
+        hit = self.hatch_at(x, y)
+        if not hit:
+            self.say("No fill under that point. Click inside a coloured part of the detail.")
+            return
+        h, g = hit
+        hid = str(h.dxf.handle)
+        it = next((i for i in self.items if i.get("picked") == hid), None)
+        new = it is None
+        if new:
+            it = self._new_item(h, self._piece(g, pt), x, y, hid)
+        else:
+            it["point"] = (x, y)                              # the dot goes where you clicked
+        self.view.rubber(list(core._polys(g)[0].exterior.coords) if core._polys(g) else None, closed=True)
+        ok = self.spec_for_item(it)
+        self.view.rubber(None)
+        if not ok and new:
+            self.items = [i for i in self.items if i is not it]
+
+    def _row_of(self, iid):
+        for r in range(self.table.rowCount()):
+            if int(self.table.item(r, 0).text()) == iid:
+                return r
+        return -1
+
+    def spec_for_item(self, it):
+        """Open the catalog for this part. True when a note was chosen."""
+        r = self._row_of(it["id"])
+        cur = self.table.item(r, 1).text() if r >= 0 else ""
+        name = core.clean_name(it["pattern"]) or it["layer"]
+        dlg = SpecDialog(self, f"{name}  ({it['layer']})", cat.guess_category(it["layer"], it["pattern"]),
+                         core.measured_mm(it, self.mmu), cur)
+        if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.note:
+            return False
+        self.set_row_note(it, dlg.note)
+        if it.get("picked"):
+            self.specs[it["picked"]] = {"note": dlg.note, "x": it["point"][0], "y": it["point"][1]}
+        elif it.get("user"):
+            for el in self.user:
+                if el["uid"] == it["user"]:
+                    el["note"] = dlg.note
+            it["note"] = dlg.note
+        self.save_edits()
+        self.timer.start()
+        return True
+
+    def set_row_note(self, it, txt):
+        r = self._row_of(it["id"])
+        self.table.blockSignals(True)
+        if r < 0:
+            r = self.table.rowCount()
+            self.table.insertRow(r)
+            a = QTableWidgetItem(str(it["id"]))
+            a.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            self.table.setItem(r, 0, a)
+            c = QTableWidgetItem("YOURS" if it.get("user") else "")
+            c.setForeground(QColor(RED))
+            c.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            self.table.setItem(r, 2, c)
+            m = QTableWidgetItem(core.clean_name(it["pattern"]) or it["layer"])
+            m.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            self.table.setItem(r, 3, m)
+        self.table.setItem(r, 1, QTableWidgetItem(txt))
+        self.table.blockSignals(False)
+        self.table.resizeRowsToContents()
+        self.table.setColumnWidth(0, 36)
+        self.table.setColumnWidth(2, 60)
+        self.table.setColumnWidth(3, 170)
+        self.btn_apply.setEnabled(True)
+
+    def restore_spec(self, hid, sp):
+        """Bring back a note chosen earlier for a part (the saved edits file keeps them by the part's handle)."""
+        from shapely.geometry import Point
+        h = self.edit_doc.entitydb.get(hid) if self.edit_doc is not None else None
+        if h is None or h.dxftype() != "HATCH":
+            return
+        g = core.hatch_geometry(h)
+        if g is None or g.is_empty:
+            return
+        self.hgeo[hid] = g
+        x, y = float(sp.get("x", 0)), float(sp.get("y", 0))
+        it = self._new_item(h, self._piece(g, Point(x, y)), x, y, hid)
+        self.specs[hid] = {"note": sp["note"], "x": x, "y": y}
+        self.set_row_note(it, sp["note"])
+
+    def row_spec(self, r):
+        if r < 0 or r >= self.table.rowCount():
+            self.say("Select a note in the list first.")
+            return
+        iid = int(self.table.item(r, 0).text())
+        it = next((i for i in self.items if i["id"] == iid), None)
+        if it:
+            self.spec_for_item(it)
+
+    def remove_note(self):
+        r = self.table.currentRow()
+        if r < 0 or r >= self.table.rowCount():
+            return
+        iid = int(self.table.item(r, 0).text())
+        it = next((i for i in self.items if i["id"] == iid), None)
+        if it and it.get("picked"):
+            self.specs.pop(it["picked"], None)
+            self.items = [i for i in self.items if i is not it]
+            self.table.removeRow(r)
+        else:                                     # your own element or a suggested note: its note is just emptied
+            self.table.blockSignals(True)
+            self.table.setItem(r, 1, QTableWidgetItem(""))
+            self.table.blockSignals(False)
+            if it and it.get("user"):
+                for el in self.user:
+                    if el["uid"] == it["user"]:
+                        el["note"] = ""
+        self.save_edits()
+        self.timer.start()
 
     # ---- generate
     def generate(self):
@@ -1047,6 +1392,10 @@ class Win(QMainWindow):
                     continue
                 seen[txt.strip().lower()] = True
                 rows.append((it["id"], txt, ver))
+        rows = [r for r in rows if not by_id[r[0]].get("picked")]
+        for it in self.items:                       # parts whose specification you chose from the catalog stay as chosen
+            if it.get("picked") and it["picked"] in self.specs:
+                rows.append((it["id"], self.specs[it["picked"]]["note"], False))
         have_txt = {r[1].strip().lower() for r in rows}
         for it in self.items:                       # elements the tool adds itself
             if it.get("synthetic"):
@@ -1078,7 +1427,7 @@ class Win(QMainWindow):
         self.table.setColumnWidth(3, 170)
         self.btn_gen.setEnabled(True)
         self.btn_apply.setEnabled(True)
-        self.tabs.setCurrentIndex(1)
+        self.tabs.setCurrentIndex(0)
         self.apply_and_save()
 
     # ---- apply
@@ -1118,6 +1467,8 @@ class Win(QMainWindow):
                 txt = " ".join(self.table.item(r, 1).text().split())
                 if by_id[iid].get("synthetic") and not live.get(by_id[iid]["key"]):
                     continue
+                if by_id[iid].get("picked") and by_id[iid]["picked"] in self.specs:
+                    self.specs[by_id[iid]["picked"]]["note"] = txt
                 if by_id[iid].get("user"):                 # keep your edited wording
                     by_id[iid]["note"] = txt
                     for el in self.user:
