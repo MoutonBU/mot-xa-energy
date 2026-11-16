@@ -17088,8 +17088,8 @@ def acc_remembered():
 
 
 # ---------------------------------------------------------------- online accounts (Supabase Auth, kept off this PC)
-SB_URL = ""         # the project URL, e.g. https://abcdxyz.supabase.co   (filled in once the account service is set up)
-SB_KEY = ""         # the project's public "anon" key (it is meant to be public; it cannot read or change accounts by itself)
+SB_URL = "https://erfgsisfvttercpytsnq.supabase.co"         # the project URL, e.g. https://abcdxyz.supabase.co   (filled in once the account service is set up)
+SB_KEY = "sb_publishable_MzRfcJZToTLiwi_TimtM3A_ukRjN2bj"         # the project's public "anon" key (it is meant to be public; it cannot read or change accounts by itself)
 OFFLINE_DAYS = 14   # how long a PC that was signed in before may keep working with no internet
 
 
