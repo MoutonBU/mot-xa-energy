@@ -2273,14 +2273,14 @@ def vtext(v):
 
 
 def gh_repo_name():
-    r = (SETTINGS.get("gh_repo") or "").strip()
-    if r:
-        return r
-    try:
+    try:    # the repository the installer was built for (a public releases repository: no token needed)
         with open(_app_data_file("app_config.json"), encoding="utf-8") as f:
-            return str(json.load(f).get("repo", "")).strip()
+            r = str(json.load(f).get("repo", "")).strip()
+            if r:
+                return r
     except Exception:
-        return ""
+        pass
+    return (SETTINGS.get("gh_repo") or "").strip()
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
