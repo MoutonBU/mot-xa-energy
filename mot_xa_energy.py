@@ -8638,6 +8638,13 @@ class MainWindow(QMainWindow):
                 T.setItem(r, c, QTableWidgetItem(str(v)))
         self._loading = False
         self._recalc_row(r, T)
+        self._remember_wh(T, r)
+
+    def _remember_wh(self, T, r):
+        """Keep the row's width and height, so a later change can be worked out as a ratio."""
+        it = T.item(r, 0)
+        if it is not None:
+            it.setData(Qt.ItemDataRole.UserRole, (self._num(T.item(r, 1)), self._num(T.item(r, 2))))
 
     def _style_changed(self, box):
         """Picking an opening style fills in the Openable % and clears the sash size."""
@@ -8666,12 +8673,24 @@ class MainWindow(QMainWindow):
                     m_it.setText("")
                 elif c in (1, 2, 11):      # keep Glazed % in step with the glazed area
                     w, h, ga = self._num(T.item(r, 1)), self._num(T.item(r, 2)), self._num(m_it)
+                    prev = T.item(r, 0).data(Qt.ItemDataRole.UserRole) if T.item(r, 0) else None
+                    if c in (1, 2) and prev and prev[0] > 0 and prev[1] > 0 and w > 0 and h > 0:
+                        rw, rh = w / prev[0], h / prev[1]
+                        if ga > 0:         # a new width / height: the glass area from the schedule follows the size
+                            ga = ga * rw * rh
+                            m_it.setText(f"{ga:.3f}")
+                        for sc, rr in ((7, rw), (8, rh)):      # so does the size of the opening sash
+                            si = T.item(r, sc)
+                            if si is not None and self._num(si) > 0:
+                                si.setText(f"{self._num(si) * rr:.0f}")
                     if ga > 0 and w > 0 and h > 0:
                         g_it.setText(f"{min(100.0, ga / (w * h / 1e6) * 100.0):.1f}")
             finally:
                 self._loading = False
         if c in (1, 2, 7, 8, 9):
             self._recalc_row(r, T)
+        if c in (1, 2):
+            self._remember_wh(T, r)
 
     def _toggle_sash_cols(self, on):
         for T in (self.sched_table, self.door_table):
