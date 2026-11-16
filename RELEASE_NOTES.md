@@ -1,6 +1,6 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.8.0**. The version number is shown in the installer, in the installer file name
+Current version: **1.8.1**. The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
@@ -26,6 +26,8 @@ Current version: **1.8.0**. The version number is shown in the installer, in the
 - Changing a window's width or height now changes its glazed area, opening size and opening percentage with it.
 - Lighting check follows the occupancy class (SANS 10400-XA Table 12) instead of always using the residential 4 W/m2.
 - Installer is readable (dark theme, summary box), names the version and replaces older copies and shortcuts.
+- **Faster reports**: the 3D model is read once instead of for every PDF. A Rational Design PDF takes about 0.4 s instead of
+  11 s after the first one, and "export each subject" for that report takes about 2 s instead of about 100 s.
 - Keep me signed in is more reliable: the saved sign-in is only removed when the licence is switched off.
 
 ### Renamed
@@ -44,6 +46,14 @@ Current version: **1.8.0**. The version number is shown in the installer, in the
 - SANS 10400-O: ventilation 5 % of floor area (0.2 m2 minimum). Confirm the natural-light percentage and category
   rule in your copy of the standard before submission.
 - Every report states that it supports, and does not replace, the competent person's declaration.
+
+## Quality check done for this release
+- Static scan of the whole program: no undefined names, no crashes.
+- Every menu action, button, tab, drop-down and theme switch was run against a real model: no errors.
+- Speed: Light & Ventilation check 0.02 s, Energy XA calculation 0.12 s, Energy XA PDF 0.3 s, Coverage PDF 0.2 s.
+  The first Rational Design PDF of a session needs about 10 s to read the 3D model; the dark/light switch takes about 2 s.
+- Standards tables compared with the published SANS 10400-XA:2021 text: consumption and demand tables, fenestration
+  table, R-values by zone, hot water and pipe insulation all match.
 
 ## Upgrading
 Install the latest `MCP_XA_Energy_Setup_x.y.z.exe` once. It replaces the old program in place and removes the old

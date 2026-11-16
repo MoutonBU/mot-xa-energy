@@ -6480,7 +6480,22 @@ def ifc_door_external(path):
     return {t: (sum(1 for x in v if x) * 2 > len(v)) for t, v in votes.items()}
 
 
+_MESH_CACHE = {}
+
+
 def ifc_meshes(path):
+    """The model's triangles, read once per file (reading the IFC geometry takes seconds)."""
+    try:
+        key = (path, os.path.getmtime(path))
+    except OSError:
+        return _ifc_meshes_raw(path)
+    if key not in _MESH_CACHE:
+        _MESH_CACHE.clear()
+        _MESH_CACHE[key] = _ifc_meshes_raw(path)
+    return _MESH_CACHE[key]
+
+
+def _ifc_meshes_raw(path):
     """Triangles of the building from the IFC file, in world metres: [(kind, verts Nx3, faces Mx3)]."""
     import numpy as np
     import ifcopenshell, ifcopenshell.geom
@@ -6557,7 +6572,20 @@ def _shadow_factors(P, sd, rng_pad=0.0):
     return lit
 
 
+_VIEW_CACHE = {}
+
+
 def render_views(meshes, north, sun_az, sun_alt, size=(520, 340), views=(45, 135, 225, 315), title_sun=""):
+    """Same pictures for the same model and sun: drawn once (every PDF of a report asks for them)."""
+    key = (id(meshes), len(meshes), north, sun_az, sun_alt, tuple(size), tuple(views), title_sun)
+    if key not in _VIEW_CACHE:
+        if len(_VIEW_CACHE) > 6:
+            _VIEW_CACHE.clear()
+        _VIEW_CACHE[key] = _render_views_raw(meshes, north, sun_az, sun_alt, size, views, title_sun)
+    return _VIEW_CACHE[key]
+
+
+def _render_views_raw(meshes, north, sun_az, sun_alt, size=(520, 340), views=(45, 135, 225, 315), title_sun=""):
     """Isometric images (QImage) of the building lit from the sun with cast shadows, plus the ground and a north arrow.
     north = world bearing of true north (degrees clockwise from the plan's top), so a compass azimuth A is world bearing A + north."""
     import numpy as np, math
@@ -17263,23 +17291,28 @@ LOGO_B64 = "iVBORw0KGgoAAAANSUhEUgAAAaQAAAFWCAYAAAAmFuknAAAlh0lEQVR42u2debikdXmm
 _logo_pm = None
 
 
+_LOGO_CACHE = {}
+
+
 def logo_pixmap():
-    """The MCP logo mark (white + red, transparent background)."""
-    global _logo_pm
-    if _logo_pm is None:
+    """The MCP logo mark (white + red, transparent background), made once for each of the two looks."""
+    key = bool(light())
+    pm = _LOGO_CACHE.get(key)
+    if pm is None:
         import base64
         from PySide6.QtGui import QPixmap
-        _logo_pm = QPixmap()
-        _logo_pm.loadFromData(base64.b64decode(LOGO_B64), "PNG")
-        if light():      # the white part of the mark would vanish on the light theme
-            im_ = _logo_pm.toImage().convertToFormat(QImage.Format.Format_ARGB32)
+        pm = QPixmap()
+        pm.loadFromData(base64.b64decode(LOGO_B64), "PNG")
+        if key:      # the white part of the mark would vanish on the light theme
+            im_ = pm.toImage().convertToFormat(QImage.Format.Format_ARGB32)
             for yy in range(im_.height()):
                 for xx in range(im_.width()):
                     c = im_.pixelColor(xx, yy)
                     if c.alpha() and c.red() > 200 and c.green() > 200 and c.blue() > 200:
                         im_.setPixelColor(xx, yy, QColor(28, 31, 35, c.alpha()))
-            _logo_pm = QPixmap.fromImage(im_)
-    return _logo_pm
+            pm = QPixmap.fromImage(im_)
+        _LOGO_CACHE[key] = pm
+    return pm
 
 
 def app_icon():
