@@ -186,6 +186,7 @@ class View(QGraphicsView):
     note_opened = Signal(int)
     delete_req = Signal()
     note_moved = Signal(int, float, float)   # note id, new top-left x, y (drawing units)
+    target_moved = Signal(int, float, float) # note id, new x, y of its leader dot
 
     def __init__(self):
         super().__init__()
@@ -221,6 +222,7 @@ class View(QGraphicsView):
         self._shift = False
         self._dragn = None                   # (note id, press point in the scene) while a note is being dragged
         self._ghost = None
+        self._dragd = None                   # (note id) while a leader dot is being dragged
         self._fit_scale = None
         self._zoom_goal = None
         self._zoom_anim = None
@@ -381,6 +383,37 @@ class View(QGraphicsView):
             except RuntimeError:
                 pass
 
+    def dot_at(self, p):
+        tol = 9 / max(abs(self.transform().m11()), 1e-9)
+        best = None
+        for iid, (tx, ty) in self.targets.items():
+            d = max(abs(tx - p.x()), abs(ty - p.y()))
+            if d <= tol and (best is None or d < best[0]):
+                best = (d, iid)
+        return best[1] if best else None
+
+    def _show_ghost(self, a, b):
+        try:
+            gone = self._ghost is None or self._ghost.scene() is not self.scene()
+        except RuntimeError:          # the scene was rebuilt and took the line with it
+            gone = True
+        if gone:
+            self._ghost = QGraphicsLineItem()
+            gp = QPen(QColor("#ffd600"), 1.5, Qt.PenStyle.DashLine)
+            gp.setCosmetic(True)
+            self._ghost.setPen(gp)
+            self._ghost.setZValue(9e6)
+            self.scene().addItem(self._ghost)
+        self._ghost.setLine(a[0], a[1], b[0], b[1])
+        self._ghost.setVisible(True)
+
+    def _hide_ghost(self):
+        try:
+            if self._ghost is not None:
+                self._ghost.setVisible(False)
+        except RuntimeError:
+            self._ghost = None
+
     def note_at(self, p):
         best = None
         for iid, (x0, y0, x1, y1) in self.boxes.items():
@@ -481,6 +514,10 @@ class View(QGraphicsView):
             self._moved = False
             self._shift = bool(e.modifiers() & Qt.KeyboardModifier.ShiftModifier)
             sp = self.mapToScene(e.position().toPoint())
+            dot = self.dot_at(sp)
+            if dot is not None and not self._shift:
+                self._dragd = dot                # pressing on a leader dot: a drag moves where the note points
+                return
             hit = self.note_at(sp)
             bx = self.boxes.get(hit) if hit is not None else None
             if bx and bx[0] <= sp.x() <= bx[2] and bx[1] <= sp.y() <= bx[3] and not self._shift:
@@ -511,6 +548,17 @@ class View(QGraphicsView):
                     self._band = QRubberBand(QRubberBand.Shape.Rectangle, self.viewport())
                 else:
                     self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+            if self._moved and self._dragd is not None:
+                p1 = self.mapToScene(e.position().toPoint())
+                x0, y0, x1, y1 = self.boxes[self._dragd]
+                self._show_ghost((x0, (y0 + y1) / 2), (p1.x(), p1.y()))
+                ov = self._ov.get(self._dragd)
+                if ov and ov[1] is not None:
+                    tx, ty = self.targets[self._dragd]
+                    ov[1].setPen(QPen(QColor("#ffd600"), 3))
+                    ov[1].setPos(p1.x(), p1.y())
+                self.viewport().setCursor(Qt.CursorShape.SizeAllCursor)
+                return
             if self._moved and self._dragn is not None:
                 nid, p0 = self._dragn
                 p1 = self.mapToScene(e.position().toPoint())
@@ -522,15 +570,7 @@ class View(QGraphicsView):
                     x0, y0, x1, y1 = self.boxes[nid]
                     tgt = self.targets.get(nid)
                     if tgt:
-                        if self._ghost is None or self._ghost.scene() is not self.scene():
-                            self._ghost = QGraphicsLineItem()
-                            gp = QPen(QColor("#ffd600"), 1.5, Qt.PenStyle.DashLine)
-                            gp.setCosmetic(True)
-                            self._ghost.setPen(gp)
-                            self._ghost.setZValue(9e6)
-                            self.scene().addItem(self._ghost)
-                        self._ghost.setLine(x0 + dx, (y0 + y1) / 2 + dy, tgt[0], tgt[1])
-                        self._ghost.setVisible(True)
+                        self._show_ghost((x0 + dx, (y0 + y1) / 2 + dy), tgt)
                     self.viewport().setCursor(Qt.CursorShape.SizeAllCursor)
                 return
             if self._moved:
@@ -551,7 +591,7 @@ class View(QGraphicsView):
             x, y, on = self._pt(e)
             self.show_snap(x, y, on and h is None)
             self.moved.emit(x, y)
-        self.viewport().setCursor(Qt.CursorShape.PointingHandCursor if h is not None else
+        self.viewport().setCursor(Qt.CursorShape.SizeAllCursor if (h is not None or self.dot_at(sp) is not None) else
                                   (Qt.CursorShape.CrossCursor if self.tool else Qt.CursorShape.ArrowCursor))
 
     def mouseReleaseEvent(self, e):
@@ -561,13 +601,23 @@ class View(QGraphicsView):
             return
         if e.button() == Qt.MouseButton.LeftButton and self._press is not None:
             add = bool(e.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier))
+            if self._dragd is not None and self._moved:
+                p1 = self.mapToScene(e.position().toPoint())
+                nid = self._dragd
+                self._dragd = None
+                self._hide_ghost()
+                self.target_moved.emit(nid, p1.x(), p1.y())
+                self._press = None
+                self._moved = False
+                self.viewport().setCursor(Qt.CursorShape.CrossCursor if self.tool else Qt.CursorShape.ArrowCursor)
+                return
+            self._dragd = None
             if self._dragn is not None and self._moved:
                 nid, p0 = self._dragn
                 p1 = self.mapToScene(e.position().toPoint())
                 x0, y0, x1, y1 = self.boxes[nid]
                 self._dragn = None
-                if self._ghost is not None:
-                    self._ghost.setVisible(False)
+                self._hide_ghost()
                 self.note_moved.emit(nid, x0 + p1.x() - p0.x(), y1 + p1.y() - p0.y())
                 self._press = None
                 self._moved = False
@@ -602,6 +652,7 @@ class View(QGraphicsView):
     def mouseDoubleClickEvent(self, e):
         self._press = None
         self._dragn = None
+        self._dragd = None
         if e.button() == Qt.MouseButton.LeftButton:
             hit = self.note_at(self.mapToScene(e.position().toPoint()))
             if hit is not None:
@@ -1258,7 +1309,7 @@ class Win(QMainWindow):
         self.btn_tpl_stop.setVisible(False)
         self.btn_tpl_stop.clicked.connect(self.stop_template)
         tbm.addWidget(self.btn_tpl_stop)
-        self.btn_arrange = QPushButton("Auto-arrange notes")
+        self.btn_arrange = QPushButton("Reset note positions")
         self.btn_arrange.setToolTip("Drag any note on the drawing to move it. This puts them all back in a neat column.")
         self.btn_arrange.clicked.connect(self.auto_arrange)
         tbm.addWidget(self.btn_arrange)
@@ -1285,7 +1336,8 @@ class Win(QMainWindow):
         self.view.note_opened.connect(lambda iid: self.row_spec(self._row_of(iid)))
         self.view.delete_req.connect(self.remove_note)
         self.view.note_moved.connect(self.on_note_moved)
-        self.note_pos = {}
+        self.view.target_moved.connect(self.on_target_moved)
+        self.note_pos, self.note_tgt = {}, {}
         self.note_boxes, self.note_targets = {}, {}
         self.xa_provider = None              # set by the suite: returns {'zone','roof','heavy','light'}
         self._syncing = False
@@ -1502,6 +1554,7 @@ class Win(QMainWindow):
                 pass
             self.specs = {}
             self.note_pos = {k: tuple(v) for k, v in (read_json(self.edits_path()).get("note_pos", {}) or {}).items()}
+            self.note_tgt = {k: tuple(v) for k, v in (read_json(self.edits_path()).get("note_tgt", {}) or {}).items()}
             self.table.setRowCount(0)
             for hid, sp in (read_json(self.edits_path()).get("specs", {}) or {}).items():
                 try:
@@ -1528,7 +1581,7 @@ class Win(QMainWindow):
 
     # ---- your own detailing
     HINTS = {
-        "spec": "Click a part of the detail to choose its spec. Click a note to select it (Ctrl adds), Shift+drag selects a box of notes, Delete removes them. Drag moves the drawing, wheel zooms, F fits.",
+        "spec": "Click a part to choose its spec. Drag a note anywhere, and drag its dot to change what it points at. Click a note to select (Ctrl adds), Shift+drag selects a box, Delete removes. Drag empty space to move the drawing, wheel zooms, F fits.",
         "pan": "Drag to move the drawing, wheel to zoom. Click a note to select it, Delete removes it.",
         "sheet": "Roof sheet: click the start, then the end of the roof line. The sheet profile snaps to the drawing and gets its own note.",
         "purlin": "Purlin: click where the 76 x 50 purlin goes (it follows the roof slope).",
@@ -1691,9 +1744,9 @@ class Win(QMainWindow):
 
     def snap(self):
         st = {"rows": self._rows_state(), "specs": copy.deepcopy(self.specs), "user": copy.deepcopy(self.user),
-              "overrides": copy.deepcopy(self.overrides), "uid": self.uid, "pos": dict(self.note_pos),
+              "overrides": copy.deepcopy(self.overrides), "uid": self.uid, "pos": dict(self.note_pos), "tgt": dict(self.note_tgt),
               "items": [(i, i.get("point")) for i in self.items]}
-        st["sig"] = json.dumps([st["rows"], st["specs"], st["user"], st["overrides"], st["pos"]], sort_keys=True, default=str)
+        st["sig"] = json.dumps([st["rows"], st["specs"], st["user"], st["overrides"], st["pos"], st["tgt"]], sort_keys=True, default=str)
         return st
 
     def commit(self):
@@ -1737,6 +1790,7 @@ class Win(QMainWindow):
             self.user = copy.deepcopy(st["user"])
             self.overrides = copy.deepcopy(st["overrides"])
             self.note_pos = dict(st["pos"])
+            self.note_tgt = dict(st["tgt"])
             self.uid = max(self.uid, st["uid"])
             self.items = []
             for i, pt in st["items"]:
@@ -2059,7 +2113,8 @@ class Win(QMainWindow):
         try:
             OUT_DIR.mkdir(parents=True, exist_ok=True)
             write_json(self.edits_path(), {"elements": self.user, "overrides": self.overrides, "specs": self.specs,
-                                           "note_pos": {k: list(v) for k, v in self.note_pos.items()}})
+                                           "note_pos": {k: list(v) for k, v in self.note_pos.items()},
+                                           "note_tgt": {k: list(v) for k, v in self.note_tgt.items()}})
         except Exception:
             traceback.print_exc()
 
@@ -2239,9 +2294,19 @@ class Win(QMainWindow):
         self.timer.start()
         self.say("Note moved. Drag it again to adjust, or press \u201cAuto-arrange notes\u201d to put them back in a column.")
 
+    def on_target_moved(self, iid, x, y):
+        it = next((i for i in self.items if i["id"] == iid), None)
+        if it is None:
+            return
+        self.note_tgt[self.item_key(it)] = (x, y)
+        self.commit()
+        self.save_edits()
+        self.timer.start()
+        self.say("Pointer moved. Drag the dot again to adjust it.")
+
     def auto_arrange(self):
-        if self.note_pos:
-            self.note_pos = {}
+        if self.note_pos or self.note_tgt:
+            self.note_pos, self.note_tgt = {}, {}
             self.commit()
             self.save_edits()
             self.timer.start()
@@ -2481,7 +2546,9 @@ class Win(QMainWindow):
             ordered = core.place_notes(doc, notes, extents, self.mmu, self.scale.value(),
                                        self.text_mm.value(), self.note_w.value(), 12, self.number_notes.isChecked(),
                                        manual={i["id"]: self.note_pos[self.item_key(i)] for i in self.items
-                                               if self.item_key(i) in self.note_pos})
+                                               if self.item_key(i) in self.note_pos},
+                                       targets={i["id"]: self.note_tgt[self.item_key(i)] for i in self.items
+                                                if self.item_key(i) in self.note_tgt})
             self.note_boxes = {n["id"]: n["box"] for n in ordered if "box" in n}
             self.note_targets = {n["id"]: n["target"] for n in ordered if "target" in n}
             OUT_DIR.mkdir(parents=True, exist_ok=True)

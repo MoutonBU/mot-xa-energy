@@ -1065,7 +1065,7 @@ def _layout(notes, heights, ax, y_top, h, dmin, iters=6000):
     return best, cands
 
 
-def place_notes(doc, notes, extents, mmu, scale, text_mm, width_mm, gap_mm, number=False, manual=None):
+def place_notes(doc, notes, extents, mmu, scale, text_mm, width_mm, gap_mm, number=False, manual=None, targets=None):
     if not notes:
         return []
     msp = doc.modelspace()
@@ -1097,6 +1097,9 @@ def place_notes(doc, notes, extents, mmu, scale, text_mm, width_mm, gap_mm, numb
     for k in order:
         n = notes[k]
         tx, ty = cands[k][pick[k]]
+        tp = (targets or {}).get(n.get("id"))
+        if tp:
+            tx, ty = tp                                   # you moved the dot: it points where you put it
         n["target"] = (tx, ty)
         mp = manual.get(n.get("id"))
         px, py = (mp if mp else (x, y))                  # a note you dragged keeps your position and takes no slot in the stack
