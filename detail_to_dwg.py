@@ -1092,6 +1092,7 @@ def place_notes(doc, notes, extents, mmu, scale, text_mm, width_mm, gap_mm, numb
         n = notes[k]
         tx, ty = cands[k][pick[k]]
         n["target"] = (tx, ty)
+        n["box"] = (x, y - heights[k], x + width, y)
         msp.add_mtext((f"{len(ordered) + 1}.  " if number else "") + n["note"], dxfattribs={
             "layer": NOTE_LAYER, "style": "MOT_NOTE", "char_height": h, "width": width,
             "insert": (x, y), "attachment_point": 1,

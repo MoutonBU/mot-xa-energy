@@ -18,9 +18,9 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from PySide6.QtCore import QBuffer, QByteArray, QIODevice, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import QBuffer, QPointF, QRectF, QByteArray, QIODevice, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QIcon, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import (QApplication, QButtonGroup, QComboBox, QGraphicsPathItem, QInputDialog, QCheckBox, QFrame, QTabWidget, QDialog, QDialogButtonBox, QDoubleSpinBox,
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QComboBox, QGraphicsPathItem, QGraphicsRectItem, QRubberBand, QInputDialog, QCheckBox, QFrame, QTabWidget, QDialog, QDialogButtonBox, QDoubleSpinBox,
                                QFileDialog, QFormLayout, QGraphicsEllipseItem, QGraphicsScene,
                                QGraphicsSimpleTextItem, QGraphicsView, QHBoxLayout, QHeaderView,
                                QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QSplitter,
@@ -158,26 +158,44 @@ class Worker(QThread):
 
 # ---------------------------------------------------------------- preview
 class View(QGraphicsView):
+    """Detail preview. Drag = move the drawing, wheel = zoom, click a note = select it (Ctrl adds),
+    Shift+drag = select every note in a box, Delete = remove the selected notes, F = fit, Esc = clear."""
     clicked = Signal(float, float, int)      # x, y (drawing units), 1 = left / 2 = right
     moved = Signal(float, float)
+    note_clicked = Signal(int, bool)         # note id (-1 = empty space), add to selection
+    box_selected = Signal(list, bool)
+    note_opened = Signal(int)
+    delete_req = Signal()
 
     def __init__(self):
         super().__init__()
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
-        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        self.setDragMode(QGraphicsView.DragMode.NoDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
         self.setBackgroundBrush(QColor("#1a1a1a"))
         self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.scale(1, -1)  # DXF y is up
         self.tool = None
         self.snaps = None                    # numpy array of snap points
         self._pan = None
         self._mark = None
         self._rub = None
+        self.boxes = {}                      # note id -> (x0, y0, x1, y1) of its text on the drawing
+        self.targets = {}                    # note id -> (x, y) of its leader dot
+        self.sel = set()
+        self.hover = None
+        self._ov = {}
+        self._press = None
+        self._last = None
+        self._moved = False
+        self._band = None
+        self._band0 = None
+        self._shift = False
 
     def set_tool(self, on):
         self.tool = on
-        self.setDragMode(QGraphicsView.DragMode.NoDrag if on else QGraphicsView.DragMode.ScrollHandDrag)
         self.viewport().setCursor(Qt.CursorShape.CrossCursor if on else Qt.CursorShape.ArrowCursor)
         self.show_snap(0, 0, False)
         self.rubber(None)
@@ -185,6 +203,68 @@ class View(QGraphicsView):
     def wheelEvent(self, e):
         f = 1.2 if e.angleDelta().y() > 0 else 1 / 1.2
         self.scale(f, f)
+
+    # ---- notes on the drawing: highlight, hit test
+    def set_boxes(self, boxes, targets):
+        self.boxes, self.targets = dict(boxes), dict(targets)
+        self._ov = {}
+        sc = self.scene()
+        if sc is None:
+            return
+        for iid, (x0, y0, x1, y1) in self.boxes.items():
+            r = QGraphicsRectItem(QRectF(x0, y0, x1 - x0, y1 - y0))
+            r.setZValue(9e6)
+            ring = None
+            if iid in self.targets:
+                ring = QGraphicsEllipseItem(-9, -9, 18, 18)
+                ring.setFlag(QGraphicsEllipseItem.GraphicsItemFlag.ItemIgnoresTransformations)
+                ring.setPos(*self.targets[iid])
+                ring.setZValue(9e6)
+                sc.addItem(ring)
+            sc.addItem(r)
+            self._ov[iid] = (r, ring)
+        self._style()
+
+    def set_selected(self, ids):
+        self.sel = set(ids)
+        self._style()
+
+    def _style(self):
+        for iid, (r, ring) in self._ov.items():
+            try:
+                on, hov = iid in self.sel, iid == self.hover
+                if on:
+                    r.setBrush(QColor(255, 214, 0, 70))
+                    pen = QPen(QColor("#ffd600"), 2)
+                elif hov:
+                    r.setBrush(QColor(0, 229, 255, 35))
+                    pen = QPen(QColor("#00e5ff"), 1.5)
+                else:
+                    r.setBrush(Qt.BrushStyle.NoBrush)
+                    pen = QPen(Qt.PenStyle.NoPen)
+                pen.setCosmetic(True)
+                r.setPen(pen)
+                if ring is not None:
+                    rp = QPen(QColor("#ffd600"), 3)
+                    rp.setCosmetic(True)
+                    ring.setPen(rp if on else QPen(Qt.PenStyle.NoPen))
+            except RuntimeError:
+                pass
+
+    def note_at(self, p):
+        best = None
+        for iid, (x0, y0, x1, y1) in self.boxes.items():
+            if x0 <= p.x() <= x1 and y0 <= p.y() <= y1:
+                a = (x1 - x0) * (y1 - y0)
+                if best is None or a < best[0]:
+                    best = (a, iid)
+        if best:
+            return best[1]
+        tol = 10 / max(abs(self.transform().m11()), 1e-9)
+        for iid, (tx, ty) in self.targets.items():
+            if abs(tx - p.x()) <= tol and abs(ty - p.y()) <= tol:
+                return iid
+        return None
 
     def fit(self):
         sc = self.scene()
@@ -254,40 +334,125 @@ class View(QGraphicsView):
         self._rub.setPath(path)
         self._rub.setVisible(True)
 
-    # ---- mouse: tools draw with left click, right click finishes, middle button pans
+    # ---- mouse: drag pans, a click picks/draws, Shift+drag selects a box of notes, middle button also pans
     def mousePressEvent(self, e):
+        self.setFocus()
         if e.button() == Qt.MouseButton.MiddleButton:
             self._pan = e.position()
             self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
             return
-        if self.tool and e.button() in (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._press = e.position()
+            self._last = e.position()
+            self._moved = False
+            self._shift = bool(e.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+            return
+        if e.button() == Qt.MouseButton.RightButton and self.tool:
             x, y, _ = self._pt(e)
-            self.clicked.emit(x, y, 1 if e.button() == Qt.MouseButton.LeftButton else 2)
+            self.clicked.emit(x, y, 2)
             return
         super().mousePressEvent(e)
+
+    def _scroll_by(self, d):
+        self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - int(d.x()))
+        self.verticalScrollBar().setValue(self.verticalScrollBar().value() - int(d.y()))
 
     def mouseMoveEvent(self, e):
         if self._pan is not None:
             d = e.position() - self._pan
             self._pan = e.position()
-            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - int(d.x()))
-            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - int(d.y()))
+            self._scroll_by(d)
             return
+        if self._press is not None:
+            if not self._moved and (e.position() - self._press).manhattanLength() > 5:
+                self._moved = True
+                if self._shift:
+                    self._band0 = self._press.toPoint()
+                    self._band = QRubberBand(QRubberBand.Shape.Rectangle, self.viewport())
+                else:
+                    self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+            if self._moved:
+                if self._band is not None:
+                    from PySide6.QtCore import QRect
+                    self._band.setGeometry(QRect(self._band0, e.position().toPoint()).normalized())
+                    self._band.show()
+                else:
+                    self._scroll_by(e.position() - self._last)
+                self._last = e.position()
+            return
+        sp = self.mapToScene(e.position().toPoint())
+        h = self.note_at(sp)
+        if h != self.hover:
+            self.hover = h
+            self._style()
         if self.tool:
             x, y, on = self._pt(e)
-            self.show_snap(x, y, on)
+            self.show_snap(x, y, on and h is None)
             self.moved.emit(x, y)
-            return
-        super().mouseMoveEvent(e)
+        self.viewport().setCursor(Qt.CursorShape.PointingHandCursor if h is not None else
+                                  (Qt.CursorShape.CrossCursor if self.tool else Qt.CursorShape.ArrowCursor))
 
     def mouseReleaseEvent(self, e):
-        if self._pan is not None:
+        if e.button() == Qt.MouseButton.MiddleButton and self._pan is not None:
             self._pan = None
             self.viewport().setCursor(Qt.CursorShape.CrossCursor if self.tool else Qt.CursorShape.ArrowCursor)
             return
-        if self.tool:
+        if e.button() == Qt.MouseButton.LeftButton and self._press is not None:
+            add = bool(e.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier))
+            if self._band is not None:
+                a = self.mapToScene(self._band0)
+                b = self.mapToScene(e.position().toPoint())
+                r = QRectF(a, b).normalized()
+                ids = [i for i, (x0, y0, x1, y1) in self.boxes.items() if r.intersects(QRectF(x0, y0, x1 - x0, y1 - y0))]
+                self._band.hide()
+                self._band.deleteLater()
+                self._band = None
+                self.box_selected.emit(ids, bool(e.modifiers() & Qt.KeyboardModifier.ControlModifier))
+            elif not self._moved:
+                sp = self.mapToScene(e.position().toPoint())
+                hit = self.note_at(sp)
+                if hit is not None:
+                    self.note_clicked.emit(hit, add)
+                elif self.tool:
+                    x, y, _ = self._pt(e)
+                    self.clicked.emit(x, y, 1)
+                else:
+                    self.note_clicked.emit(-1, add)
+            self._press = None
+            self._moved = False
+            self.viewport().setCursor(Qt.CursorShape.CrossCursor if self.tool else Qt.CursorShape.ArrowCursor)
             return
         super().mouseReleaseEvent(e)
+
+    def mouseDoubleClickEvent(self, e):
+        self._press = None
+        if e.button() == Qt.MouseButton.LeftButton:
+            hit = self.note_at(self.mapToScene(e.position().toPoint()))
+            if hit is not None:
+                self.note_opened.emit(hit)
+
+    def leaveEvent(self, e):
+        if self.hover is not None:
+            self.hover = None
+            self._style()
+        super().leaveEvent(e)
+
+    def keyPressEvent(self, e):
+        k, m = e.key(), e.modifiers()
+        if k in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            self.delete_req.emit()
+        elif k == Qt.Key.Key_Escape:
+            self.note_clicked.emit(-1, False)
+        elif k == Qt.Key.Key_F:
+            self.fit()
+        elif k == Qt.Key.Key_A and m & Qt.KeyboardModifier.ControlModifier:
+            self.box_selected.emit(list(self.boxes), False)
+        elif k in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):
+            self.scale(1.2, 1.2)
+        elif k == Qt.Key.Key_Minus:
+            self.scale(1 / 1.2, 1 / 1.2)
+        else:
+            super().keyPressEvent(e)
 
 
 def collect_snaps(doc):
@@ -835,6 +1000,10 @@ class Win(QMainWindow):
         self.btn_more.setCheckable(True)
         self.btn_more.setToolTip("Draw your own roof sheets, purlins, fill boxes and lines, edit a fill, delete your own elements")
         tbm.addWidget(self.btn_more)
+        self.btn_fit = QPushButton("Fit")
+        self.btn_fit.setToolTip("Show the whole detail (key F)")
+        self.btn_fit.clicked.connect(lambda: self.view.fit())
+        tbm.addWidget(self.btn_fit)
         nl.addLayout(tbm)
         self.more = QWidget()
         self.more.setLayout(tb)
@@ -849,6 +1018,12 @@ class Win(QMainWindow):
         self.view = View()
         self.view.clicked.connect(self.on_click)
         self.view.moved.connect(self.on_move)
+        self.view.note_clicked.connect(self.on_note_click)
+        self.view.box_selected.connect(self.on_box_select)
+        self.view.note_opened.connect(lambda iid: self.row_spec(self._row_of(iid)))
+        self.view.delete_req.connect(self.remove_note)
+        self.note_boxes, self.note_targets = {}, {}
+        self._syncing = False
         self.view.setScene(QGraphicsScene())
         split.addWidget(self.view)
         self.table = QTableWidget(0, 4)
@@ -857,6 +1032,9 @@ class Win(QMainWindow):
         h.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.setWordWrap(True)
         self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.table.itemSelectionChanged.connect(self.on_table_sel)
         split.addWidget(self.table)
         split.setSizes([760, 600])
         nl.addWidget(split, 1)
@@ -870,7 +1048,7 @@ class Win(QMainWindow):
         self.btn_apply.setEnabled(False)
         self.btn_choose = QPushButton("Choose spec for selected note")
         self.btn_choose.clicked.connect(lambda: self.row_spec(self.table.currentRow()))
-        self.btn_remove = QPushButton("Remove selected note")
+        self.btn_remove = QPushButton("Remove selected notes")
         self.btn_remove.clicked.connect(self.remove_note)
         br.addWidget(self.btn_choose)
         br.addWidget(self.btn_remove)
@@ -1058,8 +1236,8 @@ class Win(QMainWindow):
 
     # ---- your own detailing
     HINTS = {
-        "spec": "Click a part of the detail (concrete, brick, stone, insulation, waterproofing...) and choose what it is from the catalog. Double-click a note in the list to change it.",
-        "pan": "Drag to move the drawing, wheel to zoom.",
+        "spec": "Click a part of the detail to choose its spec. Click a note to select it (Ctrl adds), Shift+drag selects a box of notes, Delete removes them. Drag moves the drawing, wheel zooms, F fits.",
+        "pan": "Drag to move the drawing, wheel to zoom. Click a note to select it, Delete removes it.",
         "sheet": "Roof sheet: click the start, then the end of the roof line. The sheet profile snaps to the drawing and gets its own note.",
         "purlin": "Purlin: click where the 76 x 50 purlin goes (it follows the roof slope).",
         "box": "Fill box: pick a material in the list, click two opposite corners.",
@@ -1073,7 +1251,7 @@ class Win(QMainWindow):
         self.tool = None if key == "pan" else key
         self.pend = []
         self.view.set_tool(self.tool)
-        self.tool_hint.setText(self.HINTS[key] + ("  (middle mouse button pans)" if self.tool else ""))
+        self.tool_hint.setText(self.HINTS[key])
 
     def on_move(self, x, y):
         t = self.tool
@@ -1429,24 +1607,85 @@ class Win(QMainWindow):
         if it:
             self.spec_for_item(it)
 
-    def remove_note(self):
-        r = self.table.currentRow()
-        if r < 0 or r >= self.table.rowCount():
+    # ---- selection: the list and the drawing always show the same notes
+    def sel_ids(self):
+        ids = set()
+        for r in sorted({i.row() for i in self.table.selectedIndexes()}):
+            it = self.table.item(r, 0)
+            if it is not None:
+                ids.add(int(it.text()))
+        return ids
+
+    def on_table_sel(self):
+        if self._syncing:
             return
-        iid = int(self.table.item(r, 0).text())
-        it = next((i for i in self.items if i["id"] == iid), None)
-        if it and it.get("picked"):
-            self.specs.pop(it["picked"], None)
-            self.items = [i for i in self.items if i is not it]
-            self.table.removeRow(r)
-        else:                                     # your own element or a suggested note: its note is just emptied
-            self.table.blockSignals(True)
-            self.table.setItem(r, 1, QTableWidgetItem(""))
-            self.table.blockSignals(False)
-            if it and it.get("user"):
+        ids = self.sel_ids()
+        self.view.set_selected(ids)
+        if len(ids) == 1 and next(iter(ids)) in self.note_boxes:
+            x0, y0, x1, y1 = self.note_boxes[next(iter(ids))]
+            self.view.ensureVisible(QRectF(x0, y0, x1 - x0, y1 - y0), 60, 60)
+
+    def select_ids(self, ids):
+        self._syncing = True
+        try:
+            self.table.clearSelection()
+            sm = self.table.selectionModel()
+            from PySide6.QtCore import QItemSelectionModel as _SM
+            first = None
+            for r in range(self.table.rowCount()):
+                it = self.table.item(r, 0)
+                if it is not None and int(it.text()) in ids:
+                    sm.select(self.table.model().index(r, 0),
+                              _SM.SelectionFlag.Select | _SM.SelectionFlag.Rows)
+                    first = r if first is None else first
+            if first is not None:
+                self.table.scrollToItem(self.table.item(first, 1))
+        finally:
+            self._syncing = False
+        self.view.set_selected(self.sel_ids())
+
+    def on_note_click(self, iid, additive):
+        cur = self.sel_ids()
+        if iid < 0:
+            ids = cur if additive else set()
+        elif additive:
+            ids = cur ^ {iid}
+        else:
+            ids = {iid}
+        self.select_ids(ids)
+
+    def on_box_select(self, ids, additive):
+        self.select_ids((self.sel_ids() | set(ids)) if additive else set(ids))
+
+    def remove_note(self):
+        """Remove every selected note (list and drawing)."""
+        rows = sorted({i.row() for i in self.table.selectedIndexes()}, reverse=True)
+        if not rows and 0 <= self.table.currentRow() < self.table.rowCount():
+            rows = [self.table.currentRow()]
+        if not rows:
+            return
+        self._syncing = True
+        for r in rows:
+            if r >= self.table.rowCount() or self.table.item(r, 0) is None:
+                continue
+            iid = int(self.table.item(r, 0).text())
+            it = next((i for i in self.items if i["id"] == iid), None)
+            if it and it.get("picked"):
+                self.specs.pop(it["picked"], None)
+                self.items = [i for i in self.items if i is not it]
+                self.table.removeRow(r)
+            elif it and it.get("user"):                # your own element keeps its row, its note is emptied
+                self.table.blockSignals(True)
+                self.table.setItem(r, 1, QTableWidgetItem(""))
+                self.table.blockSignals(False)
                 for el in self.user:
                     if el["uid"] == it["user"]:
                         el["note"] = ""
+            else:                                     # a suggested note: its row goes
+                self.table.removeRow(r)
+        self._syncing = False
+        self.view.set_selected(set())
+        self.btn_apply.setEnabled(self.table.rowCount() > 0)
         self.save_edits()
         self.timer.start()
 
@@ -1591,6 +1830,8 @@ class Win(QMainWindow):
             extents = (ext.extmin.x, ext.extmin.y, ext.extmax.x, ext.extmax.y)
             ordered = core.place_notes(doc, notes, extents, self.mmu, self.scale.value(),
                                        self.text_mm.value(), self.note_w.value(), 12, self.number_notes.isChecked())
+            self.note_boxes = {n["id"]: n["box"] for n in ordered if "box" in n}
+            self.note_targets = {n["id"]: n["target"] for n in ordered if "target" in n}
             OUT_DIR.mkdir(parents=True, exist_ok=True)
             self.save_edits()
             stem = self.src.stem + "_noted"
@@ -1613,6 +1854,8 @@ class Win(QMainWindow):
             keep = None if self.first_apply else (self.view.transform(),
                                                   self.view.mapToScene(self.view.viewport().rect().center()))
             self.view.setScene(build_scene(doc))
+            self.view.set_boxes(self.note_boxes, self.note_targets)
+            self.view.set_selected(self.sel_ids())
             if keep:
                 self.view.setTransform(keep[0])
                 self.view.centerOn(keep[1])
