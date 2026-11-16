@@ -17130,21 +17130,21 @@ def _sb(method, path, body=None, token=None, timeout=15):
         raise SbError("No internet connection (%s)" % ex, True)
 
 
-def sb_status(user):
-    """'ok', 'pending' (not approved yet) or 'expired' (licence date passed)."""
-    am = (user or {}).get("app_metadata") or {}
-    if not am.get("approved"):
-        return "pending"
-    vu = str(am.get("valid_until") or "")
-    if vu and vu < datetime.date.today().isoformat():
-        return "expired"
-    return "ok"
+def sb_licence(token):
+    """What the service says about this person's licence: 'ok', 'none' (no key entered yet), 'revoked' or 'expired'."""
+    d = _sb("POST", "/rest/v1/rpc/licence_status", {}, token=token)
+    return d.get("state", "none") if isinstance(d, dict) else "none"
+
+
+def sb_redeem(token, key):
+    d = _sb("POST", "/rest/v1/rpc/redeem_licence", {"p_key": key.strip()}, token=token)
+    return d.get("state", "none") if isinstance(d, dict) else "none"
 
 
 def _sb_pack(d):
     u = d.get("user") or {}
     return {"name": (u.get("user_metadata") or {}).get("name") or (u.get("email") or ""), "email": u.get("email", ""),
-            "status": sb_status(u), "refresh": d.get("refresh_token", ""), "token": d.get("access_token", "")}
+            "status": "?", "refresh": d.get("refresh_token", ""), "token": d.get("access_token", "")}
 
 
 def sb_login(email, pw):
@@ -17261,19 +17261,26 @@ class LoginDialog(QDialog):
         self.err.setText("")
         self.err.setStyleSheet("color:#ff8f9c;")
         reg, res = m == "register", m == "reset"
-        self.head.setText({"login": "Sign in", "register": "Create your account", "reset": "Reset your password"}[m])
+        self.head.setText({"login": "Sign in", "register": "Create your account", "reset": "Reset your password",
+                           "activate": "Enter your licence key"}.get(m, ""))
         self.f_name.setVisible(reg)
-        self.f_rec.setVisible(res)
-        self.f_rec.setPlaceholderText("Code from the email" if self.online else "Recovery key (XXXX-XXXX-XXXX-XXXX)")
+        act = m == "activate"
+        self.f_rec.setVisible(res or act or (reg and self.online))
+        self.f_rec.setPlaceholderText("Licence key (MCP-XXXX-XXXX-XXXX)" if (act or reg) and self.online
+                                      else "Code from the email" if self.online else "Recovery key (XXXX-XXXX-XXXX-XXXX)")
         self.f_pw.setPlaceholderText("New password (at least 8 characters)" if (reg or res) else "Password")
+        self.f_email.setVisible(not act)
+        self.f_pw.setVisible(not act)
         self.f_pw2.setVisible(reg or res)
-        self.show_pw.setVisible(True)
+        self.show_pw.setVisible(not act)
         self.keep.setVisible(m == "login")
-        self.btn.setText({"login": "Sign in", "register": "Create account", "reset": "Set new password"}[m])
+        self.btn.setText({"login": "Sign in", "register": "Create account", "reset": "Set new password",
+                          "activate": "Activate"}.get(m, ""))
         self.l1.setText("Create a new account" if m == "login" else "I already have an account")
+        self.l1.setVisible(not act)
         self.l2.setText("Forgot password?" if m == "login" else ("Email me a code" if (res and self.online) else ""))
         self.l2.setVisible(m == "login" or (res and self.online))
-        (self.f_email if m != "register" else self.f_name).setFocus()
+        (self.f_rec if act else self.f_email if m != "register" else self.f_name).setFocus()
 
     def l2_click(self):
         if self.mode == "login":
@@ -17290,6 +17297,32 @@ class LoginDialog(QDialog):
         except SbError as ex:
             self.err.setStyleSheet("color:#ff8f9c;")
             self.err.setText(str(ex))
+
+    def _finish_login(self, u, pw, checked=False):
+        """Account found: now the licence decides. No key yet -> ask for it."""
+        self._u, self._pw = u, pw
+        try:
+            st = u["status"] if checked else sb_licence(u["token"])
+        except SbError as ex:
+            self.err.setText(str(ex))
+            return
+        if st == "none":
+            self.set_mode("activate")
+            self.err.setStyleSheet("color:#9aa0a8;")
+            self.err.setText("This account has no licence yet. Enter the licence key you were given.")
+            return
+        if st == "revoked":
+            self.err.setText("This licence has been switched off. Contact MCP Architecture & Interiors.")
+            return
+        if st == "expired":
+            self.err.setText("This licence has expired. Contact MCP Architecture & Interiors for a new key.")
+            return
+        _off_set(u["email"], pw, u["name"])
+        if self.keep.isChecked() or self.mode == "activate":
+            SETTINGS["sb_refresh"] = u["refresh"]
+            save_settings()
+        self.user = u
+        self.accept()
 
     def go_online(self):
         em, pw = self.f_email.text().strip(), self.f_pw.text()
@@ -17309,18 +17342,16 @@ class LoginDialog(QDialog):
                 else:
                     self.err.setText("That email and password do not match." if ex.status in (400, 401, 422) else str(ex))
                 return
-            if u["status"] == "pending":
-                self.err.setText("Your account is waiting for approval. You will be able to sign in once it is approved.")
+            self._finish_login(u, pw)
+            return
+        if self.mode == "activate":
+            try:
+                st = sb_redeem(self._u["token"], self.f_rec.text())
+            except SbError as ex:
+                self.err.setText(str(ex))
                 return
-            if u["status"] == "expired":
-                self.err.setText("This account's access period has ended. Contact MCP Architecture & Interiors.")
-                return
-            _off_set(em, pw, u["name"])
-            if self.keep.isChecked():
-                SETTINGS["sb_refresh"] = u["refresh"]
-                save_settings()
-            self.user = u
-            self.accept()
+            self._u["status"] = st
+            self._finish_login(self._u, self._pw, checked=True)
             return
         if "@" not in em or "." not in em.split("@")[-1]:
             self.err.setText("Enter a valid email address.")
@@ -17336,10 +17367,20 @@ class LoginDialog(QDialog):
                 if not self.f_name.text().strip():
                     self.err.setText("Enter your name.")
                     return
+                if not self.f_rec.text().strip():
+                    self.err.setText("Enter the licence key you were given.")
+                    return
                 sb_signup(self.f_name.text(), em, pw)
-                QMessageBox.information(self, APP_NAME, "Your account was created.\n\nIt has to be approved before you can use the program. "
-                                        "You will be able to sign in as soon as that is done.")
-                self.set_mode("login")
+                u = sb_login(em, pw)
+                try:
+                    u["status"] = sb_redeem(u["token"], self.f_rec.text())
+                except SbError as ex:
+                    self._u, self._pw = u, pw
+                    self.set_mode("activate")
+                    self.err.setText("Your account was created, but: %s" % ex)
+                    return
+                self.mode = "login"
+                self._finish_login(u, pw, checked=True)
             else:
                 sb_reset(em, self.f_rec.text(), pw)
                 QMessageBox.information(self, APP_NAME, "Your password was changed. Sign in with the new one.")
@@ -17400,6 +17441,7 @@ def sign_in_gate(app):
         if rt:                                              # "Keep me signed in": check the account again, quietly
             try:
                 u = sb_refresh(rt)
+                u["status"] = sb_licence(u["token"])
                 if u["status"] == "ok":
                     SETTINGS["sb_refresh"] = u["refresh"]
                     save_settings()
