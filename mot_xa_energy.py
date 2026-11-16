@@ -1,4 +1,4 @@
-import sys, json, csv, re, os, tempfile, html
+import sys, json, csv, re, os, tempfile, html, datetime
 from dataclasses import dataclass
 from PySide6.QtWidgets import (
     QGroupBox, QListWidgetItem, QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
@@ -17067,6 +17067,7 @@ def acc_remember(email):
 
 
 def acc_forget():
+    SETTINGS["sb_refresh"] = ""
     d = _acc_load()
     d.pop("remember", None)
     _acc_save(d)
@@ -17086,6 +17087,111 @@ def acc_remembered():
     return None
 
 
+# ---------------------------------------------------------------- online accounts (Supabase Auth, kept off this PC)
+SB_URL = ""         # the project URL, e.g. https://abcdxyz.supabase.co   (filled in once the account service is set up)
+SB_KEY = ""         # the project's public "anon" key (it is meant to be public; it cannot read or change accounts by itself)
+OFFLINE_DAYS = 14   # how long a PC that was signed in before may keep working with no internet
+
+
+def sb_conf():
+    u, k = SB_URL, SB_KEY
+    try:
+        with open(_app_data_file("app_config.json"), encoding="utf-8") as f:
+            c = json.load(f)
+            u, k = c.get("sb_url") or u, c.get("sb_key") or k
+    except Exception:
+        pass
+    u = (u or "").strip().rstrip("/")
+    return (u, (k or "").strip()) if u and k else None
+
+
+class SbError(Exception):
+    def __init__(self, msg, offline=False, status=0):
+        super().__init__(msg)
+        self.offline, self.status = offline, status
+
+
+def _sb(method, path, body=None, token=None, timeout=15):
+    u, k = sb_conf()
+    hdr = {"apikey": k, "Content-Type": "application/json", "Authorization": "Bearer " + (token or k)}
+    req = urllib.request.Request(u + path, data=json.dumps(body).encode("utf-8") if body is not None else None, headers=hdr, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read().decode("utf-8") or "{}"
+            return json.loads(raw)
+    except urllib.error.HTTPError as ex:
+        try:
+            d = json.loads(ex.read().decode("utf-8"))
+        except Exception:
+            d = {}
+        msg = d.get("msg") or d.get("error_description") or d.get("message") or d.get("error") or ("HTTP %s" % ex.code)
+        raise SbError(str(msg), False, ex.code)
+    except Exception as ex:
+        raise SbError("No internet connection (%s)" % ex, True)
+
+
+def sb_status(user):
+    """'ok', 'pending' (not approved yet) or 'expired' (licence date passed)."""
+    am = (user or {}).get("app_metadata") or {}
+    if not am.get("approved"):
+        return "pending"
+    vu = str(am.get("valid_until") or "")
+    if vu and vu < datetime.date.today().isoformat():
+        return "expired"
+    return "ok"
+
+
+def _sb_pack(d):
+    u = d.get("user") or {}
+    return {"name": (u.get("user_metadata") or {}).get("name") or (u.get("email") or ""), "email": u.get("email", ""),
+            "status": sb_status(u), "refresh": d.get("refresh_token", ""), "token": d.get("access_token", "")}
+
+
+def sb_login(email, pw):
+    return _sb_pack(_sb("POST", "/auth/v1/token?grant_type=password", {"email": email.strip().lower(), "password": pw}))
+
+
+def sb_refresh(refresh_token):
+    return _sb_pack(_sb("POST", "/auth/v1/token?grant_type=refresh_token", {"refresh_token": refresh_token}))
+
+
+def sb_signup(name, email, pw):
+    _sb("POST", "/auth/v1/signup", {"email": email.strip().lower(), "password": pw, "data": {"name": name.strip()}})
+
+
+def sb_send_code(email):
+    _sb("POST", "/auth/v1/recover", {"email": email.strip().lower()})
+
+
+def sb_reset(email, code, new_pw):
+    d = _sb("POST", "/auth/v1/verify", {"type": "recovery", "email": email.strip().lower(), "token": code.strip()})
+    _sb("PUT", "/auth/v1/user", {"password": new_pw}, token=d.get("access_token"))
+
+
+def _off_set(email, pw, name):
+    import secrets
+    d = _acc_load()
+    salt = secrets.token_hex(16)
+    d["offline"] = {"email": email.strip().lower(), "name": name, "salt": salt, "hash": _pw_hash(pw, salt),
+                    "last_ok": datetime.date.today().isoformat()}
+    _acc_save(d)
+
+
+def _off_fresh(o):
+    try:
+        return (datetime.date.today() - datetime.date.fromisoformat(o["last_ok"])).days <= OFFLINE_DAYS
+    except Exception:
+        return False
+
+
+def _off_check(email, pw):
+    import hmac
+    o = _acc_load().get("offline")
+    if o and o["email"] == email.strip().lower() and _off_fresh(o) and hmac.compare_digest(_pw_hash(pw, o["salt"]), o["hash"]):
+        return {"name": o["name"], "email": o["email"], "status": "ok"}
+    return None
+
+
 class LoginDialog(QDialog):
     """Start screen: the logo in the middle, the sign-in form underneath. First time on a PC it opens on 'Create account'."""
 
@@ -17095,7 +17201,8 @@ class LoginDialog(QDialog):
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(app_icon())
         self.setFixedSize(460, 700)
-        self.mode = "login" if _acc_load()["users"] else "register"
+        self.online = sb_conf() is not None
+        self.mode = "login" if (self.online or _acc_load()["users"]) else "register"
         lay = QVBoxLayout(self)
         lay.setContentsMargins(46, 34, 46, 28)
         lay.setSpacing(8)
@@ -17146,27 +17253,104 @@ class LoginDialog(QDialog):
             row.addWidget(b_)
         lay.addLayout(row)
         self.l1.clicked.connect(lambda: self.set_mode("register" if self.mode == "login" else "login"))
-        self.l2.clicked.connect(lambda: self.set_mode("reset"))
+        self.l2.clicked.connect(self.l2_click)
         self.set_mode(self.mode)
 
     def set_mode(self, m):
         self.mode = m
         self.err.setText("")
+        self.err.setStyleSheet("color:#ff8f9c;")
         reg, res = m == "register", m == "reset"
         self.head.setText({"login": "Sign in", "register": "Create your account", "reset": "Reset your password"}[m])
         self.f_name.setVisible(reg)
         self.f_rec.setVisible(res)
+        self.f_rec.setPlaceholderText("Code from the email" if self.online else "Recovery key (XXXX-XXXX-XXXX-XXXX)")
         self.f_pw.setPlaceholderText("New password (at least 8 characters)" if (reg or res) else "Password")
         self.f_pw2.setVisible(reg or res)
         self.show_pw.setVisible(True)
         self.keep.setVisible(m == "login")
         self.btn.setText({"login": "Sign in", "register": "Create account", "reset": "Set new password"}[m])
         self.l1.setText("Create a new account" if m == "login" else "I already have an account")
-        self.l2.setText("Forgot password?" if m == "login" else "")
-        self.l2.setVisible(m == "login")
+        self.l2.setText("Forgot password?" if m == "login" else ("Email me a code" if (res and self.online) else ""))
+        self.l2.setVisible(m == "login" or (res and self.online))
         (self.f_email if m != "register" else self.f_name).setFocus()
 
+    def l2_click(self):
+        if self.mode == "login":
+            self.set_mode("reset")
+            return
+        em = self.f_email.text().strip()
+        if "@" not in em:
+            self.err.setText("Enter your email address first.")
+            return
+        try:
+            sb_send_code(em)
+            self.err.setStyleSheet("color:#3fbf6b;")
+            self.err.setText("A code was sent to that email. Enter it below with your new password.")
+        except SbError as ex:
+            self.err.setStyleSheet("color:#ff8f9c;")
+            self.err.setText(str(ex))
+
+    def go_online(self):
+        em, pw = self.f_email.text().strip(), self.f_pw.text()
+        self.err.setStyleSheet("color:#ff8f9c;")
+        if self.mode == "login":
+            try:
+                u = sb_login(em, pw)
+            except SbError as ex:
+                if ex.offline:
+                    u = _off_check(em, pw)
+                    if u:
+                        self.user = u
+                        self.accept()
+                        return
+                    self.err.setText("No internet connection. You can only sign in without internet on a PC "
+                                     "that signed in within the last %d days." % OFFLINE_DAYS)
+                else:
+                    self.err.setText("That email and password do not match." if ex.status in (400, 401, 422) else str(ex))
+                return
+            if u["status"] == "pending":
+                self.err.setText("Your account is waiting for approval. You will be able to sign in once it is approved.")
+                return
+            if u["status"] == "expired":
+                self.err.setText("This account's access period has ended. Contact MCP Architecture & Interiors.")
+                return
+            _off_set(em, pw, u["name"])
+            if self.keep.isChecked():
+                SETTINGS["sb_refresh"] = u["refresh"]
+                save_settings()
+            self.user = u
+            self.accept()
+            return
+        if "@" not in em or "." not in em.split("@")[-1]:
+            self.err.setText("Enter a valid email address.")
+            return
+        if len(pw) < 8:
+            self.err.setText("The password needs at least 8 characters.")
+            return
+        if pw != self.f_pw2.text():
+            self.err.setText("The two passwords are not the same.")
+            return
+        try:
+            if self.mode == "register":
+                if not self.f_name.text().strip():
+                    self.err.setText("Enter your name.")
+                    return
+                sb_signup(self.f_name.text(), em, pw)
+                QMessageBox.information(self, APP_NAME, "Your account was created.\n\nIt has to be approved before you can use the program. "
+                                        "You will be able to sign in as soon as that is done.")
+                self.set_mode("login")
+            else:
+                sb_reset(em, self.f_rec.text(), pw)
+                QMessageBox.information(self, APP_NAME, "Your password was changed. Sign in with the new one.")
+                self.f_pw.clear(); self.f_pw2.clear()
+                self.set_mode("login")
+        except SbError as ex:
+            self.err.setText(str(ex))
+
     def go(self):
+        if self.online:
+            return self.go_online()
         em, pw = self.f_email.text().strip(), self.f_pw.text()
         if self.mode == "login":
             u = acc_check(em, pw)
@@ -17211,9 +17395,29 @@ class LoginDialog(QDialog):
 
 def sign_in_gate(app):
     """True when the person may continue. Skipped for the user who chose 'Keep me signed in'."""
-    u = acc_remembered()
-    if u:
-        return u
+    if sb_conf():
+        rt = SETTINGS.get("sb_refresh", "")
+        if rt:                                              # "Keep me signed in": check the account again, quietly
+            try:
+                u = sb_refresh(rt)
+                if u["status"] == "ok":
+                    SETTINGS["sb_refresh"] = u["refresh"]
+                    save_settings()
+                    return u
+                SETTINGS["sb_refresh"] = ""                 # approval taken away or period over
+                save_settings()
+            except SbError as ex:
+                if ex.offline:
+                    o = _acc_load().get("offline")
+                    if o and _off_fresh(o):
+                        return {"name": o["name"], "email": o["email"], "status": "ok"}
+                else:
+                    SETTINGS["sb_refresh"] = ""
+                    save_settings()
+    else:
+        u = acc_remembered()
+        if u:
+            return u
     app.setStyle("Fusion")
     app.setStyleSheet((light_qss(STUDIO_QSS) if light() else STUDIO_QSS).replace("@TICK@", _tick_png()))
     dlg = LoginDialog()
