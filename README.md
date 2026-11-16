@@ -1,6 +1,6 @@
 # MOT XA Energy (private)
 
-Release a new version: edit mot_xa_energy.py, set the number in the BUILD file one higher, commit and push.
+Release a new version: edit mot_xa_energy.py, set the number in the RELEASE_NUMBER file one higher, commit and push.
     
 
 GitHub builds MOT_XA_Energy_Setup.exe and attaches it to the Release (Actions tab shows progress).
