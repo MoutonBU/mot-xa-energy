@@ -14,6 +14,19 @@ drop trigger if exists on_user_created_licence on auth.users;
 create trigger on_user_created_licence after insert on auth.users
 for each row execute function public.auto_licence_trigger();
 
+-- 1b. safety net: if an account ever has no key, the program asks for one and gets it, so nobody types a key
+create or replace function public.ensure_my_licence() returns json
+language plpgsql security definer set search_path = public, auth as $$
+declare em text;
+begin
+  if auth.uid() is null then return json_build_object('state', 'none'); end if;
+  select email into em from auth.users where id = auth.uid();
+  perform public.make_auto_licence(auth.uid(), em, null);
+  return public.licence_status();
+end $$;
+revoke all on function public.ensure_my_licence() from public, anon;
+grant execute on function public.ensure_my_licence() to authenticated;
+
 -- 2. anybody who already has an account but no key gets one now
 do $$ declare r record; begin
   for r in select id, email from auth.users loop perform public.make_auto_licence(r.id, r.email, null); end loop;

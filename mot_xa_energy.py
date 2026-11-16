@@ -17778,7 +17778,15 @@ def _sb(method, path, body=None, token=None, timeout=15):
 def sb_licence(token):
     """What the service says about this person's licence: 'ok', 'none' (no key entered yet), 'revoked' or 'expired'."""
     d = _sb("POST", "/rest/v1/rpc/licence_status", {}, token=token)
-    return d.get("state", "none") if isinstance(d, dict) else "none"
+    st = d.get("state", "none") if isinstance(d, dict) else "none"
+    if st == "none":                       # an account without a licence: the service makes one now (no key to type)
+        try:
+            d = _sb("POST", "/rest/v1/rpc/ensure_my_licence", {}, token=token)
+            st = d.get("state", "none") if isinstance(d, dict) else "none"
+        except SbError as ex:
+            if ex.offline:
+                raise
+    return st
 
 
 def sb_redeem(token, key):
@@ -17962,7 +17970,7 @@ class LoginDialog(QDialog):
         if st == "none":
             self.set_mode("activate")
             self.err.setStyleSheet("color:#9aa0a8;")
-            self.err.setText("This account has no licence yet. Enter the licence key you were given.")
+            self.err.setText("This account has no licence yet. Run supabase_user_keys.sql in Supabase, or enter a licence key.")
             return
         if st == "revoked":
             self.err.setText("This licence has been switched off. Contact MCP Architecture & Interiors.")
