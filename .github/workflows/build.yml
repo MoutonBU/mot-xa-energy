@@ -7,8 +7,8 @@ on:
 permissions:
   contents: write
 env:
-  REL_REPO: ${{ github.repository }}
-  SB_URL: https://erfgsisfvttercpytsnq.supabase.co
+  # Releases go to a separate PUBLIC repository when the RELEASES_TOKEN secret exists, so the source stays private
+  REL_REPO: ${{ secrets.RELEASES_TOKEN != '' && 'MoutonBU/mot-xa-energy-releases' || github.repository }}
 jobs:
   build:
     runs-on: windows-latest
@@ -39,11 +39,3 @@ jobs:
           EXTRA=""
           [ "$REL_REPO" = "$GITHUB_REPOSITORY" ] && EXTRA="--target $GITHUB_SHA"
           gh release create "v${APP_VER}" installer_out/MOT_XA_Energy_Setup.exe --repo "$REL_REPO" $EXTRA --title "Version ${APP_VER}" --notes "MOT XA Energy ${APP_VER}"
-      - name: Publish to the private update store (Supabase)
-        if: github.ref_type == 'branch'
-        shell: bash
-        env:
-          SB_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: |
-          if [ -z "$SB_SERVICE_KEY" ]; then echo "SUPABASE_SERVICE_KEY secret is not set - skipping"; exit 0; fi
-          python scripts/publish_supabase.py installer_out/MOT_XA_Energy_Setup.exe
