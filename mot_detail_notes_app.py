@@ -184,6 +184,34 @@ class Worker(QThread):
 
 
 # ---------------------------------------------------------------- preview
+from PySide6.QtWidgets import QPlainTextEdit as _QPTE
+
+
+class NoteEdit(_QPTE):
+    """text box typed directly on the drawing: Enter saves, Esc cancels, clicking away saves"""
+    done = Signal(bool)
+
+    def keyPressEvent(self, e):
+        if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not (e.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+            self.done.emit(True)
+            return
+        if e.key() == Qt.Key.Key_Escape:
+            self.done.emit(False)
+            return
+        super().keyPressEvent(e)
+
+    def event(self, e):
+        from PySide6.QtCore import QEvent
+        if e.type() == QEvent.Type.ShortcutOverride and e.key() == Qt.Key.Key_Escape:
+            e.accept()                      # the window's Esc shortcut must not take it: Esc cancels this edit
+            return True
+        return super().event(e)
+
+    def focusOutEvent(self, e):
+        super().focusOutEvent(e)
+        self.done.emit(True)
+
+
 class View(QGraphicsView):
     """Detail preview. Drag = move the drawing, wheel = zoom, click a note = select it (Ctrl adds),
     Shift+drag = select every note in a box, Delete = remove the selected notes, F = fit, Esc = clear."""
@@ -195,6 +223,9 @@ class View(QGraphicsView):
     delete_req = Signal()
     note_moved = Signal(int, float, float)   # note id, new top-left x, y (drawing units)
     target_moved = Signal(int, float, float) # note id, new x, y of its leader dot
+    note_menu = Signal(int, object)          # note id, global position: right-click on a note
+    bar_action = Signal(str)                 # "spec" / "snap" / "delete" / "ptr:<style>" from the floating bar
+    note_text = Signal(int, str)             # note id, new text typed on the drawing
 
     def __init__(self):
         super().__init__()
@@ -213,6 +244,12 @@ class View(QGraphicsView):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.scale(1, -1)  # DXF y is up
         self.tool = None
+        self.status = {}                      # note id -> "ok" / "verify" / "todo"
+        self.menu_ok = True
+        self._edit = None
+        self._build_bar()
+        self.horizontalScrollBar().valueChanged.connect(lambda *_: self._place_bar())
+        self.verticalScrollBar().valueChanged.connect(lambda *_: self._place_bar())
         self.snaps = None                    # numpy array of snap points
         self._pan = None
         self._mark = None
@@ -274,6 +311,7 @@ class View(QGraphicsView):
         if cur > 0 and v > 0:
             self.scale(v / cur, v / cur)
             self._update_chip()
+            self._place_bar()
 
     def _zoom_done(self):
         self._zoom_goal = None
@@ -328,6 +366,7 @@ class View(QGraphicsView):
     def resizeEvent(self, e):
         super().resizeEvent(e)
         self._place_controls()
+        self._place_bar()
 
     def drawForeground(self, painter, rect):
         sc = self.scene()
@@ -369,6 +408,92 @@ class View(QGraphicsView):
     def set_selected(self, ids):
         self.sel = set(ids)
         self._style()
+        self._place_bar()
+
+    def set_status(self, st):
+        self.status = dict(st)
+        self._style()
+
+    # ---- floating bar next to the selected note(s)
+    def _build_bar(self):
+        from PySide6.QtWidgets import QMenu
+        self._bar = QFrame(self.viewport())
+        self._bar.setObjectName("notebar")
+        self._bar.setStyleSheet("#notebar{background:#26262b;border:1px solid #555;border-radius:8px;}"
+                                "#notebar QPushButton{padding:3px 9px;border-radius:6px;}")
+        lay = QHBoxLayout(self._bar)
+        lay.setContentsMargins(5, 4, 5, 4)
+        lay.setSpacing(4)
+        for lab, key, tip in (("Spec", "spec", "Choose this note's specification"), ("In line", "snap", "Snap to the note column"),
+                              ("Delete", "delete", "Remove the selected notes")):
+            b = QPushButton(lab)
+            b.setToolTip(tip)
+            b.clicked.connect(lambda _c=False, k=key: self.bar_action.emit(k))
+            lay.addWidget(b)
+        pb = QPushButton("Pointer \u25be")
+        pb.setToolTip("Leader end: dot, arrow, ring, tick, none")
+        m = QMenu(pb)
+        for lab, k in (("Dot", "dot"), ("Arrow", "arrow"), ("Ring", "ring"), ("Tick", "tick"), ("None", "none")):
+            m.addAction(lab, lambda kk=k: self.bar_action.emit("ptr:" + kk))
+        pb.setMenu(m)
+        lay.addWidget(pb)
+        self._bar.adjustSize()
+        self._bar.hide()
+
+    def _place_bar(self):
+        try:
+            ids = [i for i in self.sel if i in self.boxes]
+            if not ids or self._dragn is not None or self._dragd is not None or self._edit is not None:
+                self._bar.hide()
+                return
+            x0 = min(self.boxes[i][0] for i in ids)
+            x1 = max(self.boxes[i][2] for i in ids)
+            y1 = max(self.boxes[i][3] for i in ids)
+            a = self.mapFromScene(x0, y1)
+            b = self.mapFromScene(x1, y1)
+            self._bar.adjustSize()
+            x = max(4, min(a.x(), self.viewport().width() - self._bar.width() - 4))
+            y = a.y() - self._bar.height() - 6
+            if y < 4:                                  # no room above: put the bar beside the note instead
+                x = max(4, a.x() - self._bar.width() - 8)
+                y = max(4, a.y())
+            self._bar.move(x, y)
+            self._bar.show()
+            self._bar.raise_()
+        except RuntimeError:
+            pass
+
+    # ---- type the note text on the drawing
+    def begin_edit(self, iid, text):
+        bx = self.boxes.get(iid)
+        if not bx:
+            return
+        self.end_edit(False)
+        a, b = self.mapFromScene(bx[0], bx[3]), self.mapFromScene(bx[2], bx[1])
+        w, h = max(300, abs(b.x() - a.x())), max(110, abs(b.y() - a.y()))
+        ed = NoteEdit(self.viewport())
+        ed.done.connect(self.end_edit)
+        ed.setPlainText(text)
+        ed.setStyleSheet("QPlainTextEdit{background:#202024;color:#fff;border:2px solid #ffd600;border-radius:8px;font-size:13px;padding:6px;}")
+        ed.setGeometry(max(0, min(a.x(), self.viewport().width() - w)), max(0, a.y()), w, h)
+        ed.setToolTip("Enter = save, Shift+Enter = new line, Esc = cancel")
+        ed.show()
+        ed.setFocus()
+        ed.selectAll()
+        self._edit = (iid, ed)
+        self._bar.hide()
+
+    def end_edit(self, save=False):
+        if self._edit is None:
+            return
+        iid, ed = self._edit
+        self._edit = None
+        txt = " ".join(ed.toPlainText().split())
+        ed.deleteLater()
+        if save and txt:
+            self.note_text.emit(iid, txt)
+        self._place_bar()
+        self.setFocus()
 
     def _style(self):
         for iid, (r, ring) in self._ov.items():
@@ -382,7 +507,8 @@ class View(QGraphicsView):
                     pen = QPen(QColor("#00e5ff"), 1.5)
                 else:
                     r.setBrush(Qt.BrushStyle.NoBrush)
-                    pen = QPen(Qt.PenStyle.NoPen)
+                    col = {"ok": "#43a047", "verify": "#ff5a6e", "todo": "#ffb300"}.get(self.status.get(iid))
+                    pen = QPen(QColor(col), 1.5) if col else QPen(Qt.PenStyle.NoPen)
                 pen.setCosmetic(True)
                 r.setPen(pen)
                 if ring is not None:
@@ -532,6 +658,11 @@ class View(QGraphicsView):
             if bx and bx[0] <= sp.x() <= bx[2] and bx[1] <= sp.y() <= bx[3] and not self._shift:
                 self._dragn = (hit, sp)          # pressing on a note's text: a drag moves that note
             return
+        if e.button() == Qt.MouseButton.RightButton and self.menu_ok:
+            hit = self.note_at(self.mapToScene(e.position().toPoint()))
+            if hit is not None:
+                self.note_menu.emit(hit, e.globalPosition().toPoint())
+                return
         if e.button() == Qt.MouseButton.RightButton and self.tool:
             x, y, _ = self._pt(e)
             self.clicked.emit(x, y, 2)
@@ -552,6 +683,7 @@ class View(QGraphicsView):
         if self._press is not None:
             if not self._moved and (e.position() - self._press).manhattanLength() > 5:
                 self._moved = True
+                self._bar.hide()
                 if self._shift:
                     self._band0 = self._press.toPoint()
                     self._band = QRubberBand(QRubberBand.Shape.Rectangle, self.viewport())
@@ -1531,7 +1663,10 @@ class Win(QMainWindow):
         self.view.moved.connect(self.on_move)
         self.view.note_clicked.connect(self.on_note_click)
         self.view.box_selected.connect(self.on_box_select)
-        self.view.note_opened.connect(lambda iid: self.row_spec(self._row_of(iid)))
+        self.view.note_opened.connect(self.edit_on_drawing)
+        self.view.note_menu.connect(self.note_context_menu)
+        self.view.bar_action.connect(self.on_bar_action)
+        self.view.note_text.connect(self.set_note_text)
         self.view.delete_req.connect(self.remove_note)
         self.view.note_moved.connect(self.on_note_moved)
         self.view.target_moved.connect(self.on_target_moved)
@@ -1619,7 +1754,11 @@ class Win(QMainWindow):
         _del.activated.connect(self.remove_note)
         self.status = QLabel("Drag a DWG or DXF of your detail into this window.")
         self.status.setObjectName("status")
+        self.status.setWordWrap(True)
         outer.addWidget(self.status)
+        self.stats = QLabel("")
+        self.stats.setObjectName("muted")
+        outer.addWidget(self.stats)
         self.refresh_pill()
         self.set_tool("spec")
 
@@ -2153,6 +2292,10 @@ class Win(QMainWindow):
                           (ref[1] + "\n" + refs.CLAUSE_WARNING if ref else "No reference for this group: check the standard yourself.")))
             self.table.setItem(r, 4, c)
         self.table.blockSignals(False)
+        try:
+            self.update_stats()
+        except Exception:
+            pass
 
     def approve_selected(self):
         ids = self.sel_ids() or ({int(self.table.item(self.table.currentRow(), 0).text())}
@@ -2396,6 +2539,7 @@ class Win(QMainWindow):
             self.say("Open a detail first.")
             return
         self.tpl = {"name": name, "steps": list(steps), "i": 0}
+        self.view.menu_ok = False
         self.btn_tpl_stop.setVisible(True)
         self.set_tool("spec")
         self.tpl_hint()
@@ -2417,10 +2561,12 @@ class Win(QMainWindow):
         if self.tpl["i"] >= len(self.tpl["steps"]):
             self.say(f"Template '{self.tpl['name']}' finished. Check each note, then approve the ones you have verified.")
             self.tpl = None
+            self.view.menu_ok = True
         self.tpl_hint()
 
     def stop_template(self):
         self.tpl = None
+        self.view.menu_ok = True
         self.tpl_hint()
 
     def clear_user(self):
@@ -2866,6 +3012,78 @@ class Win(QMainWindow):
         bb.addWidget(cl)
         lay.addLayout(bb)
         dlg.exec()
+
+    def edit_on_drawing(self, iid):
+        r = self._row_of(iid)
+        if r < 0:
+            return
+        self.select_ids({iid})
+        self.view.begin_edit(iid, self.table.item(r, 1).text())
+
+    def set_note_text(self, iid, txt):
+        r = self._row_of(iid)
+        if r >= 0 and self.table.item(r, 1).text() != txt:
+            self.table.item(r, 1).setText(txt)          # the normal change path saves, redraws and checks it
+
+    def on_bar_action(self, act):
+        ids = self.sel_ids()
+        if not ids:
+            return
+        if act == "delete":
+            self.remove_note()
+        elif act == "snap":
+            self.align_notes("column")
+        elif act == "spec":
+            self.row_spec(self._row_of(sorted(ids)[0]))
+        elif act.startswith("ptr:"):
+            self.ptr_combo.setCurrentIndex(max(0, self.ptr_combo.findData(act[4:])))
+            self.on_pointer_pick(0)
+
+    def note_context_menu(self, iid, pos):
+        from PySide6.QtWidgets import QMenu
+        if iid not in self.sel_ids():
+            self.select_ids({iid})
+        m = QMenu(self)
+        m.addAction("Edit text here", lambda: self.edit_on_drawing(iid))
+        m.addAction("Choose specification...", lambda: self.row_spec(self._row_of(iid)))
+        pm = m.addMenu("Pointer")
+        for lab, k in (("Dot", "dot"), ("Arrow", "arrow"), ("Ring", "ring"), ("Tick", "tick"), ("None", "none")):
+            pm.addAction(lab, lambda kk=k: self.on_bar_action("ptr:" + kk))
+        m.addAction("Snap to the column", lambda: self.align_notes("column"))
+        m.addAction("Mark as checked by me", self.approve_selected)
+        m.addSeparator()
+        m.addAction("Delete", self.remove_note)
+        m.exec(pos)
+
+    def note_status(self):
+        """note id -> ok (checked by you) / verify (red) / todo (no spec chosen yet), for the colours on the drawing"""
+        st = {}
+        for r in range(self.table.rowCount()):
+            a, n, v, c = (self.table.item(r, k) for k in (0, 1, 2, 4))
+            if a is None or n is None:
+                continue
+            iid = int(a.text())
+            if self.is_unfinished(n.text()):
+                st[iid] = "todo"
+            elif v is not None and v.text() in ("VERIFY", "ADDED"):
+                st[iid] = "verify"
+            elif c is not None and c.text().startswith("\u2714"):
+                st[iid] = "ok"
+        return st
+
+    def update_stats(self):
+        st = self.note_status()
+        self.view.set_status(st)
+        tot = self.table.rowCount()
+        txt = (f"{tot} notes  |  {sum(1 for v in st.values() if v == 'ok')} checked  |  "
+               f"{sum(1 for v in st.values() if v == 'verify')} to verify  |  {sum(1 for v in st.values() if v == 'todo')} unfinished")
+        if self.xa_provider:
+            try:
+                d = self.xa_provider()
+                txt += f"  |  {d['town'] + ', ' if d.get('town') else ''}XA zone {d['zone']}"
+            except Exception:
+                pass
+        self.stats.setText(txt)
 
     def on_pointer_pick(self, _i):
         style = self.ptr_combo.currentData()
