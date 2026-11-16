@@ -2250,7 +2250,7 @@ import base64
 SETTINGS_PATH = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"),
                              "MCP_LightVent", "settings.json")
 PROVIDERS = {"Claude (Anthropic)": "claude-sonnet-5-5", "ChatGPT (OpenAI)": "gpt-4o"}
-SETTINGS = {"online": False, "provider": "Claude (Anthropic)", "api_key": "", "model": "", "theme": "studio", "mode": "dark", "gh_repo": "", "gh_token": ""}
+SETTINGS = {"online": False, "provider": "Claude (Anthropic)", "api_key": "", "model": "", "theme": "studio", "mode": "dark", "gh_repo": "", "gh_token": "", "sb_refresh": "", "last_email": ""}
 
 
 # ---------------------------------------------------------------- updates from GitHub Releases (installed .exe only)
@@ -2423,7 +2423,7 @@ ONLINE_NOTE = [""]
 def load_settings():
     try:
         with open(SETTINGS_PATH, encoding="utf-8") as f:
-            SETTINGS.update({k: v for k, v in json.load(f).items() if k in SETTINGS})
+            SETTINGS.update(json.load(f))   # every saved key, including the signed-in session
     except Exception:
         pass
 
