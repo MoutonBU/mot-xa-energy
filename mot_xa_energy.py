@@ -4010,7 +4010,7 @@ def apply_icons(win, force=False):
     """Tab icons, button icons and big icons on the home cards."""
     mt = getattr(win, "main_tabs", None)
     if mt is not None:
-        for i, n in enumerate(("home", "lightvent", "bolt")):
+        for i, n in enumerate(("home", "lightvent", "bolt", "building")):
             if i < mt.count():
                 mt.setTabIcon(i, make_icon(n, "#eceef0", 18))
         mt.setIconSize(QSize(18, 18))
@@ -9812,12 +9812,12 @@ class MainWindow(QMainWindow):
         add(vm, "Dark Studio (flat, crisp)" + ("   \u2713" if studio() else ""), lambda: self.set_theme("studio"))
         add(vm, "Liquid glass (old look)" + ("" if studio() else "   \u2713"), lambda: self.set_theme("glass"))
         m.addSeparator()
+        add(m, "Release notes...", self.show_release_notes)
         self.update_act = add(m, "Restart the program" if FROZEN else "Update - reload the latest program", self.restart_app)
         add(m, "Update from downloaded file...", self.update_from_download)
         add(m, "Sign out (ask for the password next time)", self.sign_out)
         if FROZEN:
             add(m, "Check for updates now", lambda: self.gh_check(manual=True))
-            add(m, "Check for updates...", self.gh_settings)
             va_ = add(m, "Version %s" % vtext(app_version()), lambda: None)
             va_.setEnabled(False)
         m.addSeparator()
@@ -15562,6 +15562,34 @@ class MainWindow(QMainWindow):
         if rd["contact"]:
             h += f'<p style="font-size:8pt; color:#777777;">{e(rd["contact"])}</p>'
         return h
+
+    def show_release_notes(self):
+        """File > Release notes: what is new, what changed and what stays the same."""
+        from PySide6.QtWidgets import QTextBrowser
+        txt = ""
+        for base in (_app_data_file("RELEASE_NOTES.md"), os.path.join(os.path.dirname(os.path.abspath(__file__)), "RELEASE_NOTES.md")):
+            try:
+                with open(base, encoding="utf-8") as f:
+                    txt = f.read()
+                break
+            except Exception:
+                continue
+        if not txt:
+            QMessageBox.information(self, APP_NAME, "The release notes file was not found.")
+            return
+        d = QDialog(self)
+        d.setWindowTitle("Release notes - version %s" % (vtext(app_version()) or "dev"))
+        d.resize(760, 640)
+        lay = QVBoxLayout(d)
+        tb = QTextBrowser()
+        tb.setOpenExternalLinks(True)
+        tb.setMarkdown(txt)
+        lay.addWidget(tb)
+        bt = QPushButton("Close")
+        bt.clicked.connect(d.accept)
+        row = QHBoxLayout(); row.addStretch(); row.addWidget(bt)
+        lay.addLayout(row)
+        d.exec()
 
     def _lt_lpd(self):
         """Allowed lighting power density (W/m2) for the occupancy class chosen in the building details."""

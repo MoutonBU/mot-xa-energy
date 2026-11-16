@@ -1,6 +1,6 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.8.1**. The version number is shown in the installer, in the installer file name
+Current version: **1.8.2**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
@@ -19,6 +19,7 @@ Current version: **1.8.1**. The version number is shown in the installer, in the
 - **Updates**: the red "Update available" button and Menu > Check for updates download and install the new version in
   one click, with no token. Your work is saved and restored after the update.
 - **Dark / light mode** switch that changes the interface at once, without restarting. The installer matches the dark theme.
+- **Release notes** inside the program (File > Release notes...) and a tab icon for Coverage & FAR.
 - **Version numbers** (1.0.0, 1.0.1 ...) shown everywhere, including inside the installer.
 
 ### Improvements
