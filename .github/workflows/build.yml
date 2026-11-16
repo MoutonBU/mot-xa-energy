@@ -17,10 +17,10 @@ jobs:
       - name: Version files
         shell: bash
         run: |
-          TAG="v$(tr -dc 0-9 < RELEASE_NUMBER)"
-          echo "${TAG#v}" > version.txt
+          VER="$(tr -d ' \r\n' < RELEASE_NUMBER)"
+          echo "${VER}" > version.txt
           echo "{\"repo\": \"${GITHUB_REPOSITORY}\"}" > app_config.json
-          echo "APP_VER=${TAG#v}" >> "$GITHUB_ENV"
+          echo "APP_VER=${VER}" >> "$GITHUB_ENV"
       - run: pyinstaller --noconfirm mot_xa_energy.spec
       - run: choco install innosetup -y --no-progress
       - run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss'

@@ -761,7 +761,7 @@ def assembly_hover_html(name, etype, films, layers):      # pop-up in the progra
     """Rich text for the pop-up shown while pointing at a preset: the section, the layers and the total R."""
     import html as _h
     lay = [make_layer(l) for l in layers]
-    det = assembly_detail_uri(lay, xa_category(etype) == "walls", 150, 2, 210.0, dark=True)
+    det = assembly_detail_uri(lay, xa_category(etype) == "walls", 150, 2, 210.0, dark=not light())
     tot = element_total_r({"type": etype, "films": films, "layers": lay})
     rows = "".join("<tr><td>%d.&nbsp;</td><td>%s</td><td align='right'>&nbsp;%s</td></tr>" % (
         i + 1, _h.escape(l.get("mat", "")), ("%g mm" % l["t"]) if l.get("t") else "fixed R") for i, l in enumerate(lay))
@@ -2250,7 +2250,7 @@ import base64
 SETTINGS_PATH = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"),
                              "MCP_LightVent", "settings.json")
 PROVIDERS = {"Claude (Anthropic)": "claude-sonnet-5-5", "ChatGPT (OpenAI)": "gpt-4o"}
-SETTINGS = {"online": False, "provider": "Claude (Anthropic)", "api_key": "", "model": "", "theme": "studio", "gh_repo": "", "gh_token": ""}
+SETTINGS = {"online": False, "provider": "Claude (Anthropic)", "api_key": "", "model": "", "theme": "studio", "mode": "dark", "gh_repo": "", "gh_token": ""}
 
 
 # ---------------------------------------------------------------- updates from GitHub Releases (installed .exe only)
@@ -2260,13 +2260,16 @@ def _app_data_file(name):
 
 
 def app_version():
-    """Build number of this installed program (the number in the release tag, e.g. v87 -> 87). 0 when running from the .py file."""
+    """Version of this installed program as numbers, e.g. (1, 0, 1). () when running from the .py file."""
     try:
         with open(_app_data_file("version.txt"), encoding="utf-8") as f:
-            m_ = re.search(r"\d+", f.read())
-            return int(m_.group(0)) if m_ else 0
+            return tuple(int(x) for x in re.findall(r"\d+", f.read()))
     except Exception:
-        return 0
+        return ()
+
+
+def vtext(v):
+    return ".".join(str(x) for x in v) if v else "-"
 
 
 def gh_repo_name():
@@ -2303,12 +2306,12 @@ def gh_latest_release(repo, token, timeout=15):
         raise RuntimeError("GitHub answered %s." % ex.code)
     except Exception as ex:
         raise RuntimeError("Could not reach GitHub: %s" % ex)
-    m_ = re.search(r"\d+", str(d.get("tag_name", "")))
+    m_ = tuple(int(x) for x in re.findall(r"\d+", str(d.get("tag_name", ""))))
     assets = [a for a in d.get("assets", []) if str(a.get("name", "")).lower().endswith("_setup.exe")]
     if not m_ or not assets:
         raise RuntimeError("The latest release has no installer file.")
     a = assets[0]
-    return {"ver": int(m_.group(0)), "tag": d.get("tag_name", ""), "name": a["name"], "asset_id": a["id"], "size": a.get("size", 0),
+    return {"ver": m_, "tag": d.get("tag_name", ""), "name": a["name"], "asset_id": a["id"], "size": a.get("size", 0),
             "notes": (d.get("body") or "").strip()}
 
 
@@ -2365,6 +2368,40 @@ class _GhThread(QThread):
 def studio():
     """True for the flat Dark Studio look (default); False for the older liquid-glass look."""
     return SETTINGS.get("theme", "studio") != "glass"
+
+
+def light():
+    """True when the Dark Studio look is switched to its light version (Appearance menu / top-left button)."""
+    return SETTINGS.get("mode", "dark") == "light" and studio()
+
+
+# dark-theme colours -> light-theme colours (used on the style sheet, and on colours written inline in labels)
+_LIGHT_MAP = [("#16171a", "#f1f2f4"), ("#1f2125", "#ffffff"), ("#1b1d21", "#f8f9fa"), ("#121316", "#ffffff"),
+              ("#262a2f", "#e9ebee"), ("#2a2e34", "#e1e4e8"), ("#30353b", "#d9dde2"), ("#1b1e22", "#cfd4da"),
+              ("#34383e", "#d0d4da"), ("#3a3f46", "#c3c9d0"), ("#4a5058", "#a9b0b8"), ("#565c64", "#98a0a9"),
+              ("#6b7179", "#8f969e"), ("#8a9099", "#6b727b"), ("#9aa0a8", "#5c636b"), ("#eceef0", "#1c1f23"),
+              ("#4a3a1c", "#fff0d2"), ("#ffd98a", "#7a4f00"), ("#c8932f", "#d9a441"), ("#ff8f9c", "#c4161c"),
+              ("#e8e8ec", "#1c1f23"), ("#3fbf6b", "#1b7f3b"), ("#5fd38a", "#1b7f3b"), ("#ff7b8b", "#c4161c")]
+
+
+def _lt(txt):
+    """Make colours written inside a label or style sheet readable on the light theme (white-ish -> dark-ish)."""
+    if not isinstance(txt, str) or not light():
+        return txt
+    if "rgba(255,255,255," in txt or "rgba(255, 255, 255," in txt:
+        txt = txt.replace("rgba(255,255,255,", "rgba(40,44,52,").replace("rgba(255, 255, 255,", "rgba(40, 44, 52,")
+    for a_, b_ in _LIGHT_MAP:
+        if a_ in txt:
+            txt = txt.replace(a_, b_)
+    return txt
+
+
+def light_qss(qss):
+    for a_, b_ in _LIGHT_MAP:
+        qss = qss.replace(a_, b_)
+    # white on the selected tab would vanish on the light card
+    qss = re.sub(r"(QTabBar::tab:selected \{[^}]*?)color: #ffffff;", r"\1color: #111111;", qss)
+    return qss
 ONLINE_NOTE = [""]
 
 
@@ -2552,6 +2589,20 @@ def online_rooms(images, known_tags=None):
 
 
 load_settings()
+
+from PySide6 import QtWidgets as _QtW
+
+
+class QLabel(_QtW.QLabel):
+    def __init__(self, *a, **k):
+        super().__init__(*[_lt(x) for x in a], **k)
+
+    def setText(self, t):
+        super().setText(_lt(t))
+
+
+_orig_setSS = _QtW.QWidget.setStyleSheet
+_QtW.QWidget.setStyleSheet = lambda self, t: _orig_setSS(self, _lt(t))
 
 
 # ---------- floor-plan screenshots: rooms, areas and the windows that belong to them ----------
@@ -3818,6 +3869,8 @@ ICON_SVG = {
 
 
 def icon_svg(name, color="#eceef0", stroke=1.8):
+    if color == "#eceef0" and light():
+        color = "#2a2e34"
     body = ICON_SVG.get(name, ICON_SVG["info"]).replace("currentColor", color)
     return ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="%s" '
             'stroke-width="%s" stroke-linecap="round" stroke-linejoin="round">%s</svg>' % (color, stroke, body))
@@ -4136,8 +4189,8 @@ class GlassCellDelegate(GlassItemDelegate):
             ok = kind == "pass"
             pth = QPainterPath()
             pth.addRoundedRect(r, r.height() / 2, r.height() / 2)
-            painter.fillPath(pth, QColor("#1f3a2a" if ok else "#4a1d24"))
-            painter.setPen(QColor("#5fd38a" if ok else "#ff7b8b"))
+            painter.fillPath(pth, QColor(("#dff3e6" if ok else "#fbe3e6") if light() else ("#1f3a2a" if ok else "#4a1d24")))
+            painter.setPen(QColor(("#1b7f3b" if ok else "#c4161c") if light() else ("#5fd38a" if ok else "#ff7b8b")))
             f = painter.font(); f.setBold(True); f.setPointSizeF(max(7.5, f.pointSizeF() - 1))
             painter.setFont(f)
             painter.drawText(r, Qt.AlignmentFlag.AlignCenter, index.data(Qt.ItemDataRole.DisplayRole))
@@ -4340,8 +4393,8 @@ class OpeningPreview(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         card = QRectF(1, 1, self.width() - 2, self.height() - 2)
         g = QLinearGradient(card.topLeft(), card.bottomRight())
-        g.setColorAt(0, QColor(38, 42, 47, 250) if studio() else QColor(58, 22, 28, 245))
-        g.setColorAt(1, QColor(27, 29, 33, 250) if studio() else QColor(22, 10, 14, 245))
+        g.setColorAt(0, (QColor(255, 255, 255, 250) if light() else QColor(38, 42, 47, 250)) if studio() else QColor(58, 22, 28, 245))
+        g.setColorAt(1, (QColor(236, 238, 241, 250) if light() else QColor(27, 29, 33, 250)) if studio() else QColor(22, 10, 14, 245))
         p.setBrush(QBrush(g))
         p.setPen(QPen(QColor(255, 255, 255, 70), 1.2))
         p.drawRoundedRect(card, 16, 16)
@@ -9553,6 +9606,8 @@ class MainWindow(QMainWindow):
         add(tl, "Online mode (API key)...", self.online_settings)
         add(tl, "Save icon pack (SVG files)...", self.save_icon_pack)
         vm = m.addMenu("Appearance")
+        add(vm, "Switch to dark mode" if light() else "Switch to light mode", self.toggle_mode)
+        vm.addSeparator()
         add(vm, "Dark Studio (flat, crisp)" + ("   \u2713" if studio() else ""), lambda: self.set_theme("studio"))
         add(vm, "Liquid glass (old look)" + ("" if studio() else "   \u2713"), lambda: self.set_theme("glass"))
         m.addSeparator()
@@ -9561,7 +9616,7 @@ class MainWindow(QMainWindow):
         if FROZEN:
             add(m, "Check for updates now", lambda: self.gh_check(manual=True))
             add(m, "Update settings (GitHub)...", self.gh_settings)
-            va_ = add(m, "Version %s" % (app_version() or "-"), lambda: None)
+            va_ = add(m, "Version %s" % vtext(app_version()), lambda: None)
             va_.setEnabled(False)
         m.addSeparator()
         add(m, "Quit", self.close)
@@ -10286,16 +10341,16 @@ class MainWindow(QMainWindow):
                     QMessageBox.information(self, APP_NAME, "Could not check for updates.\n" + err)
                 return
             cur = app_version()
-            if res["ver"] > cur:
+            if res["ver"] > cur and cur:
                 self._gh_new = res
                 self._update_ready = True
-                self.update_btn.setText("\u27F3  Update available (version %d) - click to update" % res["ver"])
+                self.update_btn.setText("\u27F3  Update available (version %s) - click to update" % vtext(res["ver"]))
                 self.update_btn.show()
                 self.update_act.setText("Update available - click to install")
                 if manual:
-                    QMessageBox.information(self, APP_NAME, "Version %d is available (you have %d). Click the red update button at the bottom." % (res["ver"], cur))
+                    QMessageBox.information(self, APP_NAME, "Version %s is available (you have %s). Click the red update button at the bottom." % (vtext(res["ver"]), vtext(cur)))
             elif manual:
-                QMessageBox.information(self, APP_NAME, "You have the latest version (%d)." % cur)
+                QMessageBox.information(self, APP_NAME, "You have the latest version (%s)." % vtext(cur))
         th.done.connect(done)
         th.start()
 
@@ -10312,7 +10367,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, APP_NAME, f"Could not save your work before updating:\n{e}")
             return
         dest = os.path.join(tempfile.gettempdir(), info["name"])
-        dlg = QProgressDialog("Downloading version %d..." % info["ver"], "Cancel", 0, 100, self)
+        dlg = QProgressDialog("Downloading version %s..." % vtext(info["ver"]), "Cancel", 0, 100, self)
         dlg.setWindowModality(Qt.WindowModality.WindowModal)
         dlg.setMinimumDuration(0)
         th = _GhThread("download", gh_repo_name(), SETTINGS.get("gh_token", ""), info["asset_id"], dest, parent=self)
@@ -10425,6 +10480,12 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, APP_NAME, f"Could not save the icons: {e}")
             return
         QMessageBox.information(self, APP_NAME, f"{n} icon files saved in:\n{os.path.join(d, 'MCP_icons')}")
+
+    def toggle_mode(self):
+        SETTINGS["theme"] = "studio"
+        SETTINGS["mode"] = "dark" if light() else "light"
+        save_settings()
+        self.restart_app(seamless=True)
 
     def set_theme(self, name):
         if SETTINGS.get("theme", "studio") == name:
@@ -12412,7 +12473,7 @@ class MainWindow(QMainWindow):
         key = (xa_category(el.get("type", "")) == "walls", tuple(lay))
         c = self.__dict__.setdefault("_thumb_cache", {})
         if key not in c:
-            img = assembly_detail_image(el.get("layers", []), key[0], 84, 2, labels=False, dark=True)
+            img = assembly_detail_image(el.get("layers", []), key[0], 84, 2, labels=False, dark=not light())
             c[key] = QIcon(QPixmap.fromImage(img)) if img is not None else None
         return c[key]
 
@@ -12926,7 +12987,7 @@ class MainWindow(QMainWindow):
                 if tbl.cellWidget(i, 0) is None:
                     continue
                 ls_.append(row_data(i))
-            img = assembly_detail_image(ls_, xa_category(typ.currentText()) == "walls", 190, 2, 220.0, tbl.currentRow(), dark=True)
+            img = assembly_detail_image(ls_, xa_category(typ.currentText()) == "walls", 190, 2, 220.0, tbl.currentRow(), dark=not light())
             if img is None:
                 prev.setPixmap(QPixmap()); prev.setText("Add a layer to see the build-up.")
                 prev_k.setText("")
@@ -12939,7 +13000,7 @@ class MainWindow(QMainWindow):
                 if k_ not in seen:
                     seen.append(k_)
             prev_k.setText("Outside to inside. The layer picked in the list has a red outline.<br>" + "<br>".join(
-                '<span style="background:%s">&nbsp;&nbsp;&nbsp;&nbsp;</span>&nbsp;%s' % (DET_DARK[k_][0] or "#3A3D42", DET_STYLE[k_][2]) for k_ in seen))
+                '<span style="background:%s">&nbsp;&nbsp;&nbsp;&nbsp;</span>&nbsp;%s' % ((DET_STYLE if light() else DET_DARK)[k_][0] or "#3A3D42", DET_STYLE[k_][2]) for k_ in seen))
 
         def recalc(*_a):
             if loading[0]:
@@ -16441,6 +16502,14 @@ def logo_pixmap():
         from PySide6.QtGui import QPixmap
         _logo_pm = QPixmap()
         _logo_pm.loadFromData(base64.b64decode(LOGO_B64), "PNG")
+        if light():      # the white part of the mark would vanish on the light theme
+            im_ = _logo_pm.toImage().convertToFormat(QImage.Format.Format_ARGB32)
+            for yy in range(im_.height()):
+                for xx in range(im_.width()):
+                    c = im_.pixelColor(xx, yy)
+                    if c.alpha() and c.red() > 200 and c.green() > 200 and c.blue() > 200:
+                        im_.setPixelColor(xx, yy, QColor(28, 31, 35, c.alpha()))
+            _logo_pm = QPixmap.fromImage(im_)
     return _logo_pm
 
 
@@ -16675,7 +16744,7 @@ class GlassBackground(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
         if studio():
-            p.fillRect(self.rect(), QColor("#16171a"))
+            p.fillRect(self.rect(), QColor("#f1f2f4" if light() else "#16171a"))
             return
         g = QLinearGradient(0, 0, w, h)
         g.setColorAt(0.0, QColor(10, 10, 13))
@@ -16711,8 +16780,8 @@ class GlassCard(QFrame):
             r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
             path = QPainterPath()
             path.addRoundedRect(r, 14, 14)
-            p.fillPath(path, QColor("#1f2125"))
-            p.setPen(QPen(QColor("#34383e"), 1.2))
+            p.fillPath(path, QColor("#ffffff" if light() else "#1f2125"))
+            p.setPen(QPen(QColor("#d0d4da" if light() else "#34383e"), 1.2))
             p.drawPath(path)
             return
         r = QRectF(self.rect()).adjusted(3, 3, -3, -3)
@@ -16743,7 +16812,7 @@ class GlassCard(QFrame):
 
 def apply_glass_theme(app, win):
     app.setStyle("Fusion")
-    app.setStyleSheet((STUDIO_QSS if studio() else GLASS_QSS).replace("@TICK@", _tick_png()))
+    app.setStyleSheet((light_qss(STUDIO_QSS) if light() else STUDIO_QSS if studio() else GLASS_QSS).replace("@TICK@", _tick_png()))
     app.setWindowIcon(app_icon())
     win.setWindowIcon(app_icon())
     try:
@@ -16766,9 +16835,12 @@ def apply_glass_theme(app, win):
                        "border-radius: 11px; padding: 3px 10px; color: #ffffff; font-weight: 600;")
     if studio():
         pill.setStyleSheet("background: #262a2f; border: 1px solid #3a3f46;"
-                           "border-radius: 11px; padding: 3px 10px; color: #eceef0; font-weight: 600;")
-    spacer = QLabel("")
+                           "border-radius: 11px; padding: 3px 10px; color: #eceef0; font-weight: 600;")  # light mode: colours translated by setStyleSheet
+    spacer = QPushButton("\u263E  Dark" if light() else "\u2600  Light")
     spacer.setFixedWidth(96)
+    spacer.setToolTip("Switch between the dark and the light look")
+    spacer.setCursor(Qt.CursorShape.PointingHandCursor)
+    spacer.clicked.connect(win.toggle_mode)
     mid = QVBoxLayout()
     mid.setSpacing(4)
     mark = QLabel()
