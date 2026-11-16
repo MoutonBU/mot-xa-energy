@@ -15009,6 +15009,54 @@ class MainWindow(QMainWindow):
         self.main_tabs.setCurrentWidget(self.xa_page)
 
     # ---- XA report (one A4 portrait page) ----
+    def _report_cover(self, title, sub, subject=None):
+        """Front page for the PDF reports: logo at the top, then the project, site, owner and who compiled it."""
+        import datetime, html as _h
+        e = lambda x: _h.escape(str(x))
+        rd = {**RD_DEFAULTS, **getattr(self, "rd", {})}
+        RED, DARK = "#C8102E", "#DCDCDC"
+        date = rd.get("date") or datetime.date.today().strftime("%d %B %Y")
+        town = self.xa_town.currentText() if hasattr(self, "xa_town") else ""
+        loc = ""
+        if town in XA_TOWNS:
+            loc = f"{town}, {self.xa_prov.currentText()}  (energy zone {self.xa_zone.currentText()})".replace(" *,", ",")
+        elif hasattr(self, "xa_zone") and self.xa_zone.currentText():
+            loc = f"Energy zone {self.xa_zone.currentText()}"
+        h = (f'<p style="font-size:40pt;">&nbsp;</p>'
+             f'<p align="center"><img src="logo" height="90"></p>'
+             f'<p align="center" style="font-size:11pt; color:#444444;">{e(rd["company"])}</p>'
+             f'<p style="font-size:30pt;">&nbsp;</p>'
+             f'<table width="100%" cellspacing="0" cellpadding="14" border="0"><tr>'
+             f'<td bgcolor="{DARK}" style="color:#222222;"><span style="font-size:24pt; font-weight:bold;">{title}</span><br>'
+             f'<span style="font-size:9pt; color:#555555;">{e(sub)} &nbsp;|&nbsp; {e(date)}</span></td></tr></table>'
+             f'<table width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td bgcolor="{RED}" height="4"></td></tr></table>')
+        if subject:
+            h += (f'<p style="font-size:9pt; color:#666666; margin-top:10px;">SUBJECT</p>'
+                  f'<p style="font-size:15pt; font-weight:bold; color:{RED}; margin-top:0px;">{e(subject)}</p>')
+        h += (f'<p style="font-size:12pt;">&nbsp;</p>'
+              f'<p style="font-size:9pt; color:#666666;">PROJECT</p>'
+              f'<p style="font-size:16pt; font-weight:bold; color:#222222; margin-top:0px;">{e(rd["project"] or "-")}</p>'
+              f'<p style="font-size:9pt; color:#666666;">SITE</p>'
+              f'<p style="font-size:13pt; font-weight:bold; color:#222222; margin-top:0px;">{e(rd["details"] or "-")}</p>')
+        if loc:
+            h += (f'<p style="font-size:9pt; color:#666666;">LOCATION</p>'
+                  f'<p style="font-size:11pt; font-weight:bold; color:#222222; margin-top:0px;">{e(loc)}</p>')
+        h += (f'<p style="font-size:12pt;">&nbsp;</p>'
+              f'<table width="100%" cellspacing="0" cellpadding="3" border="0"><tr>'
+              f'<td width="50%" style="font-size:8.5pt; color:#666666;">PROPERTY OWNER / CLIENT<br>'
+              f'<span style="font-size:12pt; font-weight:bold; color:#222222;">{e(rd["owner"] or "-")}</span></td>'
+              f'<td width="50%" style="font-size:8.5pt; color:#666666;">ARCHITECTURE FIRM<br>'
+              f'<span style="font-size:12pt; font-weight:bold; color:#222222;">{e(rd["architect"] or "-")}</span></td>'
+              f'</tr></table>'
+              f'<p style="font-size:24pt;">&nbsp;</p>'
+              f'<p style="font-size:9pt; color:#666666;">THIS REPORT WAS COMPILED BY</p>'
+              f'<p style="font-size:12pt; font-weight:bold; color:#222222; margin-top:0px;">'
+              f'{e(rd["prepared_by"] or rd["company"])}'
+              f'{(" &nbsp;(Reg. " + e(rd["reg_no"]) + ")") if rd["reg_no"] else ""}</p>')
+        if rd["contact"]:
+            h += f'<p style="font-size:8pt; color:#777777;">{e(rd["contact"])}</p>'
+        return h
+
     def export_subject_pdfs(self, kind, folder=None, quiet=False):
         """Save every subject of a report (walls, roofs, fenestration, lighting ...) as a PDF of its own."""
         import re as _re
@@ -15374,6 +15422,7 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
             frags = [h_ for h_, t_ in zip(frags, frags.tags) if t_ == only or (asm_ and t_ == "AsmIntro")]
             w.setTitle(f"SANS 10400-XA - {only}")
         pages = _pack_pages(mkdoc, ["".join(body)] + list(frags), avail)
+        pages = [(self._report_cover("ENERGY EFFICIENCY<br>REPORT", "SANS 10400-XA", only), 0, None)] + list(pages)
         painter = QPainter(w)
         total = len(pages)
         company = self.rd.get("company", "") or APP_NAME
@@ -15388,6 +15437,8 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
                 painter.setClipRect(QRectF(-5, y0, pw + 10, y1 - y0 + 1))
             _draw_doc_rounded(painter, doc)
             painter.restore()
+            if i == 0:
+                continue
             painter.save()
             painter.setPen(QColor("#9A9A9A"))
             painter.setFont(QFont("Arial", 7))
@@ -16240,7 +16291,9 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
         _use = (s1, s2, s3, s4, s5, s_mc, s_sm, s6, s7)
         if only:
             _use = [x[1] for x in _secs if x[0] == only]
-            pages = []
+            cover.append(f'<p style="font-size:9pt; color:#666666; margin-top:14px;">SUBJECT</p>'
+                         f'<p style="font-size:15pt; font-weight:bold; color:{RED}; margin-top:0px;">{e(only)}</p>')
+            pages = [("cover", "".join(cover), 0, None)]
             w.setTitle(f"Rational design report - {only}")
         frags_all = []
         for sec in _use:
@@ -16666,6 +16719,7 @@ Glazing limit: glazing may not exceed {GLAZE_LIMIT[0]:g}% of the net floor area,
             d_.setPageSize(QSizeF(pw, 1e7))
             return d_
         pages = _pack_pages(mkdoc, list(body), avail)      # real size, no shrinking; long tables run on to the next page
+        pages = [(self._report_cover("LIGHT &amp; VENTILATION<br>REPORT", "SANS 10400-O natural light and ventilation", only), 0, None)] + list(pages)
         painter = QPainter(w)
         company = self.rd.get("company", "") or APP_NAME
         for i, (html_, y0, y1) in enumerate(pages):
@@ -16677,6 +16731,8 @@ Glazing limit: glazing may not exceed {GLAZE_LIMIT[0]:g}% of the net floor area,
                 painter.setClipRect(QRectF(-5, y0, pw + 10, y1 - y0 + 1))
             _draw_doc_rounded(painter, mkdoc(html_))
             painter.restore()
+            if i == 0:
+                continue
             painter.save()
             painter.setPen(QColor("#9A9A9A"))
             painter.setFont(QFont("Arial", 7))
