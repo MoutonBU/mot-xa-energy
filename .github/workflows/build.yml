@@ -1,7 +1,8 @@
 name: Build installer
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+    paths: ["BUILD"]
   workflow_dispatch:
 permissions:
   contents: write
@@ -16,8 +17,7 @@ jobs:
       - name: Version files
         shell: bash
         run: |
-          TAG="${GITHUB_REF_NAME}"
-          [ "${GITHUB_REF_TYPE}" = "tag" ] || TAG="v0"
+          TAG="v$(tr -dc 0-9 < BUILD)"
           echo "${TAG#v}" > version.txt
           echo "{\"repo\": \"${GITHUB_REPOSITORY}\"}" > app_config.json
           echo "APP_VER=${TAG#v}" >> "$GITHUB_ENV"
@@ -27,7 +27,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: { name: installer, path: installer_out/MOT_XA_Energy_Setup.exe }
       - name: Release
-        if: github.ref_type == 'tag'
+        if: github.ref_type == 'branch'
         shell: bash
         env: { GH_TOKEN: "${{ github.token }}" }
-        run: gh release create "$GITHUB_REF_NAME" installer_out/MOT_XA_Energy_Setup.exe --title "Version ${GITHUB_REF_NAME#v}" --notes "MOT XA Energy ${GITHUB_REF_NAME}"
+        run: gh release create "v${APP_VER}" installer_out/MOT_XA_Energy_Setup.exe --target "$GITHUB_SHA" --title "Version ${APP_VER}" --notes "MOT XA Energy build ${APP_VER}"
