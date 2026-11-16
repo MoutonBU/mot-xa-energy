@@ -7,7 +7,7 @@ create extension if not exists pg_net with schema extensions;
 
 insert into public.app_config(key, value) values
   ('resend_key', 're_PASTE_YOUR_RESEND_KEY_HERE'),                                   -- <== EDIT (from resend.com > API Keys)
-  ('mail_from',  'MCP Architecture & Interiors <licence@YOURDOMAIN.co.za>')         -- <== EDIT (an address on your domain)
+  ('mail_from',  'MCP Architecture & Interiors <info@mcparchitecture.co.za>')
 on conflict (key) do update set value = excluded.value;
 
 create or replace function public.send_licence_mail(p_email text, p_key text, p_until date)
