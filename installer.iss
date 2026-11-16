@@ -49,9 +49,7 @@ begin
   begin
     TRichEditViewer(C).Color := PANEL;
     TRichEditViewer(C).Font.Color := TXT;
-  end
-  else if C is TNewProgressBar then
-    TNewProgressBar(C).Color := PANEL;
+  end;
   if C is TWinControl then
     for i := 0 to TWinControl(C).ControlCount - 1 do
       ThemeControl(TWinControl(C).Controls[i]);
