@@ -9,7 +9,6 @@ OutputBaseFilename=MOT_XA_Energy_Setup
 OutputDir=installer_out
 SetupIconFile=mcp_logo.ico
 WizardStyle=modern
-WizardDarkStyle=dark
 WizardImageFile=wiz_big.bmp
 WizardSmallImageFile=wiz_small.bmp
 WizardImageBackColor=$1A1716
