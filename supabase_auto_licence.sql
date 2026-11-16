@@ -1,4 +1,4 @@
--- MOT XA Energy: automatic licences. Run once in Supabase > SQL Editor (after supabase_setup.sql).
+-- MCP Architecture and Interiors XA Energy: automatic licences. Run once in Supabase > SQL Editor (after supabase_setup.sql).
 -- Everyone who creates an account with their email gets a licence key made for them automatically.
 
 create table if not exists public.app_config (key text primary key, value text);

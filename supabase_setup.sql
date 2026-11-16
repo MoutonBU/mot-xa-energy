@@ -1,4 +1,4 @@
--- MOT XA Energy: licence keys. Paste this whole file into Supabase > SQL Editor > New query > Run (once).
+-- MCP Architecture and Interiors XA Energy: licence keys. Paste this whole file into Supabase > SQL Editor > New query > Run (once).
 
 create table if not exists public.licences (
   key         text primary key,

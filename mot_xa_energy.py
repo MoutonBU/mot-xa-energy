@@ -22,7 +22,7 @@ def _script_mtime():
         return 0.0
 
 
-APP_NAME = "MCP Architecture & Interiors - SANS Compliance Suite"
+APP_NAME = "MCP Architecture and Interiors XA Energy"
 
 # Light percentage required by occupancy rule (SANS 10400-O, 4.2.1.1.3)
 RULES = {
@@ -2254,6 +2254,18 @@ SETTINGS = {"online": False, "provider": "Claude (Anthropic)", "api_key": "", "m
 
 
 # ---------------------------------------------------------------- updates from GitHub Releases (installed .exe only)
+def _user_data_dir():
+    """The program's folder in the user's home. The folder used under the old name is renamed, so nothing is lost."""
+    home = os.path.expanduser("~")
+    new, old = os.path.join(home, "MCP_XA_Energy"), os.path.join(home, "MOT_XA_Energy")
+    try:
+        if os.path.isdir(old) and not os.path.exists(new):
+            os.rename(old, new)
+    except Exception:
+        pass
+    return new
+
+
 def _app_data_file(name):
     base = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
     return os.path.join(base, name)
@@ -2296,7 +2308,7 @@ def gh_latest_release(repo, token, timeout=15):
     if not repo:
         raise RuntimeError("No update source is set.")
     req = urllib.request.Request(GH_API + "/repos/%s/releases/latest" % repo,
-                                 headers={"Accept": "application/vnd.github+json", "User-Agent": "MOT-XA-Energy",
+                                 headers={"Accept": "application/vnd.github+json", "User-Agent": "MCP-XA-Energy",
                                           **({"Authorization": "Bearer " + token} if token else {})})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -2320,14 +2332,14 @@ def gh_latest_release(repo, token, timeout=15):
 
 def gh_download_asset(repo, token, asset_id, dest, progress=None, timeout=60):
     """Download a release file of a private repository. The signed link GitHub redirects to must not receive the token."""
-    hdr = {"Accept": "application/octet-stream", "User-Agent": "MOT-XA-Energy", **({"Authorization": "Bearer " + token} if token else {})}
+    hdr = {"Accept": "application/octet-stream", "User-Agent": "MCP-XA-Energy", **({"Authorization": "Bearer " + token} if token else {})}
     url = GH_API + "/repos/%s/releases/assets/%s" % (repo, asset_id)
     op = urllib.request.build_opener(_NoRedirect)
     try:
         resp = op.open(urllib.request.Request(url, headers=hdr), timeout=timeout)
     except urllib.error.HTTPError as ex:
         if ex.code in (301, 302, 303, 307, 308) and ex.headers.get("Location"):
-            resp = urllib.request.urlopen(urllib.request.Request(ex.headers["Location"], headers={"User-Agent": "MOT-XA-Energy"}), timeout=timeout)
+            resp = urllib.request.urlopen(urllib.request.Request(ex.headers["Location"], headers={"User-Agent": "MCP-XA-Energy"}), timeout=timeout)
         else:
             raise RuntimeError("Download refused (%s)." % ex.code)
     total = int(resp.headers.get("Content-Length") or 0)
@@ -9987,7 +9999,7 @@ class MainWindow(QMainWindow):
 
     # ---- recent projects (File menu) ----
     def _recent_file(self):
-        d = os.path.join(os.path.expanduser("~"), "MOT_XA_Energy")
+        d = _user_data_dir()
         try:
             os.makedirs(d, exist_ok=True)
         except OSError:
@@ -10051,7 +10063,7 @@ class MainWindow(QMainWindow):
 
     # ---------- auto-save, crash recovery, revisions ----------
     def _autosave_path(self):
-        d = os.path.join(os.path.expanduser("~"), "MOT_XA_Energy", "autosave")
+        d = os.path.join(_user_data_dir(), "autosave")
         try:
             os.makedirs(d, exist_ok=True)
         except OSError:
@@ -12025,7 +12037,7 @@ class MainWindow(QMainWindow):
             return self.PROV_LAT.get(self.xa_prov.currentText(), 30.0)
 
     def _weather_dir(self):
-        d = os.path.join(os.path.expanduser("~"), "MOT_XA_Energy", "weather")
+        d = os.path.join(_user_data_dir(), "weather")
         os.makedirs(d, exist_ok=True)
         return d
 

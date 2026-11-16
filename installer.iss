@@ -1,15 +1,16 @@
 #define AppVer GetEnv("APP_VER")
 [Setup]
-AppName=MOT XA Energy
+AppId=MOT XA Energy
+AppName=MCP Architecture and Interiors XA Energy
 AppVersion={#AppVer}
-AppVerName=MOT XA Energy {#AppVer}
+AppVerName=MCP Architecture and Interiors XA Energy {#AppVer}
 VersionInfoVersion={#AppVer}.0
 VersionInfoProductVersion={#AppVer}.0
-UninstallDisplayName=MOT XA Energy {#AppVer}
+UninstallDisplayName=MCP Architecture and Interiors XA Energy {#AppVer}
 AppPublisher=MCP Architecture & Interiors
-DefaultDirName={autopf}\MOT XA Energy
-DefaultGroupName=MOT XA Energy
-OutputBaseFilename=MOT_XA_Energy_Setup
+DefaultDirName={autopf}\MCP Architecture and Interiors XA Energy
+DefaultGroupName=MCP Architecture and Interiors XA Energy
+OutputBaseFilename=MCP_XA_Energy_Setup
 OutputDir=installer_out
 SetupIconFile=mcp_logo.ico
 WizardStyle=modern
@@ -22,13 +23,18 @@ CloseApplications=yes
 RestartApplications=no
 PrivilegesRequired=lowest
 [Files]
-Source: "dist\MOT_XA_Energy\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
+Source: "dist\MCP_XA_Energy\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
+[InstallDelete]
+Type: files; Name: "{app}\MOT_XA_Energy.exe"
+Type: files; Name: "{autodesktop}\MOT XA Energy.lnk"
+Type: filesandordirs; Name: "{userprograms}\MOT XA Energy"
+Type: filesandordirs; Name: "{commonprograms}\MOT XA Energy"
 [Icons]
-Name: "{group}\MOT XA Energy"; Filename: "{app}\MOT_XA_Energy.exe"
-Name: "{autodesktop}\MOT XA Energy"; Filename: "{app}\MOT_XA_Energy.exe"
+Name: "{group}\MCP Architecture and Interiors XA Energy"; Filename: "{app}\MCP_XA_Energy.exe"
+Name: "{autodesktop}\MCP Architecture and Interiors XA Energy"; Filename: "{app}\MCP_XA_Energy.exe"
 [Run]
-Filename: "{app}\MOT_XA_Energy.exe"; Parameters: "--after-update"; Flags: nowait postinstall skipifsilent runasoriginaluser
-Filename: "{app}\MOT_XA_Energy.exe"; Parameters: "--after-update"; Flags: nowait runasoriginaluser; Check: WizardSilent
+Filename: "{app}\MCP_XA_Energy.exe"; Parameters: "--after-update"; Flags: nowait postinstall skipifsilent runasoriginaluser
+Filename: "{app}\MCP_XA_Energy.exe"; Parameters: "--after-update"; Flags: nowait runasoriginaluser; Check: WizardSilent
 [Code]
 const
   BGC = $1A1716;      { #16171a }
@@ -99,7 +105,7 @@ procedure InitializeWizard;
 var
   V: TNewStaticText;
 begin
-  WizardForm.Caption := 'MOT XA Energy {#AppVer} - Setup';
+  WizardForm.Caption := 'MCP Architecture and Interiors XA Energy {#AppVer} - Setup';
   V := TNewStaticText.Create(WizardForm);
   V.Parent := WizardForm;
   V.Caption := 'Version {#AppVer}';

@@ -1,4 +1,4 @@
--- MOT XA Energy: the licence key goes out in the sign-up e-mail, sent from YOUR OWN mailbox (no extra service).
+-- MCP Architecture and Interiors XA Energy: the licence key goes out in the sign-up e-mail, sent from YOUR OWN mailbox (no extra service).
 -- Run once in Supabase > SQL Editor (after supabase_setup.sql and supabase_auto_licence.sql).
 
 drop function if exists public.make_auto_licence(uuid, text);

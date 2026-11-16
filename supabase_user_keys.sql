@@ -1,4 +1,4 @@
--- MOT XA Energy: make sure EVERY new account gets its own licence key automatically, and see them all in one table.
+-- MCP Architecture and Interiors XA Energy: make sure EVERY new account gets its own licence key automatically, and see them all in one table.
 -- Safe to run more than once. Supabase > SQL Editor > paste > Run.
 -- (needs supabase_setup.sql and supabase_auto_licence.sql to have been run before)
 
