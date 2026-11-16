@@ -2,6 +2,32 @@
 -- Safe to run more than once. Supabase > SQL Editor > paste > Run.
 -- (needs supabase_setup.sql and supabase_auto_licence.sql to have been run before)
 
+-- 0. the function that makes a key (included here so this one file is enough)
+create table if not exists public.app_config (key text primary key, value text);
+insert into public.app_config(key, value) values ('licence_days', '365') on conflict (key) do nothing;
+drop function if exists public.make_auto_licence(uuid, text);
+drop function if exists public.make_auto_licence(uuid, text, boolean);
+
+-- the licence uses the key the program made for the new person (so the same key is in the e-mail)
+create or replace function public.make_auto_licence(p_user uuid, p_email text, p_key text default null) returns void
+language plpgsql security definer set search_path = public as $$
+declare k text; d int;
+begin
+  if exists (select 1 from public.licence_users where user_id = p_user) then return; end if;
+  select coalesce((select value::int from public.app_config where key = 'licence_days'), 365) into d;
+  k := upper(trim(coalesce(p_key, '')));
+  if k !~ '^MCP-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}$' or exists (select 1 from public.licences where key = k) then
+    k := 'MCP-' || upper(substr(md5(random()::text || clock_timestamp()::text), 1, 4)) || '-'
+                || upper(substr(md5(random()::text || clock_timestamp()::text), 1, 4)) || '-'
+                || upper(substr(md5(random()::text || clock_timestamp()::text), 1, 4));
+  end if;
+  insert into public.licences(key, note, valid_until, max_users)
+  values (k, 'auto: ' || coalesce(p_email, ''), case when d > 0 then current_date + d end, 1);
+  insert into public.licence_users(user_id, key) values (p_user, k);
+end $$;
+revoke all on function public.make_auto_licence(uuid, text, text) from public, anon, authenticated;
+
+
 -- 1. the trigger: the moment an account is created, a key is made and linked to it
 create or replace function public.auto_licence_trigger() returns trigger
 language plpgsql security definer set search_path = public as $$
