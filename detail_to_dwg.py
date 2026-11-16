@@ -79,6 +79,7 @@ RULES = [
     (r"dpm|damp|membrane", "250 µm DPM below slab with 150 mm taped overlaps, turned up at wall (SANS 952, SANS 10400-J)"),
     (r"screed", "Sand-cement screed to falls, uniform thickness, movement joints per specification"),
     (r"iso.?board|polystyrene|eps|xps|pir", "Insulation board or similar, achieving min. R-value per SANS 10400-XA"),
+    (r"stone|granite|sandstone|slate", "Natural stone to specification, bedded in mortar and fixed per Eng. detail"),
     (r"slab|conc|floor|found|footing", "Concrete to Eng. design min. 25 MPa, reinforced, over DPM (SANS 10100-1, SANS 10400-J)"),
     (r"brick|masonry|block|wall", "Masonry wall to SANS 10400-K, brickforce at every 4th course, wall ties per spec"),
     (r"plaster|render|paint|finish", "Plaster and paint finish to specification"),
@@ -117,9 +118,13 @@ def rule_note(layer, pattern, thick=None):
         sz = f"{thick} mm "              # no size in the material name: use what is drawn
         measured = True
     # material (hatch) name first, layer name only as a fallback
+    if name.upper() in ("SOLID", "") and thick and thick < 30 and not size:
+        return f"{layer}: thin solid fill (about {thick} mm) - describe element and specification", True
     for hay in (name.lower(), f"{layer} {name}".lower().replace("_", " ")):
         for rx, note in RULES:
             if re.search(rx, hay):
+                if re.search(r"Concrete to Eng", note) and sz and int(re.match(r"\d+", sz).group()) >= 300:
+                    note = "Concrete foundation to Eng. design min. 25 MPa, founded on competent soil (SANS 10400-H, SANS 10100-1)"
                 if sz and not re.search(r"\d+\s*mm", note):
                     note = sz + note[0].lower() + note[1:]
                 return note, measured       # a size measured from the drawing is flagged VERIFY

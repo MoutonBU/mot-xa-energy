@@ -1,6 +1,6 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.16.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.17.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
@@ -19,6 +19,7 @@ Current version: **1.16.0**. You can read these notes in the program: File > Rel
 - **Updates**: the red "Update available" button and Menu > Check for updates download and install the new version in
   one click, with no token. Your work is saved and restored after the update.
 - **Dark / light mode** switch that changes the interface at once, without restarting. The installer matches the dark theme.
+- **Detail Notes: tested on your real details, remembers your choices (1.17.0):** I ran it on D-6, D-21, D-22, D-23 and D-24 from your Desktop and fixed what showed up: "Cut Stone" was getting a concrete note; a thin solid fill was called "10 mm concrete"; a 595 mm concrete part was written as a slab (now a foundation note, flagged VERIFY). The thickness check also caught a real mismatch in D-6 (insulation named 135 mm but drawn 70 mm). New: when you choose a note for a material name such as AR-SAND or ANSI31, tick "Remember this note" and it is used automatically in every later detail.
 - **Detail Notes: references, checks, templates, undo, schedule (1.16.0):**
   - **Reference column** in the notes list: each note shows the SANS 10400 part (and the NHBRC Home Building Manual where it applies) for its group. These are part-level references only, never clause numbers: confirm the clause in the current edition. A group with no confident reference says "no reference".
   - **Checked by you:** "Approve this wording" in the spec picker, or "Mark selected as checked" in the list, gives a note a green tick everywhere. Edit the wording and the tick goes, so only text you have verified shows as approved.

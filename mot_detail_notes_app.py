@@ -594,6 +594,18 @@ def approve_notes(texts, on=True):
     write_json(OWN_SETTINGS, o)
 
 
+def mapping_get(name):
+    return read_json(OWN_SETTINGS).get("mapping", {}).get(refs.norm(name))
+
+
+def mapping_set(name, note):
+    o = read_json(OWN_SETTINGS)
+    m = o.get("mapping", {})
+    m[refs.norm(name)] = note
+    o["mapping"] = m
+    write_json(OWN_SETTINGS, o)
+
+
 def ref_text(category):
     """-> (short, long) or None"""
     return refs.ref_for(category)
@@ -629,6 +641,10 @@ class SpecDialog(QDialog):
         self.text.setMaximumHeight(90)
         self.text.setAcceptRichText(False)
         v.addWidget(self.text)
+        self.remember = QCheckBox(f"Remember this note for \u201c{name}\u201d in future details" if name else "Remember")
+        self.remember.setChecked(bool(name) and name.upper() not in ("SOLID", "WOOD"))
+        self.remember.setVisible(bool(name))
+        v.addWidget(self.remember)
         self.ref_lbl = QLabel("")
         self.ref_lbl.setWordWrap(True)
         self.ref_lbl.setTextFormat(Qt.TextFormat.RichText)
@@ -1862,6 +1878,8 @@ class Win(QMainWindow):
         self.set_row_note(it, dlg.note)
         if it.get("picked"):
             self.specs[it["picked"]] = {"note": dlg.note, "x": it["point"][0], "y": it["point"][1], "cat": dlg.cat_final}
+            if dlg.remember.isChecked() and name:
+                mapping_set(name, dlg.note)
         elif it.get("user"):
             for el in self.user:
                 if el["uid"] == it["user"]:
@@ -2040,7 +2058,11 @@ class Win(QMainWindow):
             for it in sorted(orig, key=lambda i: -i["area"]):
                 if max(it["bbox"]) * self.mmu < 15:
                     continue                       # specks under 15 mm
-                txt, ver = core.rule_note(it["layer"], it["pattern"], core.measured_mm(it, self.mmu))
+                remembered = mapping_get(core.clean_name(it["pattern"]) or "") if core.clean_name(it["pattern"]).upper() not in ("", "SOLID") else None
+                if remembered:
+                    txt, ver = remembered, False       # a note you chose before for this material name
+                else:
+                    txt, ver = core.rule_note(it["layer"], it["pattern"], core.measured_mm(it, self.mmu))
                 if txt.strip().lower() in seen:    # one callout per identical note
                     continue
                 seen[txt.strip().lower()] = True
