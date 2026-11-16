@@ -4737,6 +4737,33 @@ def cov_block_floor(b):
     return fa if fa > 0 else cov_num(b.get("fp", 0)) * max(cov_num(b.get("storeys", 1)), 1.0)
 
 
+def cov_from_rooms(rooms, walls_pct=15.0, block_name="Building"):
+    """One block (the loaded building, all its units together) with the room area on each level, from the Rooms list. The footprint is the largest level
+    and the floor area is every level added up; both are raised by the wall allowance (net room area -> gross)."""
+    k = 1.0 + cov_num(walls_pct) / 100.0
+    by = {}
+    roofs = []
+    for r in rooms:
+        a = cov_num(getattr(r, "area_m2", 0))
+        if a <= 0:
+            continue
+        nm = r.name or ""
+        if EXTERNAL_RE.search(nm):
+            if re.search(r"carport|veranda|verandah|patio|porch|pergola|stoep|stoop", nm, re.I):
+                roofs.append({"name": nm, "area": round(a, 2), "on": bool(re.search(r"carport", nm, re.I))})
+            continue
+        blk = block_name or "Building"
+        lv = (getattr(r, "floor", "") or "Ground Floor").strip()
+        by.setdefault(blk, {}).setdefault(lv, 0.0)
+        by[blk][lv] += a
+    blocks = []
+    for blk, lv in by.items():
+        levels = [[n, round(a * k, 2)] for n, a in lv.items()]
+        blocks.append({"name": blk, "fp": round(max(a for _, a in levels), 2), "storeys": len(levels),
+                       "floor": round(sum(a for _, a in levels), 2), "on": True, "levels": levels})
+    return blocks, roofs
+
+
 def cov_scenario(st, name, blocks, with_roofs):
     """Coverage and FAR of a set of blocks (and, optionally, the roofs that are ticked) on the stand."""
     stand = cov_num(st.get("stand", 0))
@@ -12217,8 +12244,20 @@ class MainWindow(QMainWindow):
         for lab, wdg in (("Stand (erf) area:", self.cov_stand), ("Maximum coverage:", self.cov_maxcov),
                          ("Maximum FAR:", self.cov_maxfar)):
             top.addWidget(QLabel(lab)); top.addWidget(wdg); top.addSpacing(14)
+        self.cov_walls = QDoubleSpinBox(); self.cov_walls.setRange(0, 60); self.cov_walls.setDecimals(1)
+        self.cov_walls.setSuffix(" %"); self.cov_walls.setValue(15.0)
+        self.cov_walls.setToolTip("Rooms are net areas. This adds the thickness of the walls to get the gross floor "
+                                  "area and footprint. Set it to 0 if your room areas already include the walls.")
+        top.addWidget(QLabel("Add for walls:")); top.addWidget(self.cov_walls)
         top.addStretch()
         lay.addLayout(top)
+        fill = QHBoxLayout()
+        bf = QPushButton("Fill the blocks from the Rooms list")
+        bf.setToolTip("Adds up the rooms on the Rooms tab per level: the footprint is the biggest level, "
+                      "the floor area is all levels together. Add your other blocks by hand.")
+        bf.clicked.connect(lambda: self.cov_fill_from_rooms(True))
+        fill.addWidget(bf); fill.addStretch()
+        lay.addLayout(fill)
         info = QLabel("Coverage = footprint of the buildings (plus the roofs you tick) / stand area.  "
                       "FAR (floor area ratio) = total floor area of all storeys / stand area.  "
                       "Floor area left empty = footprint x storeys.  Use the limits from the zoning scheme / title deed.")
@@ -12263,18 +12302,60 @@ class MainWindow(QMainWindow):
         lay.addLayout(bot)
         for sp in (self.cov_stand, self.cov_maxcov, self.cov_maxfar):
             sp.valueChanged.connect(lambda *_: self._cov_refresh())
+        self.cov_walls.valueChanged.connect(lambda *_: self.cov_fill_from_rooms(False, "walls"))
+        self.main_tabs.currentChanged.connect(lambda i: self.cov_fill_from_rooms(False)
+                                              if self.main_tabs.widget(i) is self.cov_page else None)
         self._cov_busy = False
         self.cov_page = page
         self.main_tabs.addTab(page, "Coverage && FAR")
         self._cov_add_block(); self._cov_refresh()
 
-    def _cov_add_block(self, name=None, fp="", storeys=1, floor="", on=True):
+    def cov_fill_from_rooms(self, force=False, mode="tab"):
+        """Fill the blocks and carport roofs from the Rooms list: always on the button, when the wall allowance
+        changes (if the blocks came from the rooms), and when the tab is opened while the table is still empty."""
+        if getattr(self, "_cov_busy", True):
+            return
+        st = self.cov_state()
+        if not force:
+            if mode == "walls" and not any(b.get("levels") for b in st["blocks"]):
+                return
+            if mode == "tab" and any(cov_num(b["fp"]) > 0 for b in st["blocks"]):
+                return
+        try:
+            rooms = self.read_rooms()
+        except Exception:
+            rooms = []
+        _nm = os.path.splitext(os.path.basename(getattr(self, "ifc_path", "") or ""))[0]
+        _nm = re.sub(r"(?i)^.*?(block\s*\w+).*$", r"\1", _nm).strip() if re.search(r"(?i)block\s*\w+", _nm) else ""
+        blocks, roofs = cov_from_rooms(rooms, self.cov_walls.value(), _nm or "Block A")
+        if not blocks:
+            if force:
+                QMessageBox.information(self, APP_NAME, "There are no rooms yet. Load the IFC or add the rooms on the "
+                                        "Light && Ventilation > Rooms tab first, or type the areas in by hand.")
+            return
+        old_on = {b["name"]: b["on"] for b in st["blocks"]}
+        old_roof_on = {r["name"]: r["on"] for r in st["roofs"]}
+        self._cov_busy = True
+        self.cov_blocks.setRowCount(0)
+        self.cov_roofs.setRowCount(0)
+        self._cov_busy = False
+        for b in blocks:
+            self._cov_add_block(b["name"], b["fp"], b["storeys"], b["floor"], old_on.get(b["name"], True), b["levels"])
+        for r in roofs:
+            self._cov_add_roof(r["name"], r["area"], old_roof_on.get(r["name"], r["on"]))
+        self._cov_refresh()
+
+    def _cov_add_block(self, name=None, fp="", storeys=1, floor="", on=True, levels=None):
         t = self.cov_blocks
         self._cov_busy = True
         r = t.rowCount(); t.insertRow(r)
         vals = [name if name is not None else f"Block {chr(65 + r % 26)}", str(fp), str(storeys), str(floor)]
         for c, v in enumerate(vals):
             t.setItem(r, c, QTableWidgetItem(v))
+        if levels:
+            t.item(r, 0).setData(Qt.ItemDataRole.UserRole, levels)
+            t.item(r, 0).setToolTip("Net room area on each level plus the wall allowance:\n" +
+                                    "\n".join(f"{n}: {a:.2f} m2" for n, a in levels))
         ck = QTableWidgetItem(); ck.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
         ck.setCheckState(Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
         t.setItem(r, 4, ck)
@@ -12301,16 +12382,19 @@ class MainWindow(QMainWindow):
         def on(t, r, c):
             it = t.item(r, c)
             return bool(it and it.checkState() == Qt.CheckState.Checked)
-        return {"stand": self.cov_stand.value(), "max_cov": self.cov_maxcov.value(), "max_far": self.cov_maxfar.value(),
+        return {"walls": self.cov_walls.value(), "stand": self.cov_stand.value(), "max_cov": self.cov_maxcov.value(), "max_far": self.cov_maxfar.value(),
                 "blocks": [{"name": tx(self.cov_blocks, r, 0), "fp": tx(self.cov_blocks, r, 1),
                             "storeys": tx(self.cov_blocks, r, 2), "floor": tx(self.cov_blocks, r, 3),
-                            "on": on(self.cov_blocks, r, 4)} for r in range(self.cov_blocks.rowCount())],
+                            "on": on(self.cov_blocks, r, 4),
+                            "levels": (self.cov_blocks.item(r, 0).data(Qt.ItemDataRole.UserRole) or []) if self.cov_blocks.item(r, 0) else []}
+                           for r in range(self.cov_blocks.rowCount())],
                 "roofs": [{"name": tx(self.cov_roofs, r, 0), "area": tx(self.cov_roofs, r, 1),
                            "on": on(self.cov_roofs, r, 2)} for r in range(self.cov_roofs.rowCount())]}
 
     def cov_load(self, st):
         st = st or {}
         self._cov_busy = True
+        self.cov_walls.setValue(cov_num(st.get("walls", 15)) if "walls" in st else 15.0)
         self.cov_stand.setValue(cov_num(st.get("stand", 0)))
         self.cov_maxcov.setValue(cov_num(st.get("max_cov", 0)))
         self.cov_maxfar.setValue(cov_num(st.get("max_far", 0)))
@@ -12318,7 +12402,8 @@ class MainWindow(QMainWindow):
         self.cov_roofs.setRowCount(0)
         self._cov_busy = False
         for b in st.get("blocks", []):
-            self._cov_add_block(b.get("name", ""), b.get("fp", ""), b.get("storeys", 1), b.get("floor", ""), b.get("on", True))
+            self._cov_add_block(b.get("name", ""), b.get("fp", ""), b.get("storeys", 1), b.get("floor", ""), b.get("on", True),
+                                b.get("levels") or None)
         for r in st.get("roofs", []):
             self._cov_add_roof(r.get("name", ""), r.get("area", ""), r.get("on", True))
         if not st.get("blocks"):
@@ -12397,6 +12482,9 @@ class MainWindow(QMainWindow):
                 rows.append([cell(bn, bold=True), cell(f"{cov_num(b.get('fp')):.2f}", "right"),
                              cell(f"{cov_num(b.get('storeys', 1)):g}", "center"),
                              cell(f"{cov_block_floor(b):.2f}", "right")])
+                for ln, la in (b.get("levels") or []):
+                    rows.append([cell(f"      {ln}", color="#555555"), cell(""), cell(""),
+                                 cell(f"{la:.2f}", "right", "#555555")])
             rows.append([cell("Total buildings", "right", bold=True), cell(f"{r['foot']:.2f}", "right", bold=True), cell(""),
                          cell(f"{r['floor']:.2f}", "right", bold=True)])
             frags.append(table(["Block", "Footprint m2", "Storeys", "Floor area m2"], rows, [40, 20, 15, 25]))
