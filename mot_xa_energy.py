@@ -8240,8 +8240,10 @@ class MainWindow(QMainWindow):
         top.addWidget(QLabel("Occupancy rule:"))
         self.rule_box = QComboBox()
         self.rule_box.addItems(list(RULES.keys()))
+        self.rule_box.currentIndexChanged.connect(self._lv_refresh_soon)
         top.addWidget(self.rule_box)
         self.frame_chk = QCheckBox("Deduct frames:")
+        self.frame_chk.toggled.connect(self._lv_refresh_soon)
         self.frame_chk.setToolTip(
             "Off: sizes are counted as the full opening including frames.\n"
             "On: the frame width (set separately for windows and doors) is taken off every side of each window/door "
@@ -8326,6 +8328,7 @@ class MainWindow(QMainWindow):
                 t.horizontalHeaderItem(c).setToolTip(tip)
             t.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
             t.itemChanged.connect(self._on_sched_changed)
+            t.itemChanged.connect(self._lv_refresh_soon)
             for c in (7, 8, 9):
                 t.setColumnHidden(c, True)
             return t
@@ -8347,6 +8350,7 @@ class MainWindow(QMainWindow):
         self.combined = {}      # open-plan room name -> the rooms it was made from
         self._units_chks = []
         self.room_table = QTableWidget(0, 8)
+        self.room_table.itemChanged.connect(self._lv_refresh_soon)
         self.room_table.horizontalHeader().setSectionsClickable(True)
         self.room_table.horizontalHeader().setSortIndicatorShown(False)
         self.room_table.horizontalHeader().sectionClicked.connect(lambda c: self._sort_rooms(c))
@@ -8533,12 +8537,14 @@ class MainWindow(QMainWindow):
                 box = QComboBox()
                 box.addItems(["Door"] if is_door else ["Window", "Skylight"])
                 box.setCurrentText(str(v))
+                box.currentIndexChanged.connect(self._lv_refresh_soon)
                 T.setCellWidget(r, c, box)
             elif c == 6:
                 sb = QComboBox()
                 sb.addItems(STYLE_LABELS)
                 sb.setCurrentText(str(v) if str(v) in STYLE_LABELS else "Custom")
                 sb.currentIndexChanged.connect(lambda _i, b=sb: self._style_changed(b))
+                sb.currentIndexChanged.connect(self._lv_refresh_soon)
                 T.setCellWidget(r, c, sb)
             else:
                 T.setItem(r, c, QTableWidgetItem(str(v)))
@@ -8616,12 +8622,14 @@ class MainWindow(QMainWindow):
         self._sync_tag_button(r)
         chk = QCheckBox()
         chk.setChecked(bool(values[3]))
+        chk.stateChanged.connect(self._lv_refresh_soon)
         self.room_table.setCellWidget(r, 3, chk)
         art = QCheckBox()
         art.setToolTip("Accept artificial lighting if the window is smaller than the natural "
                        "light minimum (usually bathrooms/toilets). Confirm with your council.")
         art.setChecked(bool(values[4]) if len(values) > 4
                        else bool(WET_ROOM_RE.search(str(values[0]))))
+        art.stateChanged.connect(self._lv_refresh_soon)
         self.room_table.setCellWidget(r, 4, art)
         fl = values[5] if len(values) > 5 and values[5] else self._current_floor()
         if fl not in self.floors:
@@ -9416,7 +9424,7 @@ class MainWindow(QMainWindow):
                               (self.room_table.item(r, 7).text().strip() if self.room_table.item(r, 7) else "")))
         return rooms
 
-    def run_check(self):
+    def run_check(self, *_a, goto=True):
         try: self._xa_autofill()
         except Exception: pass
         sched = self.read_schedule()
@@ -9496,7 +9504,32 @@ class MainWindow(QMainWindow):
                              + "   ".join(per) + "\n" + glazing_summary(self.results))
         self._fill_house_table()
         self._fill_assignments(rooms, sched)
-        self._goto_lv(3)
+        if goto:
+            self._goto_lv(3)
+
+    def _lv_refresh_soon(self, *_a):
+        """After any change to the windows, doors, rooms or the rule: update the PASS / FAIL results on their own
+        (once a check has been run). Waits a moment so typing is not interrupted."""
+        if not getattr(self, "results", None):
+            return
+        tm = self.__dict__.get("_lv_timer")
+        if tm is None:
+            tm = self._lv_timer = QTimer(self)
+            tm.setSingleShot(True)
+            tm.timeout.connect(self._lv_refresh)
+        tm.start(350)
+
+    def _lv_refresh(self):
+        t = self.result_table
+        sb = t.verticalScrollBar()
+        pos, row = sb.value(), t.currentRow()
+        try:
+            self.run_check(goto=False)
+        except Exception:
+            return
+        sb.setValue(pos)
+        if 0 <= row < t.rowCount():
+            t.setCurrentCell(row, 0)
 
     def _show_assignments(self):
         if self._assign_dialog is None:
