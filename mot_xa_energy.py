@@ -2280,7 +2280,7 @@ def gh_repo_name():
                 return r
     except Exception:
         pass
-    return (SETTINGS.get("gh_repo") or "").strip()
+    return (SETTINGS.get("gh_repo") or "").strip() or "MoutonBU/mot-xa-energy-releases"
 
 
 GH_API = "https://api.github.com"
@@ -2294,7 +2294,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 def gh_latest_release(repo, token, timeout=15):
     """The newest release of a (private) repository: {'ver', 'tag', 'name', 'asset_id', 'size', 'notes'}. Raises RuntimeError with a plain message."""
     if not repo:
-        raise RuntimeError("No GitHub repository is set (Menu > Update settings).")
+        raise RuntimeError("No update source is set.")
     req = urllib.request.Request(GH_API + "/repos/%s/releases/latest" % repo,
                                  headers={"Accept": "application/vnd.github+json", "User-Agent": "MOT-XA-Energy",
                                           **({"Authorization": "Bearer " + token} if token else {})})
@@ -2303,9 +2303,9 @@ def gh_latest_release(repo, token, timeout=15):
             d = json.loads(r.read().decode("utf-8"))
     except urllib.error.HTTPError as ex:
         if ex.code in (401, 403):
-            raise RuntimeError("GitHub refused the token (check it in Menu > Update settings).")
+            raise RuntimeError("The update server refused the request. Try again later.")
         if ex.code == 404:
-            raise RuntimeError("No release found. For a private repository the token is needed (Menu > Update settings).")
+            raise RuntimeError("No update has been published yet.")
         raise RuntimeError("GitHub answered %s." % ex.code)
     except Exception as ex:
         raise RuntimeError("Could not reach GitHub: %s" % ex)
@@ -9755,7 +9755,7 @@ class MainWindow(QMainWindow):
         add(m, "Sign out (ask for the password next time)", self.sign_out)
         if FROZEN:
             add(m, "Check for updates now", lambda: self.gh_check(manual=True))
-            add(m, "Update settings (GitHub)...", self.gh_settings)
+            add(m, "Check for updates...", self.gh_settings)
             va_ = add(m, "Version %s" % vtext(app_version()), lambda: None)
             va_.setEnabled(False)
         m.addSeparator()
@@ -10455,17 +10455,7 @@ class MainWindow(QMainWindow):
             self.update_btn.show()
 
     def gh_settings(self):
-        repo, ok = QInputDialog.getText(self, APP_NAME, "GitHub repository that holds the releases (owner/name):", text=gh_repo_name())
-        if not ok:
-            return
-        tok, ok = QInputDialog.getText(self, APP_NAME, "GitHub token with read access to that repository\n(Settings > Developer settings > Fine-grained tokens > Contents: Read-only).\nLeave blank to keep the saved one.",
-                                       QLineEdit.EchoMode.Password)
-        if not ok:
-            return
-        SETTINGS["gh_repo"] = repo.strip()
-        if tok.strip():
-            SETTINGS["gh_token"] = tok.strip()
-        save_settings()
+        """Menu > Check for updates: no token, no questions. The releases are public (the source code is not)."""
         self._gh_next = 0.0
         self.gh_check(manual=True)
 
