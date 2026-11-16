@@ -6836,6 +6836,9 @@ LT_DEFAULT_RULES = [
     ["Laundry, stores, garage", "laundry|utility|store|garage|linen|cupboard|closet|wardrobe|dress|cellar|plant|meter|bin", 1.0, 7.0, 6.0],
     ["Covered outdoor (patio, stoep)", "patio|stoep|veranda|verandah|balcony|porch|deck|braai|carport|terrace", 3.0, 7.0, 6.0],
     ["All other rooms", ".*", 3.0, 7.0, 5.0]]
+# SANS 10400-XA:2021 table 12: maximum lighting power density by occupancy class (W per m2)
+LT_LPD_TABLE = {"A1": 2, "A2": 8, "A3": 10, "A4": 4, "C1": 10, "C2": 4, "E1": 4, "E2": 8, "E3": 8, "E4": 8, "F1": 20,
+                "F2": 8, "F3": 8, "G1": 8, "H1": 4, "H2": 4, "H3": 4, "H4": 4, "H5": 4}
 LT_LPD = 4.0     # SANS 10400-XA:2021 table 12: maximum lighting power density for H2, H3 and H4 (W per m2 of net floor area)
 LT_EXT_PRESETS = [("Door or entrance light", 7.0, 4.0), ("Security / flood light", 20.0, 10.0), ("Garden or path light", 5.0, 8.0),
                   ("Driveway or parking light", 10.0, 10.0), ("Patio / stoep light", 7.0, 4.0)]
@@ -13869,7 +13872,7 @@ class MainWindow(QMainWindow):
         nfa = sum(r.area_m2 for r in self.xa_rooms() if not excluded_reason(r.name))
         load_w = sum(r["n"] * r["w"] for r in rows) + sum(e["n"] * e["w"] for e in self._lt_ext)
         led = self.lt_lamp.currentIndex() in (0, 1)
-        return {"nfa": nfa, "allow_w": LT_LPD * nfa, "load_w": load_w, "led": led, "kwh_m2": self.lt_kwh_m2.value(),
+        return {"nfa": nfa, "allow_w": self._lt_lpd() * nfa, "load_w": load_w, "led": led, "kwh_m2": self.lt_kwh_m2.value(),
                 "lights": sum(r["n"] for r in rows), "ext_lights": sum(e["n"] for e in self._lt_ext),
                 "load_kw": load_w / 1000.0,
                 "inside_kwh": inn, "ext_kwh": ext, "total_kwh": inn + ext, "day_kwh": (inn + ext) / 365.0}
@@ -14045,7 +14048,7 @@ class MainWindow(QMainWindow):
         t = self.lt_totals()
         ok_ = t["load_w"] <= t["allow_w"] or t["led"]
         self.lt_lbl.setText(f"<b>Lighting and power:</b> connected load {t['load_w']:.0f} W against {t['allow_w']:.0f} W allowed "
-                            f"(4 W/m\u00b2 x {t['nfa']:.1f} m\u00b2): <span style='color:{'#6fd08c' if ok_ else '#ff6b6b'}'><b>{'COMPLIANT' if ok_ else 'NOT COMPLIANT'}</b></span>"
+                            f"({self._lt_lpd():g} W/m\u00b2 x {t['nfa']:.1f} m\u00b2): <span style='color:{'#6fd08c' if ok_ else '#ff6b6b'}'><b>{'COMPLIANT' if ok_ else 'NOT COMPLIANT'}</b></span>"
                             + ("" if t["load_w"] <= t["allow_w"] else " (LED / CFL lamps are deemed to comply, clause 6.2.2)" if t["led"] else "") + "<br>"
                             f"{t['lights']} lights inside + {t['ext_lights']} exterior; connected load {t['load_kw']:.2f} kW; "
                             f"{t['inside_kwh']:,.0f} kWh a year inside + {t['ext_kwh']:,.0f} kWh a year exterior = <b>{t['total_kwh']:,.0f} kWh a year "
@@ -14121,7 +14124,7 @@ class MainWindow(QMainWindow):
         else:
             st_w = cell("NOT compliant", "center", badc, True)
         srows = [
-            [cell("Allowable - Max. Energy Demand:", bold=True), cell(f"{t['allow_w']:.1f} W (4 W/m2 x {t['nfa']:.1f} m2, table 12)"), cell("", "center")],
+            [cell("Allowable - Max. Energy Demand:", bold=True), cell(f"{t['allow_w']:.1f} W ({self._lt_lpd():g} W/m2 x {t['nfa']:.1f} m2, table 12)"), cell("", "center")],
         ]
         if t["kwh_m2"] > 0:
             allow_k = t["kwh_m2"] * t["nfa"]
@@ -14144,7 +14147,7 @@ class MainWindow(QMainWindow):
             srows.append([cell("Check for each unit (inside lights only; exterior lights are counted above):", bold=True, bg="#E6E6E6"),
                           cell("", bg="#E6E6E6"), cell("", bg="#E6E6E6")])
             for g, (nfa_g, w_g) in grp.items():
-                allow_g = LT_LPD * nfa_g
+                allow_g = self._lt_lpd() * nfa_g
                 ok_g = w_g <= allow_g
                 srows.append([cell(f"{g} ({nfa_g:.1f} m2)", bold=True), cell(f"{w_g:.0f} W of {allow_g:.1f} W allowed"),
                               cell("Compliant" if ok_g else ("Compliant (deemed, clause 6.2.2)" if t["led"] else "NOT compliant"), "center",
@@ -15531,6 +15534,14 @@ class MainWindow(QMainWindow):
         if rd["contact"]:
             h += f'<p style="font-size:8pt; color:#777777;">{e(rd["contact"])}</p>'
         return h
+
+    def _lt_lpd(self):
+        """Allowed lighting power density (W/m2) for the occupancy class chosen in the building details."""
+        try:
+            code = self.xa_occ.currentText().split(" - ")[0].strip()
+        except Exception:
+            code = ""
+        return float(LT_LPD_TABLE.get(code, LT_LPD))
 
     def export_subject_pdfs(self, kind, folder=None, quiet=False):
         """Save every subject of a report (walls, roofs, fenestration, lighting ...) as a PDF of its own."""
