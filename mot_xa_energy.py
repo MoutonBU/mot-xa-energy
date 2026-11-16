@@ -12338,6 +12338,7 @@ class MainWindow(QMainWindow):
             t_.horizontalHeader().setStretchLastSection(True)
             t_.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
             t_.setMinimumHeight(h_)
+            t_.verticalHeader().setDefaultSectionSize(36)
             t_.itemChanged.connect(lambda *_: self._cov_refresh())
         for lab, t_, add_, ph in (("Blocks (buildings)", self.cov_blocks, self._cov_add_block, "Add block"),
                                   ("Carports and other roofs (optional extra for the coverage)", self.cov_roofs,
@@ -17421,7 +17422,7 @@ QLineEdit, QPlainTextEdit, QTextEdit, QDoubleSpinBox, QSpinBox { background: rgb
     selection-background-color: rgba(255,50,64,170); }
 QLineEdit:focus, QPlainTextEdit:focus, QDoubleSpinBox:focus, QSpinBox:focus {
     border: 1px solid rgba(255,90,102,235); background: rgba(0,0,0,95); }
-QTableWidget QLineEdit { border-radius: 6px; background: rgba(28,28,34,245); }
+QTableWidget QLineEdit { border-radius: 6px; background: rgba(28,28,34,245); color: #eceef0; padding: 0px 6px; min-height: 26px; }
 QComboBox { background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
     stop:0 rgba(255,255,255,70), stop:1 rgba(255,255,255,26));
     border: 1px solid rgba(255,255,255,100); border-radius: 12px; padding: 5px 14px; }
@@ -17509,7 +17510,7 @@ QTableCornerButton::section { background: #1f2125; border: none; }
 QLineEdit, QPlainTextEdit, QTextEdit, QDoubleSpinBox, QSpinBox { background: #121316; border: 1px solid #34383e;
     border-radius: 8px; padding: 5px 10px; selection-background-color: #d8132b; }
 QLineEdit:focus, QPlainTextEdit:focus, QDoubleSpinBox:focus, QSpinBox:focus { border: 1px solid #d8132b; }
-QTableWidget QLineEdit { border-radius: 5px; background: #121316; }
+QTableWidget QLineEdit, QTableWidget QSpinBox, QTableWidget QDoubleSpinBox { border-radius: 5px; background: #121316; color: #eceef0; padding: 0px 6px; min-height: 26px; }
 QComboBox { background: #262a2f; border: 1px solid #3a3f46; border-radius: 9px; padding: 5px 14px; }
 QComboBox:hover { background: #30353b; }
 QComboBox::drop-down { border: none; width: 24px; }
