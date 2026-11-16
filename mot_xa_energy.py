@@ -17157,8 +17157,15 @@ def sb_refresh(refresh_token):
     return _sb_pack(_sb("POST", "/auth/v1/token?grant_type=refresh_token", {"refresh_token": refresh_token}))
 
 
-def sb_signup(name, email, pw):
-    _sb("POST", "/auth/v1/signup", {"email": email.strip().lower(), "password": pw, "data": {"name": name.strip()}})
+def new_licence_key():
+    import secrets
+    return "MCP-" + "-".join(secrets.token_hex(2).upper() for _ in range(3))
+
+
+def sb_signup(name, email, pw, key=""):
+    """Creates the account. The licence key is made here and sent along, so the service can e-mail it (from your own mailbox)."""
+    _sb("POST", "/auth/v1/signup", {"email": email.strip().lower(), "password": pw,
+                                    "data": {"name": name.strip(), "licence_key": key}})
 
 
 def sb_send_code(email):
@@ -17369,8 +17376,17 @@ class LoginDialog(QDialog):
                 if not self.f_name.text().strip():
                     self.err.setText("Enter your name.")
                     return
-                sb_signup(self.f_name.text(), em, pw)          # the service issues the licence by itself
-                u = sb_login(em, pw)
+                sb_signup(self.f_name.text(), em, pw, new_licence_key())     # the service issues the licence by itself
+                try:
+                    u = sb_login(em, pw)
+                except SbError as ex:
+                    if "confirm" in str(ex).lower():                          # the e-mail with the key and a confirm link is on its way
+                        QMessageBox.information(self, APP_NAME,
+                                                "Your account was created.\n\nWe sent an e-mail with your licence key and a link to "
+                                                "confirm your address. Click the link, then sign in here.")
+                        self.set_mode("login")
+                        return
+                    raise
                 self._finish_login(u, pw)
             else:
                 sb_reset(em, self.f_rec.text(), pw)

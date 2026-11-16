@@ -1,0 +1,10 @@
+<div style="font-family:Arial,Helvetica,sans-serif;max-width:520px;margin:auto;color:#1c1f23">
+  <h2 style="margin:0 0 4px">MCP Architecture &amp; Interiors</h2>
+  <div style="color:#5c636b;margin-bottom:22px">SANS Compliance Suite</div>
+  <p>Welcome{{ if .Data.name }}, {{ .Data.name }}{{ end }}.</p>
+  <p>Your licence key:</p>
+  <p style="font-size:22px;letter-spacing:2px;font-weight:bold;background:#f1f2f4;padding:14px 18px;border-radius:8px;display:inline-block">{{ .Data.licence_key }}</p>
+  <p>Please confirm your e-mail address, then sign in to the program with your e-mail and password:</p>
+  <p><a href="{{ .ConfirmationURL }}" style="background:#d8132b;color:#ffffff;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:bold;display:inline-block">Confirm my e-mail</a></p>
+  <p style="color:#8f969e;font-size:12px;margin-top:28px">Keep this e-mail for your records.<br>MCP Architecture &amp; Interiors</p>
+</div>
