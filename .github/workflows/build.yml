@@ -1,0 +1,33 @@
+name: Build installer
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11", cache: pip }
+      - run: pip install -r requirements.txt
+      - name: Version files
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          [ "${GITHUB_REF_TYPE}" = "tag" ] || TAG="v0"
+          echo "${TAG#v}" > version.txt
+          echo "{\"repo\": \"${GITHUB_REPOSITORY}\"}" > app_config.json
+          echo "APP_VER=${TAG#v}" >> "$GITHUB_ENV"
+      - run: pyinstaller --noconfirm mot_xa_energy.spec
+      - run: choco install innosetup -y --no-progress
+      - run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss'
+      - uses: actions/upload-artifact@v4
+        with: { name: installer, path: installer_out/MOT_XA_Energy_Setup.exe }
+      - name: Release
+        if: github.ref_type == 'tag'
+        shell: bash
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: gh release create "$GITHUB_REF_NAME" installer_out/MOT_XA_Energy_Setup.exe --title "Version ${GITHUB_REF_NAME#v}" --notes "MOT XA Energy ${GITHUB_REF_NAME}"

@@ -1,0 +1,9 @@
+PySide6
+numpy
+ifcopenshell
+opencv-python-headless
+shapely
+rapidocr_onnxruntime
+onnxruntime
+pymupdf
+pyinstaller

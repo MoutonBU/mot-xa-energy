@@ -1,0 +1,16884 @@
+import sys, json, csv, re, os, tempfile, html
+from dataclasses import dataclass
+from PySide6.QtWidgets import (
+    QGroupBox, QListWidgetItem, QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
+    QTableWidget, QTableWidgetItem, QPushButton, QLabel, QComboBox, QSplitter, QSplitterHandle,
+    QFileDialog, QMessageBox, QHeaderView, QCheckBox, QProgressDialog, QDialog,
+    QPlainTextEdit, QDoubleSpinBox, QInputDialog, QStyledItemDelegate, QSpinBox,
+    QScrollArea, QGridLayout, QLineEdit, QDialogButtonBox, QMenu, QListWidget, QToolTip
+)
+from PySide6.QtGui import (QColor, QAction, QImage, QPainter, QLinearGradient, QRadialGradient,
+                           QPen, QBrush, QPainterPath, QPolygonF)
+from PySide6.QtCore import (Qt, QThread, Signal, QBuffer, QByteArray, QIODevice, QTimer, QProcess,
+                            QRectF, QPointF, QSize, QObject, QEvent, QPoint)
+
+FROZEN = bool(getattr(sys, "frozen", False))
+
+
+def _script_mtime():
+    try:
+        return os.path.getmtime(os.path.abspath(__file__))
+    except Exception:
+        return 0.0
+
+
+APP_NAME = "MCP Architecture & Interiors - SANS Compliance Suite"
+
+# Light percentage required by occupancy rule (SANS 10400-O, 4.2.1.1.3)
+RULES = {
+    "Standard (10% light)": 10.0,
+    "Cat 1 - F2 / H3 / H4 (5% light)": 5.0,
+}
+VENT_PERCENT = 5.0
+MIN_LIGHT_M2 = 0.2
+
+
+GLAZE_LIMIT = [20.0]     # max glazing as % of net floor area before a rational design is needed
+SKIP_UNGLAZED = [True]   # doors with no glass are internal: not imported, not calculated
+
+
+@dataclass
+class Opening:
+    tag: str
+    width_mm: float
+    height_mm: float
+    glazed_pct: float
+    openable_pct: float
+    kind: str = "Window"
+    style: str = "Custom"
+    sash_w_mm: float = 0.0      # size of ONE opening sash/leaf (clear opening)
+    sash_h_mm: float = 0.0
+    sash_qty: float = 1.0       # how many such sashes this window has
+    frame_mm: float = 0.0       # frame width deducted on every side (0 = opening incl. frame)
+    sched_qty: float = 1.0      # how many of this type the schedule lists (information only)
+    glazed_area_m2: float = 0.0  # 'Total Glazed Area' from the schedule; beats the Glazed %
+
+    @property
+    def counts(self):
+        """Only glazed doors (outer-wall glass doors) count. A door with no glass is an
+        internal door and is left out of both the light and the ventilation sums."""
+        return ((not SKIP_UNGLAZED[0]) or self.kind != "Door"
+                or self.glazed_pct > 0 or self.glazed_area_m2 > 0)
+
+    @property
+    def area_m2(self):
+        return (self.width_mm / 1000.0) * (self.height_mm / 1000.0)
+
+    @property
+    def clear_m2(self):
+        """Area inside the frame (equals area_m2 when no frame is deducted)."""
+        f = self.frame_mm
+        w = max(self.width_mm - 2 * f, 0.0)
+        h = max(self.height_mm - 2 * f, 0.0)
+        return (w / 1000.0) * (h / 1000.0)
+
+    @property
+    def glazed_m2(self):
+        if self.glazed_area_m2 > 0:
+            # taken straight from the drawing's schedule - the frame is already left out
+            return min(self.glazed_area_m2, self.area_m2)
+        return self.clear_m2 * self.glazed_pct / 100.0
+
+    @property
+    def openable_m2(self):
+        # A real opening size beats a percentage: e.g. a 1000 x 1800 side-hung sash.
+        if self.sash_w_mm > 0 and self.sash_h_mm > 0:
+            f = self.frame_mm
+            sw = max(self.sash_w_mm - 2 * f, 0.0) / 1000.0
+            sh = max(self.sash_h_mm - 2 * f, 0.0) / 1000.0
+            return min(self.clear_m2, self.sash_qty * sw * sh)
+        if self.glazed_area_m2 > 0:
+            # the schedule's glass area is known: the opening share is a share of the GLASS
+            return min(self.glazed_m2 * self.openable_pct / 100.0, self.clear_m2)
+        return self.clear_m2 * self.openable_pct / 100.0
+
+
+@dataclass
+class Room:
+    name: str
+    area_m2: float
+    tags: str = ""
+    internal: bool = False
+    artificial_light: bool = False   # accept artificial lighting instead of natural light
+    floor: str = "Ground Floor"
+    unit: str = ""                   # flat / townhouse / unit name (used when the building has several units)
+    facing: str = ""                 # side of the plan its windows face, e.g. "R" or "T;W2=B" (see parse_facing)
+
+
+UNIT_MODE = [False]      # True: results and energy checks are done per unit instead of per floor
+
+
+def unit_label(unit):
+    """'U1' -> 'Unit 1' (U stands for unit); other names are left as typed."""
+    u = (unit or "").strip()
+    m = re.fullmatch(r"[Uu]\s*[-_.]?\s*(\d+)", u)
+    return f"Unit {m.group(1)}" if m else u
+
+
+def room_group(floor, unit):
+    """The group a room is totalled in: its unit when the building has several units, otherwise its floor."""
+    return (unit_label(unit) or "No unit") if UNIT_MODE[0] else floor
+
+
+WET_ROOM_RE = re.compile(r"\b(bath|bathroom|bathfoom|toilet|wc|shower|ensuite|en-suite|powder|cloak)", re.I)
+
+
+def parse_tags(text):
+    """Turn 'W01:2, D01' into {'W01': 2, 'D01': 1}."""
+    result = {}
+    for part in text.replace(";", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if ":" in part:
+            tag, qty = part.split(":", 1)
+            try:
+                q = float(qty)
+            except ValueError:
+                q = 1
+        else:
+            tag, q = part, 1
+        tag = tag.strip().upper()
+        result[tag] = result.get(tag, 0) + q
+    return result
+
+
+def glazing_summary(results):
+    """How many glazed windows/doors there are, how much glass, and which rooms need a rational design."""
+    nw = sum(r["n_win"] for r in results)
+    nd = sum(r["n_door"] for r in results)
+    glz = sum(r["glazed"] for r in results)
+    flr = sum(r["area"] for r in results)
+    over = [r["room"] for r in results if not r["glaze_ok"]]
+    txt = (f"Glazing: {nw:g} glazed window(s) + {nd:g} glazed door(s) = {glz:.2f} m2 on {flr:.2f} m2 of floor "
+           f"({(glz / flr * 100 if flr else 0):.1f}%, limit {GLAZE_LIMIT[0]:g}% per room)   |   ")
+    txt += ("Rational design needed for: " + ", ".join(over)) if over else "No room exceeds the glazing limit."
+    return txt
+
+
+# --------------------------------------------------------------------------
+# SANS 10400-XA (energy efficiency) - envelope data and calculations
+# Figures: SANS 10400-XA:2021 as summarised in the TIPSA thermal insulation guide
+# (walls, roofs, floors, pipes) and SANS 204:2011 Table 5 (fenestration constants).
+# Always confirm against the published standard before submitting to a council.
+# --------------------------------------------------------------------------
+XA_ZONES = ["1", "2", "3", "4", "5", "5H", "6", "7"]
+XA_PROVINCES = {   # SANS 10400-XA:2021 Annex C, Table C.1 (province -> {town: energy zone})
+    'Eastern Cape': {
+        'Aberdeen': '1', 'Adelaide': '2', 'Adendorp': '1', 'Addo': '5', 'Algoa Bay': '5', 'Alice': '4',
+        'Alicedale': '4', 'Aliwal North': '2', 'Baroe': '1', 'Barkly East': '6', 'Bathurst': '5', 'Bedford': '2',
+        'Bisho': '4', 'Bizana': '2', 'Burgersdorp': '6', 'Butterworth': '4', 'Cathcart': '2', 'Cedarville': '6',
+        'Cookhouse': '2', 'Cradock': '2', 'Darlington': '2', 'Dimabaza': '4', 'Dordrecht': '6', 'East London': '5',
+        'Elliot': '6', 'Elliotdale': '5', 'Engcobo': '2', 'Fort Beaufort': '4', 'Gamtoos': '4', 'Gatyana': '5',
+        'Gcuwa': '4', 'Graaff-Reinet': '1', 'Grahamstown': '4', 'Groot-Kei': '5', 'Idutywa': '4', 'Jamestown': '6',
+        'Kendrew': '5', "King William's Town": '4', 'Kirkwood': '5', 'Klipplaat': '5', 'Kompasberg': '6',
+        'Kraai': '1', 'Kruisfontein': '4', 'Kwa-Nobuhle': '4', 'Kwabhaca': '2', 'Lady Grey': '6', 'Libode': '4',
+        'Maclear': '2', 'Matatiele': '6', 'Maxesibenj': '2', 'Mbashe': '2', 'Mdantsane': '5',
+        'Middelburg (Eastern Cape)': '2', 'Molteno': '6', 'Mount Fletcher': '6', 'Mqanduli': '5', 'Patensie': '4',
+        'Peddie': '5', 'Port Alfred': '5', 'Port Elizabeth': '4', 'Port St Johns': '5H', 'Qumbu': '2',
+        'Queenstown': '2', 'Riebeek-Oos': '5', 'Rosmead': '2', 'Tarkastad': '2', 'Tsolo': '2', 'Ugie': '2',
+        'Uitenhage': '4', 'Umtata': '4', 'Umzimvubu': '2', 'Venterstad': '1', 'Willowmore': '2', 'Xora': '5',
+    },
+    'Free State': {
+        'Allanridge': '1', 'Arlington': '2', 'Bethlehem': '2', 'Bethulie': '1', 'Bloemfontein': '1', 'Boshof': '1',
+        'Bothaville': '1', 'Brandfort': '1', 'Bultfontein': '1', 'Clocolan': '2', 'Dealesville': '1',
+        'Dewetsdorp': '2', 'Edenville': '2', 'Erfenisdam': '1', 'Fauresmith': '1', 'Ficksburg': '2',
+        'Fouriesburg': '6', 'Frankfort': '2', 'Harrismith': '2', 'Heilbron': '2', 'Hennenman': '1',
+        'Hertzogville': '1', 'Hoopstad': '1', 'Jagersfontein': '1', 'Kestell': '1', 'Koffiefontein': '1',
+        'Koppies': '1', 'Luckhoff': '1', 'Mangaung': '1', 'Marquard': '2', 'Memel': '2', 'Odendaalsrus': '1',
+        'Parys': '1', 'Petrus Steyn': '2', 'Petrusburg': '1', 'Philippolis': '1', 'Reddersburg': '1', 'Reitz': '2',
+        'Rouxville': '2', 'Sannaspos': '1', 'Senekal': '2', 'Smithfield': '1', 'Theunissen': '1', 'Ventersburg': '1',
+        'Villiers': '2', 'Virginia': '1', 'Vredefort': '1', 'Warden': '2', 'Welkom': '1', 'Wepener': '2',
+    },
+    'Gauteng': {
+        'Bronkhorstspruit': '1', 'Carletonville': '1', 'Edenburg': '1', 'Germiston': '1',
+        'Heidelberg (Gauteng)': '2', 'Johannesburg': '1', 'Krugersdorp': '1', 'Magaliesburg': '1', 'Nigel': '2',
+        'Pretoria': '5', 'Randfontein': '1', 'Roodepoort': '1', 'Springs': '2', 'Vanderbijlpark': '1',
+        'Vereeniging': '1',
+    },
+    'KwaZulu-Natal': {
+        'Amatikulu': '5H', 'Bergville': '2', 'Charlestown': '2', 'Colenso': '5', 'Dannhauser': '1', 'Darnall': '5H',
+        'Donnybrook': '2', 'Durban': '5H', 'Emmaus': '2', 'Empangeni': '5H', 'Estcourt': '2', 'Eshowe': '5H',
+        'False Bay': '5H', 'Gingindlovu': '5H', 'Glencoe': '5', 'Greytown': '4', 'Harding': '5H', 'Hlobane': '4',
+        'Hluhluwe': '5', 'Ingwavuma': '5', 'Ixopo': '5H', 'Kokstad': '2', 'KwaMashu': '5H', 'Kwadukuza': '5H',
+        'Kranskop': '5H', 'Ladysmith': '5', 'Louwsburg': '5', 'Madadeni': '2', 'Margate': '5H', 'Mkomazi': '2',
+        'Mkuze': '5', 'Mooi River': '2', 'Mtubatuba': '5H', 'Mtwalume': '5H', 'Mzimvubu': '5H', 'Newcastle': '2',
+        'New Hanover': '4', 'Nkandla': '5', 'Nongoma': '5', 'Nqutu': '4', 'Osizweni': '2', 'Park Rynie': '5H',
+        'Paulpietersburg': '4', 'Pietermaritzburg': '4', 'Pinetown': '5H', 'Port Shepstone': '5H',
+        'Richards Bay': '5H', 'Tongaat': '5H', 'Umkomaas': '5H', 'Utrecht': '2', 'Vryheid': '4', 'Wasbank': '5',
+        'Weenen': '2',
+    },
+    'Limpopo': {
+        'Duiwelskloof': '5', 'Groblersdal': '5', 'Lepalale': '3', 'Letaba': '5', 'Louis Trichardt': '5',
+        'Luvuvhu': '3', 'Modimolle': '5', 'Mogalakwena': '5', 'Mopane': '3', 'Musina': '3', 'Northam': '5',
+        'Pienaarsrivier': '5', 'Polokwane': '5', 'Punda Maria': '3', 'Settlers': '5', 'Soekmekaar': '5',
+        'Thohoyandou': '3', 'Tom Burke': '3', 'Tzaneen': '5', 'Vaalwater': '5', 'Waterberge': '5', 'Zebediela': '5',
+    },
+    'Mpumalanga': {
+        'Acornhoek': '5', 'Amersfoort': '2', 'Barberton': '5', 'Belfast': '5', 'Bethal': '2', 'Breyten': '2',
+        'Dullstroom': '2', 'Emalahleni': '2', 'Ermelo': '2', 'Graskop': '5', 'Komatipoort': '3', 'Lothair': '2',
+        'Loskop Dam': '5', 'Mbombela': '5', 'Middelburg (Mpumalanga)': '2', 'Morgenzon': '2', 'Piet Retief': '4',
+        "Pilgrim's Rest": '1', 'Standerton': '2', 'Volksrust': '2', 'Wakkerstroom': '2', 'Waterval-Boven': '2',
+        'Waterval-Onder': '2', 'Wilge': '2',
+    },
+    'North West': {
+        'Bloemhof': '1', 'Brits': '5', 'Christiana': '1', 'Coligny': '1', 'Delareyville': '5', 'Derdepoort': '5',
+        'Klerksdorp': '1', 'Koster': '1', 'Lichtenburg': '1', 'Mahikeng': '5', 'Makwassie': '1', 'Maretsane': '5',
+        'Middelwit': '5', 'Mmabatho': '5', 'Orkney': '1', 'Ottosdal': '1', 'Pepani': '5', 'Potchefstroom': '1',
+        'Reivilo': '1', 'Rustenburg': '5', 'Sannieshof': '1', 'Vryburg': '1', 'Wolmaransstad': '1', 'Zeerust': '5',
+    },
+    'Northern Cape': {
+        'Alexander Bay': '4', 'Asbesberge': '1', 'Askham': '3', 'Augrabies Falls': '3', 'Barkly West': '1',
+        'Biesiesfontein': '5', 'Bitterfontein': '5', 'Brandvlei': '1', 'Britstown': '1', 'Calvinia': '1',
+        'Campbell': '1', 'Carnarvon': '1', 'Danielskuil': '1', 'De Aar': '1', 'Delportshoop': '1', 'Douglas': '1',
+        'Fraserburg': '7', 'Garies': '1', 'Gariep': '4', 'Griekwastad': '1', 'Grootdrink': '5', 'Grootvloer': '1',
+        'Hanover': '1', 'Hartbees': '3', 'Hartswater': '1', 'Hondeklipbaai': '4', 'Hopetown': '1', 'Hotazel': '5',
+        'Houtkraal': '1', 'Kakamas': '3', 'Kamieskroon': '1', 'Kareeberge': '1', 'Keimoes': '5', 'Kenhardt': '5',
+        'Kimberley': '1', 'Komsberg': '6', 'Kuruman': '1', 'Langklip': '3', 'Loeriesfontein': '1', 'Loxton': '1',
+        'Lutzputs': '3', 'Modderrivier': '1', 'Nababeep': '1', 'Nieuwoudtville': '5', 'Niekerkshoop': '1',
+        'Noupoort': '2', 'Okiep': '1', 'Olifantshoek': '1', 'Pampoenpoort': '1', 'Pella': '5', 'Philipstown': '1',
+        'Pofadder': '5', 'Port Nolloth': '4', 'Postmasburg': '1', 'Prieska': '1', 'Sakrivier': '1', 'Seekoei': '1',
+        'Sishen': '5', 'Springbok': '1', 'Tsineng': '5', 'Ulco': '1', 'Upington': '5', 'Vanwyksvlei': '1',
+        'Verneukpan': '1', 'Victoria West': '1', 'Warrenton': '1', 'Williston': '1', 'Windsorton': '1',
+    },
+    'Western Cape': {
+        'Ashton': '1', 'Beaufort West': '1', 'Bredasdorp': '4', 'Caledon': '2', 'Calitzdorp': '2',
+        'Cape Agulhas': '4', 'Cape Town': '4', 'Ceres': '2', 'Citrusdal': '1', 'Clanwilliam': '5', 'Doringbos': '5',
+        'George': '4', 'Gourits': '4', 'Hebertsdale': '4', 'Heidelberg (Western Cape)': '4', 'Hermanus': '2',
+        'Hopefield': '4', 'Klawer': '5', 'Klipdale': '4', 'Knysna': '4', 'Ladismith': '2', 'Laingsburg': '2',
+        "Lambert's Bay": '5', 'Langebaan': '4', 'Langeberg': '2', 'Leeu Gamka': '1', 'Letjiesbos': '1',
+        'Malmesbury': '1', 'Matjiesfontein': '2', 'Matroosberg': '6', 'Moorreesburg': '5', 'Mosselbaai': '4',
+        'Murraysburg': '1', 'Nelspoort': '1', 'Nuwerus': '5', 'Paarl': '2', 'Pakhuis': '5', 'Piketberg': '5',
+        'Porterville': '1', 'Prince Albert': '2', 'Quoin Point': '4', 'Riversdale': '4', 'Robertson': '2',
+        'Saldanha Bay': '4', 'Simonstown': '4', 'Stellenbosch': '2', 'Touws': '2', 'Tulbagh': '1', 'Uniondale': '2',
+        'Vanrhynsdorp': '5', 'Vredendal': '5', 'Vredenburg': '4', 'Wolseley': '2', 'Worcester': '2',
+    },
+}
+# Places that are NOT in Annex C Table C.1. Each takes the zone of the nearest listed town
+# (shown with a * and explained wherever the zone is shown). Confirm with the municipality.
+XA_EXTRA = {
+    "Western Cape": {
+        "Oudtshoorn": "Calitzdorp", "De Rust": "Calitzdorp", "Dysselsdorp": "Calitzdorp", "Barrydale": "Ladismith",
+        "Plettenberg Bay": "Knysna", "Sedgefield": "Knysna", "Buffelsbaai": "Knysna", "Brenton-on-Sea": "Knysna",
+        "The Heads": "Knysna", "Wilderness": "George", "Hoekwil": "George", "Herolds Bay": "George",
+        "Tergniet": "Mosselbaai", "Hartenbos": "Mosselbaai", "Little Brak River": "Mosselbaai",
+        "Great Brak River": "Mosselbaai", "Klein Brak": "Mosselbaai", "Dana Bay": "Mosselbaai",
+        "Reebok": "Mosselbaai", "Glentana": "Mosselbaai", "Outeniqua Strand": "George",
+        "Stilbaai": "Riversdale", "Albertinia": "Riversdale", "Gouritsmond": "Gourits", "Witsand": "Heidelberg (Western Cape)",
+        "Swellendam": "Riversdale", "Montagu": "Robertson", "McGregor": "Robertson", "Bonnievale": "Robertson",
+        "Franschhoek": "Paarl", "Wellington": "Paarl", "Pniel": "Stellenbosch", "Somerset West": "Cape Town",
+        "Strand": "Cape Town", "Gordon's Bay": "Cape Town", "Bellville": "Cape Town", "Durbanville": "Cape Town",
+        "Hout Bay": "Cape Town", "Milnerton": "Cape Town", "Table View": "Cape Town", "Blouberg": "Cape Town",
+        "Atlantis": "Cape Town", "Mitchells Plain": "Cape Town", "Khayelitsha": "Cape Town", "Fish Hoek": "Simonstown",
+        "Kommetjie": "Cape Town", "Muizenberg": "Cape Town", "Kuils River": "Cape Town", "Brackenfell": "Cape Town",
+        "Melkbosstrand": "Cape Town", "Camps Bay": "Cape Town", "Sea Point": "Cape Town", "Darling": "Malmesbury",
+        "Yzerfontein": "Saldanha Bay", "Paternoster": "Saldanha Bay", "St Helena Bay": "Saldanha Bay",
+        "Velddrif": "Saldanha Bay", "Struisbaai": "Cape Agulhas", "Arniston": "Cape Agulhas",
+        "L'Agulhas": "Cape Agulhas", "Gansbaai": "Hermanus", "Stanford": "Hermanus", "Kleinmond": "Hermanus",
+        "Betty's Bay": "Hermanus", "Onrus": "Hermanus", "Hawston": "Hermanus", "Grabouw": "Caledon", "Elgin": "Caledon",
+        "Riebeek-Kasteel": "Malmesbury", "Riebeek West": "Malmesbury", "Elands Bay": "Lambert's Bay",
+        "Graafwater": "Lambert's Bay", "Sutherland": "Matjiesfontein"},
+    "Eastern Cape": {
+        "Gqeberha": "Port Elizabeth", "Jeffreys Bay": "Port Elizabeth", "Humansdorp": "Port Elizabeth",
+        "St Francis Bay": "Port Elizabeth", "Despatch": "Uitenhage", "Kariega": "Uitenhage", "Kenton-on-Sea": "Port Alfred",
+        "Hogsback": "Alice", "Stutterheim": "King William's Town", "Komga": "East London", "Gonubie": "East London",
+        "Mthatha": "Umtata", "Whittlesea": "Queenstown", "Port Edward": "Port St Johns", "Colchester": "Port Elizabeth"},
+    "KwaZulu-Natal": {
+        "Umhlanga": "Durban", "Ballito": "Kwadukuza", "Westville": "Durban", "Umlazi": "Durban",
+        "Amanzimtoti": "Durban", "Scottburgh": "Umkomaas", "Howick": "Pietermaritzburg", "Hillcrest": "Pinetown",
+        "Kloof": "Pinetown", "Dundee": "Glencoe", "Ramsgate": "Margate", "Shelly Beach": "Margate", "Uvongo": "Margate",
+        "Hibberdene": "Port Shepstone", "Richmond (KwaZulu-Natal)": "Pietermaritzburg", "Winterton": "Bergville"},
+    "Gauteng": {
+        "Sandton": "Johannesburg", "Midrand": "Johannesburg", "Randburg": "Johannesburg", "Fourways": "Johannesburg",
+        "Soweto": "Johannesburg", "Benoni": "Springs", "Boksburg": "Germiston", "Brakpan": "Springs",
+        "Alberton": "Germiston", "Kempton Park": "Germiston", "Edenvale": "Germiston", "Bedfordview": "Germiston",
+        "Tembisa": "Germiston", "Sebokeng": "Vereeniging", "Centurion": "Pretoria", "Soshanguve": "Pretoria",
+        "Mamelodi": "Pretoria", "Cullinan": "Pretoria"},
+    "Free State": {
+        "Kroonstad": "Hennenman", "Sasolburg": "Vereeniging", "Phuthaditjhaba": "Harrismith", "Winburg": "Brandfort",
+        "Zastron": "Rouxville", "Clarens": "Fouriesburg", "Trompsburg": "Philippolis", "Ladybrand": "Clocolan",
+        "Thaba Nchu": "Bloemfontein", "Botshabelo": "Bloemfontein", "Bloemfontein (Mangaung)": "Bloemfontein"},
+    "Limpopo": {
+        "Mokopane": "Mogalakwena", "Bela-Bela": "Modimolle", "Phalaborwa": "Letaba", "Hoedspruit": "Letaba",
+        "Giyani": "Letaba", "Thabazimbi": "Northam", "Marble Hall": "Groblersdal", "Ellisras": "Lepalale",
+        "Burgersfort": "Zebediela"},
+    "Mpumalanga": {
+        "Nelspruit": "Mbombela", "White River": "Mbombela", "Witbank": "Emalahleni", "Secunda": "Bethal",
+        "Sabie": "Graskop", "Hazyview": "Graskop", "Malelane": "Komatipoort", "Lydenburg": "Dullstroom",
+        "Hendrina": "Middelburg (Mpumalanga)", "Ogies": "Emalahleni"},
+    "North West": {
+        "Hartbeespoort": "Brits", "Mafikeng": "Mahikeng", "Sun City": "Rustenburg", "Stilfontein": "Klerksdorp",
+        "Mogwase": "Rustenburg", "Taung": "Vryburg"},
+    "Northern Cape": {
+        "Colesberg": "Hanover", "Kathu": "Sishen", "Kleinzee": "Port Nolloth", "Aggeneys": "Pofadder",
+        "Richmond (Northern Cape)": "Victoria West", "Sutherland (Northern Cape)": "Fraserburg"},
+}
+XA_NEAREST = {}      # "Oudtshoorn *" -> "Calitzdorp"
+for _p, _d in XA_EXTRA.items():
+    for _t, _ref in _d.items():
+        if _ref in XA_PROVINCES.get(_p, {}) or any(_ref in v for v in XA_PROVINCES.values()):
+            _z = next(v[_ref] for v in XA_PROVINCES.values() if _ref in v)
+            XA_PROVINCES[_p][f"{_t} *"] = _z
+            XA_NEAREST[f"{_t} *"] = _ref
+
+
+def xa_town_note(t):
+    """Text for a chosen town: its zone and where that zone came from."""
+    if t in XA_NEAREST:
+        return (f"{t[:-2]} is not in SANS 10400-XA Annex C. Zone {XA_TOWNS[t]} is taken from the nearest listed "
+                f"town, {XA_NEAREST[t]}. Confirm the zone with your municipality or competent person.")
+    if t in XA_TOWNS:
+        return f"{t}: energy zone {XA_TOWNS[t]} (SANS 10400-XA Annex C)."
+    return ""
+
+
+XA_TOWNS = {t: z for _p, _d in XA_PROVINCES.items() for t, z in _d.items()}
+# Tabs shown in the program: the provinces, plus a convenience "Southern Cape" tab (Garden Route and nearby towns)
+XA_REGIONS = {}
+for _p, _d in XA_PROVINCES.items():
+    XA_REGIONS[_p] = sorted(_d)
+    if _p == "Western Cape":
+        XA_REGIONS["Southern Cape"] = sorted(
+            [t for t in ("Calitzdorp", "George", "Gourits", "Hebertsdale", "Knysna", "Ladismith", "Mosselbaai",
+                         "Riversdale", "Uniondale") if t in _d]
+            + [f"{t} *" for t in ("Oudtshoorn", "De Rust", "Dysselsdorp", "Plettenberg Bay", "Sedgefield",
+                                  "Buffelsbaai", "Brenton-on-Sea", "The Heads", "Wilderness", "Hoekwil",
+                                  "Herolds Bay", "Tergniet", "Hartenbos", "Little Brak River", "Great Brak River",
+                                  "Klein Brak", "Dana Bay", "Reebok", "Glentana", "Outeniqua Strand", "Stilbaai",
+                                  "Albertinia", "Gouritsmond", "Swellendam", "Barrydale") if f"{t} *" in _d])
+XA_HEAVY_WALL_R = {"1": 0.60, "2": 0.60, "3": 0.40, "4": 0.60, "5": 0.40, "5H": 0.40, "6": 0.60, "7": 0.60}
+XA_LIGHT_WALL_R = {"1": 2.2, "2": 2.2, "6": 2.2, "7": 2.2, "3": 1.9, "4": 1.9, "5": 1.9, "5H": 1.9}
+XA_ROOF_R = {z: (2.7 if z == "5H" else 3.7) for z in XA_ZONES}
+XA_SUSP_FLOOR_R = {"1": 1.5, "2": 1.5, "6": 1.5, "7": 1.5, "3": 1.0, "4": 1.0, "5": 1.0, "5H": 1.0}
+XA_ZONE_COLS = ["1", "2", "3", "4", "5", "5H", "6", "7"]
+# SANS 10400-XA:2021 Table 1 (max annual consumption, kWh/m2/a) and Table 2 (max demand intensity, VA/m2),
+# by occupancy class and energy zone. A3 = places of instruction (general), G1 = large multi-storey offices.
+XA_MAX_CONS = {
+    "A1": [75, 75, 95, 70, 95, 95, 80, 80], "A2": [95, 95, 110, 90, 110, 110, 105, 105],
+    "A3": [110, 155, 110, 125, 140, 140, 120, 120], "A4": [70, 45, 45, 40, 50, 40, 70, 70],
+    "E2": [325, 335, 225, 295, 295, 230, 345, 345], "E3": [120, 95, 90, 90, 100, 80, 130, 130],
+    "F1": [125, 200, 155, 180, 185, 150, 125, 125], "F2": [75, 150, 100, 125, 130, 95, 80, 80],
+    "F3": [125, 200, 155, 180, 185, 150, 125, 125], "G1": [90, 105, 110, 95, 110, 95, 100, 100],
+    "H1": [125, 130, 100, 115, 125, 95, 140, 140], "H2": [155, 170, 160, 175, 160, 160, 160, 180],
+    "H3": [90, 100, 50, 80, 85, 60, 110, 110], "H4": [95, 100, 50, 80, 85, 60, 110, 110],
+    "H5": [120, 130, 110, 120, 115, 135, 135, 135]}
+XA_MAX_DEMAND = {
+    "A1": [30, 30, 38, 28, 38, 38, 32, 32], "A2": [38, 38, 44, 36, 44, 44, 42, 42],
+    "A3": [44, 62, 44, 50, 56, 56, 48, 48], "A4": [28, 18, 18, 16, 20, 16, 28, 28],
+    "E2": [130, 134, 90, 118, 118, 92, 138, 138], "E3": [48, 38, 36, 36, 40, 32, 52, 52],
+    "F1": [50, 80, 62, 72, 74, 60, 50, 50], "F2": [30, 60, 40, 50, 52, 38, 32, 32],
+    "F3": [50, 80, 62, 72, 74, 60, 50, 50], "G1": [36, 42, 44, 38, 44, 38, 40, 40],
+    "H1": [80, 60, 46, 54, 54, 44, 80, 80], "H2": [80, 74, 94, 78, 90, 90, 80, 80],
+    "H3": [58, 66, 40, 56, 56, 46, 60, 60], "H4": [58, 66, 40, 56, 56, 46, 60, 60],
+    "H5": [58, 58, 62, 56, 60, 60, 60, 60]}
+# typical use of the building (hours a day, days a week) - a starting point, edit it if yours differs
+XA_TYPICAL_USE = {"H1": (24, 7), "H2": (24, 7), "H3": (24, 7), "H4": (24, 7), "H5": (24, 7), "E2": (24, 7),
+                  "E3": (24, 7), "G1": (10, 5), "A3": (8, 5)}
+
+
+XA_ELEMENT_TYPES = [
+    "Wall - heavy (>= 270 kg/m2)", "Wall - light (< 270 kg/m2)", "Internal wall (no XA minimum)", "Roof / ceiling",
+    "Suspended floor", "Floor with underfloor heating", "Floor on ground (no XA minimum)", "Floor within the building (no XA minimum)", "Hot water pipe (<= 80 mm)",
+    "Hot water pipe (> 80 mm)"]
+
+
+XA_CATEGORIES = [   # key, section title, help text, element types, preset prefix, default type
+    ("walls", "2. Walls", "External walls (outside to inside) and, if you want them in the report, internal walls "
+     "(type 'Internal wall': surface films on both sides, no XA minimum). Add each wall build-up.",
+     ["Wall - heavy (>= 270 kg/m2)", "Wall - light (< 270 kg/m2)", "Internal wall (no XA minimum)"], "Wall - ",
+     "Wall - heavy (>= 270 kg/m2)"),
+    ("roof", "3. Roof and ceiling", "Roof covering, insulation and ceiling together. A building can have more than one "
+     "roof type at the same time (for example roof sheets on trusses with a ceiling, and a flat concrete slab): add each "
+     "one, give it a name and its area, and each is checked on its own.",
+     ["Roof / ceiling"], "Roof - ", "Roof / ceiling"),
+    ("floors", "4. Floors", "Only needed for suspended floors and floors with underfloor heating. "
+     "A slab on the ground with no underfloor heating has no XA minimum. Say how many storeys the building has, "
+     "then add a build-up for each floor that needs one and choose which floor it is on (for example the ground "
+     "floor slab with underfloor heating and insulation, and suspended floors on the upper storeys).",
+     ["Suspended floor", "Floor with underfloor heating", "Floor on ground (no XA minimum)", "Floor within the building (no XA minimum)"], "Floor - ", "Suspended floor"),
+    ("pipes", "5. Hot water pipes", "Hot water supply pipes need insulation.",
+     ["Hot water pipe (<= 80 mm)", "Hot water pipe (> 80 mm)"], "Hot water pipe - ", "Hot water pipe (<= 80 mm)"),
+]
+
+
+def xa_category(etype):
+    for key, _t, _h, types, _p, _d in XA_CATEGORIES:
+        if etype in types:
+            return key
+    return "walls"
+
+
+def xa_no_minimum(etype):
+    """Types that have no SANS 10400-XA minimum R-value and are listed for the record only."""
+    return (etype.startswith("Internal wall") or etype.startswith("Floor on ground")
+            or etype.startswith("Floor within the building"))
+
+
+def xa_reference_r(zone, etype):
+    """(R, text) shown for information on floors that have no XA minimum (inside the envelope / on the ground)."""
+    if etype.startswith("Floor within the building"):
+        return (XA_SUSP_FLOOR_R.get(zone, 1.5),
+                "Reference: minimum R of an exposed suspended floor for this zone (SANS 10400-XA / SANS 204). "
+                "Not required here because the floor is inside the building envelope.")
+    if etype.startswith("Floor on ground"):
+        return (1.0, "Reference: minimum R of a floor with underfloor heating (SANS 10400-XA). "
+                     "Not required for a slab on the ground without underfloor heating.")
+    return None, ""
+
+
+def xa_required_r(zone, etype):
+    if xa_no_minimum(etype):
+        return 0.0
+    if etype.startswith("Wall - heavy"):
+        return XA_HEAVY_WALL_R.get(zone, 0.6)
+    if etype.startswith("Wall - light"):
+        return XA_LIGHT_WALL_R.get(zone, 2.2)
+    if etype.startswith("Roof"):
+        return XA_ROOF_R.get(zone, 3.7)
+    if etype == "Suspended floor":
+        return XA_SUSP_FLOOR_R.get(zone, 1.5)
+    if etype.startswith("Floor with underfloor"):
+        return 1.0
+    if etype.endswith("(<= 80 mm)"):
+        return 1.0
+    return 1.5
+
+# Surface resistances (m2K/W): inside, outside - SANS 204 / ISO 6946 conventions
+XA_FILMS = {"wall": (0.13, 0.04), "roof": (0.10, 0.04), "floor": (0.17, 0.04), "internal": (0.12, 0.12), "ground": (0.17, 0.0), "midfloor": (0.17, 0.10)}
+XA_FILM_KIND = {"Internal wall (no XA minimum)": "internal", "Floor on ground (no XA minimum)": "ground", "Floor within the building (no XA minimum)": "midfloor", "Wall - heavy (>= 270 kg/m2)": "wall", "Wall - light (< 270 kg/m2)": "wall",
+                "Roof / ceiling": "roof", "Suspended floor": "floor",
+                "Floor with underfloor heating": "floor"}
+
+# material: (conductivity W/mK or None, fixed R or None, is_insulation)
+XA_MATERIALS = {
+    "Clay brick (common)": (0.70, None, False),
+    "Concrete block (hollow)": (0.80, None, False),
+    "Dense concrete": (1.60, None, False),
+    "Cement plaster": (0.72, None, False),
+    "Gypsum plasterboard": (0.25, None, False),
+    "Fibre cement board": (0.35, None, False),
+    "Timber (softwood)": (0.13, None, False),
+    "Air cavity (unventilated, 50 mm)": (None, 0.18, False),
+    "Air cavity (unventilated, 60 mm)": (None, 0.18, False),
+    "Roof & ceiling materials (XA guide: tiles ~0.35, metal ~0.38)": (None, 0.35, False),
+    "EPS (standard density)": (0.035, None, True),
+    "XPS": (0.030, None, True),
+    "PIR / PUR rigid foam": (0.024, None, True),
+    "Glass wool blanket": (0.040, None, True),
+    "Glass wool batt": (0.033, None, True),
+    "Stone / rock wool": (0.033, None, True),
+    "Fibre glass loose-fill": (0.043, None, True),
+    "Cellulose fibre loose-fill": (0.040, None, True),
+    "Polyester fibre blanket": (0.051, None, True),
+    "AAC block (aerated concrete ~600 kg/m3)": (0.16, None, False),
+    "Clay brick (perforated / hollow)": (0.47, None, False),
+    "Concrete (medium density)": (1.15, None, False),
+    "Cement screed": (1.00, None, False),
+    "Ceramic tiles": (1.30, None, False),
+    "Waterproofing membrane": (0.17, None, False),
+    "OSB / plywood board": (0.13, None, False),
+    "Steel sheeting": (45.0, None, False),
+    "Air space under roof (unventilated)": (None, 0.18, False),
+    "Spray polyurethane foam": (0.028, None, True),
+    "Polyethylene foam pipe lagging": (0.040, None, True),
+    "Elastomeric foam pipe lagging": (0.036, None, True),
+    "Custom (type conductivity)": (0.10, None, False),
+    "Custom (type fixed R)": (None, 0.10, False),
+}
+
+
+def layer_r(layer):
+    """R of one layer: thickness / conductivity, or a fixed R."""
+    fixed = layer.get("rfix")
+    if fixed not in (None, "", 0, 0.0):
+        return float(fixed)
+    lam = float(layer.get("lam") or 0)
+    t = float(layer.get("t") or 0)
+    return (t / 1000.0 / lam) if lam > 0 else 0.0
+
+
+def element_total_r(el):
+    """Total R of a build-up, with surface films if the element uses them."""
+    r = sum(layer_r(l) for l in el.get("layers", []))
+    if el.get("films", True):
+        kind = XA_FILM_KIND.get(el.get("type", ""))
+        if kind:
+            r += sum(XA_FILMS[kind])
+    return r
+
+
+def element_film_rows(el):
+    """[(label, R)] for the surface films, outside first then inside, for the build-up table of a report."""
+    kind = XA_FILM_KIND.get(el.get("type", ""))
+    if not (el.get("films", True) and kind):
+        return None, None
+    inside, outside = XA_FILMS[kind]
+    if kind == "internal":
+        return ("Vertical internal surface coefficient", outside), ("Vertical internal surface coefficient", inside)
+    if kind == "midfloor":
+        return ("Internal surface film (heat flow upwards)", outside), ("Internal surface film (heat flow downwards)", inside)
+    if kind == "ground":
+        return None, ("Internal surface film (heat flow downwards)", inside)
+    if kind == "wall":
+        return ("3 m/s wind external surface coefficient", outside), ("Vertical internal surface coefficient", inside)
+    return ("External surface film", outside), ("Internal surface film", inside)
+
+
+XA_NOMINAL_T = {   # thickness (mm) shown for layers that only have a fixed R in the standard
+    "Roof & ceiling materials (XA guide: tiles ~0.35, metal ~0.38)": 20.0,
+    "Air space under roof (unventilated)": 100.0,
+}
+LAYER_NOTE = ("* Equivalent value: for layers whose resistance is a fixed figure from the standard (air spaces, roof "
+              "coverings) the conductivity shown is thickness / R, and the thickness of the roof covering and the roof "
+              "air space is nominal. Surface films have no thickness; the standard surface resistances (SANS 204 / "
+              "ISO 6946) are used.")
+
+
+# ---------------------------------------------------------------- section detail drawings for the build-up tables (v82)
+def _det_kind(mat):
+    n = (mat or "").lower()
+    if "air cavity" in n or "air space" in n or "air gap" in n:
+        return "air"
+    if "steel" in n:
+        return "steel"
+    if "membrane" in n or "waterproof" in n:
+        return "membrane"
+    if "roof & ceiling" in n or "roof covering" in n:
+        return "roofcover"
+    if "tile" in n:
+        return "tile"
+    if "screed" in n or "plaster" in n or "render" in n:
+        return "plaster"
+    if "brick" in n:
+        return "brick"
+    if "aac" in n or "aerated" in n:
+        return "aac"
+    if "concrete" in n or "block" in n:
+        return "concrete"
+    if "timber" in n or "wood" in n or "rafter" in n:
+        return "timber"
+    if "gypsum" in n or "board" in n or "osb" in n or "ply" in n:
+        return "board"
+    if any(k in n for k in ("wool", "batt", "blanket", "fibre glass", "cellulose", "polyester", "loose-fill")):
+        return "batt"
+    if any(k in n for k in ("eps", "xps", "pir", "pur", "foam", "lagging", "insulation")):
+        return "foam"
+    return "custom"
+
+
+DET_STYLE = {   # kind: (fill, hatch colour, key text). Colours follow the usual coloured-section practice: concrete green, timber yellow, brick red
+    "concrete": ("#8FCB8F", "#2F6B2F", "Concrete and concrete block"),
+    "aac": ("#CDE9CD", "#4C8A4C", "Aerated concrete (AAC) block"),
+    "brick": ("#E8806F", "#8E2F22", "Brick"),
+    "plaster": ("#E3E3E3", "#6E6E6E", "Plaster, mortar and screed"),
+    "timber": ("#F6DB5E", "#8A6A00", "Timber"),
+    "board": ("#EDEDED", "#7A7A7A", "Board (plasterboard, fibre cement, OSB)"),
+    "batt": ("#F8B878", "#A8530A", "Insulation, blanket or batt"),
+    "foam": ("#F8B878", "#A8530A", "Insulation, rigid board"),
+    "air": ("#FFFFFF", "#FFFFFF", "Air cavity or air space (left white)"),
+    "steel": ("#1E1E1E", "#1E1E1E", "Steel sheeting (solid black)"),
+    "membrane": ("#1E1E1E", "#1E1E1E", "Waterproofing membrane (solid black)"),
+    "tile": ("#BBD7EE", "#4F7FA5", "Ceramic tiles"),
+    "roofcover": ("#B9C4CE", "#4E5D6A", "Roof covering (tiles or sheets)"),
+    "custom": ("#DADADA", "#6E6E6E", "Other material"),
+}
+
+
+DET_DARK = {    # the same materials for the dark program theme: muted fills, lighter hatch lines, nothing bright
+    "concrete": ("#35603F", "#8CC79A"), "aac": ("#456350", "#9CC5A6"), "brick": ("#7E433C", "#D98E82"),
+    "plaster": ("#3A3D42", "#8E949C"), "timber": ("#7C6E2E", "#E8D27A"), "board": ("#3A3D42", "#8E949C"),
+    "batt": ("#8A5F36", "#F0B070"), "foam": ("#8A5F36", "#F0B070"), "air": (None, None),
+    "steel": ("#C5CAD1", "#C5CAD1"), "membrane": ("#C5CAD1", "#C5CAD1"), "tile": ("#37566F", "#8FB8D8"),
+    "roofcover": ("#515D68", "#B4C0CB"), "custom": ("#3A3D42", "#8E949C"),
+}
+
+
+def _det_hatch(p, kind, x, y, w, h, vert, dark=False):
+    """Fill and hatch one layer in section. Hatch lines are clipped inside the layer, run one way only and stop short of the outline, so nothing crosses."""
+    import math
+    fill, col, _txt = DET_STYLE.get(kind, DET_STYLE["custom"])
+    if dark:
+        fill, col = DET_DARK.get(kind, DET_DARK["custom"])
+    p.setPen(Qt.NoPen)
+    if fill:
+        p.setBrush(QColor(fill))
+        p.drawRect(QRectF(x, y, w, h))
+    if kind in ("steel", "membrane", "air"):
+        return
+    ix, iy, iw, ih = x + 1.0, y + 1.0, w - 2.0, h - 2.0
+    if iw <= 1.5 or ih <= 1.5:
+        return
+    p.save()
+    p.setClipRect(QRectF(ix, iy, iw, ih))
+    pen = QPen(QColor(col)); pen.setWidthF(0.55)
+    p.setPen(pen); p.setBrush(Qt.NoBrush)
+    if kind in ("brick", "roofcover"):                                   # common brick: 45 degree lines
+        sp = 4.0 if kind == "brick" else 6.0
+        k = -ih
+        while k < iw:
+            p.drawLine(QPointF(ix + k, iy), QPointF(ix + k + ih, iy + ih))
+            k += sp
+    elif kind == "foam":                                                 # rigid board: parallel diagonal lines
+        k = -ih
+        while k < iw:
+            p.drawLine(QPointF(ix + k, iy + ih), QPointF(ix + k + ih, iy))
+            k += 5.0
+    elif kind in ("concrete", "aac", "plaster"):                          # concrete: dots and small triangles; screed and plaster: fine dots
+        step = {"concrete": 4.6, "aac": 5.0, "plaster": 3.2}[kind]
+        yy, row = iy + step / 2, 0
+        while yy < iy + ih:
+            xx = ix + (step / 2 if row % 2 == 0 else step)
+            n = 0
+            while xx < ix + iw:
+                if kind == "concrete" and n % 3 == 1 and iw > 6 and ih > 6:
+                    r = 1.3
+                    tri = QPolygonF([QPointF(xx, yy - r), QPointF(xx + r, yy + r * 0.8), QPointF(xx - r, yy + r * 0.8)])
+                    p.drawPolygon(tri)
+                elif kind == "aac":
+                    p.drawEllipse(QPointF(xx, yy), 0.9, 0.9)
+                else:
+                    p.setBrush(QColor(col)); p.setPen(Qt.NoPen)
+                    p.drawEllipse(QPointF(xx, yy), 0.45 if kind == "plaster" else 0.6, 0.45 if kind == "plaster" else 0.6)
+                    p.setBrush(Qt.NoBrush); p.setPen(pen)
+                xx += step
+                n += 1
+            yy += step / 2
+            row += 1
+    elif kind == "batt":                                                 # blanket or batt: one continuous zigzag line along the layer
+        amp = max(0.8, min(3.2, (iw if vert else ih) * 0.32))
+        mid = (ix + iw / 2) if vert else (iy + ih / 2)
+        L0, L1 = (iy, iy + ih) if vert else (ix, ix + iw)
+        pts = []
+        s_, flip = L0, 1
+        while s_ <= L1:
+            pts.append(QPointF(mid + flip * amp, s_) if vert else QPointF(s_, mid + flip * amp))
+            s_ += 2.6
+            flip = -flip
+        p.drawPolyline(QPolygonF(pts))
+    elif kind == "timber":                                               # timber along the grain: wavy parallel lines
+        n = 3 if (iw if vert else ih) > 7 else 1
+        for i in range(1, n + 1):
+            pts = []
+            L0, L1 = (iy, iy + ih) if vert else (ix, ix + iw)
+            base = (ix + iw * i / (n + 1)) if vert else (iy + ih * i / (n + 1))
+            s_ = L0
+            while s_ <= L1:
+                off = 0.7 * math.sin((s_ - L0) / 4.0)
+                pts.append(QPointF(base + off, s_) if vert else QPointF(s_, base + off))
+                s_ += 0.8
+            p.drawPolyline(QPolygonF(pts))
+    else:                                                                # board, tile, other: parallel lines along the layer
+        n = 2 if kind == "board" else 3
+        for i in range(1, n + 1):
+            if vert:
+                xx = ix + iw * i / (n + 1)
+                p.drawLine(QPointF(xx, iy), QPointF(xx, iy + ih))
+            else:
+                yy = iy + ih * i / (n + 1)
+                p.drawLine(QPointF(ix, yy), QPointF(ix + iw, yy))
+    p.restore()
+
+
+def assembly_detail_image(layers, vert, height_px, scale=3, W=150.0, highlight=-1, labels=True, dark=False):
+    """Section of a build-up as a QImage, outside layer first, layers to scale in thickness, no dimensions.
+    vert=True: layers side by side (walls); vert=False: layers stacked top to bottom (roofs, floors, pipes)."""
+    from PySide6.QtGui import QFont
+    lay = []
+    for l in layers:
+        t = float(l.get("t") or 0.0)
+        if t <= 0:
+            t = XA_NOMINAL_T.get(l.get("mat", ""), 0.0)
+        if t <= 0:
+            t = 20.0
+        lay.append((l.get("mat", ""), t))
+    if not lay:
+        return None
+    H = float(height_px)
+    img = QImage(int(W * scale), int(H * scale), QImage.Format_ARGB32)
+    img.fill(QColor(0, 0, 0, 0) if dark else QColor(255, 255, 255))
+    p = QPainter(img)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.scale(scale, scale)
+    total = sum(t for _m, t in lay)
+    top_, bot_ = (17.0, 6.0) if labels else (4.0, 4.0)
+    if vert:
+        x0, x1, y0, y1 = 10.0, W - 10.0, top_, H - bot_
+        span = x1 - x0
+    else:
+        x0, x1, y0, y1 = 10.0, W - 10.0, top_, H - (17.0 if labels else 4.0)
+        span = y1 - y0
+    minw = 1.6                                           # a very thin layer (a membrane) is still drawn as a visible line
+    sizes = [max(minw, t / total * span) for _m, t in lay]
+    for _ in range(4):
+        fixed = sum(s for s in sizes if s <= minw + 1e-9)
+        free = [i for i, s in enumerate(sizes) if s > minw + 1e-9]
+        tt = sum(lay[i][1] for i in free)
+        if not free or tt <= 0:
+            break
+        sizes = [minw if s <= minw + 1e-9 else (span - fixed) * lay[i][1] / tt for i, s in enumerate(sizes)]
+    pos = x0 if vert else y0
+    rects = []
+    for (m, t), s in zip(lay, sizes):
+        rects.append((_det_kind(m), (pos, y0, s, y1 - y0) if vert else (x0, pos, x1 - x0, s)))
+        pos += s
+    for kd, (x, y, w, h) in rects:
+        _det_hatch(p, kd, x, y, w, h, vert, dark)
+    pen = QPen(QColor("#8A9099" if dark else "#222222")); pen.setWidthF(0.7)
+    p.setPen(pen); p.setBrush(Qt.NoBrush)
+    for kd, (x, y, w, h) in rects:                       # one outline per layer; neighbours share the same line
+        p.drawRect(QRectF(x, y, w, h))
+    if 0 <= highlight < len(rects):                      # the layer picked in the list: a red outline on top
+        hp = QPen(QColor("#FF4D5E" if dark else "#E01B24")); hp.setWidthF(1.6)
+        p.setPen(hp)
+        x, y, w, h = rects[highlight][1]
+        p.drawRect(QRectF(x, y, w, h))
+    if labels:
+        f = QFont("Arial"); f.setPixelSize(8); f.setBold(True)
+        p.setFont(f)
+        p.setPen(QColor("#8A9099" if dark else "#555555"))
+        if vert:
+            p.drawText(QRectF(x0, 3, 60, 11), int(Qt.AlignLeft | Qt.AlignVCenter), "OUTSIDE")
+            p.drawText(QRectF(x1 - 60, 3, 60, 11), int(Qt.AlignRight | Qt.AlignVCenter), "INSIDE")
+        else:
+            p.drawText(QRectF(x0, 3, 70, 11), int(Qt.AlignLeft | Qt.AlignVCenter), "OUTSIDE")
+            p.drawText(QRectF(x0, y1 + 3, 70, 11), int(Qt.AlignLeft | Qt.AlignVCenter), "INSIDE")
+    p.end()
+    return img
+
+
+def assembly_detail_uri(layers, vert, height_px, scale=3, W=150.0, dark=False):
+    """The same section as a PNG data URI for HTML (reports and pop-ups): (uri, width, height) or None."""
+    import base64
+    from PySide6.QtCore import QBuffer, QByteArray, QIODevice
+    img = assembly_detail_image(layers, vert, height_px, scale, W, dark=dark)
+    if img is None:
+        return None
+    ba = QByteArray(); buf = QBuffer(ba); buf.open(QIODevice.WriteOnly); img.save(buf, "PNG")
+    return "data:image/png;base64," + base64.b64encode(bytes(ba)).decode("ascii"), W, float(height_px)
+
+
+def assembly_hover_html(name, etype, films, layers):      # pop-up in the program: dark theme drawing
+    """Rich text for the pop-up shown while pointing at a preset: the section, the layers and the total R."""
+    import html as _h
+    lay = [make_layer(l) for l in layers]
+    det = assembly_detail_uri(lay, xa_category(etype) == "walls", 150, 2, 210.0, dark=True)
+    tot = element_total_r({"type": etype, "films": films, "layers": lay})
+    rows = "".join("<tr><td>%d.&nbsp;</td><td>%s</td><td align='right'>&nbsp;%s</td></tr>" % (
+        i + 1, _h.escape(l.get("mat", "")), ("%g mm" % l["t"]) if l.get("t") else "fixed R") for i, l in enumerate(lay))
+    img = ('<img src="%s" width="%d" height="%d"><br>' % (det[0], int(det[1]), int(det[2]))) if det else ""
+    return ("<div style='white-space:nowrap'><b>%s</b><br>%s<table cellspacing='2'>%s</table>Outside to inside. Total R %.2f</div>"
+            % (_h.escape(name), img, rows, tot))
+
+
+def assembly_key_html(elements, font="7.5pt"):
+    """A small colour key for the materials that appear in the build-ups: [swatch] name, two to a row."""
+    seen = []
+    for el in elements or []:
+        for l in el.get("layers", []):
+            k = _det_kind(l.get("mat", ""))
+            if k not in seen:
+                seen.append(k)
+    if not seen:
+        return ""
+    cells = []
+    for k in seen:
+        fill, _c, txt = DET_STYLE[k]
+        cells.append('<td width="4%%" bgcolor="%s" style="border:0.6px solid #222222;">&nbsp;</td><td width="44%%" style="padding-left:4px;">%s</td>' % (fill, txt))
+    rows = []
+    for i in range(0, len(cells), 2):
+        pair = cells[i:i + 2]
+        if len(pair) == 1:
+            pair.append('<td width="4%"></td><td width="44%"></td>')
+        rows.append("<tr>" + "".join(pair) + "</tr>")
+    return ('<p style="font-size:8pt; font-weight:bold; color:#222222; margin-left:10px; margin-top:8px;">Material key for the section details</p>'
+            '<table width="100%%" cellspacing="3" cellpadding="1" border="0" style="font-size:%s; color:#222222;">%s</table>' % (font, "".join(rows)))
+
+
+def assembly_rows(el, rows, n_layer_rows, n_sum_rows):
+    """Add the detail drawing column to the cell lists of a build-up table: the picture spans the layer rows (first cell of the first row),
+    the summary rows below use one wide label cell."""
+    rows = [list(r) for r in rows]
+    h = max(86, min(190, n_layer_rows * 22))
+    det = assembly_detail_uri(el.get("layers", []), xa_category(el.get("type", "")) == "walls", h)
+    if not det or not rows:
+        return None
+    uri, W, H = det
+    img = ('<td rowspan="%d" bgcolor="#FFFFFF" align="center" valign="middle" style="padding:2px;">'
+           '<img src="%s" width="%d" height="%d"></td>' % (n_layer_rows, uri, int(W), int(H)))
+    out = []
+    for i, r in enumerate(rows):
+        if i == 0:
+            out.append([img] + r)
+        elif i < n_layer_rows:
+            out.append(r)
+        else:
+            c0 = r[0].replace("<td", '<td colspan="2"', 1)
+            out.append([c0] + r[1:])
+    return out
+
+
+def layer_cells(l):
+    """(thickness text in m, conductivity text, R) for a build-up table, with no 'N/A' left blank."""
+    t = float(l.get("t") or 0)
+    nominal = False
+    if not t:
+        t = XA_NOMINAL_T.get(l.get("mat", ""), 0.0)
+        nominal = bool(t)
+    r = layer_r(l)
+    lam = l.get("lam")
+    if lam and not l.get("rfix"):
+        lam_txt = f"{float(lam):.3f}"
+    elif t > 0 and r > 0:
+        lam_txt = f"{t / 1000.0 / r:.3f}*"
+    else:
+        lam_txt = "-"
+    t_txt = (f"{t / 1000.0:.3f}" + ("*" if nominal else "")) if t > 0 else "0.000"
+    return t_txt, lam_txt, r
+
+
+def roof_kind(el):
+    """Short label for the kind of roof, worked out from its layers (used in report headings)."""
+    mats = " ".join(l.get("mat", "") for l in el.get("layers", [])).lower()
+    if "concrete" in mats:
+        return "Concrete roof (flat slab)"
+    if "steel sheeting" in mats:
+        return "Insulated sheeting roof panel"
+    if "timber rafter" in (el.get("name", "") or "").lower() or "rafters" in (el.get("name", "") or "").lower():
+        return "Pitched roof on timber rafters"
+    return "Pitched roof on trusses"
+
+
+def element_title(el):
+    t = el.get("type", "")
+    if t.startswith("Internal wall"):
+        return "Internal wall structure"
+    if t.startswith("Wall"):
+        return "External wall structure"
+    if t.startswith("Roof"):
+        return "Roof and ceiling structure - " + roof_kind(el)
+    if "floor" in t.lower():
+        return "Floor structure"
+    return "Hot water pipe insulation"
+
+
+def element_description(el):
+    parts = [(f"{float(l['t']):g}mm " if l.get("t") else "") + l.get("mat", "") for l in el.get("layers", [])]
+    if not parts:
+        return "No layers entered."
+    noun = {"External wall structure": "Wall structure", "Internal wall structure": "Wall structure",
+            "Floor structure": "Floor structure"}.get(element_title(el), "Insulation")
+    if element_title(el).startswith("Roof"):
+        noun = "Roof structure (" + roof_kind(el).lower() + ")"
+    lst = parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + ", and " + parts[-1]
+    return f"{noun} comprised of {lst}."
+
+
+def xa_check_element(el, zone):
+    req = xa_required_r(zone, el.get("type", ""))
+    total = element_total_r(el)
+    ok = total + 1e-9 >= req
+    notes = []
+    layers = el.get("layers", [])
+    if not layers:
+        notes.append("No layers entered yet.")
+    if not xa_no_minimum(el.get("type", "")) and layers:
+        ins_l = [l for l in layers if XA_MATERIALS.get(l.get("mat"), (0, 0, False))[2] and l.get("t")]
+        ins_txt = ", ".join(f"{float(l['t']):g} mm {l['mat']}" for l in ins_l)
+        t_ = el.get("type", "")
+        what = (roof_kind(el) if t_.startswith("Roof") else "Hot water pipe insulation" if t_.startswith("Hot water")
+                else "Suspended floor" if t_ == "Suspended floor" else "Underfloor heating floor" if "underfloor" in t_
+                else "Heavy wall" if t_.startswith("Wall - heavy") else "Light wall")
+        base = what + (f" with {ins_txt}." if ins_txt else " (no separate insulation layer).")
+        if ok:
+            base += f" Total R {total:.2f} meets the minimum R {req:.2f} for energy zone {zone}."
+        notes.append(base)
+    if el.get("type", "").startswith("Internal wall"):
+        notes.append("Internal wall: no SANS 10400-XA minimum; shown for the record.")
+    if el.get("type", "").startswith("Floor within the building"):
+        notes.append("Floor inside the building envelope (heated space above and below): no SANS 10400-XA minimum; shown for the record.")
+    if el.get("type", "").startswith("Floor on ground"):
+        notes.append("Slab on the ground: no SANS 10400-XA minimum unless it has underfloor heating; shown for the record.")
+    if not ok:
+        extra = req - total
+        ins = [l for l in layers if l.get("lam")]
+        ins = [l for l in ins if XA_MATERIALS.get(l.get("mat"), (0, 0, False))[2]]
+        if ins:
+            lam = float(ins[-1]["lam"])
+            notes.append(f"Short by R {extra:.2f}: add about {extra * lam * 1000:.0f} mm more "
+                         f"{ins[-1]['mat']} (or another insulation).")
+        else:
+            notes.append(f"Short by R {extra:.2f}: add insulation.")
+    if el.get("note"):
+        notes.append(el["note"])
+    if el.get("type", "").startswith("Wall - light") and el.get("metal_frame"):
+        if not any(l.get("thermal_break") for l in layers):
+            notes.append("Metal framing needs a thermal break of R >= 0.2 between metal elements.")
+    return {"name": el.get("name", ""), "type": el.get("type", ""), "total": total,
+            "req": req, "ok": ok, "notes": " ".join(notes)}
+
+
+XA_MASS_NOTE = "Check the wall mass: heavy = 270 kg/m2 or more. Change the type under Edit layers if yours is lighter."
+_B = "Clay brick (common)"
+XA_PRESETS = {
+    # ---- walls ----
+    "Wall - 50 mm cavity brick wall, plastered inside": ("Wall - heavy (>= 270 kg/m2)", True, [
+        {"mat": _B, "t": 110}, {"mat": "Air cavity (unventilated, 50 mm)", "t": 50},
+        {"mat": _B, "t": 110}, {"mat": "Cement plaster", "t": 15}]),
+    "Wall - 280 mm cavity brick wall (110 + 60 cavity + 110), 16 mm plaster both sides": ("Wall - heavy (>= 270 kg/m2)", True, [
+        {"mat": "Cement plaster", "t": 16}, {"mat": _B, "t": 110},
+        {"mat": "Air cavity (unventilated, 60 mm)", "t": 60}, {"mat": _B, "t": 110},
+        {"mat": "Cement plaster", "t": 16}],
+        {"note": "280 mm cavity wall (two 110 mm brick skins with a 60 mm cavity); 312 mm overall with the 16 mm plaster each side."}),
+    "Wall - internal: 110 mm brick, 16 mm plaster both sides": ("Internal wall (no XA minimum)", True, [
+        {"mat": "Cement plaster", "t": 16}, {"mat": _B, "t": 110}, {"mat": "Cement plaster", "t": 16}]),
+    "Wall - internal: 110 mm brick, 12 mm plaster both sides": ("Internal wall (no XA minimum)", True, [
+        {"mat": "Cement plaster", "t": 12}, {"mat": _B, "t": 110}, {"mat": "Cement plaster", "t": 12}]),
+    "Wall - internal: 90 mm brick, 12 mm plaster both sides": ("Internal wall (no XA minimum)", True, [
+        {"mat": "Cement plaster", "t": 12}, {"mat": _B, "t": 90}, {"mat": "Cement plaster", "t": 12}]),
+    "Wall - internal: plasterboard both sides on stud, 50 mm glass wool": ("Internal wall (no XA minimum)", True, [
+        {"mat": "Gypsum plasterboard", "t": 12}, {"mat": "Glass wool batt", "t": 50},
+        {"mat": "Gypsum plasterboard", "t": 12}]),
+    "Wall - 230 mm collar-jointed brick, plastered inside": ("Wall - heavy (>= 270 kg/m2)", True, [
+        {"mat": _B, "t": 220}, {"mat": "Cement plaster", "t": 15}]),
+    "Wall - 230 mm brick, plastered both sides": ("Wall - heavy (>= 270 kg/m2)", True, [
+        {"mat": "Cement plaster", "t": 15}, {"mat": _B, "t": 220}, {"mat": "Cement plaster", "t": 15}]),
+    "Wall - 230 mm perforated clay brick, plastered both sides": ("Wall - heavy (>= 270 kg/m2)", True, [
+        {"mat": "Cement plaster", "t": 15}, {"mat": "Clay brick (perforated / hollow)", "t": 220},
+        {"mat": "Cement plaster", "t": 15}], {"note": XA_MASS_NOTE}),
+    "Wall - 230 mm brick with 50 mm EPS inside and plasterboard": ("Wall - heavy (>= 270 kg/m2)", True, [
+        {"mat": _B, "t": 220}, {"mat": "EPS (standard density)", "t": 50}, {"mat": "Gypsum plasterboard", "t": 12}]),
+    "Wall - cavity brick wall with 50 mm XPS in the cavity": ("Wall - heavy (>= 270 kg/m2)", True, [
+        {"mat": _B, "t": 110}, {"mat": "XPS", "t": 50}, {"mat": _B, "t": 110},
+        {"mat": "Cement plaster", "t": 15}]),
+    "Wall - 190 mm hollow concrete block, plastered both sides": ("Wall - heavy (>= 270 kg/m2)", True, [
+        {"mat": "Cement plaster", "t": 15}, {"mat": "Concrete block (hollow)", "t": 190},
+        {"mat": "Cement plaster", "t": 15}], {"note": XA_MASS_NOTE}),
+    "Wall - 140 mm hollow concrete block, plastered both sides": ("Wall - light (< 270 kg/m2)", True, [
+        {"mat": "Cement plaster", "t": 15}, {"mat": "Concrete block (hollow)", "t": 140},
+        {"mat": "Cement plaster", "t": 15}], {"note": XA_MASS_NOTE}),
+    "Wall - 150 mm AAC block, plastered both sides": ("Wall - light (< 270 kg/m2)", True, [
+        {"mat": "Cement plaster", "t": 15}, {"mat": "AAC block (aerated concrete ~600 kg/m3)", "t": 150},
+        {"mat": "Cement plaster", "t": 15}]),
+    "Wall - 200 mm AAC block, plastered both sides": ("Wall - light (< 270 kg/m2)", True, [
+        {"mat": "Cement plaster", "t": 15}, {"mat": "AAC block (aerated concrete ~600 kg/m3)", "t": 200},
+        {"mat": "Cement plaster", "t": 15}]),
+    "Wall - brick veneer with glass wool and plasterboard": ("Wall - light (< 270 kg/m2)", True, [
+        {"mat": _B, "t": 110}, {"mat": "Air cavity (unventilated, 50 mm)", "t": 50},
+        {"mat": "Glass wool blanket", "t": 70}, {"mat": "Gypsum plasterboard", "t": 12}]),
+    "Wall - brick veneer with 90 mm glass wool batts and plasterboard": ("Wall - light (< 270 kg/m2)", True, [
+        {"mat": _B, "t": 110}, {"mat": "Air cavity (unventilated, 50 mm)", "t": 50},
+        {"mat": "Glass wool batt", "t": 90}, {"mat": "Gypsum plasterboard", "t": 12}]),
+    "Wall - brick veneer with 50 mm PIR board and plasterboard": ("Wall - light (< 270 kg/m2)", True, [
+        {"mat": _B, "t": 110}, {"mat": "Air cavity (unventilated, 50 mm)", "t": 50},
+        {"mat": "PIR / PUR rigid foam", "t": 50}, {"mat": "Gypsum plasterboard", "t": 12}]),
+    "Wall - fibre cement cladding with insulation and plasterboard": ("Wall - light (< 270 kg/m2)", True, [
+        {"mat": "Fibre cement board", "t": 9}, {"mat": "Glass wool blanket", "t": 90},
+        {"mat": "Gypsum plasterboard", "t": 12}]),
+    "Wall - timber frame, 140 mm glass wool, OSB and plasterboard": ("Wall - light (< 270 kg/m2)", True, [
+        {"mat": "Fibre cement board", "t": 9}, {"mat": "OSB / plywood board", "t": 9},
+        {"mat": "Glass wool batt", "t": 140}, {"mat": "Gypsum plasterboard", "t": 12}]),
+    "Wall - light steel frame, 90 mm glass wool, 20 mm PIR over frame": ("Wall - light (< 270 kg/m2)", True, [
+        {"mat": "Fibre cement board", "t": 9}, {"mat": "PIR / PUR rigid foam", "t": 20},
+        {"mat": "Glass wool batt", "t": 90}, {"mat": "Gypsum plasterboard", "t": 12}],
+        {"metal_frame": True, "note": "Steel framing: the continuous PIR layer is the thermal break."}),
+    "Wall - insulated sandwich panel, 100 mm PIR core": ("Wall - light (< 270 kg/m2)", True, [
+        {"mat": "Steel sheeting", "t": 0.5}, {"mat": "PIR / PUR rigid foam", "t": 100},
+        {"mat": "Steel sheeting", "t": 0.5}]),
+    # ---- roofs ----
+    "Roof - tiled, ceiling with glass wool blanket": ("Roof / ceiling", False, [
+        {"mat": "Roof & ceiling materials (XA guide: tiles ~0.35, metal ~0.38)"},
+        {"mat": "Glass wool blanket", "t": 135}]),
+    "Roof - metal sheeting, ceiling with glass wool blanket": ("Roof / ceiling", False, [
+        {"mat": "Roof & ceiling materials (XA guide: tiles ~0.35, metal ~0.38)", "rfix": 0.38},
+        {"mat": "Glass wool blanket", "t": 135}]),
+    "Roof - tiled, 160 mm glass wool blanket and plasterboard ceiling": ("Roof / ceiling", True, [
+        {"mat": "Roof & ceiling materials (XA guide: tiles ~0.35, metal ~0.38)"},
+        {"mat": "Air space under roof (unventilated)"}, {"mat": "Glass wool blanket", "t": 160},
+        {"mat": "Gypsum plasterboard", "t": 12}]),
+    "Roof - tiled, 190 mm polyester blanket over ceiling": ("Roof / ceiling", False, [
+        {"mat": "Roof & ceiling materials (XA guide: tiles ~0.35, metal ~0.38)"},
+        {"mat": "Polyester fibre blanket", "t": 190}]),
+    "Roof - tiled, 150 mm cellulose fibre loose-fill over ceiling": ("Roof / ceiling", False, [
+        {"mat": "Roof & ceiling materials (XA guide: tiles ~0.35, metal ~0.38)"},
+        {"mat": "Cellulose fibre loose-fill", "t": 150}]),
+    "Roof - tiled, 150 mm rock wool over ceiling": ("Roof / ceiling", False, [
+        {"mat": "Roof & ceiling materials (XA guide: tiles ~0.35, metal ~0.38)"},
+        {"mat": "Stone / rock wool", "t": 150}]),
+    "Roof - metal sheeting, 100 mm PIR insulated panel": ("Roof / ceiling", True, [
+        {"mat": "Steel sheeting", "t": 0.5}, {"mat": "PIR / PUR rigid foam", "t": 100},
+        {"mat": "Steel sheeting", "t": 0.5}]),
+    "Roof - flat concrete slab, 120 mm XPS above, screed": ("Roof / ceiling", True, [
+        {"mat": "Cement screed", "t": 40}, {"mat": "XPS", "t": 120}, {"mat": "Waterproofing membrane", "t": 3},
+        {"mat": "Dense concrete", "t": 150}, {"mat": "Cement plaster", "t": 15}]),
+    "Roof - flat concrete slab, 100 mm PIR above, waterproofing": ("Roof / ceiling", True, [
+        {"mat": "Cement screed", "t": 40}, {"mat": "PIR / PUR rigid foam", "t": 100},
+        {"mat": "Waterproofing membrane", "t": 3}, {"mat": "Dense concrete", "t": 170},
+        {"mat": "Cement plaster", "t": 15}]),
+    "Roof - concrete slab, 160 mm XPS above, screed and waterproofing": ("Roof / ceiling", True, [
+        {"mat": "Cement screed", "t": 40}, {"mat": "XPS", "t": 160}, {"mat": "Waterproofing membrane", "t": 3},
+        {"mat": "Dense concrete", "t": 170}, {"mat": "Cement plaster", "t": 15}]),
+    "Roof - roof sheets on trusses, 135 mm glass wool and plasterboard ceiling": ("Roof / ceiling", True, [
+        {"mat": "Roof & ceiling materials (XA guide: tiles ~0.35, metal ~0.38)", "rfix": 0.38},
+        {"mat": "Air space under roof (unventilated)"}, {"mat": "Glass wool blanket", "t": 135},
+        {"mat": "Gypsum plasterboard", "t": 12}]),
+    "Roof - timber rafters, 100 mm PIR between, ceiling board": ("Roof / ceiling", True, [
+        {"mat": "Roof & ceiling materials (XA guide: tiles ~0.35, metal ~0.38)"},
+        {"mat": "PIR / PUR rigid foam", "t": 100}, {"mat": "Gypsum plasterboard", "t": 12}]),
+    # ---- floors ----
+    "Floor - suspended, insulated underneath": ("Suspended floor", True, [
+        {"mat": "Timber (softwood)", "t": 22}, {"mat": "Glass wool batt", "t": 50}]),
+    "Floor - suspended timber floor, 100 mm glass wool between joists": ("Suspended floor", True, [
+        {"mat": "Timber (softwood)", "t": 22}, {"mat": "Glass wool batt", "t": 100}]),
+    "Floor - suspended timber floor, 50 mm PIR between joists": ("Suspended floor", True, [
+        {"mat": "Timber (softwood)", "t": 22}, {"mat": "PIR / PUR rigid foam", "t": 50}]),
+    "Floor - suspended concrete slab, 50 mm XPS underneath": ("Suspended floor", True, [
+        {"mat": "Ceramic tiles", "t": 10}, {"mat": "Cement screed", "t": 40},
+        {"mat": "Dense concrete", "t": 150}, {"mat": "XPS", "t": 50}]),
+    "Floor - suspended concrete slab, 70 mm rock wool underneath": ("Suspended floor", True, [
+        {"mat": "Cement screed", "t": 40}, {"mat": "Dense concrete", "t": 150},
+        {"mat": "Stone / rock wool", "t": 70}]),
+    "Floor - within the building: 250 mm concrete slab, 35 mm screed, 10 mm tiles, 16 mm plaster under": ("Floor within the building (no XA minimum)", True, [
+        {"mat": "Ceramic tiles", "t": 10}, {"mat": "Cement screed", "t": 35},
+        {"mat": "Dense concrete", "t": 250}, {"mat": "Cement plaster", "t": 16}],
+        {"note": "Floor inside the insulated building envelope."}),
+    "Floor - within the building: 470 mm concrete slab, 35 mm screed, 10 mm tiles, 16 mm plaster under": ("Floor within the building (no XA minimum)", True, [
+        {"mat": "Ceramic tiles", "t": 10}, {"mat": "Cement screed", "t": 35},
+        {"mat": "Dense concrete", "t": 470}, {"mat": "Cement plaster", "t": 16}],
+        {"note": "Floor inside the insulated building envelope."}),
+    "Floor - on the ground: 85 mm concrete, 35 mm screed, 10 mm tiles, 50 mm Isoboard (EPS) under": ("Floor on ground (no XA minimum)", True, [
+        {"mat": "Ceramic tiles", "t": 10}, {"mat": "Cement screed", "t": 35},
+        {"mat": "Dense concrete", "t": 85}, {"mat": "EPS (standard density)", "t": 50}]),
+    "Floor - on the ground: 85 mm concrete, 35 mm screed, 10 mm tiles, 40 mm Isoboard (EPS) under": ("Floor on ground (no XA minimum)", True, [
+        {"mat": "Ceramic tiles", "t": 10}, {"mat": "Cement screed", "t": 35},
+        {"mat": "Dense concrete", "t": 85}, {"mat": "EPS (standard density)", "t": 40}]),
+    "Floor - on the ground: 85 mm concrete, 35 mm screed, 10 mm tiles, no insulation": ("Floor on ground (no XA minimum)", True, [
+        {"mat": "Ceramic tiles", "t": 10}, {"mat": "Cement screed", "t": 35},
+        {"mat": "Dense concrete", "t": 85}]),
+    "Floor - slab with underfloor heating": ("Floor with underfloor heating", True, [
+        {"mat": "XPS", "t": 30}, {"mat": "Dense concrete", "t": 100}]),
+    "Floor - underfloor heating slab, 40 mm XPS under screed": ("Floor with underfloor heating", True, [
+        {"mat": "Ceramic tiles", "t": 10}, {"mat": "Cement screed", "t": 65}, {"mat": "XPS", "t": 40},
+        {"mat": "Waterproofing membrane", "t": 1}, {"mat": "Concrete (medium density)", "t": 100}]),
+    "Floor - underfloor heating slab, 50 mm EPS under screed": ("Floor with underfloor heating", True, [
+        {"mat": "Cement screed", "t": 65}, {"mat": "EPS (standard density)", "t": 50},
+        {"mat": "Concrete (medium density)", "t": 100}]),
+    "Floor - upper storey concrete slab with underfloor heating, 30 mm XPS under screed": ("Floor with underfloor heating", True, [
+        {"mat": "Ceramic tiles", "t": 10}, {"mat": "Cement screed", "t": 65}, {"mat": "XPS", "t": 30},
+        {"mat": "Concrete (medium density)", "t": 170}, {"mat": "Cement plaster", "t": 15}]),
+    "Floor - ground floor slab with underfloor heating, 75 mm XPS under slab": ("Floor with underfloor heating", True, [
+        {"mat": "Ceramic tiles", "t": 10}, {"mat": "Cement screed", "t": 65}, {"mat": "Waterproofing membrane", "t": 1},
+        {"mat": "Concrete (medium density)", "t": 100}, {"mat": "XPS", "t": 75}]),
+    # ---- hot water pipes ----
+    "Hot water pipe - glass wool lagging 40 mm (pipe up to 80 mm)": ("Hot water pipe (<= 80 mm)", False, [
+        {"mat": "Glass wool blanket", "t": 40}]),
+    "Hot water pipe - polyethylene foam lagging 40 mm (pipe up to 80 mm)": ("Hot water pipe (<= 80 mm)", False, [
+        {"mat": "Polyethylene foam pipe lagging", "t": 40}]),
+    "Hot water pipe - elastomeric foam lagging 40 mm (pipe up to 80 mm)": ("Hot water pipe (<= 80 mm)", False, [
+        {"mat": "Elastomeric foam pipe lagging", "t": 40}]),
+    "Hot water pipe - rock wool lagging 35 mm (pipe up to 80 mm)": ("Hot water pipe (<= 80 mm)", False, [
+        {"mat": "Stone / rock wool", "t": 35}]),
+    "Hot water pipe - glass wool lagging 60 mm (pipe over 80 mm)": ("Hot water pipe (> 80 mm)", False, [
+        {"mat": "Glass wool blanket", "t": 60}]),
+    "Hot water pipe - rock wool lagging 50 mm (pipe over 80 mm)": ("Hot water pipe (> 80 mm)", False, [
+        {"mat": "Stone / rock wool", "t": 50}]),
+    "Hot water pipe - PIR lagging 40 mm (pipe over 80 mm)": ("Hot water pipe (> 80 mm)", False, [
+        {"mat": "PIR / PUR rigid foam", "t": 40}]),
+}
+
+# Personal build-ups ("My build-ups") are kept in one small file so they are there in every project
+MY_PRESETS_FILE = os.path.join(os.path.expanduser("~"), ".mot_xa_my_buildups.json")
+
+
+def load_my_presets():
+    try:
+        with open(MY_PRESETS_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        return [x for x in data if isinstance(x, dict) and x.get("name") and x.get("type")]
+    except Exception:
+        return []
+
+
+def save_my_presets(items):
+    try:
+        with open(MY_PRESETS_FILE, "w", encoding="utf-8") as f:
+            json.dump(items, f, indent=2)
+        return True
+    except Exception:
+        return False
+
+
+def make_layer(spec):
+    mat = spec["mat"]
+    lam, rfix, _ins = XA_MATERIALS.get(mat, (0.1, None, False))
+    return {"mat": mat, "t": spec.get("t", 0), "lam": spec.get("lam", lam),
+            "rfix": spec.get("rfix", rfix)}
+
+
+# SANS 204:2011 Table 5 - fenestration constants (conductance, solar heat gain) per zone 1-6
+XA_FEN_2011 = {"1": (1.2, 0.15), "2": (1.4, 0.12), "3": (1.4, 0.10), "4": (1.4, 0.13),
+               "5": (1.4, 0.11), "6": (1.2, 0.13)}
+# Glass: (U-value W/m2K, solar heat gain coefficient S). Typical centre-of-glass values for a
+# 6 mm pane / 12-16 mm cavity - replace with your glazier's data sheet (choose Custom) when you have it.
+XA_GLASS = {"Single clear glass (U 5.6, S 0.77)": (5.6, 0.77),
+            "Single tinted glass (U 5.6, S 0.58)": (5.6, 0.58),
+            "Single reflective / solar control (U 5.6, S 0.45)": (5.6, 0.45),
+            "Single laminated clear (U 5.6, S 0.72)": (5.6, 0.72),
+            "Single low-E coated (U 3.7, S 0.65)": (3.7, 0.65),
+            "Double glazed clear, air (U 3.0, S 0.70)": (3.0, 0.70),
+            "Double glazed tinted (U 3.0, S 0.56)": (3.0, 0.56),
+            "Double glazed reflective / solar control (U 2.8, S 0.35)": (2.8, 0.35),
+            "Double glazed low-E, air (U 1.9, S 0.60)": (1.9, 0.60),
+            "Double glazed low-E, argon (U 1.5, S 0.58)": (1.5, 0.58),
+            "Double glazed low-E solar control, argon (U 1.4, S 0.35)": (1.4, 0.35),
+            "Double glazed laminated low-E (U 1.8, S 0.55)": (1.8, 0.55),
+            "Triple glazed low-E, argon (U 0.8, S 0.50)": (0.8, 0.50),
+            "Custom": (5.6, 0.77)}
+# Frame types: typical frame U-value (W/m2K). "Not specified" keeps the glass U only (the old behaviour).
+XA_FRAMES = {"Not specified (glass U only)": None,
+             "Aluminium - no thermal break (U 5.9)": 5.9,
+             "Aluminium - thermally broken (U 3.2)": 3.2,
+             "Aluminium - high-performance thermal break (U 2.2)": 2.2,
+             "uPVC - multi-chamber (U 1.8)": 1.8,
+             "Timber - hardwood, e.g. meranti / sapele (U 2.2)": 2.2,
+             "Timber - softwood, e.g. SA pine (U 1.8)": 1.8,
+             "Aluminium-clad timber (U 1.8)": 1.8,
+             "Steel - no thermal break (U 5.9)": 5.9,
+             "Steel - thermally broken (U 3.5)": 3.5,
+             "Fibreglass / composite (U 1.6)": 1.6,
+             "Custom frame U-value": None}
+
+
+def fenestration_storey(nfa, openings, zone2011):
+    """SANS 204:2011 deemed-to-satisfy: aggregate conductance and solar heat gain against
+    NFA x constants. openings: list of (area m2, U, S, E)."""
+    cu, cs = XA_FEN_2011.get(zone2011, (1.4, 0.11))
+    agg_u = sum(a * u for a, u, _s, _e in openings)
+    agg_s = sum(a * s * e for a, _u, s, e in openings)
+    return {"max_u": nfa * cu, "agg_u": agg_u, "max_s": nfa * cs, "agg_s": agg_s,
+            "ok": agg_u <= nfa * cu + 1e-9 and agg_s <= nfa * cs + 1e-9}
+
+
+# --------------------------------------------------------------------------
+# Orientation (SANS 10400-XA:2021 clauses 5.1, 5.2, 5.3.4, 5.3.5, tables 3 and 4)
+# --------------------------------------------------------------------------
+FACE_SECTORS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+FACE_GROUP_A = {"W", "NW", "N", "NE", "E"}          # solar heat gain AND U-value limits apply
+FACE_GROUP_B = {"SW", "S", "SE"}                    # only the U-value limit applies
+# side of the plan sheet -> (label, degrees clockwise from the top of the sheet)
+PLAN_SIDES = {"T": ("Top of plan", 0), "TR": ("Top-right", 45), "R": ("Right of plan", 90),
+              "BR": ("Bottom-right", 135), "B": ("Bottom of plan", 180), "BL": ("Bottom-left", 225),
+              "L": ("Left of plan", 270), "TL": ("Top-left", 315)}
+# Table 4: (max % of storey nett floor area, max U, max SHGC shaded W/NW/N/NE/E, max SHGC unshaded)
+XA_TABLE4 = [(20, None, None, None), (25, 5.20, 0.66, 0.49), (30, 4.40, 0.53, 0.44), (35, 3.80, 0.49, 0.40),
+             (40, 3.30, 0.44, 0.35), (45, 3.00, 0.40, 0.33), (50, 2.60, 0.35, 0.30), (55, 2.40, 0.33, 0.28),
+             (60, 2.20, 0.30, 0.25), (1e9, 2.00, 0.28, 0.22)]
+# Table 3: shading projection multiplier by latitude (degrees south): P >= H x multiplier
+XA_SHADE_MULT = [(22, 0.33), (24, 0.36), (26, 0.40), (28, 0.42), (30, 0.46), (32, 0.50), (1e9, 0.54)]
+
+
+def _face_code_ok(c):
+    c = (c or "").strip().upper()
+    if c in PLAN_SIDES:
+        return True
+    if c.startswith("@"):
+        try:
+            float(c[1:]); return True
+        except ValueError:
+            return False
+    return False
+
+
+def face_angle(code):
+    """Degrees clockwise from the top of the plan sheet that a facing code points to (None if unknown).
+    Codes: T, TR, R, BR, B, BL, L, TL, or '@215' (an exact angle, used by the IFC import)."""
+    c = (code or "").strip().upper()
+    if c in PLAN_SIDES:
+        return float(PLAN_SIDES[c][1])
+    if c.startswith("@"):
+        try:
+            return float(c[1:]) % 360.0
+        except ValueError:
+            return None
+    return None
+
+
+def angle_code(deg):
+    return "@%d" % (round(deg) % 360)
+
+
+def parse_facing(text):
+    """'R' -> ('R', {}); 'T;W2=B' -> ('T', {'W2': 'B'}); 'T;W2=@215:2|@40:1' -> ... {'W2': '@215:2|@40:1'}.
+    The first part with no '=' is the facing of the whole room; 'TAG=...' overrides it for that window."""
+    base, over = "", {}
+    for part in (text or "").split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        if "=" in part:
+            k, v = part.split("=", 1)
+            v = v.strip().upper()
+            if v and all(_face_code_ok(x.split(":")[0]) for x in v.split("|")):
+                over[k.strip().upper()] = v
+        elif _face_code_ok(part):
+            base = part.upper()
+    return base, over
+
+
+def make_facing(base, over):
+    parts = [base] if base else []
+    parts += [f"{k}={v}" for k, v in sorted(over.items()) if v]
+    return ";".join(parts)
+
+
+def facing_parts(base, over, tag, qty):
+    """[(facing code, how many)] for a window tag in a room. An override may split the windows of one tag
+    between sides ('@215:2|@40:1'); otherwise they all take the override or the room's facing."""
+    v = over.get((tag or "").upper()) or over.get(re.sub(r"_\d+$", "", (tag or "").upper()))
+    if v:
+        parts = []
+        for x in v.split("|"):
+            c, _, n = x.partition(":")
+            try:
+                parts.append((c, float(n) if n else None))
+            except ValueError:
+                parts.append((c, None))
+        if len(parts) == 1 and parts[0][1] is None:
+            return [(parts[0][0], qty)]
+        known = [n for _c, n in parts if n]
+        tot = sum(known) or 1.0
+        return [(c, qty * (n if n else tot / len(parts)) / tot) for c, n in parts]
+    return [(base, qty)] if base else [("", qty)]
+
+
+def compass_sector(side_code, north_deg):
+    """The real compass sector (N, NE ...) of a facing code, given the angle of north on the sheet
+    (degrees clockwise from the top of the sheet to the north arrow)."""
+    ang = face_angle(side_code)
+    if ang is None:
+        return ""
+    bearing = (ang - north_deg) % 360.0
+    return FACE_SECTORS[int((bearing + 22.5) // 45) % 8]
+
+
+def xa_table4_row(pct):
+    for row in XA_TABLE4:
+        if pct <= row[0] + 1e-9:
+            return row
+    return XA_TABLE4[-1]
+
+
+def xa_shade_multiplier(lat_south):
+    for lim, m in XA_SHADE_MULT:
+        if lat_south <= lim + 1e-9:
+            return m
+    return 0.54
+
+
+def xa_orientation_check(groups, north_deg, lat_south):
+    """groups: {storey: {"nfa": m2, "wins": [dict(area, u, s, sector, shaded_ok, tag, room)]}}.
+    Returns (rows, by_sector, notes).  rows = one per storey and facing group, checked against Table 4."""
+    rows, by_sector, notes = [], {s_: 0.0 for s_ in FACE_SECTORS}, []
+    unset = 0
+    for fl, g in groups.items():
+        nfa = g["nfa"]
+        total = sum(w["area"] for w in g["wins"])
+        pct = total / nfa * 100 if nfa else 0.0
+        t4 = xa_table4_row(pct)
+        for grp, sectors in (("W / NW / N / NE / E", FACE_GROUP_A), ("SW / S / SE", FACE_GROUP_B)):
+            ws = [w for w in g["wins"] if (w["sector"] in sectors) or (not w["sector"] and grp.startswith("W"))]
+            if not ws:
+                continue
+            area = sum(w["area"] for w in ws)
+            au = sum(w["area"] * w["u"] for w in ws) / area
+            asg = sum(w["area"] * w["s"] for w in ws) / area
+            all_shaded = all(w["shaded"] for w in ws)
+            max_u = t4[1]
+            max_s = None if grp.startswith("SW") else (t4[2] if all_shaded else t4[3])
+            ok_u = max_u is None or au <= max_u + 1e-9
+            ok_s = max_s is None or asg <= max_s + 1e-9
+            rows.append({"floor": fl, "group": grp, "area": area, "pct_total": pct, "avg_u": au, "avg_s": asg,
+                         "max_u": max_u, "max_s": max_s, "shaded": all_shaded if grp.startswith("W") else None,
+                         "ok_u": ok_u, "ok_s": ok_s, "ok": ok_u and ok_s, "unset": sum(1 for w in ws if not w["sector"])})
+        for w in g["wins"]:
+            if w["sector"]:
+                by_sector[w["sector"]] += w["area"]
+            else:
+                unset += 1
+    if unset:
+        notes.append(f"{unset} window(s) have no facing chosen. They are treated as facing W/NW/N/NE/E (the "
+                     "stricter group) until you choose which side of the plan their room faces.")
+    return rows, by_sector, notes
+
+
+def building_orientation(by_sector):
+    """Clause 5.1: the facade with the largest combined fenestration area gives the building's orientation."""
+    best = max(by_sector, key=lambda k: by_sector[k]) if any(by_sector.values()) else ""
+    return best if best and by_sector[best] > 0 else ""
+
+
+def house_totals(results):
+    """Permissible (limit / required) versus actual, for the whole house and for each floor:
+    glazing against the glazing limit, natural light and ventilation."""
+    groups = [("Entire block (all units)" if UNIT_MODE[0] else "Whole building", results)]
+    floors = list(dict.fromkeys(r["group"] for r in results))
+    if len(floors) > 1 or UNIT_MODE[0]:
+        groups += [(f, [r for r in results if r["group"] == f]) for f in floors]
+    out = []
+    for name, rs in groups:
+        area = sum(r["area"] for r in rs)
+        need = [r for r in rs if not r["circulation"] and not r["no_area"]]
+        glz = sum(r["glazed"] for r in rs)
+        gmax = area * GLAZE_LIMIT[0] / 100.0
+        lreq = sum(r["light_req"] for r in need)
+        lact = sum(r["glazed"] for r in need)
+        vreq = sum(r["vent_req"] for r in need)
+        vact = sum(r["openable"] for r in need)
+        out.append({"scope": name, "area": area, "rows": [
+            ("Glazing limit (max %g%% of net floor area)" % GLAZE_LIMIT[0], gmax, glz, glz <= gmax + 1e-9, "max"),
+            ("Natural light (rooms needing it)", lreq, lact, lact + 1e-9 >= lreq, "min"),
+            ("Ventilation (rooms needing it)", vreq, vact, vact + 1e-9 >= vreq, "min")]})
+    return out
+
+
+# --------------------------------------------------------------------------
+# Rational design report - cover / declaration details kept with the project
+# --------------------------------------------------------------------------
+RD_ROUTES = ["Deemed-to-satisfy (SANS 10400-XA 4.2.1 b) - envelope and fenestration",
+             "Rational design (SANS 10400-XA 4.2.1 c) - energy simulation"]
+RD_DEFAULTS = {
+    "project": "", "details": "", "owner": "", "architect": "", "prepared_by": "",
+    "company": "MCP Architecture & Interiors", "contact": "", "rev": "0", "date": "",
+    "occupancy": "H4 - Dwelling house", "population": "", "north": "", "lat": "",
+    "hrs": "", "days": "", "total_area": "", "gross_area": "", "max_demand": "", "max_cons": "",
+    "route": RD_ROUTES[0], "sim_software": "", "sim_cert": "",
+    "ref_demand": "", "act_demand": "", "ref_cons": "", "act_cons": "",
+    "reg_no": "", "notes": "", "lon": "", "epw": "", "has_ifc": "", "ifc_loaded": "", "lv_ifc": "", "lv_ifc_rooms": "",
+}
+RD_FIELDS = [   # key, label, group
+    ("project", "Project name / number", "Project"), ("details", "Site (erf, suburb, town)", "Project"),
+    ("owner", "Property owner", "Project"), ("architect", "Architecture firm", "Project"),
+    ("population", "Population (e.g. 2 per bedroom = 8)", "Project"),
+    ("company", "Report prepared by (company)", "Report"), ("prepared_by", "Competent person (name)", "Report"),
+    ("reg_no", "Registration number", "Report"), ("contact", "Contact line (address / phone / e-mail)", "Report"),
+    ("rev", "Revision", "Report"), ("date", "Date (blank = today)", "Report"),
+    ("sim_software", "Simulation software (rational design only)", "Simulation results"),
+    ("sim_cert", "Software certificate / reference", "Simulation results"),
+    ("ref_demand", "Reference building - avg peak demand (VA/m2)", "Simulation results"),
+    ("act_demand", "Actual building - avg peak demand (VA/m2)", "Simulation results"),
+    ("ref_cons", "Reference building - consumption (kWh/m2/annum)", "Simulation results"),
+    ("act_cons", "Actual building - consumption (kWh/m2/annum)", "Simulation results"),
+]
+
+
+XA_OCCUPANCY = [   # SANS 10400-A occupancy classes
+    "A1 - Entertainment and public assembly", "A2 - Theatrical and indoor sport", "A3 - Places of instruction",
+    "A4 - Worship", "A5 - Outdoor sport", "B1 - High risk commercial service", "B2 - Moderate risk commercial service",
+    "B3 - Low risk commercial service", "C1 - Exhibition hall", "C2 - Museum", "D1 - High risk industrial",
+    "D2 - Moderate risk industrial", "D3 - Low risk industrial", "D4 - Plant room", "E1 - Place of detention",
+    "E2 - Hospital", "E3 - Other institutional (residential)", "E4 - Health care", "F1 - Large shop",
+    "F2 - Small shop", "F3 - Wholesalers' store", "G1 - Offices", "H1 - Hotel", "H2 - Dormitory",
+    "H3 - Domestic residence", "H4 - Dwelling house", "H5 - Hospitality", "J1 - High risk storage",
+    "J2 - Moderate risk storage", "J3 - Low risk storage", "J4 - Parking garage"]
+
+EXTERNAL_RE = re.compile(r"\b(stoep|stoop|stoeps|patio|veranda|verandah|porch|deck|terrace|balcony|"
+                         r"braai|pergola|courtyard|carport|yard)\b", re.I)
+NONHAB_RE = re.compile(r"\b(passage|corridor|hall|hallway|lobby|landing|stairs?|staircase)\b|^\s*pass\b", re.I)
+
+
+def excluded_reason(name):
+    """Rooms that are left out of the light, ventilation and XA calculations:
+    external spaces (stoep, patio...) and non-habitable circulation (passages)."""
+    if EXTERNAL_RE.search(name or ""):
+        return "External space (not inside the building) - not part of the calculation"
+    if NONHAB_RE.search(name or ""):
+        return "Passage / circulation - not a habitable room: no light, ventilation or XA calculation"
+    return ""
+
+
+def check_room(room, schedule, light_pct):
+    tags = parse_tags(room.tags)
+    glazed = 0.0
+    openable = 0.0
+    missing = []
+    detail = []
+    assumed = []
+    n_win = n_door = 0.0
+    for tag, qty in tags.items():
+        op = schedule.get(tag)
+        if op is None:
+            missing.append(tag)
+            continue
+        if not op.counts:
+            continue
+        glazed += op.glazed_m2 * qty
+        openable += op.openable_m2 * qty
+        detail.append(f"{tag} x{qty:g} = {op.glazed_m2 * qty:.2f}")
+        if op.glazed_m2 > 0:
+            if op.kind == "Door":
+                n_door += qty
+            else:
+                n_win += qty
+        if op.glazed_area_m2 <= 0 and op.kind != "Door" and op.glazed_pct >= 99.5:
+            assumed.append(tag)
+    no_area = room.area_m2 <= 0
+    circulation = bool(re.search(r"\b(passage|corridor|hall|hallway|lobby|landing|stair)", room.name, re.I))
+    area = room.area_m2 if not no_area else 1.0
+    light_req = max(area * light_pct / 100.0, MIN_LIGHT_M2)
+    vent_req = area * VENT_PERCENT / 100.0
+    glaze_pct = 0.0 if no_area else glazed / area * 100.0
+    glaze_max = area * GLAZE_LIMIT[0] / 100.0
+    return {
+        "glaze_pct": glaze_pct,
+        "glaze_max": glaze_max,
+        "glaze_ok": no_area or glazed <= glaze_max + 1e-9,
+        "n_win": n_win, "n_door": n_door,
+        "room": room.name,
+        "floor": room.floor,
+        "unit": room.unit,
+        "group": room_group(room.floor, room.unit),
+        "area": room.area_m2,
+        "glazed": glazed,
+        "openable": openable,
+        "light_pct": 0.0 if no_area else glazed / area * 100.0,
+        "vent_pct": 0.0 if no_area else openable / area * 100.0,
+        "light_req": light_req,
+        "vent_req": vent_req,
+        "art_used": bool(room.artificial_light) and not circulation and not no_area
+                    and glazed < light_req,
+        "light_ok": circulation or ((not no_area) and (glazed >= light_req or bool(room.artificial_light))),
+        "vent_ok": circulation or ((not no_area) and openable >= vent_req),
+        "circulation": circulation,
+        "missing": missing,
+        "detail": detail,
+        "assumed": assumed,
+        "internal": room.internal,
+        "no_area": no_area,
+    }
+
+
+# --------------------------------------------------------------------------
+# Offline PDF import (text-based PDFs, e.g. exported from Archicad)
+# --------------------------------------------------------------------------
+try:
+    import pymupdf as fitz
+except ImportError:
+    try:
+        import fitz
+    except ImportError:
+        fitz = None
+
+AREA_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(?:m\s*[²2]|㎡|m\^2|sqm)", re.I)
+NET_RE = re.compile(r"\bnet\b[^0-9\n]{0,25}(\d+(?:[.,]\d+)?)", re.I)
+NUM_RE = re.compile(r"\d+(?:[.,]\d+)?")
+SCHED_TAG_RE = re.compile(r"^[A-Za-z]{1,3}-?\d{1,3}[A-Za-z]?$")
+PLAN_TAG_RE = re.compile(r"^(?:W|D|SD|PTT?|WIN|DR)-?\d{1,3}[A-Za-z]?$", re.I)
+
+# How a window opens -> share of its opening that counts as openable area.
+# (label, openable %, words that suggest it in a schedule). None = user types the %.
+OPEN_STYLES = [
+    ("Custom", None, ()),
+    ("Fixed - does not open", 0.0, ("fixed", "vaste", " vas ")),
+    ("Side-hung casement", 100.0, ("casement", "side hung", "side-hung", "sidehung", "side hinged")),
+    ("Top-hung", 100.0, ("top hung", "top-hung", "tophung", "top hinged")),
+    ("Bottom-hung / tilt", 100.0, ("bottom hung", "bottom-hung", "tilt")),
+    ("Pivot", 100.0, ("pivot",)),
+    ("One of two panels opens", 50.0, ()),
+    ("Sliding, 2 panels", 50.0, ("sliding", "slider", "skuif")),
+    ("Sliding, 3 panels", 33.3, ()),
+]
+STYLE_LABELS = [x[0] for x in OPEN_STYLES]
+STYLE_PCT = {x[0]: x[1] for x in OPEN_STYLES}
+
+
+def style_from_text(text):
+    """Guess the opening style from words in a schedule row, e.g. 'top hung'."""
+    low = " " + text.lower() + " "
+    for label, pct, keys in OPEN_STYLES:
+        if pct is not None and not label.startswith("Fixed") and any(k in low for k in keys):
+            return label, pct
+    for label, pct, keys in OPEN_STYLES:
+        if label.startswith("Fixed") and any(k in low for k in keys):
+            return label, pct
+    return None
+
+
+def _norm_tag(tok):
+    """Fix common text-recognition slips in tags: WO1 -> W01, Wl2 -> W12."""
+    t = tok.strip().upper().replace(" ", "")
+    m = re.match(r"^([A-Z]{1,3})(-?)([0-9OIL]{1,3})([A-Z]?)$", t)
+    if not m or not re.search(r"\d", m.group(3)):
+        return t
+    digits = m.group(3).replace("O", "0").replace("I", "1").replace("L", "1")
+    return f"{m.group(1)}{m.group(2)}{digits}{m.group(4)}"
+
+
+def _to_float(s):
+    return float(s.replace(",", "."))
+
+
+def _cluster_lines(words, tol=3.0):
+    """Group PyMuPDF words into text rows by vertical position."""
+    rows = []
+    for w in sorted(words, key=lambda w: ((w[1] + w[3]) / 2, w[0])):
+        yc = (w[1] + w[3]) / 2
+        if rows and abs(rows[-1]["y"] - yc) <= tol:
+            rows[-1]["w"].append(w)
+        else:
+            rows.append({"y": yc, "w": [w]})
+    return [[x[4] for x in sorted(r["w"], key=lambda x: x[0])] for r in rows]
+
+
+def _header_map(cells):
+    """Work out which column is which from a header row."""
+    hdr = {}
+    for i, c in enumerate(cells):
+        low = c.lower().strip()
+        if not low:
+            continue
+        if any(k in low for k in ("width", "breedte", "wydte")):
+            hdr.setdefault("width", i)
+        elif any(k in low for k in ("height", "hoogte")):
+            hdr.setdefault("height", i)
+        elif "open" in low:
+            hdr.setdefault("open", i)
+        elif any(k in low for k in ("glaz", "glass", "glas")):
+            hdr.setdefault("glaz", i)
+        elif low in ("id", "no", "no.", "nr", "nr.", "ref", "tag", "mark", "number", "nommer"):
+            hdr.setdefault("tag", i)
+    return hdr
+
+
+def _parse_schedule_row(cells, hdr, size=None, auto_tag=None):
+    """Return a dict for one schedule row, or None if it is not a window/door."""
+    tag_i = None
+    ti = hdr.get("tag")
+    if ti is not None and ti < len(cells) and SCHED_TAG_RE.match(_norm_tag(cells[ti])):
+        tag_i = ti
+    else:
+        for i, c in enumerate(cells):
+            if SCHED_TAG_RE.match(_norm_tag(c)):
+                tag_i = i
+                break
+    auto = False
+    if tag_i is not None:
+        tag = _norm_tag(cells[tag_i])
+    else:
+        # No tag like W01: use the first cell if it looks like an ID (a short name or a
+        # small number), as long as it is not a size.
+        for i, c in enumerate(cells):
+            cs = c.strip()
+            if not cs:
+                continue
+            if (len(cs) <= 12 and re.search(r"[A-Za-z0-9]", cs)
+                    and not re.search(r"[x×X*]\s*\d", cs)
+                    and not any(_to_float(n) >= 100 for n in NUM_RE.findall(cs))):
+                tag_i, tag = i, re.sub(r"\s+", "", cs).upper()
+            break
+        if tag_i is None:
+            if not auto_tag:
+                return None
+            tag_i, tag, auto = -1, auto_tag, True      # ID could not be read
+
+    def num_at(key):
+        i = hdr.get(key)
+        if i is None or i >= len(cells):
+            return None
+        m = NUM_RE.search(cells[i])
+        return _to_float(m.group()) if m else None
+
+    w, h = size if size else (num_at("width"), num_at("height"))
+    if w is None or h is None:
+        joined = " ".join(c for i, c in enumerate(cells) if i != tag_i)
+        m = re.search(r"(\d+(?:[.,]\d+)?)\s*[x×X*]\s*(\d+(?:[.,]\d+)?)", joined)
+        if m:
+            w, h = _to_float(m.group(1)), _to_float(m.group(2))
+        else:
+            nums = [_to_float(n) for i, c in enumerate(cells) if i != tag_i
+                    for n in NUM_RE.findall(c)]
+            mm = [n for n in nums if n >= 100]
+            metres = [n for n in nums if 0.3 <= n < 10]
+            if len(mm) >= 2:
+                w, h = mm[0], mm[1]
+            elif len(metres) >= 2:
+                w, h = metres[0], metres[1]
+            else:
+                return None
+    if w < 10 and h < 10:
+        w, h = w * 1000, h * 1000
+    if not (100 <= w <= 10000 and 100 <= h <= 10000):
+        return None
+
+    # A second "A x B" size that is smaller than the window = its opening sash.
+    sash = None
+    rest = " ".join(c for i, c in enumerate(cells) if i != tag_i)
+    for a, b in re.findall(r"(\d+(?:[.,]\d+)?)\s*[x×X*]\s*(\d+(?:[.,]\d+)?)", rest):
+        a, b = _to_float(a), _to_float(b)
+        if a < 10 and b < 10:
+            a, b = a * 1000, b * 1000
+        if 100 <= a <= w * 1.02 and 100 <= b <= h * 1.02 and a * b < w * h * 0.999:
+            sash = (a, b)
+            break
+
+    is_door = tag.startswith("D") or any(
+        re.search(r"\b(door|deur)\b", c, re.I) for c in cells)
+    kind = "Door" if is_door else "Window"
+    gl, op = num_at("glaz"), num_at("open")
+    style, flag = "Custom", set([0] if auto else [])
+    if gl is None:
+        gl = 0.0 if kind == "Door" else 100.0
+        flag.add(3)
+    if sash:
+        op = min(100.0, sash[0] * sash[1] / (w * h) * 100.0)
+        flag.update((7, 8))
+    elif op is None:
+        guess = style_from_text(" ".join(cells))
+        if guess:
+            style, op = guess
+        else:
+            op = 100.0 if kind == "Door" else 50.0
+        flag.add(4)
+    return {"tag": tag, "width": w, "height": h, "glazed": gl,
+            "openable": op, "kind": kind, "style": style, "flag": flag,
+            "sash_w": sash[0] if sash else 0.0, "sash_h": sash[1] if sash else 0.0,
+            "sash_qty": 1.0, "defaulted": bool(flag)}
+
+
+def _add_unique(found, item):
+    """Keep every window: a repeated ID with different sizes becomes ID_2, ID_3..."""
+    key = item["tag"]
+    old = found.get(key)
+    if old and (old["width"], old["height"]) != (item["width"], item["height"]):
+        n = 2
+        while f"{key}_{n}" in found:
+            n += 1
+        item["tag"] = key = f"{key}_{n}"
+    found.setdefault(key, item)
+
+
+def _schedule_pdf_columns(page):
+    """Archicad column-style schedules drawn as text (one door/window per column)."""
+    lines = _pdf_lines(page)
+    qs = sorted([l for l in lines if l[4].strip().lower() == "quantity"], key=lambda l: l[0])
+    out = []
+    for i, ql in enumerate(qs):
+        x_lo = ql[0] - 5
+        x_hi = qs[i + 1][0] - 5 if i + 1 < len(qs) else 1e9
+        reg = [l for l in lines if x_lo <= l[0] < x_hi and ql[1] - 60 <= l[1] <= ql[1] + 460]
+        # keep only the table itself: its size cells run in one row with a regular spacing
+        row = sorted([l for l in reg if re.search(r"^\d[\d ]*\s*[x×X✕*]\s*\d[\d ]*$", l[4].strip())
+                      and ql[1] + 5 <= l[1] <= ql[1] + 25], key=lambda l: l[0])
+        if row:
+            last = row[0]
+            for l in row[1:]:
+                if l[0] - last[0] > 160:
+                    break
+                last = l
+            reg = [l for l in reg if l[0] < last[2] + 70]
+        hint = " ".join(l[4] for l in reg if l[1] < ql[1] and re.search(r"door|window|schedule", l[4], re.I))
+        try:
+            items = schedule_columns(reg, None, hint)
+        except Exception:
+            items = None
+        if items:
+            out.extend(items)
+    return out
+
+
+def extract_schedule_pdf(path):
+    """Column-style (Archicad) schedules first; otherwise the row-style reader."""
+    if fitz is not None:
+        found = {}
+        for page in fitz.open(path):
+            try:
+                for it in _schedule_pdf_columns(page):
+                    found.setdefault(it["tag"], it)
+            except Exception:
+                pass
+        if found:
+            return list(found.values())
+    return _extract_schedule_pdf_old(path)
+
+
+def _extract_schedule_pdf_old(path, columns_first=False):
+    """Read a window/door schedule from a text-based PDF."""
+    if fitz is None:
+        raise RuntimeError("PyMuPDF is not installed.")
+    doc = fitz.open(path)
+    found = {}
+    for page in doc:
+        if columns_first:
+            try:
+                col = _schedule_pdf_columns(page)
+            except Exception:
+                col = []
+            if col:
+                for it in col:
+                    found.setdefault(it["tag"], it)
+                continue
+            try:
+                if len(page.get_cdrawings()) > 1500 or len(page.get_text("words")) > 3000:
+                    continue         # a drawing sheet with no column schedule on it
+            except Exception:
+                continue
+        tables, from_grid = [], True
+        try:
+            busy = len(page.get_cdrawings()) > 1500   # a CAD plan, not a schedule table
+        except Exception:
+            busy = True
+        if not busy:
+            try:
+                tables = [t.extract() for t in page.find_tables().tables]
+            except Exception:
+                tables = []
+        if not any(tables):
+            tables, from_grid = [_cluster_lines(page.get_text("words"))], False
+        for rows in tables:
+            hdr = {}
+            for row in rows:
+                cells = [("" if c is None else str(c)).replace("\n", " ").strip()
+                         for c in row]
+                if from_grid:
+                    cand = _header_map(cells)
+                    if "width" in cand and "height" in cand:
+                        hdr = cand
+                        continue
+                item = _parse_schedule_row(cells, hdr if from_grid else {})
+                if item:
+                    _add_unique(found, item)
+    return list(found.values())
+
+
+def _area_from_text(text):
+    m = NET_RE.search(text) or AREA_RE.search(text)
+    if not m:
+        return None
+    v = _to_float(m.group(1))
+    return v if 0.5 <= v <= 500 else None
+
+
+def _name_from_block(text):
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or not re.search(r"[A-Za-z]", s):
+            continue
+        if AREA_RE.search(s) or re.search(r"\b(net|gross)\b|\barea\b", s, re.I):
+            continue
+        return s
+    return ""
+
+
+def _name_nearby(blocks, stamp):
+    sx, sy0 = (stamp[0] + stamp[2]) / 2, stamp[1]
+    best, bd = None, 1e9
+    for o in blocks:
+        if o is stamp or _area_from_text(o[4]) is not None:
+            continue
+        name = _name_from_block(o[4])
+        if not name:
+            continue
+        gap = sy0 - o[3]
+        if abs((o[0] + o[2]) / 2 - sx) <= 60 and -2 <= gap <= 30 and gap < bd:
+            best, bd = name, gap
+    return best
+
+
+_CONF = str.maketrans({"V": "W", "O": "0", "Q": "0", "D": "0", "I": "1", "L": "1", "S": "5", "B": "8", "Z": "2"})
+
+
+def _fuzzy_known(t, known):
+    """Match a tag the text reader got slightly wrong (PTT6I5 -> PTT615)."""
+    if t in known:
+        return t
+    if len(t) < 3:
+        return None
+    key = t.translate(_CONF)
+    for k in known:
+        if len(k) == len(t) and k.translate(_CONF) == key:
+            return k
+    return None
+
+
+def rooms_from_page(blocks, words, width, height, known_tags=None, radius_frac=0.35):
+    """Find room labels (name + net area) and give nearby window/door tags to the
+    nearest label. blocks = (x0,y0,x1,y1,text,...), words = (x0,y0,x1,y1,text)."""
+    known = {t.upper() for t in known_tags} if known_tags else None
+    stamps = []
+    for b in blocks:
+        area = _area_from_text(b[4])
+        if area is None:
+            continue
+        name = _name_from_block(b[4]) or _name_nearby(blocks, b) or ""
+        stamps.append({"name": name, "area": area, "tags": {},
+                       "rect": (b[0], b[1], b[2], b[3]),
+                       "c": ((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)})
+    if not stamps:
+        return [], 0
+    unassigned = 0
+    limit = radius_frac * max(width, height)
+    for w in words:
+        t = _norm_tag(w[4].strip(".,;:()[]"))
+        if known:
+            t = _fuzzy_known(t, known)
+            if not t:
+                continue
+        elif not PLAN_TAG_RE.match(t):
+            continue
+        cx, cy = (w[0] + w[2]) / 2, (w[1] + w[3]) / 2
+        if any(s["rect"][0] <= cx <= s["rect"][2] and s["rect"][1] <= cy <= s["rect"][3]
+               for s in stamps):
+            continue
+        best = min(stamps, key=lambda s: (s["c"][0] - cx) ** 2 + (s["c"][1] - cy) ** 2)
+        d = ((best["c"][0] - cx) ** 2 + (best["c"][1] - cy) ** 2) ** 0.5
+        if d > limit:
+            unassigned += 1
+            continue
+        best["tags"][t] = best["tags"].get(t, 0) + 1
+    return stamps, unassigned
+
+
+def _name_unnamed(rooms):
+    for i, r in enumerate(rooms, 1):
+        if not r["name"]:
+            r["name"] = f"Room {i}"
+
+
+def _extract_rooms_pdf_simple(path, known_tags=None, radius_frac=0.35):
+    """Older, simple reader: every area label on every page (kept as a fallback)."""
+    doc = fitz.open(path)
+    rooms, unassigned = [], 0
+    for page in doc:
+        blocks = [b for b in page.get_text("blocks") if b[6] == 0]
+        r, u = rooms_from_page(blocks, page.get_text("words"), page.rect.width,
+                               page.rect.height, known_tags, radius_frac)
+        rooms.extend(r)
+        unassigned += u
+    _name_unnamed(rooms)
+    return rooms, unassigned
+
+
+# ---- big CAD sheets (A1 Archicad PDFs): find each floor plan among sections / elevations ----
+_SCALE_RE = re.compile(r"^1\s*:\s*\d+(?:[.,]\d+)?(?:\s*,.*)?$")
+_FLOOR_TITLE_RE = re.compile(
+    r"^(?P<pre>.*?)\b(?P<fl>ground|first|second|third|fourth|basement|upper|lower)\s+floor\s*$", re.I)
+# how far above its title a drawing of this kind can reach (PDF units, about 0.35 mm)
+_DRAWING_REACH = (("elevation", 330), ("section", 650), ("detail", 330), ("roof", 450),
+                  ("site", 450), ("locality", 450))
+
+
+def _pdf_lines(page):
+    """Every line of text on a page: (x0, y0, x1, y1, text)."""
+    out = []
+    for b in page.get_text("dict")["blocks"]:
+        if b.get("type") != 0:
+            continue
+        for ln in b["lines"]:
+            t = "".join(sp["text"] for sp in ln["spans"]).replace("\xa0", " ").strip()
+            if t:
+                x0, y0, x1, y1 = ln["bbox"]
+                out.append((x0, y0, x1, y1, t))
+    return out
+
+
+def _drawing_anchors(lines):
+    """Titles of the drawings on a sheet = a text line followed, on the same baseline,
+    by a scale such as 1:50."""
+    anchors = []
+    for sc in [l for l in lines if _SCALE_RE.match(l[4])]:
+        cands = [l for l in lines if l is not sc and abs(l[1] - sc[1]) < 5 and l[2] <= sc[0] + 2
+                 and sc[0] - l[2] < 140 and re.search(r"[A-Za-z]", l[4])]
+        if not cands:
+            continue
+        t = max(cands, key=lambda l: l[2])
+        if re.search(r"scale|drawn|checked", t[4], re.I):
+            continue
+        left, changed = t[0], True
+        while changed:                       # "A   Building Section", "East   Elevation"
+            changed = False
+            for l in lines:
+                if l is not t and abs(l[1] - t[1]) < 5 and l[0] < left and l[2] <= left + 2 \
+                        and left - l[2] < 45:
+                    left, changed = l[0], True
+        anchors.append({"text": t[4], "x": left, "y": t[1]})
+    return anchors
+
+
+def _owner_anchor(l, anchors):
+    """The drawing a text line belongs to: the nearest title below it (and not left of it)."""
+    cx, cy = (l[0] + l[2]) / 2, (l[1] + l[3]) / 2
+    best = None
+    for a in anchors:
+        d = a["y"] - cy
+        if d < -2 or cx < a["x"] - 40:
+            continue
+        if _FLOOR_TITLE_RE.match(a["text"]) and cx > a["x"] + 1100:
+            continue                      # a plan is not wider than this
+        low = a["text"].lower()
+        reach = next((r for k, r in _DRAWING_REACH if k in low), 1200)
+        if _FLOOR_TITLE_RE.match(a["text"]):
+            reach = 1200
+        if d > reach:
+            continue
+        if best is None or d < best[0] - 8 or (abs(d - best[0]) <= 8 and a["x"] > best[1]["x"]):
+            best = (d, a)
+    return best[1] if best else None
+
+
+def _plan_lines_by_floor(page):
+    """{floor name: [(title prefix, lines)]} for the floor plans drawn on one page."""
+    lines = _pdf_lines(page)
+    anchors = _drawing_anchors(lines)
+    floors = [a for a in anchors if _FLOOR_TITLE_RE.match(a["text"])]
+    if not floors:
+        return {}, lines
+    mine = {id(a): [] for a in floors}
+    for l in lines:
+        a = _owner_anchor(l, anchors)
+        if a is not None and id(a) in mine:
+            mine[id(a)].append(l)
+    out = {}
+    for a in floors:
+        m = _FLOOR_TITLE_RE.match(a["text"])
+        fl = m.group("fl").capitalize() + " Floor"
+        out.setdefault(fl, []).append((m.group("pre").strip(), mine[id(a)], a))
+    return out, lines
+
+
+def _pdf_drawing_name(doc):
+    """'PTN 36' from the title block, to tell several houses apart."""
+    try:
+        txt = doc[0].get_text()
+    except Exception:
+        return ""
+    m = re.search(r"(PTN\s*\d+|Erf\s*\d+)", txt, re.I)
+    return re.sub(r"\s+", " ", m.group(1)).upper() if m else ""
+
+
+def extract_rooms_pdf(path, known_tags=None, radius_frac=0.35):
+    """Read the rooms of a floor-plan PDF. On a big CAD sheet each floor plan is found
+    among the sections and elevations; every room carries its 'floor'.
+    Returns (rooms, unassigned_count)."""
+    if fitz is None:
+        raise RuntimeError("PyMuPDF is not installed.")
+    doc = fitz.open(path)
+    plans, nett = {}, {}
+    for page in doc:
+        found, _lines = _plan_lines_by_floor(page)
+        for fl, items in found.items():
+            for pre, ls, a in items:
+                key = pre.lower()
+                if "nett" in key or "net area" in key:
+                    nett.setdefault(fl, []).append(ls)
+                elif pre == "":
+                    plans.setdefault(fl, []).append(ls)
+                elif "water" not in key and "gross" not in key and fl not in plans:
+                    plans.setdefault(fl, []).append(ls)       # e.g. "Proposed First Floor"
+    if not plans:
+        return _extract_rooms_pdf_simple(path, known_tags, radius_frac)
+    rooms, unassigned = [], 0
+    order = ["Basement Floor", "Lower Floor", "Ground Floor", "First Floor", "Upper Floor",
+             "Second Floor", "Third Floor", "Fourth Floor"]
+    for fl in sorted(plans, key=lambda f: order.index(f) if f in order else 99):
+        ls = max(plans[fl], key=len)
+        x0 = min(l[0] for l in ls)
+        y0 = min(l[1] for l in ls)
+        shifted = [(l[0] - x0, l[1] - y0, l[2] - x0, l[3] - y0, l[4]) for l in ls]
+        w = max(l[2] for l in shifted)
+        h = max(l[3] for l in shifted)
+        rr, u = rooms_from_lines(shifted, w, h, known_tags, radius_frac)
+        unassigned += u
+        exact = {}
+        for nl in nett.get(fl, []):                      # exact areas from the "Nett Area" drawing
+            nr, _u = rooms_from_lines(nl, 1.0, 1.0, None, 0.0)
+            for r in nr:
+                exact[r["name"].lower()] = r["area"]
+        for r in rr:
+            r["floor"] = fl
+            ea = exact.get(r["name"].lower())
+            if not ea:     # "Passage" seen several times in the drawing with one and the same area
+                vals = {v for k, v in exact.items()
+                        if re.sub(r"\s*(\(\d+\)|\d+)$", "", k) == r["name"].lower()}
+                ea = vals.pop() if len(vals) == 1 else None
+            if ea:
+                r["area"], r["area_guess"] = ea, False
+        rooms.extend(rr)
+    return rooms, unassigned
+
+
+# --------------------------------------------------------------------------
+# Screenshot import - offline text recognition (RapidOCR; its models are bundled)
+# --------------------------------------------------------------------------
+_ocr = None
+
+
+def _ocr_engine():
+    global _ocr
+    if _ocr is None:
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+        except ImportError:
+            raise RuntimeError("The offline text reader is not installed "
+                               "(pip install rapidocr-onnxruntime).")
+        _ocr = RapidOCR()
+    return _ocr
+
+
+def _qimage_to_array(img, max_side=3000, min_side=1600):
+    """QImage -> BGR numpy array, scaled to a size the text reader copes with."""
+    import numpy as np
+    import cv2
+    img = img.convertToFormat(QImage.Format.Format_RGB32)
+    big = max(img.width(), img.height())
+    scale = 1.0
+    if big > max_side:
+        scale = max_side / big
+    elif big < min_side:
+        scale = min(2.0, min_side / big)
+    if abs(scale - 1.0) > 1e-3:
+        img = img.scaled(int(img.width() * scale), int(img.height() * scale),
+                         Qt.AspectRatioMode.KeepAspectRatio,
+                         Qt.TransformationMode.SmoothTransformation)
+    ba = QByteArray()
+    buf = QBuffer(ba)
+    buf.open(QIODevice.OpenModeFlag.WriteOnly)
+    img.save(buf, "PNG")
+    buf.close()
+    arr = cv2.imdecode(np.frombuffer(bytes(ba), np.uint8), cv2.IMREAD_COLOR)
+    return arr, img.width(), img.height()
+
+
+def ocr_lines(img):
+    """Read all text in a QImage. Returns (lines, width, height); a line is
+    (x0, y0, x1, y1, text)."""
+    arr, w, h = _qimage_to_array(img)
+    result, _ = _ocr_engine()(arr)
+    lines = []
+    for box, text, _score in (result or []):
+        xs, ys = [p[0] for p in box], [p[1] for p in box]
+        t = str(text).strip()
+        if t:
+            lines.append((min(xs), min(ys), max(xs), max(ys), t))
+    return lines, w, h
+
+
+def _line_words(lines):
+    """Split recognised lines into word boxes (positions shared out by length)."""
+    words = []
+    for x0, y0, x1, y1, t in lines:
+        toks = t.split()
+        total = sum(len(k) for k in toks) + max(len(toks) - 1, 0)
+        pos = 0
+        for k in toks:
+            a = x0 + (x1 - x0) * pos / total
+            b = x0 + (x1 - x0) * (pos + len(k)) / total
+            words.append((a, y0, b, y1, k))
+            pos += len(k) + 1
+    return words
+
+
+def _is_tag_like(t):
+    return len(t.split()) == 1 and bool(SCHED_TAG_RE.match(_norm_tag(t)))
+
+
+def _line_blocks(lines):
+    """Join stacked lines (name above area) into label blocks, like a PDF would.
+    Lines that are just a window/door tag stay on their own."""
+    blocks = []
+    for x0, y0, x1, y1, t in sorted(lines, key=lambda l: (l[1], l[0])):
+        merged = False
+        if not _is_tag_like(t):
+            for b in reversed(blocks):
+                if b["tag"]:
+                    continue
+                gap = y0 - b["y1"]
+                if (-0.3 * b["lh"] <= gap <= 0.9 * b["lh"] and
+                        abs((x0 + x1) / 2 - b["cx"]) <= 0.6 * max(x1 - x0, b["x1"] - b["x0"])):
+                    b["text"].append(t)
+                    b["x0"], b["x1"] = min(b["x0"], x0), max(b["x1"], x1)
+                    b["y1"] = max(b["y1"], y1)
+                    b["cx"] = (b["x0"] + b["x1"]) / 2
+                    merged = True
+                    break
+        if not merged:
+            blocks.append({"x0": x0, "y0": y0, "x1": x1, "y1": y1, "text": [t],
+                           "lh": max(y1 - y0, 1.0), "cx": (x0 + x1) / 2,
+                           "tag": _is_tag_like(t)})
+    return [(b["x0"], b["y0"], b["x1"], b["y1"], "\n".join(b["text"]), 0, 0) for b in blocks]
+
+
+def _cluster_rows(words, tol):
+    """Group word boxes into text rows (top to bottom), each sorted left to right."""
+    rows = []
+    for w in sorted(words, key=lambda w: ((w[1] + w[3]) / 2, w[0])):
+        yc = (w[1] + w[3]) / 2
+        if rows and abs(rows[-1]["y"] - yc) <= tol:
+            rows[-1]["w"].append(w)
+        else:
+            rows.append({"y": yc, "w": [w]})
+    for r in rows:
+        r["w"].sort(key=lambda w: w[0])
+    return rows
+
+
+def _merge_tag_tokens(toks):
+    """Join a tag the reader split in two: 'W' '01' -> 'W01'."""
+    out, i = [], 0
+    while i < len(toks):
+        t = toks[i]
+        if (i + 1 < len(toks) and re.fullmatch(r"[A-Za-z]{1,3}-?", t[4])
+                and re.fullmatch(r"[0-9OIL]{1,3}[A-Za-z]?", toks[i + 1][4].upper())
+                and re.search(r"\d", toks[i + 1][4])
+                and toks[i + 1][0] - t[2] < 2.5 * max(t[3] - t[1], 1)):
+            n = toks[i + 1]
+            out.append((t[0], min(t[1], n[1]), n[2], max(t[3], n[3]), t[4] + n[4]))
+            i += 2
+        else:
+            out.append(t)
+            i += 1
+    return out
+
+
+def _header_columns(rows):
+    """Find the header row (has 'width' and 'height') -> x position of each column."""
+    for r in rows:
+        cols = {}
+        for w in r["w"]:
+            low = w[4].lower()
+            xc = (w[0] + w[2]) / 2
+            if any(k in low for k in ("width", "breedte", "wydte")):
+                cols.setdefault("width", xc)
+            elif any(k in low for k in ("height", "hoogte")):
+                cols.setdefault("height", xc)
+        if "width" in cols and "height" in cols:
+            return cols
+    return {}
+
+
+def _size_from_columns(toks, cols, mh):
+    nums = []
+    for idx, t in enumerate(toks):
+        txt = t[4].strip(",.;:")
+        if re.fullmatch(r"\d+(?:[.,]\d+)?", txt):
+            nums.append((idx, (t[0] + t[2]) / 2, _to_float(txt)))
+    picked = []
+    for key in ("width", "height"):
+        best = min(nums, key=lambda n: abs(n[1] - cols[key]), default=None)
+        if best is None or abs(best[1] - cols[key]) > 8 * mh:
+            return None
+        picked.append(best)
+    if picked[0][0] == picked[1][0]:
+        return None
+    return picked[0][2], picked[1][2]
+
+
+def _has_dims(texts):
+    joined = " ".join(texts)
+    if re.search(r"\d+(?:[.,]\d+)?\s*[x×X*]\s*\d+", joined):
+        return True
+    return sum(1 for n in NUM_RE.findall(joined) if _to_float(n) >= 100) >= 2
+
+
+def schedule_from_words(words):
+    """Turn recognised word boxes of a schedule into window/door rows.
+    Returns (items, skipped_ids, raw_text)."""
+    if not words:
+        return [], [], ""
+    heights = sorted(w[3] - w[1] for w in words)
+    mh = max(heights[len(heights) // 2], 1.0)
+    rows = _cluster_rows(words, 0.6 * mh)
+    raw = "\n".join("   ".join(w[4] for w in r["w"]) for r in rows)
+    cols = _header_columns(rows)
+    infos = []
+    for r in rows:
+        toks = _merge_tag_tokens(r["w"])
+        if not toks:
+            continue
+        texts = [t[4] for t in toks]
+        low = " ".join(texts).lower()
+        infos.append({
+            "y": r["y"], "toks": toks, "x0": toks[0][0],
+            "header": any(k in low for k in ("width", "breedte", "wydte")) and
+                      any(k in low for k in ("height", "hoogte")),
+            "tag": any(_is_tag_like(t) for t in texts[:2]),
+            "dims": _has_dims(texts)})
+    body = [i for i in infos if not i["header"]]
+    xs = sorted(i["x0"] for i in body if i["tag"])
+    if not xs:
+        xs = sorted(i["x0"] for i in body if i["dims"])[:1]
+        col0 = xs[0] if xs else None
+    else:
+        col0 = xs[len(xs) // 2]
+    entries = []
+    for i in body:
+        close = bool(entries) and i["y"] - entries[-1]["y"] <= 2.3 * mh
+        at_col0 = col0 is not None and abs(i["x0"] - col0) <= 3 * mh
+        if i["tag"]:
+            new = True
+        elif i["dims"] and at_col0:      # a row with sizes in the ID column = a window
+            new = not (close and entries[-1]["tagged"] and not entries[-1]["dims"])
+        else:
+            new = False
+        if new:
+            entries.append({"y": i["y"], "toks": list(i["toks"]),
+                            "tagged": i["tag"], "dims": i["dims"]})
+        elif close:                      # wrapped second line of the same row
+            entries[-1]["toks"] += i["toks"]
+            entries[-1]["y"] = i["y"]
+            entries[-1]["dims"] = entries[-1]["dims"] or i["dims"]
+    found, skipped = {}, []
+    for k, e in enumerate(entries, 1):
+        texts = [t[4] for t in e["toks"]]
+        size = _size_from_columns(e["toks"], cols, mh) if cols else None
+        item = _parse_schedule_row(texts, {}, size, f"ROW{k}")
+        if item is None and size:
+            item = _parse_schedule_row(texts, {}, None, f"ROW{k}")
+        if item:
+            _add_unique(found, item)
+        else:
+            first = next((t for t in texts[:2] if _is_tag_like(t)), texts[0] if texts else "?")
+            skipped.append(_norm_tag(first))
+    return list(found.values()), skipped, raw
+
+
+# --------------------------------------------------------------------------
+# Optional ONLINE mode: let an AI model with vision read screenshots, using the
+# user's own API key. Off by default - the program works fully offline without it.
+# --------------------------------------------------------------------------
+import urllib.request
+import urllib.error
+import base64
+
+SETTINGS_PATH = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"),
+                             "MCP_LightVent", "settings.json")
+PROVIDERS = {"Claude (Anthropic)": "claude-sonnet-5-5", "ChatGPT (OpenAI)": "gpt-4o"}
+SETTINGS = {"online": False, "provider": "Claude (Anthropic)", "api_key": "", "model": "", "theme": "studio", "gh_repo": "", "gh_token": ""}
+
+
+# ---------------------------------------------------------------- updates from GitHub Releases (installed .exe only)
+def _app_data_file(name):
+    base = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
+    return os.path.join(base, name)
+
+
+def app_version():
+    """Build number of this installed program (the number in the release tag, e.g. v87 -> 87). 0 when running from the .py file."""
+    try:
+        with open(_app_data_file("version.txt"), encoding="utf-8") as f:
+            m_ = re.search(r"\d+", f.read())
+            return int(m_.group(0)) if m_ else 0
+    except Exception:
+        return 0
+
+
+def gh_repo_name():
+    r = (SETTINGS.get("gh_repo") or "").strip()
+    if r:
+        return r
+    try:
+        with open(_app_data_file("app_config.json"), encoding="utf-8") as f:
+            return str(json.load(f).get("repo", "")).strip()
+    except Exception:
+        return ""
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **k):
+        return None
+
+
+def gh_latest_release(repo, token, timeout=15):
+    """The newest release of a (private) repository: {'ver', 'tag', 'name', 'asset_id', 'size', 'notes'}. Raises RuntimeError with a plain message."""
+    if not repo:
+        raise RuntimeError("No GitHub repository is set (Menu > Update settings).")
+    req = urllib.request.Request("https://api.github.com/repos/%s/releases/latest" % repo,
+                                 headers={"Accept": "application/vnd.github+json", "User-Agent": "MOT-XA-Energy",
+                                          **({"Authorization": "Bearer " + token} if token else {})})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            d = json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as ex:
+        if ex.code in (401, 403):
+            raise RuntimeError("GitHub refused the token (check it in Menu > Update settings).")
+        if ex.code == 404:
+            raise RuntimeError("No release found. For a private repository the token is needed (Menu > Update settings).")
+        raise RuntimeError("GitHub answered %s." % ex.code)
+    except Exception as ex:
+        raise RuntimeError("Could not reach GitHub: %s" % ex)
+    m_ = re.search(r"\d+", str(d.get("tag_name", "")))
+    assets = [a for a in d.get("assets", []) if str(a.get("name", "")).lower().endswith("_setup.exe")]
+    if not m_ or not assets:
+        raise RuntimeError("The latest release has no installer file.")
+    a = assets[0]
+    return {"ver": int(m_.group(0)), "tag": d.get("tag_name", ""), "name": a["name"], "asset_id": a["id"], "size": a.get("size", 0),
+            "notes": (d.get("body") or "").strip()}
+
+
+def gh_download_asset(repo, token, asset_id, dest, progress=None, timeout=60):
+    """Download a release file of a private repository. The signed link GitHub redirects to must not receive the token."""
+    hdr = {"Accept": "application/octet-stream", "User-Agent": "MOT-XA-Energy", **({"Authorization": "Bearer " + token} if token else {})}
+    url = "https://api.github.com/repos/%s/releases/assets/%s" % (repo, asset_id)
+    op = urllib.request.build_opener(_NoRedirect)
+    try:
+        resp = op.open(urllib.request.Request(url, headers=hdr), timeout=timeout)
+    except urllib.error.HTTPError as ex:
+        if ex.code in (301, 302, 303, 307, 308) and ex.headers.get("Location"):
+            resp = urllib.request.urlopen(urllib.request.Request(ex.headers["Location"], headers={"User-Agent": "MOT-XA-Energy"}), timeout=timeout)
+        else:
+            raise RuntimeError("Download refused (%s)." % ex.code)
+    total = int(resp.headers.get("Content-Length") or 0)
+    got = 0
+    with open(dest, "wb") as f:
+        while True:
+            b = resp.read(1 << 20)
+            if not b:
+                break
+            f.write(b)
+            got += len(b)
+            if progress:
+                if progress(got, total) is False:
+                    raise RuntimeError("Cancelled.")
+    resp.close()
+    return dest
+
+
+class _GhThread(QThread):
+    """Runs one GitHub call off the screen thread. kind 'check' -> result dict or error text; 'download' -> file path or error text."""
+    done = Signal(object, str)
+    prog = Signal(int, int)
+
+    def __init__(self, kind, repo, token, asset_id=0, dest="", parent=None):
+        super().__init__(parent)
+        self.kind, self.repo, self.token, self.asset_id, self.dest = kind, repo, token, asset_id, dest
+        self.stop = False
+
+    def run(self):
+        try:
+            if self.kind == "check":
+                self.done.emit(gh_latest_release(self.repo, self.token), "")
+            else:
+                gh_download_asset(self.repo, self.token, self.asset_id, self.dest,
+                                  lambda g, t: (self.prog.emit(g, t), not self.stop)[1])
+                self.done.emit(self.dest, "")
+        except Exception as ex:
+            self.done.emit(None, str(ex))
+
+
+def studio():
+    """True for the flat Dark Studio look (default); False for the older liquid-glass look."""
+    return SETTINGS.get("theme", "studio") != "glass"
+ONLINE_NOTE = [""]
+
+
+def load_settings():
+    try:
+        with open(SETTINGS_PATH, encoding="utf-8") as f:
+            SETTINGS.update({k: v for k, v in json.load(f).items() if k in SETTINGS})
+    except Exception:
+        pass
+
+
+def save_settings():
+    try:
+        os.makedirs(os.path.dirname(SETTINGS_PATH), exist_ok=True)
+        with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+            json.dump(SETTINGS, f, indent=2)
+        return True
+    except Exception:
+        return False
+
+
+def online_ready():
+    return bool(SETTINGS.get("online") and SETTINGS.get("api_key", "").strip())
+
+
+def _image_b64(img, max_side=2000):
+    img = img.convertToFormat(QImage.Format.Format_RGB32)
+    big = max(img.width(), img.height())
+    if big > max_side:
+        img = img.scaled(int(img.width() * max_side / big), int(img.height() * max_side / big),
+                         Qt.AspectRatioMode.KeepAspectRatio,
+                         Qt.TransformationMode.SmoothTransformation)
+    ba = QByteArray()
+    buf = QBuffer(ba)
+    buf.open(QIODevice.OpenModeFlag.WriteOnly)
+    img.save(buf, "PNG")
+    buf.close()
+    return base64.b64encode(bytes(ba)).decode()
+
+
+def ai_request(prompt, images_b64=(), max_tokens=4096):
+    """Send a prompt (and pictures) to the chosen provider; returns the reply text."""
+    prov = SETTINGS.get("provider", "Claude (Anthropic)")
+    key = SETTINGS.get("api_key", "").strip()
+    model = (SETTINGS.get("model") or "").strip() or PROVIDERS.get(prov, "")
+    if prov.startswith("Claude"):
+        url = "https://api.anthropic.com/v1/messages"
+        headers = {"x-api-key": key, "anthropic-version": "2023-06-01",
+                   "content-type": "application/json"}
+        content = [{"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                                                 "data": b}} for b in images_b64]
+        content.append({"type": "text", "text": prompt})
+        body = {"model": model, "max_tokens": max_tokens,
+                "messages": [{"role": "user", "content": content}]}
+    else:
+        url = "https://api.openai.com/v1/chat/completions"
+        headers = {"Authorization": f"Bearer {key}", "content-type": "application/json"}
+        content = [{"type": "text", "text": prompt}]
+        content += [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b}"}}
+                    for b in images_b64]
+        body = {"model": model, "max_completion_tokens": max_tokens,
+                "messages": [{"role": "user", "content": content}]}
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=180) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            msg = json.loads(e.read().decode("utf-8")).get("error", {})
+            msg = msg.get("message", "") if isinstance(msg, dict) else str(msg)
+        except Exception:
+            msg = ""
+        raise RuntimeError(f"{prov} said: {msg or e.reason} (code {e.code})")
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"No internet connection to {prov} ({e.reason})")
+    if prov.startswith("Claude"):
+        return "".join(p.get("text", "") for p in data.get("content", []))
+    return data["choices"][0]["message"]["content"]
+
+
+def _json_from(text):
+    t = text.strip()
+    t = re.sub(r"^```(?:json)?|```$", "", t, flags=re.M).strip()
+    a, b = t.find("{"), t.rfind("}")
+    if a < 0 or b <= a:
+        raise RuntimeError("The AI did not return readable data.")
+    return json.loads(t[a:b + 1])
+
+
+SCHEDULE_PROMPT = """This picture is a window and door schedule from an architectural drawing. It may be \
+laid out with one window per column or one per row, and it may include small drawings of each window \
+with opening symbols.
+
+Return ONLY JSON, no other text, in this form:
+{"windows": [{"tag": "W1", "width_mm": 900, "height_mm": 1200, "quantity": 1, "type": "Window",
+ "glazed_percent": 100, "openable_percent": 50, "opening_notes": "2 of 3 panes hinged"}]}
+
+Rules:
+- One entry per window or door tag. Read sizes carefully (thousands may have a space, e.g. 2 100 = 2100).
+- type is "Window" or "Door".
+- openable_percent = the share of the window's glass area that can actually open, judged from the opening \
+symbols in its drawing: a pane with no symbol is fixed (0); a pane with V-shaped or triangular lines is \
+hinged / tilt / top-hung and opens fully; panes with horizontal arrows are sliding, so only the sliding sash \
+opens (a two-panel slider is 50%). Add up the area of the panes that open divided by the total glass area. \
+If there is no drawing or symbol, use null.
+- glazed_percent is 100 unless the schedule states otherwise (for a door, the glazed share of the leaf).
+- Do not invent windows that are not in the picture."""
+
+PLAN_PROMPT = """This picture is a floor plan with a printed floor area under each room name \
+(for example 11.4 m2) and window / door tags (like W1, W2, D1) drawn on the walls.
+
+Return ONLY JSON, no other text, in this form:
+{"rooms": [{"name": "Bedroom 1", "area_m2": 11.4, "windows": [{"tag": "W2", "qty": 2}]}]}
+
+Rules:
+- List every room that has a printed area. Use the printed name; if the plan shows two identical flats, \
+add (left) or (right) to the names.
+- For each room list the window and door tags that sit in that room's walls. Count every occurrence of a \
+tag separately (two W2 labels on a bedroom's wall = qty 2).
+- A window on the wall between an outdoor stoep / patio and a room belongs to the room, not the stoep.
+- Do not invent tags or rooms that are not in the picture.{known}"""
+
+
+def online_schedule(images):
+    items, raw = [], []
+    for img in images:
+        txt = ai_request(SCHEDULE_PROMPT, [_image_b64(img)])
+        raw.append(txt)
+        for w in _json_from(txt).get("windows", []):
+            try:
+                tag = _norm_tag(str(w["tag"]))
+                wd, ht = float(w["width_mm"]), float(w["height_mm"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if wd <= 0 or ht <= 0 or not tag:
+                continue
+            op = w.get("openable_percent")
+            kind = "Door" if str(w.get("type", "")).lower().startswith("door") else "Window"
+            flag = {4} if op is None else {4}
+            try:
+                op = float(op)
+            except (TypeError, ValueError):
+                op = 100.0 if kind == "Door" else 50.0
+            try:
+                gl = float(w.get("glazed_percent", 100) or 100)
+            except (TypeError, ValueError):
+                gl = 100.0
+            style = ("Fixed - does not open" if op <= 0 else
+                     "Sliding, 2 panels" if abs(op - 50) < 0.5 and "slid" in str(w.get("opening_notes", "")).lower()
+                     else "Custom")
+            note = ("Read by online AI. " + str(w.get("opening_notes", ""))).strip()
+            items.append({"tag": tag, "width": wd, "height": ht, "glazed": gl, "openable": op,
+                          "kind": kind, "style": style, "flag": flag, "sash_w": 0.0, "sash_h": 0.0,
+                          "sash_qty": 1.0, "defaulted": True, "qty": float(w.get("quantity", 1) or 1),
+                          "note": note})
+    seen = {}
+    for it in items:
+        seen.setdefault(it["tag"], it)
+    return list(seen.values()), [], "\n\n".join(raw)
+
+
+def online_rooms(images, known_tags=None):
+    rooms, raw = [], []
+    known = ""
+    if known_tags:
+        known = "\n- Tags that exist in the user's schedule: " + ", ".join(sorted(known_tags)) + "."
+    for img in images:
+        txt = ai_request(PLAN_PROMPT.replace("{known}", known), [_image_b64(img)])
+        raw.append(txt)
+        for r in _json_from(txt).get("rooms", []):
+            try:
+                area = float(r.get("area_m2") or 0)
+            except (TypeError, ValueError):
+                area = 0.0
+            tags = {}
+            for w in r.get("windows", []) or []:
+                try:
+                    t = _norm_tag(str(w["tag"]))
+                    tags[t] = tags.get(t, 0) + float(w.get("qty", 1) or 1)
+                except (KeyError, TypeError, ValueError):
+                    continue
+            rooms.append({"name": str(r.get("name") or "Room"), "area": area, "tags": tags,
+                          "area_guess": area <= 0, "rect": (0, 0, 0, 0), "c": (0, len(rooms))})
+    return rooms, 0, "\n\n".join(raw)
+
+
+load_settings()
+
+
+# ---------- floor-plan screenshots: rooms, areas and the windows that belong to them ----------
+AREA_LOOSE_RE = re.compile(r"^\s*(\d{1,3}\s*[.,]\s*\d{1,2})\s*[a-z]{1,2}\S{0,2}\s*$", re.I)
+
+# (name shown, words that mean it). Matching is forgiving so misread letters still work.
+ROOM_VOCAB = [
+    ("Bedroom", ["bedroom", "bedrm", "bdrm"]),
+    ("Bathroom", ["bathroom", "bath"]),
+    ("Toilet", ["toilet", "cloakroom", "powder"]),
+    ("Kitchen", ["kitchen", "scullery", "pantry"]),
+    ("Lounge", ["lounge", "living", "family", "tvroom"]),
+    ("Dining", ["dining"]),
+    ("Passage", ["passage", "pass", "corridor", "hallway", "hall"]),
+    ("Stoep", ["stoep", "patio", "veranda", "verandah", "balcony", "porch", "deck"]),
+    ("Study", ["study", "office"]),
+    ("Store", ["storeroom", "store", "laundry"]),
+    ("Garage", ["garage", "carport"]),
+    ("Entrance", ["entrance", "entry", "foyer"]),
+    ("Ensuite", ["ensuite"]),
+    ("Dressing room", ["dressing", "robe"]),
+    ("Stairs", ["stairs", "staircase"]),
+    ("WC", ["wc"]),
+]
+OUTDOOR_NAMES = ("Stoep", "Garage")
+
+
+UNIT_PREFIX_RE = re.compile(r"^\W*[A-Za-z\u4e00-\u9fff]{0,2}\s*(\d{1,2})\s*[-_.:]\s*(?=[A-Za-z])")
+
+
+def _split_unit(text):
+    """'U1-Main Bedroom' -> ('U1', 'Main Bedroom'); no prefix -> ('', text)."""
+    m = UNIT_PREFIX_RE.match(text)
+    if m:
+        return "U" + m.group(1), text[m.end():]
+    return "", text
+
+
+def _room_name(text):
+    """'Kitahen' -> 'Kitchen', 'Bath.j1' -> 'Bathroom 1', 'Vent-X.X%' -> None."""
+    from difflib import SequenceMatcher
+    t = AREA_RE.sub(" ", text)
+    low = re.sub(r"[^A-Za-z0-9 ]", " ", t).lower()
+    toks = low.split()
+    if not toks:
+        return None
+    hit = None
+    for tok in toks:
+        alpha = re.sub(r"\d", "", tok)
+        if len(alpha) < 3 and alpha != "wc":
+            continue
+        for canon, words in ROOM_VOCAB:
+            for w in words:
+                if (len(w) >= 4 and w in alpha) or alpha == w or \
+                        (len(alpha) >= 5 and SequenceMatcher(None, alpha, w).ratio() >= 0.78):
+                    hit = canon
+                    break
+            if hit:
+                break
+        if hit:
+            break
+    if not hit:
+        return None
+    nums = re.findall(r"\d+", t)
+    name = hit
+    if hit == "Entrance" and "entry" in toks:
+        name = "Entry"
+    if hit == "Dining" and "room" in toks:
+        name = "Dining Room"
+    for pre in ("main", "guest", "master"):
+        if pre in toks or any(len(t_) >= 4 and SequenceMatcher(None, t_, pre).ratio() >= 0.8
+                              for t_ in toks if t_ != pre):
+            name = pre.capitalize() + " " + name
+            break
+    if nums:
+        name += " " + nums[-1][-1]
+    return name
+
+
+def _area_line(t):
+    if re.search(r"area|=|total|measured|gross|nett?\b|footprint|\+", t, re.I):
+        return None                      # a total in a table, not a room label
+    m = AREA_RE.search(t)
+    if m:
+        v = _to_float(m.group(1))
+    else:
+        m = AREA_LOOSE_RE.match(t)
+        if not m:
+            return None
+        v = _to_float(m.group(1).replace(" ", ""))
+    return v if 0.5 <= v <= 500 else None
+
+
+def _ocr_native(img, tile=True):
+    """Text lines in the picture's own pixel coordinates. Big pictures are read in
+    overlapping tiles, which finds the small labels of a busy plan."""
+    from PySide6.QtCore import Qt as _Qt
+    W, H = img.width(), img.height()
+    if not tile or max(W, H) <= 1400:
+        lines, w, _h = ocr_lines(img)
+        s = w / float(W)
+        return [(a / s, b / s, c / s, d / s, t) for a, b, c, d, t in lines]
+    tw, th, ov, up = 1000, 800, 160, 1.6
+    out = _ocr_native(img, tile=False)
+    for y in range(0, max(H - ov, 1), th - ov):
+        for x in range(0, max(W - ov, 1), tw - ov):
+            tile_img = img.copy(x, y, min(tw, W - x), min(th, H - y))
+            tile_img = tile_img.scaled(int(tile_img.width() * up), int(tile_img.height() * up),
+                                       _Qt.AspectRatioMode.KeepAspectRatio,
+                                       _Qt.TransformationMode.SmoothTransformation)
+            lines, w, _h = ocr_lines(tile_img)
+            s = (w / float(tile_img.width())) * up
+            for a, b, c, d, t in lines:
+                out.append((x + a / s, y + b / s, x + c / s, y + d / s, t))
+    keep = []
+    for ln in sorted(out, key=lambda l: (-len(l[4]), l[1], l[0])):   # longer readings win
+        area = max((ln[2] - ln[0]) * (ln[3] - ln[1]), 1.0)
+        dup = False
+        for k in keep:
+            iw = min(ln[2], k[2]) - max(ln[0], k[0])
+            ih = min(ln[3], k[3]) - max(ln[1], k[1])
+            if iw > 0 and ih > 0 and iw * ih / max(area, max((k[2] - k[0]) * (k[3] - k[1]), 1.0)) > 0.5:
+                dup = True
+                break
+        if not dup:
+            keep.append(ln)
+    return keep
+
+
+def _plan_tag(tok, known):
+    """A window/door tag from a word, or None. Slips like V4 -> W4, WO1 -> W01 are fixed."""
+    t = _norm_tag(re.sub(r"^[^A-Za-z0-9]+|[^A-Za-z0-9]+$", "", tok))
+    if re.match(r"^D-0\d$", t):
+        return None                   # a detail reference (D-02), not a door
+    if "-" in t and t not in (known or ()):
+        t = t.replace("-", "")        # PTT-915 -> PTT915
+    if known:
+        k = _fuzzy_known(t, known)
+        if k:
+            return k
+    if re.match(r"^V-?\d", t) and not (known and t in known):
+        t = "W" + t[1:]
+    return t if PLAN_TAG_RE.match(t) else None
+
+
+def rooms_from_lines(lines, width, height, known_tags=None, radius_frac=0.35, extra_tags=()):
+    """Rooms (name + area) and the window/door tags that belong to each, from the
+    recognised text of a floor-plan picture."""
+    known = {t.upper() for t in known_tags} if known_tags else set()
+    areas = [(l, _area_line(l[4])) for l in lines]
+    areas = [(l, v) for l, v in areas if v is not None]
+    uniq = []
+    for l, v in areas:   # the same label read twice (tile overlap)
+        lh = max(l[3] - l[1], 1.0)
+        cx, cy = (l[0] + l[2]) / 2, (l[1] + l[3]) / 2
+        if any(abs(v - v2) < 1e-6 and abs((l2[0] + l2[2]) / 2 - cx) < 2 * lh
+               and abs((l2[1] + l2[3]) / 2 - cy) < 1.5 * lh for l2, v2 in uniq):
+            continue
+        uniq.append((l, v))
+    areas = uniq
+    names = []
+    unders = [l for l in lines if re.fullmatch(r"\s*under\s*", l[4], re.I)]
+    for l in lines:
+        if _area_line(l[4]) is not None or _is_tag_like(l[4]):
+            continue
+        unit, ltxt = _split_unit(l[4])
+        n = _room_name(ltxt)
+        if n:
+            n = (unit, n)
+            lcx = (l[0] + l[2]) / 2
+            if any(abs((u[0] + u[2]) / 2 - lcx) < 40 and 0 <= l[1] - u[3] <= 15 for u in unders):
+                continue                 # "Storage / Under / Stairs" is a cupboard, not the stairs
+            names.append((l, n))
+    # pair every area with the name just above it
+    rooms, used = [], set()
+    pairs = []
+    for ai, (al, v) in enumerate(areas):
+        acx, acy = (al[0] + al[2]) / 2, (al[1] + al[3]) / 2
+        for ni, (nl, n) in enumerate(names):
+            lh = max(nl[3] - nl[1], al[3] - al[1], 1.0)
+            ncx, ncy = (nl[0] + nl[2]) / 2, (nl[1] + nl[3]) / 2
+            dy = acy - ncy
+            if -0.6 * lh <= dy <= 5.5 * lh and abs(acx - ncx) <= max(nl[2] - nl[0], al[2] - al[0]) * 1.1:
+                pairs.append(((acx - ncx) ** 2 + dy ** 2, ai, ni))
+    done_a, done_n = set(), set()
+    for _d, ai, ni in sorted(pairs):
+        if ai in done_a or ni in done_n:
+            continue
+        done_a.add(ai)
+        done_n.add(ni)
+        al, v = areas[ai]
+        nl, (nunit, n) = names[ni]
+        rooms.append({"name": n, "unit": nunit, "area": v, "tags": {}, "area_guess": False,
+                      "rect": (min(al[0], nl[0]), min(al[1], nl[1]), max(al[2], nl[2]), max(al[3], nl[3])),
+                      "c": ((al[0] + al[2]) / 2, (nl[1] + al[3]) / 2)})
+    for ai, (al, v) in enumerate(areas):
+        if ai not in done_a:
+            rooms.append({"name": "", "unit": "", "area": v, "tags": {}, "area_guess": False,
+                          "rect": tuple(al[:4]), "c": ((al[0] + al[2]) / 2, (al[1] + al[3]) / 2)})
+    for ni, (nl, (nunit, n)) in enumerate(names):
+        if ni in done_n:
+            continue
+        same = [r["area"] for r in rooms if r["name"] == n and r.get("unit", "") == nunit]
+        base = re.sub(r"\s\d$", "", n)
+        if not same:
+            same = [r["area"] for r in rooms if re.sub(r"\s\d$", "", r["name"]) == base]
+        if same:   # label without a readable area: take the area of the matching room
+            rooms.append({"name": n, "unit": nunit, "area": sorted(same)[len(same) // 2], "tags": {},
+                          "area_guess": True, "rect": tuple(nl[:4]),
+                          "c": ((nl[0] + nl[2]) / 2, (nl[1] + nl[3]) / 2 + 0.0)})
+    if not rooms:
+        return [], 0
+    # window / door tags -> room
+    limit = radius_frac * max(width, height)
+    unassigned = 0
+    seen = []
+    for l in sorted(lines, key=lambda l: (l[1], l[0])):
+        for tok in l[4].split():
+            t = _plan_tag(tok, known)
+            if not t:
+                continue
+            cx, cy = (l[0] + l[2]) / 2, (l[1] + l[3]) / 2
+            if any(r["rect"][0] <= cx <= r["rect"][2] and r["rect"][1] <= cy <= r["rect"][3] for r in rooms):
+                continue
+            if any(s[0] == t and abs(s[1] - cx) < 12 and abs(s[2] - cy) < 12 for s in seen):
+                continue
+            seen.append((t, cx, cy))
+
+    def cost(r, cx, cy):
+        d = ((r["c"][0] - cx) ** 2 + (r["c"][1] - cy) ** 2) ** 0.5
+        size = max(r["area"], 2.0) ** 0.5
+        c = d / size
+        if re.sub(r"\s\d$", "", r["name"]) in OUTDOOR_NAMES:
+            c *= 3.0   # a window on the wall between stoep and lounge belongs to the lounge
+        return c, d
+
+    for t, cx, cy in seen:
+        best = min(rooms, key=lambda r: cost(r, cx, cy)[0])
+        if cost(best, cx, cy)[1] > limit:
+            unassigned += 1
+            continue
+        best["tags"][t] = best["tags"].get(t, 0) + 1
+    # a name whose number was misread ("Bedroom" for "Bedroom 1"): use the number that is short
+    from collections import Counter
+    for base in {re.sub(r"\s\d$", "", r["name"]) for r in rooms if r["name"]}:
+        loose = [r for r in rooms if r["name"] == base and not r.get("unit")]
+        cnt = Counter(r["name"][-1] for r in rooms
+                      if r["name"].startswith(base + " ") and r["name"][-1].isdigit())
+        if loose and cnt:
+            top = max(cnt.values())
+            missing = sorted(n for n, c in cnt.items() if c < top)
+            for r, n in zip(sorted(loose, key=lambda r: (r["c"][1], r["c"][0])), missing):
+                r["name"] = f"{base} {n}"
+    # a guessed copy of a label that was read twice (with and without its unit prefix)
+    for r in list(rooms):
+        if r.get("area_guess"):
+            b = re.sub(r"\s\d$", "", r["name"])
+            if any(o is not r and not o.get("area_guess")
+                   and re.sub(r"\s\d$", "", o["name"]) == b
+                   and abs(o["c"][0] - r["c"][0]) < 0.05 * width
+                   and abs(o["c"][1] - r["c"][1]) < 0.05 * width for o in rooms):
+                rooms.remove(r)
+    # shared rooms on a plan with unit labels (Stoep, Passage...) join the nearest unit
+    labelled = [r for r in rooms if r.get("unit")]
+    if labelled:
+        for r in rooms:
+            if not r.get("unit") and r["name"]:
+                r["unit"] = min(labelled, key=lambda o: abs(o["c"][0] - r["c"][0]) * 3
+                                + abs(o["c"][1] - r["c"][1]))["unit"]
+    # unnamed rooms, and rooms that share a name (two flats on one plan)
+    for i, r in enumerate(rooms, 1):
+        if not r["name"]:
+            r["name"] = f"Room {i}"
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for r in rooms:
+        groups[(r.get("unit", ""), r["name"])].append(r)
+    for (_gu, n), g in groups.items():
+        if len(g) < 2:
+            continue
+        if _gu:    # same unit: a repeated label means numbered rooms, top to bottom
+            base = re.sub(r"\s\d$", "", n)
+            for k, r in enumerate(sorted(g, key=lambda r: (r["c"][1], r["c"][0])), 1):
+                r["name"] = f"{base} {k}"
+            continue
+        xs = [r["c"][0] for r in g]
+        if max(xs) - min(xs) > 0.08 * width and len(g) == 2:
+            g.sort(key=lambda r: r["c"][0])
+            g[0]["name"], g[1]["name"] = f"{n} (left)", f"{n} (right)"
+        else:
+            for k, r in enumerate(sorted(g, key=lambda r: (r["c"][0], r["c"][1])), 1):
+                r["name"] = f"{n} ({k})"
+    two_halves = len({r["c"][0] > width / 2 for r in rooms}) > 1
+    rooms.sort(key=lambda r: ((1 if r["c"][0] > width / 2 else 0) if two_halves else 0,
+                              round(r["c"][1] / 40), r["c"][0]))
+    return rooms, unassigned
+
+
+def extract_rooms_images(images, known_tags=None, radius_frac=0.35):
+    """Returns (rooms, unassigned_count, raw_text)."""
+    ONLINE_NOTE[0] = ""
+    if online_ready():
+        try:
+            res = online_rooms(images, known_tags)
+            if res[0]:
+                ONLINE_NOTE[0] = f"Read online with {SETTINGS['provider']}."
+                return res
+            ONLINE_NOTE[0] = "The online AI found no rooms; used the offline reader instead."
+        except Exception as e:
+            ONLINE_NOTE[0] = f"Online reading failed ({e}). Used the offline reader instead."
+    from PySide6.QtGui import QTransform
+    rooms, unassigned, raw = [], 0, []
+    for img in images:
+        W, H = img.width(), img.height()
+        lines = _ocr_native(img)
+        raw.append("\n".join(l[4] for l in sorted(lines, key=lambda l: (l[1], l[0]))))
+        # tags written sideways on walls: read the picture turned both ways too
+        for ang in (90, 270):
+            try:
+                rl = _ocr_native(img.transformed(QTransform().rotate(ang)), tile=False)
+            except Exception:
+                continue
+            for x0, y0, x1, y1, t in rl:
+                if ang == 90:    # turned clockwise
+                    ox0, ox1, oy0, oy1 = y0, y1, H - x1, H - x0
+                else:            # turned anticlockwise
+                    ox0, ox1, oy0, oy1 = W - y1, W - y0, x0, x1
+                for tok in t.split():
+                    tt = _plan_tag(tok, known_tags)
+                    if not tt:
+                        continue
+                    cx, cy = (ox0 + ox1) / 2, (oy0 + oy1) / 2
+                    if any(abs((q[0] + q[2]) / 2 - cx) < 20 and abs((q[1] + q[3]) / 2 - cy) < 20
+                           and q[4].upper() == tt for q in lines):
+                        continue
+                    lines.append((ox0, oy0, ox1, oy1, tt))
+                    raw.append(f"[sideways tag] {tt}")
+        r, u = rooms_from_lines(lines, W, H, known_tags, radius_frac)
+        rooms.extend(r)
+        unassigned += u
+    return rooms, unassigned, "\n\n".join(raw)
+
+
+# ---------- column-style (transposed) schedules, e.g. Archicad "Window Schedule" ----------
+_ROW_KEYS = {"sill": "sill", "head": "head", "2d": "sym", "symbol": "sym",
+             "size": "size", "quantity": "qty", "qty": "qty"}
+
+
+def _row_key(text):
+    low = text.lower()
+    if ("glazed" in low or "glaced" in low or "glozed" in low or "g1azed" in low):
+        return "glazed"
+    if "sill" in low:
+        return "sill"
+    if "head" in low:
+        return "head"
+    if "2d" in low or "symbol" in low:
+        return "sym"
+    if "size" in low or "w x h" in low:
+        return "size"
+    if "quantity" in low or low.strip() in ("qty", "no", "no."):
+        return "qty"
+    return None
+
+
+def _digits(s):
+    d = re.sub(r"[^\d]", "", s)
+    return float(d) if d else 0.0
+
+
+LAST_OVERLAY = []   # annotated pictures of the last opening detection
+
+
+def _find_panes(arr, y_from, y_to=None):
+    """Find window panes drawn in a picture (pale tinted glass) and say whether
+    each one opens: hinged symbol = diagonal lines, sliding = long arrow line."""
+    import cv2
+    import numpy as np
+    import math
+    gray = cv2.cvtColor(arr, cv2.COLOR_BGR2GRAY)
+    b, g, r = [arr[:, :, i].astype(int) for i in range(3)]
+    mn = np.minimum(np.minimum(b, g), r)
+    mx = np.maximum(np.maximum(b, g), r)
+    glass = ((mn >= 215) & (mx <= 252) & ((mx - mn) >= 2)).astype(np.uint8) * 255
+    glass[:max(int(y_from), 0), :] = 0
+    if y_to:
+        glass[int(y_to):, :] = 0
+    glass = cv2.morphologyEx(glass, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+    n, _lab, st, _c = cv2.connectedComponentsWithStats(glass, 8)
+    panes = []
+    for i in range(1, n):
+        x, y, w, h, a = [int(v) for v in st[i]]
+        if a < 200 or w < 8 or h < 8 or w > arr.shape[1] * 0.4:
+            continue
+        ins = 4
+        m = (gray[y + ins:y + h - ins, x + ins:x + w - ins] < 175).astype(np.uint8) * 255
+        kind = "fixed"
+        if m.shape[0] >= 6 and m.shape[1] >= 6:
+            sh, sw = m.shape
+            rowfrac = float(m.mean(axis=1).max() / 255.0)
+            mm = m.copy()
+            cy, cx = sh // 2, sw // 2
+            gy, gx = min(17, sh // 6), min(15, sw // 6)       # the label glyph (smaller on small panes)
+            mm[max(cy - gy, 0):cy + gy, max(cx - gx, 0):cx + gx] = 0
+            lines = cv2.HoughLinesP(mm, 1, np.pi / 180, threshold=6,
+                                    minLineLength=max(int(0.3 * min(sw, sh)), 6), maxLineGap=4)
+            diag = 0
+            if lines is not None:
+                for l in lines.reshape(-1, 4):
+                    ang = abs(math.degrees(math.atan2(l[3] - l[1], l[2] - l[0])))
+                    ang = min(ang, 180 - ang)
+                    if 20 <= ang <= 70:
+                        diag += 1
+            if diag >= 2:
+                kind = "hinged"
+            elif rowfrac >= 0.45:
+                kind = "slide"
+        panes.append({"x": x, "y": y, "w": w, "h": h, "kind": kind})
+    return panes
+
+
+_SIZE_CELL_RE = re.compile(r"(\d[\d ]*?)\s*[x×X✕*]\s*(\d[\d ]*)$")
+
+
+def _size_row(lines):
+    """The cells of the 'W x H Size' row, left to right (one per window/door column)."""
+    cells = []
+    for l in lines:
+        m = _SIZE_CELL_RE.search(l[4].strip())
+        if m and 200 <= _digits(m.group(1)) <= 6000 and 200 <= _digits(m.group(2)) <= 6000:
+            cells.append(l)
+    if len(cells) < 2:
+        return []
+    ys = sorted(c[1] for c in cells)
+    ymed = ys[len(ys) // 2]
+    return sorted([c for c in cells if abs(c[1] - ymed) < 25], key=lambda c: c[0])
+
+
+def _read_header_cell(arr, lo, hi, y0, y1):
+    """The window/door ID in one header cell, read on its own (small writing)."""
+    import cv2
+    for off in (0, -10, 10):
+        crop = arr[max(int(y0) - 4, 0):int(y1) + 4, max(int(lo) + off, 0):max(int(hi) + off, 1)]
+        if crop.size == 0:
+            continue
+        c = cv2.resize(crop, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+        c = cv2.copyMakeBorder(c, 60, 60, 60, 60, cv2.BORDER_REPLICATE)
+        try:
+            res, _ = _ocr_engine()(c)
+        except Exception:
+            continue
+        for _b, t, _s in (res or []):
+            if _is_tag_like(t) and re.search(r"[A-Za-z]", t) and re.search(r"\d", t):
+                return _norm_tag(t)
+    return None
+
+
+def _read_small_int(arr, lo, hi, y0, y1):
+    """One small whole number (a quantity) in a table cell, read on its own."""
+    import cv2
+    for pad in (4, 10):
+        crop = arr[max(int(y0) - pad, 0):int(y1) + pad, max(int(lo) + 6, 0):max(int(hi) - 6, 1)]
+        if crop.size == 0:
+            continue
+        c = cv2.resize(crop, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+        c = cv2.copyMakeBorder(c, 50, 50, 50, 50, cv2.BORDER_REPLICATE)
+        try:
+            res, _ = _ocr_engine()(c)
+        except Exception:
+            continue
+        txt = "".join(t for _b, t, _s in (res or []))
+        d = re.sub(r"[^\d]", "", txt)
+        if d and len(d) <= 3 and int(d) > 0:
+            return float(d)
+    return None
+
+
+_digit_ocr = None
+
+
+def _read_qty_cell(arr, cx, y0, y1, half=60):
+    """A lone digit in a table cell. The normal reader skips these, so a second reader with
+    low thresholds is used here (it is only ever shown one small cell)."""
+    import cv2
+    global _digit_ocr
+    if _digit_ocr is None:
+        from rapidocr_onnxruntime import RapidOCR
+        _digit_ocr = RapidOCR(text_score=0.1, box_thresh=0.2, unclip_ratio=2.5)
+    for hw in (half, half * 0.6, half * 1.5):
+        crop = arr[max(int(y0), 0):int(y1), max(int(cx - hw), 0):int(cx + hw)]
+        if crop.size == 0:
+            continue
+        for sc in (3, 5):
+            c = cv2.resize(crop, None, fx=sc, fy=sc, interpolation=cv2.INTER_CUBIC)
+            c = cv2.copyMakeBorder(c, 60, 60, 60, 60, cv2.BORDER_CONSTANT, value=(255, 255, 255))
+            try:
+                res, _ = _digit_ocr(c)
+            except Exception:
+                continue
+            txt = "".join(t for _b, t, _s in (res or []))
+            d = re.sub(r"[^\d]", "", txt)
+            if d and len(d) <= 3 and int(d) > 0:
+                return float(d)
+    return None
+
+
+def _back_geometry(arr, x0, x1, y0, y1, mine):
+    """The exact layout of ONE window's 3D back view: the outer frame and every pane as
+    fractions of that frame, which panes open, and on which side they are hinged."""
+    import cv2
+    if arr is None or y1 is None or not mine:
+        return None
+    H, W = arr.shape[:2]
+    xa, xb = max(int(x0) + 4, 0), min(int(x1) - 4, W)
+    ya, yb = max(int(y0), 0), min(int(y1) - 3, H)
+    if xb - xa < 20 or yb - ya < 20:
+        return None
+    cell = arr[ya:yb, xa:xb]
+    g = cv2.cvtColor(cell, cv2.COLOR_BGR2GRAY) if cell.ndim == 3 else cell
+    pxs = [(q["x"] - xa, q["y"] - ya, q["w"], q["h"]) for q in mine]
+    px0 = min(q[0] for q in pxs)
+    py0 = min(q[1] for q in pxs)
+    px1 = max(q[0] + q[2] for q in pxs)
+    py1 = max(q[1] + q[3] for q in pxs)
+    gh, gw = g.shape
+
+    def band(x, y, dx, dy):
+        """How far the dark frame band runs outward from the glass edge."""
+        n = 0
+        while n < 60:
+            x += dx
+            y += dy
+            if not (0 <= x < gw and 0 <= y < gh) or g[y, x] >= 150:
+                break
+            n += 1
+        return n
+    ym, xm = (py0 + py1) // 2, (px0 + px1) // 2
+    fx0 = px0 - band(px0, ym, -1, 0)
+    fx1 = px1 + band(px1 - 1, ym, 1, 0)
+    fy0 = py0 - band(xm, py0, 0, -1)
+    fy1 = py1 + band(xm, py1 - 1, 0, 1)
+    fw, fh = max(fx1 - fx0, 1), max(fy1 - fy0, 1)
+    out = []
+    for q, (qx, qy, qw, qh) in zip(mine, pxs):
+        apex = ""
+        if q["kind"] == "hinged":
+            import numpy as _np
+            ins = -4        # the symbol runs out to the glass edge, so look slightly outside it
+            sub = (g[max(qy + ins, 0):qy + qh - ins, max(qx + ins, 0):qx + qw - ins] < 200).astype("uint8")
+            sh, sw = sub.shape[:2] if sub.size else (0, 0)
+            if sh >= 8 and sw >= 8:
+                ink = cv2.dilate(sub, _np.ones((3, 3), _np.uint8))
+                tpl = {"L": [((0, .5), (1, 0)), ((0, .5), (1, 1))],
+                       "R": [((1, .5), (0, 0)), ((1, .5), (0, 1))],
+                       "T": [((.5, 0), (0, 1)), ((.5, 0), (1, 1))],
+                       "B": [((.5, 1), (0, 0)), ((.5, 1), (1, 0))],
+                       "X": [((0, 0), (1, 1)), ((1, 0), (0, 1))]}
+                best, bs = "", 0.0
+                for key, segs in tpl.items():
+                    m_ = _np.zeros((sh, sw), _np.uint8)
+                    for (ax, ay), (bx, by) in segs:
+                        cv2.line(m_, (int(ax * (sw - 1)), int(ay * (sh - 1))),
+                                 (int(bx * (sw - 1)), int(by * (sh - 1))), 1, 1)
+                    # leave out the ends, where the frame's own lines sit
+                    m_[:2, :] = 0; m_[-2:, :] = 0; m_[:, :2] = 0; m_[:, -2:] = 0
+                    tot = float(m_.sum())
+                    if tot > 0:
+                        sc_ = float((m_ & ink).sum()) / tot
+                        if sc_ > bs:
+                            best, bs = key, sc_
+                apex = best if bs >= 0.6 else ""
+        # the opening sash = the glass plus its own frame, out to the thick outer frame
+        def reach(x, y, dx, dy):
+            """Width of the sash's own frame: outline line, a grey band, outline line."""
+            state, n = 0, 0
+            for k in range(0, 24):
+                xx, yy = x + dx * k, y + dy * k
+                if not (0 <= xx < gw and 0 <= yy < gh):
+                    break
+                v = g[yy, xx]
+                if state == 0:
+                    if v < 60:
+                        state = 1
+                    elif v < 150:
+                        state = 2
+                    elif k > 3:
+                        return 0
+                elif state == 1:
+                    if 60 <= v < 150:
+                        state = 2
+                    elif v >= 150:
+                        return 0
+                elif state == 2:
+                    if v < 60:
+                        return k + 1
+                    elif v >= 150:
+                        return 0
+            return 0
+        if q["kind"] in ("hinged", "slide"):
+            sx0 = qx - reach(qx - 1, qy + qh // 2, -1, 0)
+            sx1 = qx + qw + reach(qx + qw, qy + qh // 2, 1, 0)
+            sy0 = qy - reach(qx + qw // 2, qy - 1, 0, -1)
+            sy1 = qy + qh + reach(qx + qw // 2, qy + qh, 0, 1)
+        else:
+            sx0, sy0, sx1, sy1 = qx, qy, qx + qw, qy + qh
+        out.append(((qx - fx0) / fw, (qy - fy0) / fh, (qx + qw - fx0) / fw, (qy + qh - fy0) / fh,
+                    q["kind"], apex,
+                    (sx0 - fx0) / fw, (sy0 - fy0) / fh, (sx1 - fx0) / fw, (sy1 - fy0) / fh))
+    return {"aspect": fw / float(fh), "panes": out}
+
+
+def _sash_opening(geom, w_mm, h_mm):
+    """Opening area (m2) of a window from its drawing: every hinged or sliding sash,
+    glass plus sash frame."""
+    if not geom:
+        return 0.0
+    tot = 0.0
+    for q in geom["panes"]:
+        if q[4] in ("hinged", "slide") and len(q) >= 10:
+            tot += max(q[8] - q[6], 0.0) * max(q[9] - q[7], 0.0)
+    return tot * (w_mm / 1000.0) * (h_mm / 1000.0)
+
+
+def _norm_panes(mine):
+    """Pane rectangles of one window as fractions (0-1) of the area they cover together."""
+    if not mine:
+        return []
+    x0 = min(p["x"] for p in mine)
+    y0 = min(p["y"] for p in mine)
+    x1 = max(p["x"] + p["w"] for p in mine)
+    y1 = max(p["y"] + p["h"] for p in mine)
+    w, h = max(x1 - x0, 1.0), max(y1 - y0, 1.0)
+    return [((p["x"] - x0) / w, (p["y"] - y0) / h, (p["x"] + p["w"] - x0) / w,
+             (p["y"] + p["h"] - y0) / h, p["kind"]) for p in mine]
+
+
+def _tags_from_size_row(lines, arr, tags, top):
+    """When the reader missed some IDs, use the size row to know how many columns there
+    are and read the missing ID cells one by one."""
+    row = _size_row(lines)
+    if arr is None or len(row) <= len(tags) or not tags:
+        return tags
+    csx = [(c[0] + c[2]) / 2 for c in row]
+    out = []
+    y0, y1 = min(t[1] for t in tags), max(t[3] for t in tags)
+    for i, c in enumerate(csx):
+        lo = (csx[i - 1] + c) / 2 if i else c - (csx[1] - c) / 2
+        hi = (c + csx[i + 1]) / 2 if i + 1 < len(csx) else c + (c - csx[i - 1]) / 2
+        have = [t for t in tags if lo <= (t[0] + t[2]) / 2 < hi]
+        if have:
+            out.append(have[0])
+            continue
+        txt = _read_header_cell(arr, lo, hi, y0, y1)
+        if txt:
+            out.append((c - 20, y0, c + 20, y1, txt))
+    return out if len(out) >= len(tags) else tags
+
+
+def schedule_transposed(lines, arr):
+    """Reader for schedules laid out with one WINDOW PER COLUMN (tags across the top,
+    row names down the left). Returns a list of items, or None if the picture is
+    not laid out like that."""
+    if len(lines) < 8:
+        return None
+    hs = sorted(l[3] - l[1] for l in lines)
+    mh = max(hs[len(hs) // 2], 1.0)
+    tagl = [l for l in lines if _is_tag_like(l[4]) and re.search(r"[A-Za-z]", l[4])
+            and re.search(r"\d", l[4])]
+    groups = []
+    for l in sorted(tagl, key=lambda t: t[1]):
+        yc = (l[1] + l[3]) / 2
+        for g in groups:
+            if abs(g["y"] - yc) < 0.8 * mh:
+                g["l"].append(l)
+                break
+        else:
+            groups.append({"y": yc, "l": [l]})
+    groups = [g for g in groups if len(g["l"]) >= 2]
+    if not groups:
+        return None
+    top = min(groups, key=lambda g: g["y"])
+    tags = sorted(top["l"], key=lambda t: t[0])
+    tags = _tags_from_size_row(lines, arr, tags, top)
+    cx = [(t[0] + t[2]) / 2 for t in tags]
+    pitch = ([b - a for a, b in zip(cx, cx[1:])] or [200.0])
+    pitch = sorted(pitch)[len(pitch) // 2]
+    hw = pitch / 2
+    left_edge = cx[0] - hw
+    labels = {}
+    for l in lines:
+        if (l[2] < left_edge + 2 or (l[0] < left_edge and l[2] < cx[0])) and l[1] > top["y"] - mh:
+            k = _row_key(l[4])
+            if k and k not in labels:
+                labels[k] = l
+    if len(labels) < 2 or not ("size" in labels or "sym" in labels or "sill" in labels):
+        return None
+    head_y = top["y"]
+
+    def col_of(l):
+        c = (l[0] + l[2]) / 2
+        best = min(range(len(cx)), key=lambda i: abs(cx[i] - c))
+        return best if abs(cx[best] - c) <= hw else None
+
+    cells = {k: {} for k in labels}
+    glz_lines = {}
+    for l in lines:
+        if l in tagl or l[1] <= head_y:
+            continue
+        ci = col_of(l)
+        if ci is None or l[2] < left_edge:
+            continue
+        yc = (l[1] + l[3]) / 2
+        for k, lab in labels.items():
+            lyc = (lab[1] + lab[3]) / 2
+            lo, hi = (lyc - 10, lyc + 42) if k == "sym" else (lyc - 15, lyc + 15)
+            if lo <= yc <= hi and ci not in cells[k]:
+                cells[k][ci] = l[4]
+                glz_lines[(k, ci)] = l
+                break
+    y3d = None
+    for l in lines:
+        if "3d" in l[4].lower().replace(" ", "") or "back view" in l[4].lower():
+            y3d = l
+    panes = []
+    if y3d:
+        # the drawing sits in the rows around its label: from below the 2D-symbol
+        # numbers down to the next row name
+        below = [l[1] for l in lines if l[2] < left_edge + 2 and l[1] > y3d[3] + 2]
+        if "sym" in labels:
+            y_from = labels["sym"][3] + 25
+        else:
+            y_from = max(l[3] for l in lines if l[1] < y3d[1] and l[2] > left_edge)
+        y_to = min(below) if below else None
+        panes = _find_panes(arr, y_from + 2, y_to)
+    items = []
+    for i, t in enumerate(tags):
+        tag = _norm_tag(t[4])
+        flag = set()
+        w = h = 0.0
+        txt = cells.get("size", {}).get(i, "")
+        mt = re.search(r"(\d[\d ]*?)\s*[x×X✕*]\s*(\d[\d ]*)", txt)
+        if mt:
+            w, h = _digits(mt.group(1)), _digits(mt.group(2))
+        w_alt = _digits(cells.get("sym", {}).get(i, ""))
+        sill = _digits(cells.get("sill", {}).get(i, ""))
+        head = _digits(cells.get("head", {}).get(i, ""))
+        h_alt = head - sill if head > sill > 0 or (head > 0 and "sill" in cells and i in cells["sill"]) else 0.0
+        if not (w > 0 and h > 0):
+            w, h = w_alt, h_alt
+            flag |= {1, 2}
+        elif (w_alt and abs(w_alt - w) > 5) or (h_alt and abs(h_alt - h) > 5):
+            flag |= {1, 2}
+        if w <= 0 or h <= 0:
+            continue
+        # how it opens, from the opening symbols drawn in the picture
+        mine = [p for p in panes if col_of((p["x"], 0, p["x"] + p["w"], 0)) == i]
+        style, op = "Custom", 50.0
+        if mine:
+            tot = sum(p["w"] * p["h"] for p in mine)
+            hinged = sum(p["w"] * p["h"] for p in mine if p["kind"] == "hinged")
+            if any(p["kind"] == "slide" for p in mine):
+                style, op = "Sliding, 2 panels", 50.0
+            elif hinged <= 0:
+                style, op = "Fixed - does not open", 0.0
+            elif hinged >= tot * 0.97:
+                style, op = "Side-hung casement", 100.0
+            else:
+                style, op = "Custom", round(100.0 * hinged / tot, 1)
+        flag.add(4)  # opening was read from a drawing - check it
+        geom_t = None
+        if y3d and arr is not None and y_to is not None:
+            geom_t = _back_geometry(arr, cx[i] - hw, cx[i] + hw, y_from, y_to, mine)
+        note = ""
+        if mine:
+            nh = sum(1 for p in mine if p["kind"] == "hinged")
+            ns = sum(1 for p in mine if p["kind"] == "slide")
+            nf = len(mine) - nh - ns
+            note = (f"Read from the drawing: {len(mine)} pane(s) - {nh} hinged/opening, "
+                    f"{ns} sliding, {nf} fixed. Openable = {op:.1f}% of the glass area.")
+        else:
+            note = "No opening symbols could be found for this window - set the style by hand."
+        qty = _digits(cells.get("qty", {}).get(i, ""))
+        if not qty and arr is not None and "qty" in labels:
+            ql = labels["qty"]
+            qty = _read_small_int(arr, cx[i] - hw, cx[i] + hw, ql[1], ql[3]) or 1.0
+        qty = qty or 1.0
+        gm2 = 0.0
+        gtxt = cells.get("glazed", {}).get(i, "")
+        if ("glazed", i) in glz_lines:
+            gtxt = _reread_number(arr, glz_lines[("glazed", i)]) or gtxt
+        elif "glazed" in labels and not re.search(r"\d+[.,]\d+", gtxt):
+            lab = labels["glazed"]       # the number was not picked up: read that cell on its own
+            gtxt = _reread_number(arr, (cx[i] - hw * 0.6, lab[1] - 3, cx[i] + hw * 0.6, lab[3] + 3, "")) or gtxt
+        mg = re.search(r"\d+[.,]\d+", gtxt)
+        pct = 100.0
+        if not mg:
+            flag.add(3)
+            note += " No 'Total Glazed Area' value was found for this one - 100% glass is ASSUMED. Check it."
+        if mg:
+            gm2 = _to_float(mg.group())
+            pct = max(0.0, min(100.0, gm2 / (w * h / 1e6) * 100.0))
+            if gm2 > w * h / 1e6 * 1.02:
+                flag.add(3)          # glazed area bigger than the window: misread
+            note += f" Total glazed area in the schedule: {gm2:.2f} m2 ({pct:.0f}% of the opening)."
+            sash_m2 = _sash_opening(geom_t, w, h)
+            if mine and gm2 > 0 and sash_m2 > 0 and style != "Fixed - does not open":
+                op = round(min(100.0 * sash_m2 / gm2, 100.0 * w * h / 1e6 / gm2), 1)
+                note += f" Opening sash area from the drawing: {sash_m2:.2f} m2."
+        items.append({"tag": tag, "width": w, "height": h, "glazed": round(pct, 1),
+                      "glazed_m2": gm2,
+                      "openable": op, "kind": "Window", "style": style, "flag": flag,
+                      "sash_w": 0.0, "sash_h": 0.0, "sash_qty": 1.0,
+                      "defaulted": True, "qty": qty, "note": note, "panes": _norm_panes(mine),
+                      "geom": geom_t})
+    tot = _schedule_grand_total(lines, arr, labels.get("glazed"), (cx[-1] + hw - 12) if cx else 0)
+    for it in items:
+        it["sched_total"] = tot
+    if panes and items:
+        try:
+            import cv2
+            y0 = int(max(min(p["y"] for p in panes) - 40, 0))
+            y1 = int(min(max(p["y"] + p["h"] for p in panes) + 25, arr.shape[0]))
+            ov = arr[y0:y1].copy()
+            col = {"hinged": (60, 170, 60), "slide": (200, 120, 30), "fixed": (60, 60, 200)}
+            for p in panes:
+                cv2.rectangle(ov, (p["x"], p["y"] - y0), (p["x"] + p["w"], p["y"] - y0 + p["h"]),
+                              col[p["kind"]], 3)
+            for it, t in zip(items, tags):
+                cv2.putText(ov, f"{it['tag']}: {it['style']}", (int(t[0]) - 20, 22),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+            LAST_OVERLAY[:] = [ov]
+        except Exception:
+            pass
+    return items or None
+
+
+def _reread_number(arr, line):
+    """Read one small number again from a zoomed crop (more accurate than the page pass)."""
+    import cv2
+    x0, y0, x1, y1 = [int(v) for v in line[:4]]
+    pad = 6
+    crop = arr[max(y0 - pad, 0):y1 + pad, max(x0 - pad, 0):x1 + pad]
+    if crop.size == 0:
+        return None
+    best = None
+    for sc in (4, 6):
+        c = cv2.resize(crop, None, fx=sc, fy=sc, interpolation=cv2.INTER_CUBIC)
+        c = cv2.copyMakeBorder(c, 50, 50, 50, 50, cv2.BORDER_REPLICATE)
+        try:
+            res, _ = _ocr_engine()(c)
+        except Exception:
+            continue
+        for _b, t, _s in (res or []):
+            t = t.strip().replace(",", ".")
+            if re.fullmatch(r"\d+\.\d{2}", t):
+                return t
+    return best
+
+
+def _schedule_grand_total(lines, arr, label, right_x):    # right_x: where the table's last cell ends
+    """The sum printed at the right end of the 'Total Glazed Area' row, if there is one."""
+    if label is None:
+        return None
+    lyc = (label[1] + label[3]) / 2
+    tol = max(4.0, 0.55 * (label[3] - label[1]))
+    for l in lines:
+        if l[0] >= right_x - 90 and abs((l[1] + l[3]) / 2 - lyc) <= tol \
+                and re.fullmatch(r"\d+[.,]\d+", l[4].strip()):
+            t = l[4].strip()
+            if arr is not None:
+                t = _reread_number(arr, l) or t
+            try:
+                return _to_float(t)
+            except ValueError:
+                return None
+    return None
+
+
+def merge_identical(items):
+    """Same ID (or ID_2, ID_3 ...) with identical size and glass = one row, with a quantity."""
+    out, seen = [], {}
+    for it in items:
+        it = dict(it)
+        base = re.sub(r"_\d+$", "", it["tag"])
+        key = (base, round(it["width"]), round(it["height"]), round(it.get("glazed", 0)),
+               it.get("kind"), it.get("style"))
+        if key in seen:
+            seen[key]["qty"] = seen[key].get("qty", 1) + it.get("qty", 1)
+            continue
+        it["qty"] = it.get("qty", 1) or 1
+        seen[key] = it
+        out.append(it)
+    # tidy the suffixes: D2, D2_2 ...
+    count = {}
+    for it in out:
+        base = re.sub(r"_\d+$", "", it["tag"])
+        count[base] = count.get(base, 0) + 1
+        it["tag"] = base if count[base] == 1 else f"{base}_{count[base]}"
+    return out
+
+
+def schedule_columns(lines, arr, title_hint=""):
+    """Column-style schedule where the ID cells are merged or too small to read (e.g. an
+    Archicad door schedule). Every column is found from its 'W x H Size' cell; the ID sits
+    in the first column of a group, and the following columns without an ID belong to it."""
+    import cv2
+    szl = []
+    for l in lines:
+        m = re.search(r"(\d+[.,]\d{3})\s*[x×X✕*]\s*(\d+[.,]\d{3})$", l[4].strip())   # metres: 1.100x1.800
+        if not m:
+            m = re.search(r"(\d[\d ]*?)\s*[x×X✕*]\s*(\d[\d ]*)$", l[4].strip())
+        if m and 300 <= _digits(m.group(1)) <= 6000 and 300 <= _digits(m.group(2)) <= 6000:
+            szl.append((l, _digits(m.group(1)), _digits(m.group(2))))
+    if len(szl) < 2:
+        return None
+    ys = sorted(x[0][1] for x in szl)
+    ymed = ys[len(ys) // 2]
+    szl = sorted([x for x in szl if abs(x[0][1] - ymed) < 25], key=lambda x: x[0][0])
+    if len(szl) < 2:
+        return None
+    cx = [(x[0][0] + x[0][2]) / 2 for x in szl]
+    pitch = sorted(b - a for a, b in zip(cx, cx[1:]))[len(cx) // 2 - 1 if len(cx) > 2 else 0]
+    y_size = (szl[0][0][1] + szl[0][0][3]) / 2
+    bounds = [cx[0] - (cx[1] - cx[0]) / 2] + [(a + b) / 2 for a, b in zip(cx, cx[1:])]
+    right = cx[-1] + (cx[-1] - cx[-2]) / 2
+
+    def col_of(l):
+        c = (l[0] + l[2]) / 2
+        for i in range(len(cx)):
+            hi = bounds[i + 1] if i + 1 < len(cx) else right
+            if bounds[i] <= c < hi:
+                return i
+        return None
+
+    # row labels on the left, so each value can be matched to its row
+    left_edge = bounds[0]
+    labels = {}
+    for l in lines:
+        if l[2] < left_edge + 2:
+            k = _row_key(l[4])
+            if k and k not in labels:
+                labels[k] = l
+    cells = {k: {} for k in labels}
+    glz_lines = {}
+    for l in lines:
+        ci = col_of(l)
+        if ci is None or l[2] < left_edge:
+            continue
+        yc = (l[1] + l[3]) / 2
+        for k, lab in labels.items():
+            lyc = (lab[1] + lab[3]) / 2
+            if k in ("sym",):
+                continue
+            if abs(yc - lyc) <= max(4.0, 0.55 * (lab[3] - lab[1])) and ci not in cells[k]:
+                cells[k][ci] = l[4]
+                glz_lines[(k, ci)] = l
+                break
+    # the ID row: read cell by cell (the writing is tiny)
+    qrow = labels.get("qty") or labels.get("size") or szl[0][0]
+    y1 = int(qrow[1]) + 2
+    y0 = max(y1 - 36, 0)
+    tags = {}
+    if arr is None:
+        # text from a PDF is exact: the ID sits on the row just above 'Quantity'
+        for l in lines:
+            if (_is_tag_like(l[4]) and re.search(r"[A-Za-z]", l[4]) and re.search(r"\d", l[4])
+                    and qrow[1] - 24 <= l[1] <= qrow[1] + 1 and l[0] >= left_edge - 25):
+                ci = max((i for i in range(len(cx)) if bounds[i] - 20 <= l[0]), default=None)
+                if ci is not None:
+                    tags.setdefault(ci, _norm_tag(l[4]))
+    else:
+        # merged ID cells: read the whole ID row in zoomed strips, then give every column
+        # the nearest ID (W1 sits centred over its two columns, so a column-wide crop misses it)
+        pos = []
+        for l in lines:
+            if (_is_tag_like(l[4]) and re.search(r"[A-Za-z]", l[4]) and re.search(r"\d", l[4])
+                    and qrow[1] - 30 <= l[1] <= qrow[1] and l[0] > left_edge):
+                pos.append(((l[0] + l[2]) / 2, _norm_tag(l[4])))
+        sw = 260          # narrow windows: the engine misses small IDs in wide strips
+        for x0 in range(max(int(left_edge), 0), arr.shape[1], sw // 2):
+            crop = arr[y0:y1, x0:x0 + sw]
+            if crop.size == 0:
+                continue
+            for sc in (3, 4):
+                c = cv2.resize(crop, None, fx=sc, fy=sc, interpolation=cv2.INTER_CUBIC)
+                c = cv2.copyMakeBorder(c, 60, 60, 60, 60, cv2.BORDER_CONSTANT, value=(190, 190, 190))
+                try:
+                    res, _ = _ocr_engine()(c)
+                except Exception:
+                    continue
+                for b, t, _sc in (res or []):
+                    t = t.strip()
+                    if _is_tag_like(t) and re.search(r"[A-Za-z]", t) and re.search(r"\d", t):
+                        xc = x0 + (sum(pt[0] for pt in b) / 4.0 - 60) / sc
+                        if not any(abs(xc - q[0]) < 60 for q in pos):
+                            pos.append((xc, _norm_tag(t)))
+        if len(pos) >= 2:
+            prev = None
+            for i in range(len(cx)):
+                near = min(pos, key=lambda q: abs(q[0] - cx[i]))[1]
+                if near != prev:
+                    tags[i] = near
+                prev = near
+    if arr is not None and not tags:
+        for i in range(len(cx)):
+            for off in (-28, -10, 8):
+                x0 = max(int(bounds[i]) + off, 0)
+                crop = arr[y0:y1, x0:x0 + 125]
+                if crop.size == 0:
+                    continue
+                c = cv2.resize(crop, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+                c = cv2.copyMakeBorder(c, 60, 60, 60, 60, cv2.BORDER_CONSTANT, value=(190, 190, 190))
+                try:
+                    res, _ = _ocr_engine()(c)
+                except Exception:
+                    res = None
+                hit = None
+                for _b, t, _s in (res or []):
+                    if _is_tag_like(t) and re.search(r"[A-Za-z]", t) and re.search(r"\d", t):
+                        hit = _norm_tag(t)
+                        break
+                if hit:
+                    tags[i] = hit
+                    break
+    panes_all = []
+    back_y0 = back_y1 = None
+    if arr is not None:
+        try:
+            y3 = [l for l in lines if "3d" in l[4].lower().replace(" ", "") or "back view" in l[4].lower()]
+            if y3 and "sym" in labels:
+                y3d = y3[-1]
+                below = [l[1] for l in lines if l[2] < left_edge + 2 and l[1] > y3d[3] + 2]
+                back_y0 = labels["sym"][3] + 27
+                back_y1 = min(below) if below else arr.shape[0]
+                panes_all = _find_panes(arr, back_y0, min(below) if below else None)
+        except Exception:
+            panes_all = []
+    title = " ".join(l[4] for l in lines if l[1] < y_size - 40).lower()
+    frame_txt = " ".join(l[4] for l in lines if re.search(r"sliding|slide|glij", l[4], re.I))
+    all_door = "door" in (title + " " + title_hint).lower().replace(" ", "")
+    items, cur, n = [], None, {}
+    for i in range(len(cx)):
+        if i in tags:
+            cur = tags[i]
+        base = cur or f"D{i + 1}"
+        n[base] = n.get(base, 0) + 1
+        tag = base if n[base] == 1 else f"{base}_{n[base]}"
+        w, h = szl[i][1], szl[i][2]
+        flag = set([] if i in tags or cur else [0])
+        kind = "Door" if (all_door or base.startswith(("D", "SD"))) else "Window"
+        g = cells.get("glazed", {}).get(i, "")
+        if arr is not None and ("glazed", i) in glz_lines:
+            g = _reread_number(arr, glz_lines[("glazed", i)]) or g
+        elif arr is not None and "glazed" in labels and not re.search(r"\d", g):
+            lab = labels["glazed"]
+            g = _reread_number(arr, (cx[i] - 0.35 * pitch, lab[1] - 3, cx[i] + 0.35 * pitch, lab[3] + 3, "")) or g
+        mg = re.search(r"\d+[.,]\d+|\d+", g)
+        qty_i = _digits(cells.get("qty", {}).get(i, ""))
+        if not qty_i and arr is not None and "qty" in labels:
+            ql = labels["qty"]
+            qty_i = _read_qty_cell(arr, cx[i], ql[1] - 3, ql[1] + 21, 0.42 * pitch) or 0.0
+        if not qty_i:
+            qty_i, flag = 1.0, flag | {5}      # quantity not readable: 1 assumed
+        if mg:
+            gm2 = _to_float(mg.group())
+            pct = max(0.0, min(100.0, gm2 / (w * h / 1e6) * 100.0))
+        else:
+            pct, flag = (0.0 if kind == "Door" else 100.0), flag | {3}
+        # sliding = its own column text says so (the Frame row names it)
+        style, op = ("Side-hung casement", 100.0) if kind == "Door" else ("Custom", 50.0)
+        ft = " ".join(l[4] for l in lines if col_of(l) == i and re.search(r"slid", l[4], re.I))
+        if ft or (kind == "Door" and base.startswith("SD")):
+            style, op = "Sliding, 2 panels", 50.0
+        flag.add(4)
+        hi_x = bounds[i + 1] if i + 1 < len(cx) else right
+        mine = [pn for pn in panes_all if bounds[i] <= pn["x"] + pn["w"] / 2.0 < hi_x]
+        norm = _norm_panes(mine)
+        geom = None
+        if panes_all and arr is not None:
+            geom = _back_geometry(arr, bounds[i], hi_x, back_y0, back_y1, mine)
+        if mine and kind == "Window":
+            tot = sum(pn["w"] * pn["h"] for pn in mine)
+            hinged = sum(pn["w"] * pn["h"] for pn in mine if pn["kind"] == "hinged")
+            if any(pn["kind"] == "slide" for pn in mine):
+                style, op = "Sliding, 2 panels", 50.0
+            elif hinged <= 0:
+                style, op = "Fixed - does not open", 0.0
+            elif hinged >= tot * 0.97:
+                style, op = "Side-hung casement", 100.0
+            else:
+                style, op = "Custom", round(100.0 * hinged / tot, 1)
+            sash_m2 = _sash_opening(geom, w, h)
+            if mg and gm2 > 0 and sash_m2 > 0:
+                op = round(min(100.0 * sash_m2 / gm2, 100.0 * w * h / 1e6 / gm2), 1)   # of the glass, from the sash
+        note = (f"Total glazed area in the schedule: {gm2:.2f} m2 = {pct:.0f}% of the leaf."
+                if mg else "No glazed area found in the schedule.")
+        if kind == "Door" and pct <= 0:
+            note += " No glass, so it is an internal door and is NOT used in the calculation."
+        items.append({"tag": tag, "width": w, "height": h, "glazed": round(pct, 1),
+                      "glazed_m2": gm2 if mg else 0.0,
+                      "openable": op, "kind": kind, "style": style, "flag": flag,
+                      "sash_w": 0.0, "sash_h": 0.0, "sash_qty": 1.0, "defaulted": True,
+                      "qty": qty_i, "note": note, "panes": norm, "geom": geom})
+    tot = _schedule_grand_total(lines, arr, labels.get("glazed"), max(x[0][2] for x in szl) + 30)
+    for it in items:
+        it["sched_total"] = tot
+    # one quantity unreadable: the grand total of the 'Total Glazed Area' row gives it
+    miss = [it for it in items if 5 in it["flag"] and it.get("glazed_m2")]
+    if tot and len(miss) == 1:
+        others = sum((it.get("qty") or 1) * (it.get("glazed_m2") or 0) for it in items if it is not miss[0])
+        q = (tot - others) / miss[0]["glazed_m2"]
+        if 0.9 <= q <= 99 and abs(q - round(q)) < 0.12:
+            miss[0]["qty"] = float(round(q))
+            miss[0]["flag"] = set(miss[0]["flag"]) - {5}
+            miss[0]["note"] += f" Quantity {round(q)} worked out from the schedule total ({tot:g} m2)."
+    return items
+
+
+def _split_tables(lines, width):
+    """Door and window schedules often sit side by side in one screenshot: find where each
+    table starts from its 'Quantity' row label."""
+    qs = sorted([l for l in lines if re.fullmatch(r"(?i)\s*(quantity|qty)\s*", l[4])], key=lambda l: l[0])
+    keep = []
+    for q in qs:
+        if not keep or q[0] - keep[-1][0] > 0.15 * width:
+            keep.append(q)
+    if len(keep) < 2:
+        return [(0.0, float(width))]
+    return [(max(q[0] - 10, 0.0), (keep[i + 1][0] - 10) if i + 1 < len(keep) else float(width))
+            for i, q in enumerate(keep)]
+
+
+def extract_schedule_images(images):
+    """Returns (items, skipped_tags, raw_text)."""
+    found, skipped, raw = {}, [], []
+    LAST_OVERLAY[:] = []
+    ONLINE_NOTE[0] = ""
+    if online_ready():
+        try:
+            res = online_schedule(images)
+            if res[0]:
+                ONLINE_NOTE[0] = f"Read online with {SETTINGS['provider']}."
+                return res
+            ONLINE_NOTE[0] = "The online AI found no windows; used the offline reader instead."
+        except Exception as e:
+            ONLINE_NOTE[0] = f"Online reading failed ({e}). Used the offline reader instead."
+    for img in images:
+        lines, _w, _h = ocr_lines(img)
+        try:
+            arr, _aw, _ah = _qimage_to_array(img)
+        except Exception:
+            arr = None
+        tr = []
+        if arr is not None:
+            for xl, xh in _split_tables(lines, arr.shape[1]):
+                sub = [(l[0] - xl, l[1], l[2] - xl, l[3], l[4]) for l in lines
+                       if xl <= (l[0] + l[2]) / 2 < xh]
+                sub_arr = arr[:, int(xl):int(xh)]
+                qy = min([l[1] for l in sub if re.fullmatch(r"(?i)\s*(quantity|qty)\s*", l[4])] or [1e9])
+                title = " ".join(l[4] for l in sub if l[1] < qy and re.search(r"door|window|schedule", l[4], re.I))
+                is_door = "door" in title.lower().replace(" ", "")
+                part = None
+                for reader in ((schedule_columns, schedule_transposed) if is_door
+                               else (schedule_transposed, schedule_columns)):
+                    try:
+                        cand = reader(sub, sub_arr, title) if reader is schedule_columns \
+                            else reader(sub, sub_arr)
+                    except Exception:
+                        cand = None
+                    if cand and (not part or len(cand) > len(part)):
+                        part = cand       # the reader that finds more columns wins
+                if part:
+                    tr.extend(part)
+        if tr:
+            for it in tr:
+                found.setdefault(it["tag"], it)
+            raw.append("\n".join(l[4] for l in sorted(lines, key=lambda t: (round(t[1] / 10), t[0]))))
+            continue
+        items, sk, text = schedule_from_words(_line_words(lines))
+        for it in items:
+            found.setdefault(it["tag"], it)
+        skipped += [t for t in sk if t not in found]
+        raw.append(text)
+    return list(found.values()), skipped, "\n\n".join(raw)
+
+
+class BgWorker(QThread):
+    """Runs a slow function off the screen thread so the window stays alive."""
+    done = Signal(object, str)
+
+    def __init__(self, fn):
+        super().__init__()
+        self.fn = fn
+
+    def run(self):
+        try:
+            self.done.emit(self.fn(), "")
+        except Exception as e:
+            self.done.emit(None, str(e))
+
+
+YELLOW = QColor(255, 190, 80, 70)   # soft amber glass tint for cells to double-check
+
+
+# ---------------------------------------------------------------------------
+# Vector icon set (24 x 24 line icons). Drawn from SVG, so they stay sharp at any size.
+# ---------------------------------------------------------------------------
+ICON_SVG = {
+    "home": '<path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v10h13V10"/><path d="M10 20v-5.5h4V20"/>',
+    "sun": '<circle cx="12" cy="12" r="4"/><path d="M12 2.5V5M12 19v2.5M2.5 12H5M19 12h2.5M5.3 5.3l1.8 1.8M16.9 16.9l1.8 1.8M5.3 18.7l1.8-1.8M16.9 7.1l1.8-1.8"/>',
+    "sunset": '<path d="M3 18h18"/><path d="M7 18a5 5 0 0 1 10 0"/><path d="M12 6.5V10M4.9 11l1.8 1.8M19.1 11l-1.8 1.8M2.5 15.5h2M19.5 15.5h2"/><path d="m10 4.5 2 2 2-2"/><path d="M8 21.5h8"/>',
+    "wind": '<path d="M3 8h11a3 3 0 1 0-3-3"/><path d="M3 12.5h16a3 3 0 1 1-3 3"/><path d="M3 17h7"/>',
+    "bolt": '<path d="M13 2.5 5 13.5h6l-1 8 8-11h-6z"/>',
+    "window": '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M12 3v18M4 12h16"/>',
+    "window_open": '<path d="M12 3v18"/><path d="M12 3 4 6v12l8 3"/><path d="M12 3h6a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-6"/>',
+    "door": '<path d="M6 21V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v17"/><path d="M3 21h18"/><circle cx="15" cy="12.5" r=".9" fill="currentColor"/>',
+    "room": '<rect x="3.5" y="3.5" width="17" height="17" rx="2"/><path d="M3.5 12h7M14 12h6.5M10.5 12v8.5"/>',
+    "check_circle": '<circle cx="12" cy="12" r="9"/><path d="m8 12.3 2.8 2.8 5.5-5.6"/>',
+    "x_circle": '<circle cx="12" cy="12" r="9"/><path d="m9 9 6 6M15 9l-6 6"/>',
+    "results": '<path d="M4 20V4"/><path d="M4 20h16"/><rect x="7.5" y="11" width="3" height="6" rx=".6"/><rect x="12.5" y="7" width="3" height="10" rx=".6"/><rect x="17.5" y="13" width="2.5" height="4" rx=".6"/>',
+    "import": '<path d="M12 3.5v11"/><path d="m7.5 10.5 4.5 4.5 4.5-4.5"/><path d="M4 20h16"/>',
+    "export": '<path d="M12 15.5v-12"/><path d="m7.5 8 4.5-4.5L16.5 8"/><path d="M4 20h16"/>',
+    "cube": '<path d="M12 2.5 3.5 7.2v9.6L12 21.5l8.5-4.7V7.2z"/><path d="m3.5 7.2 8.5 4.8 8.5-4.8M12 12v9.5"/>',
+    "pdf": '<path d="M6 2.5h8l5 5v14H6z"/><path d="M14 2.5v5h5"/><path d="M9 13h6M9 17h6"/>',
+    "compass": '<circle cx="12" cy="12" r="9"/><path d="m15.5 8.5-2 5-5 2 2-5z"/>',
+    "north": '<path d="M12 3 7 20l5-3 5 3z"/>',
+    "layers": '<path d="m12 3 9 5-9 5-9-5z"/><path d="m3 12.5 9 5 9-5"/><path d="m3 17 9 5 9-5"/>',
+    "building": '<path d="M5 21V4.5a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1V21"/><path d="M15 9.5h3.5a.5.5 0 0 1 .5.5v11"/><path d="M3 21h18M8.5 7.5h3M8.5 11h3M8.5 14.5h3"/>',
+    "add": '<path d="M12 5v14M5 12h14"/>',
+    "trash": '<path d="M4 7h16M9.5 7V4h5v3M6.5 7l1 13.5h9l1-13.5M10 11v6M14 11v6"/>',
+    "save": '<path d="M5 3.5h11l3.5 3.5v13.5H5z"/><path d="M8 3.5v5h7v-5M8 20.5v-7h8v7"/>',
+    "folder": '<path d="M3 6.5h6l2 2.2h10V19H3z"/>',
+    "file_plus": '<path d="M6 2.5h8l5 5v14H6z"/><path d="M14 2.5v5h5M12.5 11.5v6M9.5 14.5h6"/>',
+    "refresh": '<path d="M20 11.5a8 8 0 1 0-2.3 5.7"/><path d="M20.5 4v7.5H13"/>',
+    "edit": '<path d="m4 20 1-4.5L16.5 4a2 2 0 0 1 3 3L8 18.5z"/><path d="m14.5 6 3.5 3.5"/>',
+    "clipboard": '<rect x="6" y="4.5" width="12" height="16.5" rx="2"/><path d="M9 4.5h6V3H9zM9 11h6M9 15h4"/>',
+    "image": '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="m4 18 5-5 3.5 3.5 3-3 4.5 4.5"/>',
+    "eye": '<path d="M2.5 12s3.6-6.5 9.5-6.5 9.5 6.5 9.5 6.5-3.6 6.5-9.5 6.5S2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/>',
+    "play": '<path d="M7 4.5v15l12-7.5z"/>',
+    "search": '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/>',
+    "wall": '<rect x="3.5" y="4" width="17" height="16" rx="1.5"/><path d="M3.5 9.3h17M3.5 14.7h17M9.5 4v5.3M15.5 9.3v5.4M9.5 14.7V20"/>',
+    "roof": '<path d="M2.5 12.5 12 4l9.5 8.5"/><path d="M5.5 10.5V20h13v-9.5"/>',
+    "floor": '<path d="M3 20h18"/><path d="M5 20v-3h14v3"/><path d="M8 14.5V9h8v5.5"/>',
+    "thermo": '<path d="M10 14.5V5a2 2 0 0 1 4 0v9.5a4 4 0 1 1-4 0z"/><path d="M12 9v8"/>',
+    "drop": '<path d="M12 3s6 6.2 6 10.5a6 6 0 0 1-12 0C6 9.2 12 3 12 3z"/>',
+    "shield": '<path d="M12 3 4.5 6v5.5c0 4.7 3.1 8.2 7.5 9.5 4.4-1.3 7.5-4.8 7.5-9.5V6z"/><path d="m8.8 12.2 2.4 2.4 4-4.4"/>',
+    "info": '<circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.8v.2"/>',
+    "warning": '<path d="M12 3.5 2.8 19.5h18.4z"/><path d="M12 10v4.5M12 17v.3"/>',
+    "settings": '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
+    "globe": '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/>',
+    "lightvent": '<rect x="3.5" y="9" width="12" height="12" rx="1.6"/><path d="M9.5 9v12M3.5 15h12"/><circle cx="18" cy="6" r="2.6"/><path d="M18 1.5v1M18 9.5v1M22.5 6h-1M13.5 6h1M21 3l-.7.7M15.7 8.3 15 9M21 9l-.7-.7M15.7 3.7 15 3"/>',
+    "copy": '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
+    "ruler": '<path d="m3.5 16.5 13-13 4 4-13 13z"/><path d="m7 13 2 2M10 10l1.5 1.5M13 7l2 2"/>',
+    "close": '<path d="M6 6l12 12M18 6 6 18"/>',
+    "user": '<circle cx="12" cy="8" r="3.5"/><path d="M5 20.5c.8-4 3.6-6 7-6s6.2 2 7 6"/>',
+    "pin": '<path d="M12 21s7-6.2 7-11.5a7 7 0 0 0-14 0C5 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/>',
+    "calc": '<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M8.5 7.5h7"/><path d="M8.5 12h.01M12 12h.01M15.5 12h.01M8.5 16h.01M12 16h.01M15.5 16h.01" stroke-width="2.4"/>',
+    "stairs": '<path d="M3 20h4v-4h4v-4h4V8h6"/><path d="M3 20h18"/>',
+    "orientation": '<circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v2.5M12 18v2.5M3.5 12H6M18 12h2.5"/><path d="m12 7.5 2.2 4.5H9.8z" fill="currentColor"/>',
+    "glass": '<rect x="5" y="3" width="14" height="18" rx="1.5"/><path d="m9 8 6-2.5M9 13.5l6-2.5"/>',
+    "leaf": '<path d="M5 19c0-8 4-13.5 14-14.5 0 9-5 14.5-12.5 14.5"/><path d="M5 19c2.5-4 5-6.5 9-8.5"/>',
+    "star": '<path d="m12 3.5 2.6 5.4 5.9.8-4.3 4.1 1 5.9L12 16.9l-5.2 2.8 1-5.9-4.3-4.1 5.9-.8z"/>',
+}
+
+
+def icon_svg(name, color="#eceef0", stroke=1.8):
+    body = ICON_SVG.get(name, ICON_SVG["info"]).replace("currentColor", color)
+    return ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="%s" '
+            'stroke-width="%s" stroke-linecap="round" stroke-linejoin="round">%s</svg>' % (color, stroke, body))
+
+
+_ICON_CACHE = {}
+
+
+def icon_pixmap(name, color="#eceef0", size=18):
+    key = (name, color, size)
+    if key in _ICON_CACHE:
+        return _ICON_CACHE[key]
+    from PySide6.QtGui import QPixmap
+    pm = QPixmap(size * 2, size * 2)
+    pm.fill(Qt.GlobalColor.transparent)
+    try:
+        from PySide6.QtSvg import QSvgRenderer
+        r = QSvgRenderer(icon_svg(name, color).encode("utf-8"))
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r.render(p)
+        p.end()
+    except Exception:
+        pass
+    pm.setDevicePixelRatio(2.0)
+    _ICON_CACHE[key] = pm
+    return pm
+
+
+def make_icon(name, color="#eceef0", size=18):
+    from PySide6.QtGui import QIcon
+    ic = QIcon()
+    ic.addPixmap(icon_pixmap(name, color, size), QIcon.Mode.Normal)
+    ic.addPixmap(icon_pixmap(name, "#ffffff", size), QIcon.Mode.Selected)
+    ic.addPixmap(icon_pixmap(name, "#6b7179", size), QIcon.Mode.Disabled)
+    return ic
+
+
+# word in a button / menu text -> icon (the first match wins)
+ICON_KEYS = [
+    ("import ifc", "cube"), ("ifc", "cube"), ("import floor", "import"), ("import windows", "import"),
+    ("import", "import"), ("paste", "clipboard"), ("preview", "eye"), ("export", "export"),
+    ("save pdf", "pdf"), ("save icon", "star"), ("save", "save"), ("open", "folder"),
+    ("start a new", "file_plus"), ("new project", "file_plus"), ("edit project", "edit"),
+    ("run", "play"), ("do all", "calc"), ("add floor", "layers"), ("rename", "edit"),
+    ("add row", "add"), ("add from", "add"), ("add", "add"), ("remove", "trash"), ("clear", "trash"),
+    ("duplicate", "copy"), ("build your own", "edit"), ("edit layers", "edit"), ("assign unit", "building"),
+    ("show which windows", "window"), ("north", "compass"), ("combine", "room"), ("split", "room"),
+    ("report details", "pdf"), ("light & ventilation", "lightvent"), ("light && ventilation", "lightvent"),
+    ("energy", "bolt"), ("rational", "shield"), ("show text", "search"), ("detected openings", "window_open"),
+    ("room report", "room"), ("online", "globe"), ("appearance", "settings"), ("dark studio", "eye"),
+    ("liquid glass", "eye"), ("restart", "refresh"), ("update", "refresh"), ("reload", "refresh"),
+    ("quit", "close"), ("cancel", "close"), ("done", "check_circle"), ("tools", "settings"),
+    ("reports", "pdf"), ("select all", "check_circle"), ("set...", "edit"),
+]
+
+
+def _icon_for(text):
+    t = (text or "").lower().replace("&", "&")
+    for k, n in ICON_KEYS:
+        if k in t:
+            return n
+    return None
+
+
+def decorate_icons(root):
+    """Give every button / menu entry under root an icon, chosen from its text."""
+    from PySide6.QtWidgets import QPushButton as _PB, QTableWidget as _TW, QMenu as _MN
+    for b in root.findChildren(_PB):
+        if not b.icon().isNull() or not b.text():
+            continue
+        par, in_table = b.parent(), False
+        while par is not None:
+            if isinstance(par, _TW):
+                in_table = True
+                break
+            par = par.parent()
+        if in_table:
+            continue
+        n = _icon_for(b.text())
+        if n:
+            b.setIcon(make_icon(n, "#ffffff" if b.property("accent") else "#eceef0", 18))
+            b.setIconSize(QSize(18, 18))
+    if isinstance(root, _MN):
+        for a in root.actions():
+            if a.icon().isNull() and a.text():
+                n = _icon_for(a.text())
+                if n:
+                    a.setIcon(make_icon(n, "#eceef0", 16))
+
+
+class _IconFilter(QObject):
+    """Adds icons to dialogs and menus the moment they appear."""
+
+    def eventFilter(self, obj, ev):
+        if ev.type() == QEvent.Type.Show and isinstance(obj, (QDialog, QMenu)):
+            try:
+                if not obj.property("_icons_done") or isinstance(obj, QMenu):
+                    decorate_icons(obj)
+                    obj.setProperty("_icons_done", True)
+            except Exception:
+                pass
+        return False
+
+
+def apply_icons(win):
+    """Tab icons, button icons and big icons on the home cards."""
+    mt = getattr(win, "main_tabs", None)
+    if mt is not None:
+        for i, n in enumerate(("home", "lightvent", "bolt")):
+            if i < mt.count():
+                mt.setTabIcon(i, make_icon(n, "#eceef0", 18))
+        mt.setIconSize(QSize(18, 18))
+    st = getattr(win, "tabs", None)
+    if st is not None:
+        for i, n in enumerate(("window", "door", "room", "results")):
+            if i < st.count():
+                st.setTabIcon(i, make_icon(n, "#eceef0", 17))
+        st.setIconSize(QSize(17, 17))
+    decorate_icons(win)
+
+
+GROUP_ICON_KEYS = [
+    ("wall", "wall"), ("roof", "roof"), ("floors", "floor"), ("pipe", "drop"), ("hot water", "drop"),
+    ("windows and glazed", "window"), ("air infiltration", "wind"), ("rational", "shield"), ("where is the building", "pin"),
+    ("building details", "building"), ("building type", "building"), ("what kind of building", "building"),
+    ("project", "folder"), ("model", "cube"), ("light", "lightvent"), ("energy", "bolt"), ("reports", "pdf"),
+    ("who", "user"), ("location", "pin"), ("details", "edit"),
+]
+
+
+# Air infiltration and leakage (SANS 204 clause 4.4, used with SANS 10400-XA). Limits are in L/s.m2 at a 75 Pa
+# pressure difference, tested to SANS 613. Items marked "al" take the supplier's test figure.
+AIR_AL_ITEMS = [
+    ("open", "Openable glazing", 2.0),
+    ("fixed", "Non-openable glazing", 0.31),
+    ("swing", "Glazed double action swing doors and revolving doors", 5.0),
+]
+AIR_PROV_ITEMS = [
+    # key, group, options (first = not present), requirement text per option (None = nothing required)
+    ("chim", "Chimneys and flues",
+     ["None in the building", "Solid-fuel open fireplace", "Closed appliance or gas flue"],
+     [None, "Damper or flap required (SANS 204 4.4.3).",
+      "Not covered by the damper rule: follow the appliance maker's instructions."]),
+    ("sky", "Roof lights and skylights",
+     ["None in the building", "Roof lights / skylights fitted"],
+     [None, "Must meet the glazing air leakage limits (2.0 L/s.m2 openable, 0.31 L/s.m2 non-openable) (SANS 204 4.4.2)."]),
+    ("door", "External doors",
+     ["None in the building", "Opening from a habitable room", "Opening from a non-habitable room"],
+     [None, "Door seal required (SANS 204 4.4.3).", "No door seal required by this rule."]),
+    ("fan", "Exhaust fans",
+     ["None in the building", "Fan in a habitable room", "Fan in a non-habitable room"],
+     [None, "Self-closing damper or filter required (SANS 204 4.4.3).", "No damper rule for this room."]),
+    ("env", "Roofs, walls and floors",
+     ["Habitable rooms (always applies)"],
+     ["Construction to minimise air leakage (SANS 204 4.4.3)."]),
+]
+AIR_PROV_STATES = ["Not yet decided", "Yes - provided / specified", "No"]
+
+
+class IconGroupBox(QGroupBox):
+    """A framed group whose red title pill carries a small icon chosen from the title."""
+
+    def __init__(self, title="", parent=None):
+        super().__init__(title, parent)
+        t = title.lower().replace("&&", "&")
+        self._icon = next((n for k, n in GROUP_ICON_KEYS if k in t), None)
+        if self._icon:
+            self.setTitle("        " + title)       # room for the icon inside the title pill
+
+    def paintEvent(self, ev):
+        super().paintEvent(ev)
+        if not self._icon:
+            return
+        try:
+            from PySide6.QtWidgets import QStyleOptionGroupBox, QStyle
+            opt = QStyleOptionGroupBox()
+            self.initStyleOption(opt)
+            r = self.style().subControlRect(QStyle.ComplexControl.CC_GroupBox, opt,
+                                            QStyle.SubControl.SC_GroupBoxLabel, self)
+            pm = icon_pixmap(self._icon, "#ffffff", 16)
+            p = QPainter(self)
+            p.drawPixmap(r.left() + 6, r.top() + (r.height() - 16) // 2 + 1, 16, 16, pm)
+            p.end()
+        except Exception:
+            pass
+
+
+class _GripHandle(QSplitterHandle):
+    """Splitter bar with a visible grip so it is obvious that it can be dragged."""
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        col = QColor("#d8132b") if self.underMouse() else (QColor("#565c64") if studio() else QColor(255, 255, 255, 120))
+        r = QRectF(w / 2 - 2, h / 2 - 22, 4, 44) if self.orientation() == Qt.Orientation.Horizontal \
+            else QRectF(w / 2 - 22, h / 2 - 2, 44, 4)
+        pth = QPainterPath()
+        pth.addRoundedRect(r, 2, 2)
+        p.fillPath(pth, col)
+
+
+class GripSplitter(QSplitter):
+    def createHandle(self):
+        h = _GripHandle(self.orientation(), self)
+        h.setCursor(Qt.CursorShape.SplitVCursor if self.orientation() == Qt.Orientation.Vertical
+                    else Qt.CursorShape.SplitHCursor)
+        h.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        return h
+
+
+class TableGrip(QWidget):
+    """A thin draggable bar under a table: drag it up or down to make that table shorter or taller."""
+
+    def __init__(self, table, min_h=70, max_h=1400):
+        super().__init__()
+        self.t, self.min_h, self.max_h = table, min_h, max_h
+        self.setFixedHeight(12)
+        self.setCursor(Qt.CursorShape.SplitVCursor)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self.setToolTip("Drag up or down to change the height of the table above")
+        self._y0 = None
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        col = QColor("#d8132b") if (self.underMouse() or self._y0 is not None) else \
+            (QColor("#565c64") if studio() else QColor(255, 255, 255, 120))
+        pth = QPainterPath()
+        pth.addRoundedRect(QRectF(self.width() / 2 - 22, self.height() / 2 - 2, 44, 4), 2, 2)
+        p.fillPath(pth, col)
+
+    def mousePressEvent(self, ev):
+        self._y0 = ev.globalPosition().y()
+        self._h0 = self.t.height()
+
+    def mouseMoveEvent(self, ev):
+        if self._y0 is None:
+            return
+        h = int(max(self.min_h, min(self.max_h, self._h0 + ev.globalPosition().y() - self._y0)))
+        self.t.setMinimumHeight(h)
+        self.t.setMaximumHeight(h)
+
+    def mouseReleaseEvent(self, _ev):
+        self._y0 = None
+        self.update()
+
+
+def add_table_grip(layout, table, **kw):
+    g = TableGrip(table, **kw)
+    layout.addWidget(g)
+    return g
+
+
+class GlassItemDelegate(QStyledItemDelegate):
+    """Plain cells; a selected row gets a soft rounded glass highlight."""
+    draw_text = True
+    draw_selection = True
+
+    def paint(self, painter, option, index):
+        from PySide6.QtWidgets import QStyle, QStyleOptionViewItem
+        opt = QStyleOptionViewItem(option)
+        if self.draw_selection and (opt.state & QStyle.StateFlag.State_Selected):
+            painter.save()
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            r = QRectF(opt.rect).adjusted(0, 3, 0, -3)
+            n = index.model().columnCount()
+            rad = r.height() / 2.4
+            if index.column() == 0:
+                r.adjust(4, 0, rad, 0)
+            elif index.column() == n - 1:
+                r.adjust(-rad, 0, -4, 0)
+            else:
+                r.adjust(-rad, 0, rad, 0)
+            path = QPainterPath()
+            painter.setClipRect(opt.rect)
+            if studio():
+                path.addRoundedRect(r, 7, 7)
+                painter.fillPath(path, QColor(216, 19, 43, 60))
+            else:
+                path.addRoundedRect(r, rad, rad)
+                g = QLinearGradient(0, r.top(), 0, r.bottom())
+                g.setColorAt(0, QColor(255, 255, 255, 70))
+                g.setColorAt(1, QColor(255, 255, 255, 28))
+                painter.fillPath(path, g)
+            painter.restore()
+            opt.state &= ~QStyle.StateFlag.State_Selected
+        if self.draw_text:
+            super().paint(painter, opt, index)
+        else:   # keep the thin row divider that the stylesheet would normally draw
+            painter.fillRect(option.rect.left(), option.rect.bottom(), option.rect.width(), 1,
+                             QColor(255, 255, 255, 20))
+
+
+class HiddenTextDelegate(GlassItemDelegate):
+    """Cell shows a button; the text underneath is just data, so it is not drawn."""
+    draw_text = False
+    draw_selection = False
+
+
+class GlassCellDelegate(GlassItemDelegate):
+    """Draws PASS / FAIL cells as glossy translucent glass pills."""
+    LOOK = {"pass": ((95, 240, 160, 165), (25, 165, 90, 95), (170, 255, 205, 190)),
+            "fail": ((255, 105, 115, 175), (200, 15, 32, 110), (255, 170, 175, 190))}
+
+    def paint(self, painter, option, index):
+        kind = index.data(Qt.ItemDataRole.UserRole)
+        if kind not in self.LOOK:
+            return super().paint(painter, option, index)
+        top, bot, edge = self.LOOK[kind]
+        if studio():
+            painter.save()
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            r = QRectF(option.rect).adjusted(6, 7, -6, -7)
+            ok = kind == "pass"
+            pth = QPainterPath()
+            pth.addRoundedRect(r, r.height() / 2, r.height() / 2)
+            painter.fillPath(pth, QColor("#1f3a2a" if ok else "#4a1d24"))
+            painter.setPen(QColor("#5fd38a" if ok else "#ff7b8b"))
+            f = painter.font(); f.setBold(True); f.setPointSizeF(max(7.5, f.pointSizeF() - 1))
+            painter.setFont(f)
+            painter.drawText(r, Qt.AlignmentFlag.AlignCenter, index.data(Qt.ItemDataRole.DisplayRole))
+            painter.restore()
+            return
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(option.rect).adjusted(6, 4, -6, -4)
+        path = QPainterPath()
+        path.addRoundedRect(r, r.height() / 2.2, r.height() / 2.2)
+        g = QLinearGradient(0, r.top(), 0, r.bottom())
+        g.setColorAt(0, QColor(*top))
+        g.setColorAt(1, QColor(*bot))
+        painter.fillPath(path, g)
+        gloss = QLinearGradient(0, r.top(), 0, r.center().y())
+        gloss.setColorAt(0, QColor(255, 255, 255, 80))
+        gloss.setColorAt(1, QColor(255, 255, 255, 0))
+        hl = QPainterPath()
+        hl.addRoundedRect(r.adjusted(2, 1.5, -2, -r.height() / 2), r.height() / 3, r.height() / 3)
+        painter.fillPath(hl, gloss)
+        painter.setPen(QPen(QColor(*edge), 1.2))
+        painter.drawPath(path)
+        painter.setPen(QColor(255, 255, 255))
+        f = painter.font()
+        f.setBold(True)
+        painter.setFont(f)
+        painter.drawText(r, Qt.AlignmentFlag.AlignCenter, index.data(Qt.ItemDataRole.DisplayRole))
+        painter.restore()
+
+
+from PySide6.QtWidgets import QTabBar as _QTabBar
+
+
+class ProvTabs(_QTabBar):
+    """Tab strip with the same small interface as a combo box (currentText / setCurrentText)."""
+    currentTextChanged = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.currentChanged.connect(lambda i: self.currentTextChanged.emit(self.tabText(i)))
+
+    def currentText(self):
+        return self.tabText(self.currentIndex())
+
+    def setCurrentText(self, t):
+        for i in range(self.count()):
+            if self.tabText(i) == t:
+                self.setCurrentIndex(i)
+                return
+
+
+class CompassWidget(QWidget):
+    """Draggable north arrow. angle = degrees clockwise from the top of the plan."""
+    changed = Signal(float)
+    def __init__(self, angle=0.0, parent=None):
+        super().__init__(parent)
+        self.angle = float(angle) % 360
+        self.setMinimumSize(280, 280)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+    def set_angle(self, a, emit=True):
+        a = float(a) % 360
+        if abs(a - self.angle) > 1e-9:
+            self.angle = a
+            self.update()
+            if emit: self.changed.emit(a)
+    def _from_pos(self, pos):
+        import math
+        c = self.rect().center()
+        dx, dy = pos.x() - c.x(), pos.y() - c.y()
+        if dx == 0 and dy == 0: return
+        a = math.degrees(math.atan2(dx, -dy)) % 360
+        if QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier:
+            a = round(a / 5) * 5
+        self.set_angle(a)
+    def mousePressEvent(self, e):
+        self.setCursor(Qt.CursorShape.ClosedHandCursor); self._from_pos(e.position())
+    def mouseMoveEvent(self, e):
+        if e.buttons() & Qt.MouseButton.LeftButton: self._from_pos(e.position())
+    def mouseReleaseEvent(self, e):
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+    def wheelEvent(self, e):
+        self.set_angle(self.angle + (1 if e.angleDelta().y() > 0 else -1))
+    def paintEvent(self, _e):
+        import math
+        p = QPainter(self); p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height(); r = min(w, h) / 2 - 18
+        p.translate(w / 2, h / 2)
+        p.setBrush(QColor(20, 20, 24)); p.setPen(QPen(QColor(200, 30, 45), 2)); p.drawEllipse(QPointF(0, 0), r, r)
+        for d in range(0, 360, 10):
+            p.save(); p.rotate(d)
+            ln = 12 if d % 90 == 0 else (8 if d % 30 == 0 else 4)
+            p.setPen(QPen(QColor(150, 150, 160) if d % 30 else QColor(230, 230, 235), 1.4))
+            p.drawLine(QPointF(0, -r), QPointF(0, -r + ln)); p.restore()
+        f = p.font(); f.setBold(True); f.setPointSize(9); p.setFont(f)
+        p.setPen(QColor(200, 200, 205))
+        for d, t in ((0, "TOP"), (90, "R"), (180, "BOT"), (270, "L")):
+            a = math.radians(d); x = math.sin(a) * (r - 28); y = -math.cos(a) * (r - 28)
+            p.drawText(QRectF(x - 20, y - 9, 40, 18), Qt.AlignmentFlag.AlignCenter, t)
+        p.save(); p.rotate(self.angle)
+        up = QPolygonF([QPointF(0, -r + 38), QPointF(-15, 0), QPointF(15, 0)])
+        dn = QPolygonF([QPointF(0, r - 60), QPointF(-15, 0), QPointF(15, 0)])
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(225, 30, 50)); p.drawPolygon(up)
+        p.setBrush(QColor(90, 90, 100)); p.drawPolygon(dn)
+        p.restore()
+        a = math.radians(self.angle); tx = math.sin(a) * (r - 64); ty = -math.cos(a) * (r - 64)
+        p.setPen(QColor(255, 255, 255)); f.setPointSize(16); p.setFont(f)
+        p.drawText(QRectF(tx - 14, ty - 14, 28, 28), Qt.AlignmentFlag.AlignCenter, "N")
+        p.setBrush(QColor(240, 240, 240)); p.setPen(Qt.PenStyle.NoPen); p.drawEllipse(QPointF(0, 0), 5, 5)
+
+def compass_point(deg):
+    pts = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"]
+    return pts[int((deg % 360) / 22.5 + 0.5) % 16]
+
+class CompassDialog(QDialog):
+    def __init__(self, parent=None, angle=0.0):
+        super().__init__(parent)
+        self.setWindowTitle("North arrow - building orientation")
+        v = QVBoxLayout(self)
+        t = QLabel("Drag the red arrow so it points the same way as the north arrow on your plan.\n"
+                   "0 deg = north points to the top of the sheet. Mouse wheel = 1 deg, hold Shift = snap to 5 deg.")
+        t.setWordWrap(True); v.addWidget(t)
+        self.dial = CompassWidget(angle); v.addWidget(self.dial, 1)
+        row = QHBoxLayout()
+        self.spin = QDoubleSpinBox(); self.spin.setRange(0, 359.9); self.spin.setDecimals(1)
+        self.spin.setSuffix(" deg"); self.spin.setWrapping(True); self.spin.setValue(float(angle) % 360)
+        self.lab = QLabel(); row.addWidget(QLabel("Rotation (clockwise):")); row.addWidget(self.spin)
+        row.addWidget(self.lab, 1); v.addLayout(row)
+        def from_dial(a):
+            self.spin.blockSignals(True); self.spin.setValue(round(a, 1)); self.spin.blockSignals(False); upd()
+        def upd():
+            self.lab.setText("Points %s" % compass_point(self.spin.value()))
+        self.dial.changed.connect(from_dial)
+        self.spin.valueChanged.connect(lambda x: (self.dial.set_angle(x, emit=False), self.dial.update(), upd()))
+        upd()
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        bb.accepted.connect(self.accept); bb.rejected.connect(self.reject); v.addWidget(bb)
+    def value(self):
+        return round(self.spin.value(), 1)
+
+
+class OpeningPreview(QWidget):
+    """Small pop-up drawn when the mouse rests on a window row: the window to scale, the glass
+    (blue) and the opening part that counts as ventilation (green)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent, Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.op = None
+        self.panes = []
+        self.geom = None
+        self.setFixedSize(330, 380)
+        self.on_pick = None          # set to a function(pane_index, global_pos) to make the panes clickable
+        self.on_enter = None
+        self.on_leave = None
+        self._hit = []
+        self._hover_i = -1
+        self.setMouseTracking(True)
+
+    def enterEvent(self, ev):
+        if self.on_enter: self.on_enter()
+
+    def leaveEvent(self, ev):
+        self._hover_i = -1
+        self.update()
+        if self.on_leave: self.on_leave()
+
+    def _pane_at(self, pt):
+        for r, i in self._hit:
+            if r.contains(pt): return i
+        return -1
+
+    def mouseMoveEvent(self, ev):
+        if not self.on_pick: return
+        i = self._pane_at(ev.position())
+        if i != self._hover_i:
+            self._hover_i = i
+            self.setCursor(Qt.CursorShape.PointingHandCursor if i >= 0 else Qt.CursorShape.ArrowCursor)
+            self.update()
+
+    def mousePressEvent(self, ev):
+        if not self.on_pick: return
+        i = self._pane_at(ev.position())
+        if i >= 0: self.on_pick(i, ev.globalPosition().toPoint())
+
+    def show_for(self, op, panes, pos, geom=None):
+        self.op, self.panes = op, panes or []
+        self.geom = geom
+        self.move(pos)
+        self.show()
+        self.update()
+
+    def paintEvent(self, _e):
+        op = self.op
+        self._hit = []
+        if op is None:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        card = QRectF(1, 1, self.width() - 2, self.height() - 2)
+        g = QLinearGradient(card.topLeft(), card.bottomRight())
+        g.setColorAt(0, QColor(38, 42, 47, 250) if studio() else QColor(58, 22, 28, 245))
+        g.setColorAt(1, QColor(27, 29, 33, 250) if studio() else QColor(22, 10, 14, 245))
+        p.setBrush(QBrush(g))
+        p.setPen(QPen(QColor(255, 255, 255, 70), 1.2))
+        p.drawRoundedRect(card, 16, 16)
+        p.setPen(QColor(255, 255, 255))
+        f = p.font()
+        f.setPointSize(11)
+        f.setBold(True)
+        p.setFont(f)
+        p.drawText(QRectF(16, 10, 300, 22), Qt.AlignmentFlag.AlignLeft, f"{op.tag}   {op.width_mm:g} x {op.height_mm:g} mm")
+        f.setBold(False)
+        f.setPointSize(9)
+        p.setFont(f)
+        p.setPen(QColor(255, 255, 255, 190))
+        p.drawText(QRectF(16, 32, 300, 18), Qt.AlignmentFlag.AlignLeft, op.style)
+        box = QRectF(24, 60, 282, 220)
+        if self.geom and self.geom.get("panes"):
+            self._paint_exact(p, box, op)
+            self._paint_legend(p, op, 296, True)
+            return
+        # window to scale
+        aspect = max(op.width_mm, 1.0) / max(op.height_mm, 1.0)
+        if aspect >= box.width() / box.height():
+            w = box.width()
+            h = w / aspect
+        else:
+            h = box.height()
+            w = h * aspect
+        fr = QRectF(box.center().x() - w / 2, box.center().y() - h / 2, w, h)
+        p.setPen(QPen(QColor(210, 210, 215), 1.5))
+        p.setBrush(QColor(70, 72, 78))
+        p.drawRect(fr)
+        # the glass: its share of the opening comes from the schedule
+        share = op.glazed_m2 / op.area_m2 if op.area_m2 > 0 else 1.0
+        k = max(min(share, 1.0), 0.05) ** 0.5
+        inner = QRectF(fr.center().x() - fr.width() * k / 2, fr.center().y() - fr.height() * k / 2,
+                       fr.width() * k, fr.height() * k)
+        glass = QColor(120, 190, 255, 150)
+        vent = QColor(70, 220, 120, 190)
+        pane_list = self.panes
+        if pane_list:
+            for (x0, y0, x1, y1, kind) in pane_list:
+                r = QRectF(inner.x() + x0 * inner.width() + 1, inner.y() + y0 * inner.height() + 1,
+                           (x1 - x0) * inner.width() - 2, (y1 - y0) * inner.height() - 2)
+                p.setPen(QPen(QColor(255, 255, 255, 120), 1))
+                p.setBrush(glass)
+                p.drawRect(r)
+                if kind in ("hinged", "slide") and op.openable_pct > 0:
+                    p.setBrush(QBrush(vent, Qt.BrushStyle.BDiagPattern if kind == "hinged" else Qt.BrushStyle.Dense4Pattern))
+                    p.setPen(QPen(QColor(70, 220, 120), 2))
+                    p.drawRect(r)
+                    if kind == "hinged":
+                        p.setPen(QPen(QColor(255, 255, 255, 190), 1, Qt.PenStyle.DashLine))
+                        p.drawLine(r.topRight(), QPointF(r.left(), r.center().y()))
+                        p.drawLine(r.bottomRight(), QPointF(r.left(), r.center().y()))
+        else:      # no drawing was read: show the glass, and the opening part as a strip of it
+            p.setPen(QPen(QColor(255, 255, 255, 120), 1))
+            p.setBrush(glass)
+            p.drawRect(inner)
+            if op.openable_m2 > 0 and op.glazed_m2 > 0:
+                frac = max(min(op.openable_m2 / op.glazed_m2, 1.0), 0.0)
+                r = QRectF(inner.x(), inner.y(), inner.width() * frac, inner.height())
+                p.setBrush(QBrush(vent, Qt.BrushStyle.BDiagPattern))
+                p.setPen(QPen(QColor(70, 220, 120), 2))
+                p.drawRect(r)
+        self._paint_legend(p, op, 296, False)
+
+    def _paint_exact(self, p, box, op):
+        """The 3D back view of this window, redrawn exactly: the frame, every pane where it
+        is in your drawing, the panes that open (green) and the side they are hinged."""
+        aspect = max(self.geom.get("aspect", 1.0), 0.05)
+        if aspect >= box.width() / box.height():
+            w = box.width()
+            h = w / aspect
+        else:
+            h = box.height()
+            w = h * aspect
+        fr = QRectF(box.center().x() - w / 2, box.center().y() - h / 2, w, h)
+        p.setPen(QPen(QColor(215, 215, 220), 1.5))
+        p.setBrush(QColor(74, 76, 84))
+        p.drawRect(fr)
+        for pi, q in enumerate(self.geom["panes"]):
+            x0, y0, x1, y1, kind, apex = q[:6]
+            r = QRectF(fr.x() + x0 * fr.width(), fr.y() + y0 * fr.height(),
+                       (x1 - x0) * fr.width(), (y1 - y0) * fr.height())
+            sash = r
+            if len(q) >= 10:
+                sash = QRectF(fr.x() + q[6] * fr.width(), fr.y() + q[7] * fr.height(),
+                              (q[8] - q[6]) * fr.width(), (q[9] - q[7]) * fr.height())
+            self._hit.append((sash.united(r), pi))
+            p.setPen(QPen(QColor(235, 240, 250, 200), 1))
+            p.setBrush(QColor(130, 195, 255, 170))
+            p.drawRect(r)
+            if kind in ("hinged", "slide") and op.openable_pct > 0:
+                p.setBrush(QBrush(QColor(60, 225, 120, 215),
+                                  Qt.BrushStyle.BDiagPattern if kind == "hinged" else Qt.BrushStyle.Dense4Pattern))
+                p.setPen(QPen(QColor(60, 225, 120), 2.2))
+                p.drawRect(sash)       # the whole opening sash, glass and its frame
+                if kind == "hinged":
+                    p.setPen(QPen(QColor(255, 255, 255, 230), 1.2, Qt.PenStyle.DashLine))
+                    tl, tr, bl, br = r.topLeft(), r.topRight(), r.bottomLeft(), r.bottomRight()
+                    ctr = r.center()
+                    if apex == "X":
+                        p.drawLine(tl, br)
+                        p.drawLine(tr, bl)
+                    elif apex == "L":
+                        a = QPointF(r.left(), ctr.y())
+                        p.drawLine(a, tr); p.drawLine(a, br)
+                    elif apex == "R":
+                        a = QPointF(r.right(), ctr.y())
+                        p.drawLine(a, tl); p.drawLine(a, bl)
+                    elif apex == "T":
+                        a = QPointF(ctr.x(), r.top())
+                        p.drawLine(a, bl); p.drawLine(a, br)
+                    elif apex == "B":
+                        a = QPointF(ctr.x(), r.bottom())
+                        p.drawLine(a, tl); p.drawLine(a, tr)
+            if self.on_pick and pi == self._hover_i:
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.setPen(QPen(QColor(255, 255, 255, 235), 2.4))
+                p.drawRect(sash.united(r))
+
+    def _paint_legend(self, p, op, y, exact):
+        share = op.glazed_m2 / op.area_m2 if op.area_m2 > 0 else 1.0
+        glass = QColor(130, 195, 255, 170)
+        vent = QColor(70, 220, 120, 190)
+        f = p.font()
+        f.setBold(False)
+        f.setPointSize(9)
+        p.setFont(f)
+        for col, pat, txt in ((glass, Qt.BrushStyle.SolidPattern, f"Glazed area  {op.glazed_m2:.2f} m2   ({100.0 * share:.0f}% of the opening)"),
+                              (vent, Qt.BrushStyle.BDiagPattern, f"Opening / ventilation area  {op.openable_m2:.2f} m2")):
+            p.setBrush(QBrush(col, pat))
+            p.setPen(QPen(QColor(255, 255, 255, 140), 1))
+            p.drawRect(QRectF(18, y + 2, 22, 14))
+            p.setPen(QColor(255, 255, 255))
+            p.drawText(QRectF(48, y, 270, 18), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, txt)
+            y += 24
+        p.setPen(QColor(255, 255, 255, 140))
+        f.setPointSize(8)
+        p.setFont(f)
+        if exact and self.on_pick:
+            msg = "Click a pane to choose how it opens: fixed, side-hung, top-hung, bottom-hung or sliding."
+        elif exact:
+            msg = "Your 3D back view, redrawn: frame, panes, hinge sides. Green = the whole opening sash (glass + its frame)."
+        elif self.panes:
+            msg = "Redrawn to scale. Import from a screenshot to get your exact drawing here."
+        else:
+            msg = "No drawing was read: glass and opening are shown from the numbers."
+        p.drawText(QRectF(18, y + 2, 300, 34), Qt.TextFlag.TextWordWrap, msg)
+
+
+class HoverFilter(QObject):
+    """Hover a window/door row to see it drawn. The drawing stays while the mouse is on it, and you can
+    click a pane to change how it opens (ventilation) or the glazed % - in the schedule, the Rooms
+    tab and the Energy (XA) glass table."""
+
+    def __init__(self, win):
+        super().__init__(win)
+        self.win = win
+        self.pop = OpeningPreview(win)
+        self.last = None
+        self.tbl = None
+        self.xa = False
+        self.menu_open = False
+        self.timer = QTimer(self); self.timer.setSingleShot(True); self.timer.setInterval(600)
+        self.timer.timeout.connect(self._maybe_hide)
+        self.pop.on_pick = self.pick
+        self.pop.on_enter = self.timer.stop
+        self.pop.on_leave = self.timer.start
+
+    def _maybe_hide(self):
+        if self.menu_open or self.pop.underMouse():
+            return
+        self.pop.hide(); self.last = None
+
+    def _ifc_item(self, tag):
+        d = getattr(self.win, "ifc_data", None) or {}
+        return next((i for i in d.get("items", []) if i["tag"].upper() == tag), None)
+
+    def _show(self, tag, pos):
+        w = self.win
+        op = (w.xa_schedule() if self.xa else w.read_schedule()).get(tag)
+        if op is None:
+            self.pop.hide(); return
+        panes, geom = w.sched_panes.get(tag), w.sched_geom.get(tag)
+        if self.xa:
+            it = self._ifc_item(tag)
+            panes, geom = (it.get("panes") if it else None), (it.get("geom") if it else None)
+        elif not (isinstance(geom, dict) and geom.get("panes")):
+            geom = {"aspect": op.width_mm / max(op.height_mm, 1.0), "panes": [(0.06, 0.06, 0.94, 0.94, "fixed", "")]}
+            w.sched_geom[tag] = geom
+        self.pop.show_for(op, panes, pos, geom)
+
+    def pick(self, i, gpos):
+        w, tag = self.win, self.last
+        if not tag:
+            return
+        if self.xa:
+            it = self._ifc_item(tag)
+            g = it.get("geom") if it else None
+            if not (isinstance(g, dict) and i < len(g.get("panes", []))):
+                return
+            q = g["panes"][i]; cur = (q[4], q[5] if len(q) > 5 else "")
+            share = float(it.get("glazed", 0))
+        else:
+            op = w.read_schedule().get(tag)
+            g = w.sched_geom.get(tag)
+            if op is None or not (isinstance(g, dict) and i < len(g.get("panes", []))):
+                return
+            q = g["panes"][i]; cur = (q[4], q[5] if len(q) > 5 else "")
+            share = (op.glazed_m2 / op.area_m2 * 100.0) if op.area_m2 > 0 else op.glazed_pct
+        self.menu_open = True
+        ch = w._pane_menu(w, cur, gpos, share)
+        self.menu_open = False
+        if ch is None:
+            self.timer.start(); return
+        if self.xa:
+            if ch[0] == "glaze":
+                val, ok = QInputDialog.getDouble(w, APP_NAME, f"Glazed % of {tag}:", round(share, 1), 0.0, 100.0, 1)
+                if not ok:
+                    return
+                it["glazed"] = val
+                it["glazed_m2"] = round(it["width"] * it["height"] / 1e6 * val / 100.0, 3)
+            else:
+                kinds = [(x[4], x[5] if len(x) > 5 else "") for x in g["panes"]]
+                kinds[i] = tuple(ch[1])
+                _ifc_apply_ops(it, kinds)
+            try:
+                w._run_xa_quiet()
+            except Exception:
+                pass
+        else:
+            if ch[0] == "glaze":
+                if w._sched_set_glazed(tag) is None:
+                    return
+            else:
+                kinds = [(x[4], x[5] if len(x) > 5 else "") for x in g["panes"]]
+                kinds[i] = tuple(ch[1])
+                w._sched_apply_panes(tag, kinds)
+        self._show(tag, self.pop.pos())
+
+    def eventFilter(self, obj, ev):
+        t = ev.type()
+        if t == QEvent.Type.MouseMove:
+            tbl = obj.parent()
+            if not isinstance(tbl, QTableWidget):
+                return False
+            it = tbl.itemAt(ev.position().toPoint())
+            tag = tbl.item(it.row(), 0).text().strip().upper() if it and tbl.item(it.row(), 0) else ""
+            if not tag:
+                self.timer.start()
+                return False
+            self.timer.stop()
+            if tag != self.last or not self.pop.isVisible():
+                self.last = tag
+                self.tbl = tbl
+                self.xa = tbl is getattr(self.win, "xa_glass_table", None) and self.win._ifc_active()
+                self._show(tag, ev.globalPosition().toPoint() + QPoint(24, 12))
+        elif t == QEvent.Type.Leave:
+            self.timer.start()
+        elif t in (QEvent.Type.Wheel, QEvent.Type.MouseButtonPress):
+            self.pop.hide()
+            self.last = None
+        return False
+
+
+def _cut_points(doc):
+    """y positions where a tall document can be cut without slicing through a text line or table row."""
+    from PySide6.QtGui import QTextTable
+    lay = doc.documentLayout()
+    cuts = set()
+    blk = doc.begin()
+    tables = [fr for fr in doc.rootFrame().childFrames() if isinstance(fr, QTextTable)]
+    inside = []
+    for t in tables:
+        r = lay.frameBoundingRect(t)
+        inside.append((r.top(), r.bottom()))
+        for ri in range(t.rows()):
+            bot = 0.0
+            for ci in range(t.columns()):
+                c = t.cellAt(ri, ci)
+                if c.row() != ri:
+                    continue
+                bb = lay.blockBoundingRect(c.lastCursorPosition().block())
+                bot = max(bot, bb.bottom() + 4.0)
+            if bot:
+                cuts.add(bot)
+    while blk.isValid():
+        bb = lay.blockBoundingRect(blk)
+        if not any(a - 0.5 <= bb.top() and bb.bottom() <= b + 0.5 for a, b in inside):
+            c = bb.bottom() + 1.0
+            if not any(a - 130.0 <= c < a + 2.0 for a, _b in inside):   # never leave a heading / intro line above a table
+                cuts.add(c)
+        blk = blk.next()
+    return sorted(cuts)
+
+
+def _slices(doc, avail):
+    """[(y0, y1)] pieces of a document taller than one page, cut between table rows / text lines."""
+    total = doc.size().height()
+    cuts = _cut_points(doc)
+    out, y0 = [], 0.0
+    while total - y0 > avail:
+        ok = [c for c in cuts if y0 + avail * 0.35 < c <= y0 + avail]
+        y1 = max(ok) if ok else y0 + avail
+        out.append((y0, y1))
+        y0 = y1
+    out.append((y0, total))
+    return out
+
+
+def _pack_pages(mkdoc, frags, avail, head_px=46.0):
+    """Greedy A4 flow with no shrinking: [(html, y0, y1 or None)]. Short blocks (headings) stay with the block after them;
+    a block taller than a page is cut between table rows."""
+    pages, cur, used = [], [], 0.0
+    items, hold = [], ""
+    hts = {}
+    for fr in frags:
+        h = mkdoc(hold + fr).size().height() if hold else mkdoc(fr).size().height()
+        if not hold and h < head_px and "<img" not in fr:
+            hold = fr
+            continue
+        items.append((hold + fr, h))
+        hold = ""
+    if hold:
+        items.append((hold, mkdoc(hold).size().height()))
+    for html_, h in items:
+        if h > avail:
+            if cur:
+                pages.append(("".join(cur), 0, None)); cur, used = [], 0.0
+            for y0, y1 in _slices(mkdoc(html_), avail):
+                pages.append((html_, y0, y1))
+            continue
+        if cur and used + h > avail:
+            pages.append(("".join(cur), 0, None)); cur, used = [], 0.0
+        cur.append(html_); used += h
+    if cur:
+        pages.append(("".join(cur), 0, None))
+    return pages
+
+
+def _draw_doc_rounded(painter, doc, radius=9.0, red="#C8102E", border="#c9c9c9"):
+    """Draw a QTextDocument like drawContents(), but with every table as a rounded card:
+    rounded corners (clipped), a soft shadow, a rounded outline and a red accent bar (no drop shadow) before each
+    section heading. QTextDocument cannot do this by itself, so it is painted here."""
+    from PySide6.QtGui import QPainterPath, QTextTable, QPen, QBrush
+    from PySide6.QtCore import QRectF, Qt as _Qt
+    lay = doc.documentLayout()
+    sz = doc.size()
+    big = QRectF(-50, -50, sz.width() + 100, sz.height() + 100)
+    cards = []
+    bordered = []
+    for fr in doc.rootFrame().childFrames():
+        if isinstance(fr, QTextTable):
+            try:      # exact outer edge of the table, worked out from the first and last cells
+                bd = float(fr.format().border())
+                tp = float(fr.format().cellPadding())
+                c0, c1 = fr.cellAt(0, 0), fr.cellAt(fr.rows() - 1, fr.columns() - 1)
+                f0, f1 = c0.format().toTableCellFormat(), c1.format().toTableCellFormat()
+                b0 = lay.blockBoundingRect(c0.firstCursorPosition().block())
+                b1 = lay.blockBoundingRect(c1.lastCursorPosition().block())
+                left = b0.left() - max(f0.leftPadding(), tp) - bd
+                top = b0.top() - max(f0.topPadding(), tp) - bd
+                right = b1.right() + max(f1.rightPadding(), tp) + bd
+                bottom = b1.bottom() + max(f1.bottomPadding(), tp) + bd
+                # the last row is as tall as its tallest cell, not as the last cell: use the lowest bottom of the row
+                for ci_ in range(fr.columns()):
+                    cl_ = fr.cellAt(fr.rows() - 1, ci_)
+                    fl_ = cl_.format().toTableCellFormat()
+                    bb_ = lay.blockBoundingRect(cl_.lastCursorPosition().block())
+                    bottom = max(bottom, bb_.bottom() + max(fl_.bottomPadding(), tp) + bd)
+                    ct_ = fr.cellAt(0, ci_)
+                    ft_ = ct_.format().toTableCellFormat()
+                    tb_ = lay.blockBoundingRect(ct_.firstCursorPosition().block())
+                    top = min(top, tb_.top() - max(ft_.topPadding(), tp) - bd)
+                r = QRectF(left, top, right - left, bottom - top)
+            except Exception:
+                r = lay.frameBoundingRect(fr)
+                bd = 0.0
+            if r.width() > 20 and r.height() > 1:
+                cards.append(r)
+                bordered.append(bd > 0)
+    if radius <= 0:                                   # square, clean table edges (rounded corners left ragged edges)
+        cards, bordered = [], []
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    for r in cards:                                   # white card base (no shadow)
+        if r.height() >= 14:
+            rad = min(radius, r.height() / 2, r.width() / 2)
+            card = QPainterPath()
+            card.addRoundedRect(r, rad, rad)
+            painter.fillPath(card, QColor(255, 255, 255))    # so the shadow never shows through
+    clip = QPainterPath()                             # content, clipped to the rounded shapes
+    clip.addRect(big)
+    for r in cards:
+        rad = min(radius, r.height() / 2, r.width() / 2)
+        rr = QPainterPath(); rr.addRoundedRect(r, rad, rad)
+        sq = QPainterPath(); sq.addRect(r.adjusted(-2.5, -2.5, 2.5, 2.5))   # also cuts the table's own border outside the card
+        clip = clip.subtracted(sq.subtracted(rr))
+    painter.save()
+    painter.setClipPath(clip, _Qt.ClipOperation.IntersectClip)
+    doc.drawContents(painter)
+    painter.restore()
+    wpen = QPen(QColor(255, 255, 255)); wpen.setWidthF(3.4)   # hides the table's own square outer border
+    pen = QPen(QColor(border)); pen.setWidthF(1.0)            # one clean rounded outline
+    painter.setBrush(_Qt.BrushStyle.NoBrush)
+    for r, has_border in zip(cards, bordered):
+        if r.height() >= 14:
+            rad = min(radius, r.height() / 2, r.width() / 2)
+            if has_border:
+                painter.setPen(wpen)
+                painter.drawRoundedRect(r, rad, rad)
+            painter.setPen(pen)
+            painter.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), rad, rad)
+    blk = doc.begin()                                 # red accent bar before section headings
+    rc = QColor(red)
+    while blk.isValid():
+        try:
+            it = blk.begin()
+            if not it.atEnd():
+                cf = it.fragment().charFormat()
+                if 11.4 <= cf.fontPointSize() <= 14.5 and cf.foreground().color() == rc and cf.fontWeight() >= 600:
+                    br = lay.blockBoundingRect(blk)
+                    painter.setPen(_Qt.PenStyle.NoPen); painter.setBrush(QBrush(rc))
+                    painter.drawRoundedRect(QRectF(br.left() + 1, br.top() + 2, 4.5, max(8.0, br.height() - 5)), 2.2, 2.2)
+        except Exception:
+            pass
+        blk = blk.next()
+    painter.restore()
+
+
+FLOOR_NAMES = ["Ground Floor", "First Floor", "Second Floor", "Third Floor", "Fourth Floor", "Fifth Floor",
+               "Sixth Floor", "Seventh Floor", "Eighth Floor", "Ninth Floor", "Tenth Floor", "Eleventh Floor",
+               "Twelfth Floor", "Thirteenth Floor", "Fourteenth Floor", "Fifteenth Floor"]
+
+
+_GLASS_RE = re.compile(r"glass|glaz|glas|vidr|window ?pane", re.I)
+_OP_HINGED = {"SIDEHUNGLEFTHAND": "L", "SIDEHUNGRIGHTHAND": "R", "SIDEWAYS_LEFT_HUNG": "L", "SIDEWAYSLEFTHUNG": "L", "SIDEWAYS_RIGHT_HUNG": "R", "SIDEWAYSRIGHTHUNG": "R",
+              "TILT_AND_TURN_LEFT_HAND": "L", "TILT_AND_TURN_RIGHT_HAND": "R", "TILTANDTURNLEFTHAND": "L",
+              "TILTANDTURNRIGHTHAND": "R", "TOP_HUNG": "T", "TOPHUNG": "T", "BOTTOM_HUNG": "B", "BOTTOMHUNG": "B",
+              "REMOVABLECASEMENT": "X", "PIVOTHORIZONTAL": "X", "PIVOTVERTICAL": "X",
+              "SWINGING": "L", "DOUBLE_ACTING": "X", "REVOLVING": "X", "SINGLE_SWING_LEFT": "L", "SINGLE_SWING_RIGHT": "R", "DOUBLE_DOOR_SINGLE_SWING": "X",
+              "DOUBLE_SWING_LEFT": "L", "DOUBLE_SWING_RIGHT": "R", "SWING_FIXED_LEFT": "L", "SWING_FIXED_RIGHT": "R"}
+_OP_SLIDE = ("SLIDING", "FOLDING", "ROLLINGUP", "ROLLING")
+
+
+def _name_op(name):
+    n = (name or "").lower()
+    if re.search(r"\bfix|fixed|\bfx\b", n): return "fixed", ""
+    if re.search(r"slid|stack|patio|bi-?fold|folding", n): return "slide", ""
+    if re.search(r"top ?hung|awning|louvre", n): return "hinged", "T"
+    if re.search(r"casement|side ?hung|swing|hinged|french|stable", n): return "hinged", "L"
+    return None, ""
+
+
+def _ifc_panels(el):
+    """[(kind, apex)] of the panels listed on the element's type (IfcWindowPanelProperties / IfcDoorPanelProperties)."""
+    typ = None
+    for rel in getattr(el, "IsTypedBy", None) or []:
+        typ = rel.RelatingType
+    out = []
+    for ps in (getattr(typ, "HasPropertySets", None) or []) if typ is not None else []:
+        if ps.is_a("IfcWindowPanelProperties") or ps.is_a("IfcDoorPanelProperties"):
+            op = str(getattr(ps, "OperationType", "") or "").upper()
+            pos = str(getattr(ps, "PanelPosition", "") or "").upper()
+            if op in _OP_HINGED: kind, apex = "hinged", _OP_HINGED[op]
+            elif any(op.startswith(x) for x in _OP_SLIDE): kind, apex = "slide", ""
+            elif op in ("", "NOTDEFINED", "USERDEFINED", "OTHEROPERATION"): kind, apex = None, ""
+            else: kind, apex = "fixed", ""
+            out.append((kind, apex, pos, getattr(ps, "FrameThickness", None)))
+    return out
+
+
+def _ifc_open_lines(el):
+    """Line segments (x0, z0, x1, z1) in the element's own frame taken from its non-body representations
+    (Archicad can export the opening lines of a window as annotation curves)."""
+    segs = []
+    def pts_of(item, off):
+        try:
+            if item.is_a("IfcPolyline"):
+                return [list(pt.Coordinates) for pt in item.Points]
+            if item.is_a("IfcIndexedPolyCurve"):
+                return [list(c) for c in item.Points.CoordList]
+        except Exception:
+            pass
+        return None
+    def walk(item, off, depth=0):
+        if item is None or depth > 6: return
+        if item.is_a("IfcMappedItem"):
+            o2 = list(off)
+            try:
+                tr = item.MappingTarget.LocalOrigin.Coordinates
+                for i, c in enumerate(tr[:3]): o2[i] += c
+                so = item.MappingSource.MappingOrigin.Location.Coordinates
+                for i, c in enumerate(so[:3]): o2[i] -= c
+            except Exception: pass
+            for it in item.MappingSource.MappedRepresentation.Items: walk(it, o2, depth + 1)
+            return
+        if item.is_a("IfcGeometricSet") or item.is_a("IfcGeometricCurveSet"):
+            for e in item.Elements: walk(e, off, depth + 1)
+            return
+        pl = pts_of(item, off)
+        if pl and len(pl) >= 2 and len(pl[0]) >= 3:
+            for a, b in zip(pl[:-1], pl[1:]):
+                a = [a[i] + off[i] for i in range(3)]; b = [b[i] + off[i] for i in range(3)]
+                if abs(a[1] - b[1]) < 1e-3:                    # lies in the window's own plane
+                    segs.append((a[0], a[2], b[0], b[2]))
+    try:
+        for rep_ in (el.Representation.Representations if el.Representation else []):
+            if str(rep_.RepresentationIdentifier or "").lower() in ("body", "box", "clearance", "surface"):
+                continue
+            for it in rep_.Items: walk(it, [0.0, 0.0, 0.0])
+    except Exception:
+        return []
+    return segs
+
+
+def _ifc_back_view(el, w_mm, h_mm):
+    """Rebuild the 3D back view of a window or door from the IFC geometry: glass panes (by their glass
+    material), which of them open (panel properties, else the type name), and the sash = glass + its frame.
+    Returns (panes, geom, glazed_m2, sash_m2, known, w_mm, h_mm) or None when there is no usable geometry."""
+    import numpy as np, ifcopenshell.geom as G
+    st = G.settings()
+    try: st.set("use-world-coords", False)
+    except Exception:
+        try: st.set(st.USE_WORLD_COORDS, False)
+        except Exception: pass
+    try: shape = G.create_shape(st, el)
+    except Exception: return None
+    geo = shape.geometry
+    v = np.array(geo.verts, float).reshape(-1, 3)
+    f = np.array(geo.faces, int).reshape(-1, 3)
+    if not len(v) or not len(f): return None
+    mids = np.array(geo.material_ids, int) if len(getattr(geo, "material_ids", [])) else np.zeros(len(f), int)
+    mats = list(getattr(geo, "materials", []) or [])
+    def is_glass(i):
+        if i < 0 or i >= len(mats): return False
+        m = mats[i]
+        tr = getattr(m, "transparency", None)
+        try: tr = float(tr) if tr is not None else 0.0
+        except Exception: tr = 0.0
+        return tr > 0.05 or bool(_GLASS_RE.search(str(getattr(m, "name", "") or "")))
+    gmask = np.array([is_glass(i) for i in mids])
+    # width = local x, height = local z
+    x0, x1, z0, z1 = v[:, 0].min(), v[:, 0].max(), v[:, 2].min(), v[:, 2].max()
+    W, H = max(x1 - x0, 1e-6), max(z1 - z0, 1e-6)
+    if gmask.sum() == 0: return ("noglass", W * 1000, H * 1000)
+    # connected glass pieces
+    key = {}
+    def vid(i):
+        k = tuple(np.round(v[i] * 1000).astype(int))
+        return key.setdefault(k, len(key))
+    parent = {}
+    def find(a):
+        while parent.setdefault(a, a) != a:
+            parent[a] = parent[parent[a]]; a = parent[a]
+        return a
+    for tri in f[gmask]:
+        a, b, c = (vid(i) for i in tri)
+        for q in (b, c): parent[find(q)] = find(a)
+    comp = {}
+    for tri in f[gmask]:
+        r = find(vid(tri[0])); comp.setdefault(r, []).extend(tri)
+    boxes = []
+    for idx in comp.values():
+        pts = v[sorted(set(idx))]
+        bx0, bx1, bz0, bz1 = pts[:, 0].min(), pts[:, 0].max(), pts[:, 2].min(), pts[:, 2].max()
+        if (bx1 - bx0) * (bz1 - bz0) > 1e-4: boxes.append((bx0, bz0, bx1, bz1))
+    if not boxes: return ("noglass", W * 1000, H * 1000)
+    def _iou(a, b):
+        ix = min(a[2], b[2]) - max(a[0], b[0]); iz = min(a[3], b[3]) - max(a[1], b[1])
+        if ix <= 0 or iz <= 0: return 0.0
+        inter = ix * iz
+        return inter / ((a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter)
+    uniq = []
+    for b in sorted(boxes, key=lambda b: -(b[2] - b[0]) * (b[3] - b[1])):
+        if not any(_iou(b, u) > 0.6 for u in uniq): uniq.append(b)   # the 2 layers of double glazing are ONE pane
+    boxes = uniq
+    boxes.sort(key=lambda b: (round(b[0], 2), -b[3]))
+    panels = _ifc_panels(el)
+    nm_kind, nm_apex = _name_op(getattr(el, "Name", "") or "")
+    typ = None
+    for rel in getattr(el, "IsTypedBy", None) or []:
+        typ = rel.RelatingType
+    if nm_kind is None and typ is not None: nm_kind, nm_apex = _name_op(getattr(typ, "Name", "") or "")
+    if nm_kind is None:
+        try: nm_kind, nm_apex = _ifc_scan_ops(el)
+        except Exception: pass
+    known = bool(panels and all(p[0] for p in panels) and len(panels) == len(boxes)) or nm_kind is not None
+    line_ops = [None] * len(boxes)
+    if not known:
+        segs = _ifc_open_lines(el)
+        if segs:
+            def _near(sg, b, m=0.09):
+                return all(b[0] - m <= x <= b[2] + m and b[1] - m <= z <= b[3] + m
+                           for x, z in ((sg[0], sg[1]), (sg[2], sg[3])))
+            found = False
+            for i, b in enumerate(boxes):
+                mine = [sg for sg in segs if _near(sg, b)]
+                if len(mine) >= 2:
+                    cnt = {}
+                    for sg in mine:
+                        for pt in ((sg[0], sg[1]), (sg[2], sg[3])):
+                            k = (round(pt[0] * 500), round(pt[1] * 500)); cnt[k] = cnt.get(k, 0) + 1
+                    k = max(cnt, key=cnt.get)
+                    ax, az = k[0] / 500.0, k[1] / 500.0
+                    cx, cz = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+                    bw, bh = b[2] - b[0], b[3] - b[1]
+                    if ax < cx - 0.25 * bw: ap = "L"
+                    elif ax > cx + 0.25 * bw: ap = "R"
+                    elif az > cz + 0.25 * bh: ap = "T"
+                    elif az < cz - 0.25 * bh: ap = "B"
+                    else: ap = "L"
+                    line_ops[i] = ("hinged", ap); found = True
+            if found:
+                line_ops = [lo or ("fixed", "") for lo in line_ops]
+                known = True
+    assumed = False
+    if not known:
+        # The IFC does not say which panes open: the big panes are the opening ones, small panes are fixed.
+        areas = [(b[2] - b[0]) * (b[3] - b[1]) for b in boxes]
+        mx = max(areas)
+        line_ops = [("hinged", "L") if a >= 0.6 * mx else ("fixed", "") for a in areas]
+        known = True; assumed = True
+    frame_t = next((float(p[3]) for p in panels if p[3]), None)
+    sf = (frame_t * 1.0) if frame_t else 0.045          # sash frame width (m)
+    def nx(x): return float((x - x0) / W)
+    def ny(z): return float(1.0 - (z - z0) / H)
+    panes, gp, glazed = [], [], 0.0
+    is_door = el.is_a("IfcDoor")
+    for i, (bx0, bz0, bx1, bz1) in enumerate(boxes):
+        if line_ops[i]: kind, apex = line_ops[i]
+        elif panels and len(panels) == len(boxes) and panels[i][0]: kind, apex = panels[i][0], panels[i][1]
+        elif nm_kind: kind, apex = nm_kind, nm_apex
+        else: kind, apex = "fixed", ""
+        if kind == "hinged" and not apex: apex = "L"
+        # sash = glass + its frame, but never past the window's outer edge or into a neighbour pane
+        lo_x = max([b[2] for j, b in enumerate(boxes) if j != i and b[2] <= bx0 + 1e-6] + [x0])
+        hi_x = min([b[0] for j, b in enumerate(boxes) if j != i and b[0] >= bx1 - 1e-6] + [x1])
+        lo_z = max([b[3] for j, b in enumerate(boxes) if j != i and b[3] <= bz0 + 1e-6] + [z0])
+        hi_z = min([b[1] for j, b in enumerate(boxes) if j != i and b[1] >= bz1 - 1e-6] + [z1])
+        sx0 = max(bx0 - sf, (lo_x + bx0) / 2 if lo_x > x0 else x0)
+        sx1 = min(bx1 + sf, (hi_x + bx1) / 2 if hi_x < x1 else x1)
+        sz0 = max(bz0 - sf, (lo_z + bz0) / 2 if lo_z > z0 else z0)
+        sz1 = min(bz1 + sf, (hi_z + bz1) / 2 if hi_z < z1 else z1)
+        panes.append((nx(bx0), ny(bz1), nx(bx1), ny(bz0), kind))
+        gp.append((nx(bx0), ny(bz1), nx(bx1), ny(bz0), kind, apex, nx(sx0), ny(sz1), nx(sx1), ny(sz0)))
+        glazed += (bx1 - bx0) * (bz1 - bz0)
+    W, H, glazed = float(W), float(H), float(glazed)
+    geom = {"aspect": W / H, "panes": gp}
+    sash = float(_sash_opening(geom, W * 1000, H * 1000))
+    return (panes, geom, glazed, sash, known, W * 1000, H * 1000, assumed)
+
+
+def _ifc_scan_ops(el):
+    """Look through every property set of the element and its type for how it opens (Archicad and others
+    write this in their own property sets). Returns (kind, apex) or (None, "")."""
+    objs = [el]
+    for rel in getattr(el, "IsTypedBy", None) or []:
+        objs.append(rel.RelatingType)
+    texts = []
+    for o in objs:
+        psets = list(getattr(o, "HasPropertySets", None) or [])
+        for rel in getattr(o, "IsDefinedBy", None) or []:
+            d = getattr(rel, "RelatingPropertyDefinition", None)
+            if d is not None: psets.append(d)
+        for ps in psets:
+            for pr in (getattr(ps, "HasProperties", None) or []):
+                try:
+                    val = getattr(pr, "NominalValue", None)
+                    val = str(val.wrappedValue) if val is not None else ""
+                except Exception:
+                    val = ""
+                nm = str(getattr(pr, "Name", "") or "")
+                if re.search(r"oper|open|hung|swing|slid|casement|fix", nm, re.I) and val:
+                    texts.append(val)
+    for t in texts:
+        key = re.sub(r"[^A-Z]", "", t.upper())
+        for k, ap in _OP_HINGED.items():
+            if re.sub(r"[^A-Z]", "", k) == key: return "hinged", ap
+        if any(key.startswith(x) for x in _OP_SLIDE): return "slide", ""
+        k2, a2 = _name_op(t)
+        if k2: return k2, a2
+    return None, ""
+
+
+def _ifc_resash(geom, w_mm, h_mm, sf=0.045):
+    """Recompute every pane's sash (glass + its frame) from the glass boxes. Returns the geometry."""
+    W, H = max(w_mm / 1000.0, 1e-6), max(h_mm / 1000.0, 1e-6)
+    fx, fy = sf / W, sf / H
+    ps = geom["panes"]
+    out = []
+    for i, q in enumerate(ps):
+        bx0, by0, bx1, by1 = q[0], q[1], q[2], q[3]
+        def ov(a0, a1, b0, b1): return min(a1, b1) - max(a0, b0) > 1e-6
+        oth = [(j, o) for j, o in enumerate(ps) if j != i]
+        lo_x = max([o[2] for j, o in oth if o[2] <= bx0 + 1e-6 and ov(by0, by1, o[1], o[3])] + [0.0])
+        hi_x = min([o[0] for j, o in oth if o[0] >= bx1 - 1e-6 and ov(by0, by1, o[1], o[3])] + [1.0])
+        lo_y = max([o[3] for j, o in oth if o[3] <= by0 + 1e-6 and ov(bx0, bx1, o[0], o[2])] + [0.0])
+        hi_y = min([o[1] for j, o in oth if o[1] >= by1 - 1e-6 and ov(bx0, bx1, o[0], o[2])] + [1.0])
+        sx0 = max(bx0 - fx, (lo_x + bx0) / 2 if lo_x > 0 else 0.0)
+        sx1 = min(bx1 + fx, (hi_x + bx1) / 2 if hi_x < 1 else 1.0)
+        sy0 = max(by0 - fy, (lo_y + by0) / 2 if lo_y > 0 else 0.0)
+        sy1 = min(by1 + fy, (hi_y + by1) / 2 if hi_y < 1 else 1.0)
+        kind, apex = q[4], (q[5] if len(q) > 5 else "")
+        out.append((bx0, by0, bx1, by1, kind, apex, sx0, sy0, sx1, sy1))
+    return {"aspect": geom.get("aspect", w_mm / max(h_mm, 1.0)), "panes": out}
+
+
+def _ifc_apply_ops(it, kinds):
+    """kinds: one (kind, apex) per glass pane. Rebuilds the sash, opening % and style of an IFC item."""
+    g = it.get("geom")
+    if not g or not g.get("panes"):
+        g = {"aspect": it["width"] / max(it["height"], 1.0), "panes": [(0.06, 0.06, 0.94, 0.94, "fixed", "")]}
+    ps = []
+    for q, (k, a) in zip(g["panes"], kinds):
+        ps.append((q[0], q[1], q[2], q[3], k, a))
+    g2 = _ifc_resash({"aspect": g.get("aspect", 1.0), "panes": ps}, it["width"], it["height"])
+    it["geom"] = g2
+    it["panes"] = [(q[0], q[1], q[2], q[3], q[4]) for q in g2["panes"]]
+    area = it["width"] * it["height"] / 1e6
+    gl = sum((q[2] - q[0]) * (q[3] - q[1]) for q in g2["panes"]) * area
+    if not it.get("glazed_m2"):
+        it["glazed_m2"] = round(gl, 3)
+        it["glazed"] = round(100 * gl / area, 1) if area else 0.0
+    sash = _sash_opening(g2, it["width"], it["height"])
+    gm2 = it.get("glazed_m2") or gl
+    it["openable"] = round(min(100.0 * sash / gm2, 100.0 * area / gm2), 1) if gm2 else 0.0
+    hinged = [q for q in g2["panes"] if q[4] in ("hinged", "slide")]
+    it["style"] = ("Fixed - does not open" if not hinged else
+                   "Sliding, 2 panels" if any(q[4] == "slide" for q in g2["panes"]) else
+                   "Side-hung casement" if len(hinged) == len(g2["panes"]) else "Custom")
+    it["flag"] = []
+    it["note"] = f"Opening panes set: glass {gm2:.2f} m2, opening sash (glass + frame) {sash:.2f} m2."
+    return sash
+
+
+_OP_CHOICES = [("Fixed (does not open)", ("fixed", "")), ("Side-hung, hinge on the left", ("hinged", "L")),
+               ("Side-hung, hinge on the right", ("hinged", "R")), ("Top-hung", ("hinged", "T")),
+               ("Bottom-hung", ("hinged", "B")), ("Sliding / folding", ("slide", ""))]
+
+
+
+def _ifc_world_pos(el, scale):
+    """(x, y, z) of an element in metres, or None."""
+    try:
+        import ifcopenshell.util.placement as PL
+        m = PL.get_local_placement(el.ObjectPlacement)
+        return (float(m[0][3]) * scale, float(m[1][3]) * scale, float(m[2][3]) * scale)
+    except Exception:
+        return None
+
+
+def _ifc_space_bbox(sp, scale):
+    """(x0, y0, x1, y1) of a space in world metres from its geometry, or None."""
+    try:
+        import numpy as np, ifcopenshell.geom as G
+        st = G.settings()
+        try: st.set("use-world-coords", True)
+        except Exception: st.set(st.USE_WORLD_COORDS, True)
+        v = np.array(G.create_shape(st, sp).geometry.verts, float).reshape(-1, 3)
+        return (float(v[:, 0].min()), float(v[:, 1].min()), float(v[:, 0].max()), float(v[:, 1].max()))
+    except Exception:
+        return None
+
+
+# --------------------------------------------------------------------------
+# Site location from a Google Earth KML / KMZ file: coordinates, and the angle of north from the site outline
+# --------------------------------------------------------------------------
+def read_kml(path):
+    """Placemarks of a .kml or .kmz file: [{'name', 'kind': 'Point'|'Line'|'Polygon', 'pts': [(lon, lat), ...]}]."""
+    import zipfile, xml.etree.ElementTree as ET
+    if path.lower().endswith(".kmz"):
+        with zipfile.ZipFile(path) as z:
+            names = [n for n in z.namelist() if n.lower().endswith(".kml")]
+            if not names:
+                return []
+            data = z.read("doc.kml" if "doc.kml" in names else names[0])
+    else:
+        with open(path, "rb") as fh:
+            data = fh.read()
+    root = ET.fromstring(data)
+    out = []
+
+    def coords(txt):
+        pts = []
+        for tok in (txt or "").split():
+            parts = tok.split(",")
+            try:
+                pts.append((float(parts[0]), float(parts[1])))
+            except (ValueError, IndexError):
+                pass
+        return pts
+    for el in root.iter():
+        if el.tag.split("}")[-1] != "Placemark":
+            continue
+        name = ""
+        for c in el:
+            if c.tag.split("}")[-1] == "name":
+                name = (c.text or "").strip()
+        for g in el.iter():
+            tg = g.tag.split("}")[-1]
+            if tg == "Point":
+                for cc in g.iter():
+                    if cc.tag.split("}")[-1] == "coordinates":
+                        pts = coords(cc.text)
+                        if pts:
+                            out.append({"name": name or "Point", "kind": "Point", "pts": pts[:1]})
+            elif tg == "LineString":
+                for cc in g.iter():
+                    if cc.tag.split("}")[-1] == "coordinates":
+                        pts = coords(cc.text)
+                        if len(pts) >= 2:
+                            out.append({"name": name or "Line", "kind": "Line", "pts": pts})
+            elif tg == "Polygon":
+                for ob in g.iter():
+                    if ob.tag.split("}")[-1] == "outerBoundaryIs":
+                        for cc in ob.iter():
+                            if cc.tag.split("}")[-1] == "coordinates":
+                                pts = coords(cc.text)
+                                if len(pts) >= 3:
+                                    if pts[0] == pts[-1]:
+                                        pts = pts[:-1]
+                                    out.append({"name": name or "Polygon", "kind": "Polygon", "pts": pts})
+    return out
+
+
+def kml_to_metres(pts, lat0=None, lon0=None):
+    """(lon, lat) points -> metres east / north of a reference point (default: their middle)."""
+    import math
+    lat0 = sum(p[1] for p in pts) / len(pts) if lat0 is None else lat0
+    lon0 = sum(p[0] for p in pts) / len(pts) if lon0 is None else lon0
+    kx = 111320.0 * math.cos(math.radians(lat0))
+    return [((lo - lon0) * kx, (la - lat0) * 110574.0) for lo, la in pts], lat0, lon0
+
+
+def _poly_area_centroid(P):
+    a = cx = cy = 0.0
+    n = len(P)
+    for i in range(n):
+        x0, y0 = P[i]; x1, y1 = P[(i + 1) % n]
+        c = x0 * y1 - x1 * y0
+        a += c; cx += (x0 + x1) * c; cy += (y0 + y1) * c
+    if abs(a) < 1e-9:
+        return 0.0, (sum(p[0] for p in P) / n, sum(p[1] for p in P) / n)
+    return a / 2.0, (cx / (3 * a), cy / (3 * a))
+
+
+def _raster(P, xs, ys):
+    """Boolean grid: which (xs, ys) cells are inside polygon P (numpy, crossing number)."""
+    import numpy as np
+    X, Y = np.meshgrid(xs, ys)
+    inside = np.zeros(X.shape, bool)
+    n = len(P)
+    for i in range(n):
+        x0, y0 = P[i]; x1, y1 = P[(i + 1) % n]
+        if y0 == y1:
+            continue
+        cond = ((y0 <= Y) & (Y < y1)) | ((y1 <= Y) & (Y < y0))
+        xint = x0 + (Y - y0) * (x1 - x0) / (y1 - y0)
+        inside ^= cond & (X < xint)
+    return inside
+
+
+def rotate_pts(P, deg, about=(0.0, 0.0), to=None):
+    """Rotate points counter-clockwise by deg about a point (and move that point to `to`)."""
+    import math
+    c, s_ = math.cos(math.radians(deg)), math.sin(math.radians(deg))
+    to = about if to is None else to
+    return [(to[0] + (x - about[0]) * c - (y - about[1]) * s_, to[1] + (x - about[0]) * s_ + (y - about[1]) * c)
+            for x, y in P]
+
+
+def north_candidates(model_poly, site_poly):
+    """Angle of north on the model's plan sheet (degrees clockwise from the top of the plan) that makes the
+    model's outline match the real outline from the KML. Returns [{'angle', 'score'}] best first.
+    score is the overlap (0-1) when both outlines are the same size, None when the KML outline is a bigger plot
+    (then only the directions that line the building walls up with the plot edges are possible)."""
+    import numpy as np, math
+    am, cm = _poly_area_centroid(model_poly)
+    ak, ck = _poly_area_centroid(site_poly)
+    am, ak = abs(am), abs(ak)
+    if am < 1e-6 or ak < 1e-6:
+        return []
+    allp = np.array(model_poly + site_poly)
+    ext = float(np.abs(allp - np.array(ck)).max()) * 1.2 + 1.0
+    N = 140
+    xs = np.linspace(ck[0] - ext, ck[0] + ext, N); ys = np.linspace(ck[1] - ext, ck[1] + ext, N)
+    if 0.55 <= ak / am <= 1.8:
+        K = _raster(site_poly, xs, ys)
+
+        def score(th):
+            M = _raster(rotate_pts(model_poly, th, cm, ck), xs, ys)
+            u = (M | K).sum()
+            return float((M & K).sum() / u) if u else 0.0
+        sc = [(th, score(th)) for th in range(0, 360, 3)]
+        peaks = []
+        for i, (th, v) in enumerate(sc):
+            if v >= sc[i - 1][1] and v >= sc[(i + 1) % len(sc)][1] and v > 0.2:
+                peaks.append((th, v))
+        peaks.sort(key=lambda t: -t[1])
+        out = []
+        for th, v in peaks:
+            if any(abs(((th - o["angle"] + 180) % 360) - 180) < 40 for o in out):
+                continue
+            best = (th, v)
+            for d in (-2, -1, -0.5, 0.5, 1, 2):
+                v2 = score(th + d)
+                if v2 > best[1]:
+                    best = (th + d, v2)
+            out.append({"angle": round(best[0] % 360, 1), "score": best[1]})
+            if len(out) == 3:
+                break
+        return out
+
+    def dominant(P):
+        h = np.zeros(90)
+        for i in range(len(P)):
+            x0, y0 = P[i]; x1, y1 = P[(i + 1) % len(P)]
+            L = math.hypot(x1 - x0, y1 - y0)
+            if L < 1e-6:
+                continue
+            a = math.degrees(math.atan2(y1 - y0, x1 - x0)) % 90.0
+            h[int(a) % 90] += L
+        k = int(np.argmax(h))
+        return (k + 0.5)
+    dm, dk = dominant(model_poly), dominant(site_poly)
+    base = (dk - dm) % 90.0
+    return [{"angle": round((base + 90 * q) % 360, 1), "score": None} for q in range(4)]
+
+
+def ifc_site_outline(path):
+    """Outline (metres, model frame) of the IfcSite mesh, or of all the rooms if the site has no shape."""
+    import numpy as np, ifcopenshell, ifcopenshell.geom as G
+    from collections import Counter
+    ifc = ifcopenshell.open(path)
+    st = G.settings()
+    try: st.set("use-world-coords", True)
+    except Exception: st.set(st.USE_WORLD_COORDS, True)
+
+    def hull(pts):
+        pts = sorted(set((round(float(x), 3), round(float(y), 3)) for x, y in pts))
+        if len(pts) < 3:
+            return pts
+        def cr(o, a, b): return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+        lo, up = [], []
+        for p_ in pts:
+            while len(lo) >= 2 and cr(lo[-2], lo[-1], p_) <= 0: lo.pop()
+            lo.append(p_)
+        for p_ in reversed(pts):
+            while len(up) >= 2 and cr(up[-2], up[-1], p_) <= 0: up.pop()
+            up.append(p_)
+        return lo[:-1] + up[:-1]
+    for el in list(ifc.by_type("IfcSite")):
+        try:
+            g = G.create_shape(st, el).geometry
+        except Exception:
+            continue
+        v = np.array(g.verts, float).reshape(-1, 3)
+        f = np.array(g.faces, int).reshape(-1, 3)
+        key, idx = {}, []
+        for p_ in v[:, :2]:
+            k = (round(float(p_[0]), 3), round(float(p_[1]), 3))
+            if k not in key: key[k] = len(key)
+            idx.append(key[k])
+        pts = list(key.keys())
+        ec = Counter()
+        for a, b, c in f:
+            for x, y in ((a, b), (b, c), (c, a)):
+                i, j = idx[x], idx[y]
+                if i != j: ec[(min(i, j), max(i, j))] += 1
+        adj = {}
+        for (i, j), c in ec.items():
+            if c == 1:
+                adj.setdefault(i, []).append(j); adj.setdefault(j, []).append(i)
+        loops, seen = [], set()
+        for s0 in adj:
+            if s0 in seen: continue
+            loop, cur, prev = [s0], s0, None
+            seen.add(s0)
+            while True:
+                nxt = [n for n in adj[cur] if n != prev and n not in seen]
+                if not nxt: break
+                prev, cur = cur, nxt[0]
+                seen.add(cur); loop.append(cur)
+            if len(loop) >= 3: loops.append([pts[i] for i in loop])
+        if loops:
+            best = max(loops, key=lambda L: abs(_poly_area_centroid(L)[0]))
+            if abs(_poly_area_centroid(best)[0]) > 5:
+                return best
+        if len(pts) >= 3:
+            return hull(pts)
+    allv = []
+    for sp in ifc.by_type("IfcSpace"):
+        try:
+            g = G.create_shape(st, sp).geometry
+            allv += [tuple(r[:2]) for r in np.array(g.verts, float).reshape(-1, 3)]
+        except Exception:
+            pass
+    return hull(allv) if allv else []
+
+
+def ifc_site_latlon(path):
+    """(latitude, longitude) in degrees from IfcSite RefLatitude / RefLongitude, or None."""
+    import ifcopenshell
+    try:
+        ifc = ifcopenshell.open(path) if isinstance(path, str) else path
+        s_ = ifc.by_type("IfcSite")[0]
+        def dms(t):
+            if not t: return None
+            t = list(t) + [0, 0, 0]
+            sign = -1.0 if (t[0] < 0 or (t[0] == 0 and (t[1] < 0 or t[2] < 0))) else 1.0
+            return sign * (abs(t[0]) + abs(t[1]) / 60.0 + abs(t[2]) / 3600.0 + abs(t[3]) / 3.6e9)
+        la, lo = dms(s_.RefLatitude), dms(s_.RefLongitude)
+        return (la, lo) if la is not None and lo is not None else None
+    except Exception:
+        return None
+
+
+def _ifc_space_tris(ifc):
+    """Floor-plan triangles of every IfcSpace in world metres: [(z0, z1, tris[N,3,2], cx, cy)]."""
+    out = []
+    try:
+        import numpy as np, ifcopenshell.geom as G
+        st = G.settings()
+        try: st.set("use-world-coords", True)
+        except Exception: st.set(st.USE_WORLD_COORDS, True)
+        for sp in ifc.by_type("IfcSpace"):
+            try:
+                g = G.create_shape(st, sp).geometry
+                v = np.array(g.verts, float).reshape(-1, 3)
+                f = np.array(g.faces, int).reshape(-1, 3)
+                out.append((float(v[:, 2].min()), float(v[:, 2].max()), v[f][:, :, :2],
+                            float((v[:, 0].min() + v[:, 0].max()) / 2), float((v[:, 1].min() + v[:, 1].max()) / 2)))
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return out
+
+
+def _ifc_in_spaces(spaces, pt, z):
+    import numpy as np
+    for z0, z1, tr, _cx, _cy in spaces:
+        if not (z0 - 0.3 <= z <= z1 + 0.3):
+            continue
+        a, b, c = tr[:, 0], tr[:, 1], tr[:, 2]
+        d = (b[:, 1] - c[:, 1]) * (a[:, 0] - c[:, 0]) + (c[:, 0] - b[:, 0]) * (a[:, 1] - c[:, 1])
+        ok = np.abs(d) > 1e-9
+        if not ok.any():
+            continue
+        l1 = ((b[:, 1] - c[:, 1]) * (pt[0] - c[:, 0]) + (c[:, 0] - b[:, 0]) * (pt[1] - c[:, 1]))[ok] / d[ok]
+        l2 = ((c[:, 1] - a[:, 1]) * (pt[0] - c[:, 0]) + (a[:, 0] - c[:, 0]) * (pt[1] - c[:, 1]))[ok] / d[ok]
+        if np.any((l1 >= -1e-6) & (l2 >= -1e-6) & (1 - l1 - l2 >= -1e-6)):
+            return True
+    return False
+
+
+def _ifc_is_external_geom(el, scale, spaces):
+    """True when a door or window sits in an outside wall: a room on one side of it only. None when unknown."""
+    import numpy as np
+    try:
+        import ifcopenshell.util.placement as PL
+        M = PL.get_local_placement(el.ObjectPlacement)
+        p = np.array([M[0][3], M[1][3], M[2][3]], float) * scale
+        wall = None
+        for rel in getattr(el, "FillsVoids", None) or []:
+            for v in rel.RelatingOpeningElement.VoidsElements:
+                wall = v.RelatingBuildingElement
+        if wall is not None:
+            W = PL.get_local_placement(wall.ObjectPlacement)
+            d = np.array([W[0][0], W[1][0]], float)
+        else:
+            d = np.array([M[0][0], M[1][0]], float)
+        if np.linalg.norm(d) < 1e-9:
+            return None
+        d /= np.linalg.norm(d)
+        n = np.array([-d[1], d[0]])
+        z = p[2] + float(getattr(el, "OverallHeight", None) or 1000.0) * scale / 2.0
+        votes = []
+        for off in (0.6, 0.9, 0.4):
+            a_ = _ifc_in_spaces(spaces, p[:2] + n * off, z)
+            b_ = _ifc_in_spaces(spaces, p[:2] - n * off, z)
+            if a_ != b_:
+                votes.append(True)
+            elif a_ and b_:
+                votes.append(False)
+        if not votes:
+            return None
+        return sum(votes) * 2 > len(votes)
+    except Exception:
+        return None
+
+
+AIR_DOOR_NAME_RE = re.compile(r"front|entrance|entry|main\s?door|back\s?door|rear|garage|patio|stoep|veranda|balcon|sliding|stacking|"
+                              r"bi-?fold|external|exterior|outside|\bext\b|kitchen\s?door|scullery|laundry\s?door|fire\s?escape", re.I)
+
+
+def _ifc_is_external(el, scale, spaces):
+    """True when a door sits in an outside wall, whether it is timber, steel or glass. Order of evidence: the IFC's own
+    IsExternal flag on the door or its wall, the rooms on each side, then the name (front door, entrance, patio...).
+    None when nothing can be told."""
+    wall = None
+    try:
+        for rel in getattr(el, "FillsVoids", None) or []:
+            for v in rel.RelatingOpeningElement.VoidsElements:
+                wall = v.RelatingBuildingElement
+    except Exception:
+        wall = None
+    flag = []
+    try:
+        import ifcopenshell.util.element as UE
+        for obj in (el, wall):
+            if obj is None:
+                continue
+            for _ps, props in (UE.get_psets(obj) or {}).items():
+                if isinstance(props, dict) and isinstance(props.get("IsExternal"), bool):
+                    flag.append(props["IsExternal"])
+    except Exception:
+        pass
+    if any(flag):
+        return True
+    geom = _ifc_is_external_geom(el, scale, spaces)
+    if geom is not None:
+        if geom is False and AIR_DOOR_NAME_RE.search(f"{getattr(el, 'Name', '') or ''} {getattr(el, 'ObjectType', '') or ''}") \
+                and not re.search(r"internal|interior|bedroom|bath|\bwc\b|toilet|cupboard|pantry|store", f"{getattr(el, 'Name', '') or ''} {getattr(el, 'ObjectType', '') or ''}", re.I):
+            return True                       # named as an entrance door although both sides look like rooms (porch or lobby modelled as a space)
+        return geom
+    if flag:                                  # explicit False on the door or its wall, and nothing else to go on
+        return False
+    if AIR_DOOR_NAME_RE.search(f"{getattr(el, 'Name', '') or ''} {getattr(el, 'ObjectType', '') or ''}"):
+        return True
+    return None
+
+
+AIR_FIRE_RE = re.compile(r"chimney|fire\s?place|braai|\bflue\b|wood\s?burn|\bstove\b|fire\s?pit", re.I)
+AIR_SKY_RE = re.compile(r"sky\s?light|roof\s?light|roof\s?window|velux|lantern", re.I)
+
+
+def _ifc_window_angle(el, scale, spaces, room_centre=None):
+    """Which way a window faces, in degrees clockwise from the +Y axis of the model (the top of the plan),
+    from the wall it sits in and which side of that wall is inside a room. None when it cannot be told."""
+    import numpy as np, math
+    try:
+        import ifcopenshell.util.placement as PL
+        M = PL.get_local_placement(el.ObjectPlacement)
+        p = np.array([M[0][3], M[1][3], M[2][3]], float) * scale
+        wall = None
+        for rel in getattr(el, "FillsVoids", None) or []:
+            for v in rel.RelatingOpeningElement.VoidsElements:
+                wall = v.RelatingBuildingElement
+        if wall is not None:
+            W = PL.get_local_placement(wall.ObjectPlacement)
+            d = np.array([W[0][0], W[1][0]], float)
+        else:
+            d = np.array([M[0][0], M[1][0]], float)
+        if np.linalg.norm(d) < 1e-9:
+            return None
+        d /= np.linalg.norm(d)
+        n = np.array([-d[1], d[0]])
+        h = float(getattr(el, "OverallHeight", None) or 1000.0) * scale / 2.0
+        z = p[2] + h
+        out = None
+        for off in (0.6, 0.3, 0.9, 1.4):
+            a = _ifc_in_spaces(spaces, p[:2] + n * off, z)
+            b = _ifc_in_spaces(spaces, p[:2] - n * off, z)
+            if a and not b: out = -n; break
+            if b and not a: out = n; break
+        if out is None and room_centre is None:
+            best, bd = None, 1e9
+            for z0, z1, _tr, cx, cy in spaces:
+                if z0 - 0.3 <= z <= z1 + 0.3:
+                    dd = (cx - p[0]) ** 2 + (cy - p[1]) ** 2
+                    if dd < bd:
+                        best, bd = (cx, cy), dd
+            room_centre = best
+        if out is None and room_centre is not None:
+            out = n if float(np.dot(n, p[:2] - np.array(room_centre))) > 0 else -n
+        if out is None:
+            return None
+        return math.degrees(math.atan2(out[0], out[1])) % 360.0
+    except Exception:
+        return None
+
+
+def _ifc_facing_string(face_by_tag):
+    """{tag: [angles]} of one room -> 'base;TAG=@a:n|@b:m' (see parse_facing). Angles are grouped in 45 degree bins."""
+    import math
+    def bins(angles):
+        g = {}
+        for a in angles:
+            g.setdefault(int(((a + 22.5) % 360) // 45), []).append(a)
+        res = []
+        for k, vals in g.items():
+            x = sum(math.sin(math.radians(v)) for v in vals); y = sum(math.cos(math.radians(v)) for v in vals)
+            res.append((k, math.degrees(math.atan2(x, y)) % 360.0, len(vals)))
+        return sorted(res, key=lambda t: -t[2])
+    allv = [a for v in face_by_tag.values() for a in v]
+    if not allv:
+        return ""
+    top = bins(allv)[0]
+    base = angle_code(top[1])
+    over = {}
+    for tag, vals in face_by_tag.items():
+        bs = bins(vals)
+        if len(bs) == 1 and bs[0][0] == top[0]:
+            continue
+        over[tag.upper()] = "|".join(f"{angle_code(a)}:{n}" for _k, a, n in bs)
+    return make_facing(base, over)
+
+
+def ifc_merge_variants(items):
+    """One row per tag: D4 and D4_2 (same door, a different height or width) become a single D4.
+    The most common size is shown; glazed and opening % are averaged over all of them."""
+    groups, order = {}, []
+    for it in items:
+        k = (it.get("kind"), re.sub(r"_\d+$", "", it["tag"]))
+        if k not in groups: groups[k] = []; order.append(k)
+        groups[k].append(it)
+    out = []
+    for k in order:
+        g = groups[k]
+        if len(g) == 1:
+            g[0]["tag"] = k[1]; out.append(g[0]); continue
+        prim = max(g, key=lambda i: i.get("qty", 1))
+        tot = sum(i.get("qty", 1) for i in g) or 1
+        m = dict(prim)
+        m["tag"] = k[1]; m["qty"] = tot
+        for f in ("glazed", "openable", "glazed_m2"):
+            m[f] = round(sum((i.get(f) or 0) * i.get("qty", 1) for i in g) / tot, 3 if f == "glazed_m2" else 1)
+        m["flag"] = sorted({x for i in g for x in (i.get("flag") or [])})
+        sizes = ", ".join("%d x %d (x%g)" % (round(i["width"]), round(i["height"]), i.get("qty", 1)) for i in g)
+        m["note"] = (m.get("note", "") + " Sizes in the model: " + sizes + ". The most common size is shown.").strip()
+        wh = {}
+        for i in g:
+            for part in (i.get("where") or "").split(", "):
+                if ":" in part:
+                    a, b_ = part.rsplit(":", 1)
+                    try: wh[a.strip()] = wh.get(a.strip(), 0) + int(b_)
+                    except ValueError: pass
+        if wh: m["where"] = ", ".join(f"{a}: {b_}" for a, b_ in wh.items())
+        bf = {}
+        for i in g:
+            for a, b_ in (i.get("by_floor") or {}).items(): bf[a] = bf.get(a, 0) + b_
+        if bf: m["by_floor"] = bf
+        out.append(m)
+    return out
+
+
+def _ifc_any_area(sp):
+    """Any area-like quantity or property on the space (Archicad and other tools name it differently)."""
+    best = None
+    for rel in getattr(sp, "IsDefinedBy", None) or []:
+        d = getattr(rel, "RelatingPropertyDefinition", None)
+        if d is None: continue
+        items = list(getattr(d, "Quantities", None) or []) + list(getattr(d, "HasProperties", None) or [])
+        for q in items:
+            nm = str(getattr(q, "Name", "") or "")
+            if not re.search(r"area", nm, re.I) or re.search(r"wall|ceiling|surface|perimeter|window|door|opening|occupant|per |rate|projected|analytic", nm, re.I):
+                continue
+            v = getattr(q, "AreaValue", None)
+            if v is None:
+                try: v = float(q.NominalValue.wrappedValue)
+                except Exception: v = None
+            if v and float(v) > 0:
+                if re.search(r"net|floor|reduced|calculated", nm, re.I): return float(v)
+                best = best or float(v)
+    return best
+
+
+def _ifc_space_area_from_geometry(sp):
+    """Floor area (own units squared) of a space from its 3D shape: the upward-facing faces."""
+    try:
+        import numpy as np, ifcopenshell.geom as G
+        st = G.settings()
+        try: st.set("use-world-coords", False)
+        except Exception: st.set(st.USE_WORLD_COORDS, False)
+        geo = G.create_shape(st, sp).geometry
+        v = np.array(geo.verts, float).reshape(-1, 3); f = np.array(geo.faces, int).reshape(-1, 3)
+        a, b, c = v[f[:, 0]], v[f[:, 1]], v[f[:, 2]]
+        n = np.cross(b - a, c - a)
+        ar = 0.5 * np.linalg.norm(n, axis=1)
+        flat = np.abs(n[:, 2]) > 0.9 * np.linalg.norm(n, axis=1)      # floor / ceiling faces, either winding
+        zmin = v[:, 2].min()
+        low = flat & (a[:, 2] < zmin + 0.05) & (b[:, 2] < zmin + 0.05) & (c[:, 2] < zmin + 0.05)
+        return float(ar[low].sum()) or float(ar[flat].sum() / 2.0) or None
+    except Exception:
+        return None
+
+
+def _ifc_dump_props(sp):
+    """Every quantity and property on the space as 'Set.Name = value' lines (for the room report)."""
+    out = []
+    for rel in getattr(sp, "IsDefinedBy", None) or []:
+        d = getattr(rel, "RelatingPropertyDefinition", None)
+        if d is None: continue
+        sn = str(getattr(d, "Name", "") or d.is_a())
+        for q in list(getattr(d, "Quantities", None) or []):
+            v = next((getattr(q, a) for a in ("AreaValue", "LengthValue", "VolumeValue", "CountValue", "WeightValue")
+                      if getattr(q, a, None) is not None), "")
+            out.append(f"{sn}.{q.Name} = {v}")
+        for pr in list(getattr(d, "HasProperties", None) or []):
+            try: v = pr.NominalValue.wrappedValue
+            except Exception: v = ""
+            out.append(f"{sn}.{pr.Name} = {v}")
+    return out
+
+
+IFC_EXCLUDE_RE = re.compile(r"^\s*G\s*-?\d+|\b(gate|garage|roller ?door|sectional|carport|boundary)\b", re.I)
+
+
+def ifc_excluded(tag, *names):
+    """Gates (G1, G2...), garage doors and the like are not part of the glazing calculations."""
+    return any(n and IFC_EXCLUDE_RE.search(str(n)) for n in (tag,) + names)
+
+
+def _safe_shading(path):
+    try:
+        return ifc_shading_scan(path)
+    except Exception:
+        return {}
+
+
+def ifc_shading_scan(path):
+    """Measure the real overhang above every window from the IFC geometry (roofs, slabs, beams, soffits).
+    SANS 10400-XA 5.2: P = how far the projection sticks out horizontally from the glass, H = vertical distance from the
+    underside of the projection down to the bottom of the glass (gap G above the glass + the glass height).
+    Returns {tag: {"n", "P_mm", "H_mm", "G_mm", "glass_mm", "face", "per": [[P, H, face], ...]}} (worst window of each tag)."""
+    import numpy as np, math
+    import ifcopenshell, ifcopenshell.geom
+    ifc = ifcopenshell.open(path)
+    st = ifcopenshell.geom.settings()
+    st.set(st.USE_WORLD_COORDS, True)
+    scale = 1.0
+    try:
+        import ifcopenshell.util.unit as _u
+        scale = float(_u.calculate_unit_scale(ifc))
+    except Exception:
+        pass
+    under = []
+    for cls in ("IfcSlab", "IfcRoof", "IfcBeam", "IfcCovering", "IfcMember", "IfcPlate"):
+        for el in ifc.by_type(cls):
+            try:
+                if cls == "IfcCovering" and str(getattr(el, "PredefinedType", "")).upper() in ("FLOORING", "CLADDING"):
+                    continue
+                sh = ifcopenshell.geom.create_shape(st, el)
+                v = np.array(sh.geometry.verts, float).reshape(-1, 3)   # already metres
+                f = np.array(sh.geometry.faces, int).reshape(-1, 3)
+                if not len(f):
+                    continue
+                P = v[f]
+                n = np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0])
+                ln = np.linalg.norm(n, axis=1); ln[ln == 0] = 1
+                n = n / ln[:, None]
+                # outward normals (away from the element's own centre), then keep the faces that look down
+                flip = ((P.mean(axis=1) - v.mean(axis=0)) * n).sum(axis=1) < 0
+                n[flip] *= -1
+                keep = n[:, 2] < -0.5
+                if keep.any():
+                    under.append(P[keep])
+            except Exception:
+                continue
+    if not under:
+        return {}
+    T = np.vstack(under)                              # N x 3 x 3 triangles that face down
+    tz = T[:, :, 2]
+    spaces = _ifc_space_tris(ifc)
+    per = {}
+    for cls in ("IfcWindow", "IfcDoor"):
+        for el in ifc.by_type(cls):
+            tag = re.sub(r"_\d+$", "", (el.Name or "").strip().upper())
+            if not tag:
+                continue
+            ang = _ifc_window_angle(el, scale, spaces)
+            if ang is None:
+                continue
+            try:
+                sh = ifcopenshell.geom.create_shape(st, el)
+                v = np.array(sh.geometry.verts, float).reshape(-1, 3)   # already metres
+            except Exception:
+                continue
+            if not len(v):
+                continue
+            a = math.radians(ang)
+            o = np.array([math.sin(a), math.cos(a)])          # outward, plan
+            t = np.array([math.cos(a), -math.sin(a)])         # along the wall
+            z0, z1 = float(v[:, 2].min()), float(v[:, 2].max())
+            if z1 - z0 < 0.2:
+                continue
+            c2 = v[:, :2].mean(axis=0)
+            dref = float(c2 @ o)
+            tmin, tmax = float((v[:, :2] @ t).min()), float((v[:, :2] @ t).max())
+            D = T[:, :, :2] @ o - dref                         # outward distance from the glass plane, per vertex
+            TT = T[:, :, :2] @ t
+            ok = ((tz.min(axis=1) >= z1 - 0.03) & (tz.min(axis=1) <= z1 + 3.0)
+                  & (TT.max(axis=1) >= tmin + 0.05) & (TT.min(axis=1) <= tmax - 0.05)
+                  & (D.max(axis=1) > 0.05) & (D.min(axis=1) <= 0.35))
+            Pm = 0.0; Hm = 0.0; Gm = 0.0
+            if ok.any():
+                Dk, Zk = D[ok], tz[ok]
+                Pm = float(Dk.max())
+                edge = Dk >= Pm - 0.06
+                zed = float(Zk[edge].min())
+                Gm = max(0.0, zed - z1)
+                Hm = Gm + (z1 - z0)
+            per.setdefault(tag, []).append((Pm * 1000.0, Hm * 1000.0 if Pm > 0 else 0.0, Gm * 1000.0, (z1 - z0) * 1000.0, ang))
+    out = {}
+    for tag, lst in per.items():
+        # worst window of the tag = the smallest P compared with its H
+        w = min(lst, key=lambda r: (r[0] / r[1]) if r[1] > 0 else -1.0)
+        out[tag] = {"n": len(lst), "P_mm": round(w[0]), "H_mm": round(w[1]), "G_mm": round(w[2]), "glass_mm": round(w[3]),
+                    "face": round(w[4]), "per": [[round(r[0]), round(r[1]), round(r[4])] for r in lst]}
+    return out
+
+
+def read_ifc_model(path):
+    """Read rooms (IfcSpace), windows/doors and true north from an IFC file (ifcopenshell)."""
+    import ifcopenshell, math
+    ifc = ifcopenshell.open(path)
+
+    def qty(el, names):
+        for rel in getattr(el, "IsDefinedBy", None) or []:
+            d = getattr(rel, "RelatingPropertyDefinition", None)
+            if d is None: continue
+            for q in (getattr(d, "Quantities", None) or []):
+                if q.Name in names:
+                    for a in ("AreaValue", "LengthValue", "VolumeValue"):
+                        v = getattr(q, a, None)
+                        if v: return float(v)
+            for pr in (getattr(d, "HasProperties", None) or []):
+                if pr.Name in names and getattr(pr, "NominalValue", None) is not None:
+                    try: return float(pr.NominalValue.wrappedValue)
+                    except Exception: pass
+        return None
+
+    def qty_str(el, names):
+        for rel in getattr(el, "IsDefinedBy", None) or []:
+            d = getattr(rel, "RelatingPropertyDefinition", None)
+            for pr in (getattr(d, "HasProperties", None) or []) if d is not None else []:
+                if str(pr.Name) in names and getattr(pr, "NominalValue", None) is not None:
+                    try:
+                        v = str(pr.NominalValue.wrappedValue).strip()
+                        if v: return v
+                    except Exception: pass
+        return ""
+
+    def storey_of(el):
+        for rel in getattr(el, "Decomposes", None) or []:
+            o = rel.RelatingObject
+            if o.is_a("IfcBuildingStorey"): return o
+        for rel in getattr(el, "ContainedInStructure", None) or []:
+            o = rel.RelatingStructure
+            if o.is_a("IfcBuildingStorey"): return o
+        return None
+
+    scale = 1.0
+    try:
+        import ifcopenshell.util.unit as U
+        scale = float(U.calculate_unit_scale(ifc))      # file length unit -> metres
+    except Exception:
+        pass
+
+    rooms, names_seen = [], {}
+    gross = 0.0
+    geo_area_n = no_area_n = 0
+    no_area_names = []
+    rep_lines = []
+    area_scale = 1.0
+    try:
+        import ifcopenshell.util.unit as _U
+        area_scale = float(_U.calculate_unit_scale(ifc, "AREAUNIT"))
+        if not (0 < area_scale <= 1e6): area_scale = 1.0
+    except Exception:
+        area_scale = 1.0
+    n_spaces = len(ifc.by_type("IfcSpace"))
+    for sp in ifc.by_type("IfcSpace"):
+        a = None
+        for nm_ in ("NetFloorArea", "NetArea", "Net Area", "Area", "GrossFloorArea", "GrossArea", "Gross Area"):
+            a = qty(sp, (nm_,))
+            if a: break
+        src = "quantity"
+        if not a: a = _ifc_any_area(sp); src = "property"
+        if a:
+            # Archicad writes room areas in square metres even when the file's length unit is mm, so the
+            # stored number is tried as-is first, then converted; the one that is a believable room size wins.
+            ok_ = [c for c in (a, a * area_scale) if 0.3 <= c <= 3000]
+            a = ok_[0] if ok_ else a * area_scale
+        ga = _ifc_space_area_from_geometry(sp)
+        # ifcopenshell hands the shape back in metres whatever the file's length unit is
+        if a and ga and not (0.6 <= a / ga <= 1.7):
+            src = "shape (the stored area %.2f disagreed with the room shape %.2f)" % (a, ga)
+            a = ga; geo_area_n += 1
+        elif not a and ga:
+            a = ga; src = "shape"; geo_area_n += 1
+        rep_lines.append("%s | %s | area %s (%s)\n      %s" % (
+            (getattr(sp, "LongName", None) or ""), (getattr(sp, "Name", None) or ""),
+            ("%.2f" % a) if a else "NOT FOUND", src if a else "-", "; ".join(_ifc_dump_props(sp)) or "no properties"))
+        if a and a < 0.05:      # a stray, empty zone (a sliver in the model): not a room
+            no_area_n += 1
+            no_area_names.append((getattr(sp, "LongName", None) or sp.Name or "?") + " (empty zone)")
+            continue
+        if not a:
+            no_area_n += 1
+            no_area_names.append((getattr(sp, "LongName", None) or sp.Name or "?"))
+            continue
+        a = a * scale * scale if a > 1000 and scale != 1.0 and False else a
+        lname = (getattr(sp, "LongName", None) or "").strip()
+        sname = (getattr(sp, "Name", None) or "").strip()
+        zid = ""
+        if lname and sname and sname != lname:
+            zid = sname; nm = lname              # Archicad: Name = the zone number (ID), LongName = the zone name
+        else:
+            nm = lname or sname or "Room"
+        if not zid:
+            zv = qty_str(sp, ("Zone Number", "ZoneNumber", "Zone ID", "Number", "Reference"))
+            if zv and zv != nm: zid = zv
+        if not (EXTERNAL_RE.search(nm) if EXTERNAL_RE else False):
+            gross += qty(sp, ("GrossFloorArea", "GrossArea")) or a
+        st = storey_of(sp)
+        unit = ""
+        m = UNIT_PREFIX_RE.match(nm + "")
+        if m:
+            unit = "U" + m.group(1)
+            nm = nm[m.end():].strip() or nm
+        if zid and not re.match(r"^\W*U?\d{1,2}\s*[-_.:]?\s*$", zid, re.I) and zid.lower() not in nm.lower():
+            nm_show = f"{zid} {nm}"
+        elif zid and zid.lower() not in nm.lower():
+            nm_show = f"{zid} {nm}"
+        else:
+            nm_show = nm
+        try: elev = float(st.Elevation or 0.0) * scale if st is not None else 0.0
+        except Exception: elev = 0.0
+        rooms.append({"name": nm_show, "zone_id": zid, "area": round(float(a), 2), "tags": {}, "unit": unit,
+                      "floor": (st.Name or st.LongName or "Ground Floor") if st else "", "elev": round(elev, 3),
+                      "_id": sp.id(), "_gid": sp.GlobalId})
+
+    storeys = []
+    for st_ in ifc.by_type("IfcBuildingStorey"):
+        try: storeys.append(((st_.Name or st_.LongName or "Floor"), float(st_.Elevation or 0.0) * scale))
+        except Exception: pass
+    storeys.sort(key=lambda x: x[1])
+    items, by_key = [], {}
+    ext_noglass = 0
+    excluded_n = 0
+    dup_n = 0
+    cache = {}
+    for kind, cls in (("Window", "IfcWindow"), ("Door", "IfcDoor")):
+        for el in ifc.by_type(cls):
+            w = getattr(el, "OverallWidth", None); h = getattr(el, "OverallHeight", None)
+            w = float(w) * scale * 1000 if w else 0.0
+            h = float(h) * scale * 1000 if h else 0.0
+            typ = None
+            for rel in getattr(el, "IsTypedBy", None) or []:
+                typ = rel.RelatingType
+            nm = ((typ.Name if typ is not None and typ.Name else None) or el.Name or kind).strip()
+            tag = re.sub(r":.*$", "", nm).strip().split(" ")[0] or nm
+            if ifc_excluded(tag, nm, el.Name, getattr(typ, "Name", None) if typ is not None else None):
+                excluded_n += 1
+                continue
+            ck = (typ.id() if typ is not None else nm, round(w), round(h))
+            if ck not in cache:
+                try: cache[ck] = _ifc_back_view(el, w, h)
+                except Exception: cache[ck] = None
+            bv = cache[ck]
+            if (not w or not h) and bv:
+                w, h = (bv[1], bv[2]) if bv[0] == "noglass" else (bv[5], bv[6])
+            if not w or not h: continue
+            key = (kind, tag, round(w), round(h))
+            pos = _ifc_world_pos(el, scale)
+            stn = storey_of(el)
+            fl_name = ((stn.Name or stn.LongName) if stn is not None else "")
+            if not fl_name and pos and storeys:
+                low = [n_ for n_, e_ in storeys if e_ <= pos[2] + 0.3]
+                fl_name = low[-1] if low else storeys[0][0]
+            fl_name = fl_name or "?"
+            if key in by_key:
+                itx = by_key[key]
+                if pos and any(q and abs(q[0] - pos[0]) < 0.05 and abs(q[1] - pos[1]) < 0.05
+                               and abs(q[2] - pos[2]) < 0.05 for q in itx["_pos"]):
+                    dup_n += 1                  # the same element exported twice, on the same spot
+                    continue
+                itx["qty"] += 1; itx["_els"].append(el); itx["_pos"].append(pos); itx["_fl"].append(fl_name)
+                continue
+            it = {"tag": tag, "width": w, "height": h, "kind": kind, "style": "Custom", "qty": 1, "flag": [],
+                  "_els": [el], "_pos": [pos], "_fl": [fl_name], "panes": [], "geom": None}
+            if bv and bv[0] != "noglass":
+                panes, geom, gl, sash, known, _, _, assumed = bv
+                area = w * h / 1e6
+                gm2 = min(gl, area) if gl else 0.0
+                it["glazed_m2"] = round(gm2, 3)
+                it["glazed"] = round(100 * gm2 / area, 1) if area else 0.0
+                it["panes"], it["geom"] = panes, geom
+                if known:
+                    it["openable"] = round(min(100.0 * sash / gm2, 100.0 * area / gm2), 1) if gm2 else 0.0
+                    if kind == "Door": it["openable"] = 100.0
+                    hinged = sum(1 for q in geom["panes"] if q[4] in ("hinged", "slide"))
+                    it["style"] = ("Fixed - does not open" if not hinged else
+                                   "Sliding, 2 panels" if any(q[4] == "slide" for q in geom["panes"]) else
+                                   "Side-hung casement" if hinged == len(geom["panes"]) else "Custom")
+                    it["note"] = (f"From the IFC model: glass {gm2:.2f} m2, opening sash (glass + frame) {sash:.2f} m2."
+                                  + (" The IFC does not say which panes open, so the large panes are taken as opening "
+                                     "and the small ones as fixed." if assumed else ""))
+                else:
+                    it["openable"] = 100.0 if kind == "Door" else 50.0
+                    it["note"] = ("From the IFC model: the glass is read from the model, but the IFC does not say which "
+                                  "panes open. Opening set to 50% of the glass - check it against your drawing.")
+                    it["flag"] = [4]
+            else:
+                it["glazed"] = 0.0 if kind == "Door" else 85.0
+                it["glazed_m2"] = 0.0
+                it["openable"] = 100.0 if kind == "Door" else 50.0
+                it["note"] = ("From the IFC model: no glass found in the model. " +
+                              ("Treated as a solid door (not counted)." if kind == "Door"
+                               else "Glazed 85% and opening 50% are assumed - check them."))
+                if kind == "Door":
+                    nmh = (nm + " " + (el.Name or "")).lower()
+                    if re.search(r"glass|glaz|slid|stack|patio|french|bi-?fold|folding", nmh):
+                        it["glazed"] = 70.0; it["glazed_m2"] = round(w * h / 1e6 * 0.7, 3)
+                        it["note"] = "From the IFC model: named as a glazed door, glass assumed 70% - check it."
+                    else:
+                        ext_noglass += 1
+            by_key[key] = it; items.append(it)
+    # same tag, different size -> one tag (merged at the end; room links keep working because the tag is shared)
+    # which way every window faces, from the model's walls and rooms
+    face_of = {}
+    n_faced = 0
+    try:
+        space_tris = _ifc_space_tris(ifc)
+        for it in items:
+            for el_ in it["_els"]:
+                ang = _ifc_window_angle(el_, scale, space_tris)
+                if ang is not None:
+                    face_of[el_.id()] = ang; n_faced += 1
+                if it["kind"] == "Door":
+                    ex_ = _ifc_is_external(el_, scale, space_tris)
+                    if ex_ is not None:
+                        it.setdefault("_ext", []).append(ex_)
+    except Exception:
+        face_of = {}
+    # link openings to rooms through space boundaries
+    gid2room = {r["_gid"]: r for r in rooms}
+    for rel in ifc.by_type("IfcRelSpaceBoundary"):
+        sp, el = rel.RelatingSpace, rel.RelatedBuildingElement
+        if sp is None or el is None or sp.GlobalId not in gid2room: continue
+        if not (el.is_a("IfcWindow") or el.is_a("IfcDoor")): continue
+        for it in items:
+            if any(e.id() == el.id() for e in it["_els"]):
+                t = gid2room[sp.GlobalId]["tags"]; t[it["tag"]] = t.get(it["tag"], 0) + 1
+                if el.id() in face_of:
+                    gid2room[sp.GlobalId].setdefault("_face", {}).setdefault(it["tag"], []).append(face_of[el.id()])
+    # IfcZone groups named like "Unit 2" / "U2" give the rooms in them their unit
+    try:
+        for rel in ifc.by_type("IfcRelAssignsToGroup"):
+            grp = rel.RelatingGroup
+            if grp is None or not grp.is_a("IfcZone"): continue
+            zm = re.search(r"\b(?:unit|u|flat|apartment)\s*[-_.]?\s*(\d{1,2})\b", str(grp.Name or grp.LongName or ""), re.I)
+            if not zm: continue
+            for o in rel.RelatedObjects:
+                r_ = gid2room.get(getattr(o, "GlobalId", None))
+                if r_ is not None and not r_.get("unit"): r_["unit"] = "U" + zm.group(1)
+    except Exception:
+        pass
+    # windows/doors that no space boundary placed: give each to the nearest room on its own storey
+    linked = set()
+    for rel in ifc.by_type("IfcRelSpaceBoundary"):
+        if rel.RelatedBuildingElement is not None and rel.RelatingSpace is not None \
+                and rel.RelatingSpace.GlobalId in gid2room:
+            linked.add(rel.RelatedBuildingElement.id())
+    boxes = {}
+    for sp in ifc.by_type("IfcSpace"):
+        r = gid2room.get(sp.GlobalId)
+        if r is not None:
+            bb = _ifc_space_bbox(sp, scale)
+            if bb: boxes[sp.GlobalId] = bb
+    by_floor_rooms = {}
+    for gid, r in gid2room.items():
+        by_floor_rooms.setdefault(r.get("floor") or "?", []).append(gid)
+    placed = unplaced = 0
+    for it in items:
+        for el, pos, fl in zip(it["_els"], it["_pos"], it["_fl"]):
+            if el.id() in linked or not pos: 
+                continue
+            cands = by_floor_rooms.get(fl) or list(gid2room)
+            best, bd = None, 0.6
+            for gid in cands:
+                bb = boxes.get(gid)
+                if not bb: continue
+                dx = max(bb[0] - pos[0], 0.0, pos[0] - bb[2]); dy = max(bb[1] - pos[1], 0.0, pos[1] - bb[3])
+                dd = (dx * dx + dy * dy) ** 0.5
+                if dd < bd: best, bd = gid, dd
+            if best:
+                t = gid2room[best]["tags"]; t[it["tag"]] = t.get(it["tag"], 0) + 1; placed += 1
+                if el.id() in face_of:
+                    gid2room[best].setdefault("_face", {}).setdefault(it["tag"], []).append(face_of[el.id()])
+            else:
+                unplaced += 1
+    for it in items:
+        cnt = {}
+        for f in it["_fl"]: cnt[f] = cnt.get(f, 0) + 1
+        it["where"] = ", ".join(f"{k}: {v}" for k, v in cnt.items())
+        it["by_floor"] = cnt
+    # true north (degrees clockwise the north arrow points from the plan's top)
+    north = None
+    try:
+        for ctx in ifc.by_type("IfcGeometricRepresentationContext"):
+            tn = getattr(ctx, "TrueNorth", None)
+            if tn is not None:
+                x, y = tn.DirectionRatios[0], tn.DirectionRatios[1]
+                north = round((math.degrees(math.atan2(x, y))) % 360, 1); break
+    except Exception:
+        pass
+    # Archicad keeps the project north in the IfcSite's own placement (the site's Y axis points to north),
+    # while TrueNorth often stays at 0. Add that turn so the window facings follow the model's real north.
+    try:
+        import ifcopenshell.util.placement as _pl
+        site_ = ifc.by_type("IfcSite")[0]
+        if site_.ObjectPlacement is not None:
+            m_ = _pl.get_local_placement(site_.ObjectPlacement)
+            sb = math.degrees(math.atan2(float(m_[0][1]), float(m_[1][1]))) % 360
+            if sb > 0.05 and sb < 359.95:
+                north = round(((north or 0.0) + sb) % 360, 1)
+    except Exception:
+        pass
+    for r in rooms:
+        fb = r.pop("_face", None)
+        if fb:
+            r["facing"] = _ifc_facing_string({re.sub(r"_\d+$", "", k): v for k, v in fb.items()})
+    for r in rooms: r.pop("_id", None); r.pop("_gid", None)
+    air = {"fire": [], "sky": []}
+    try:
+        for el in ifc.by_type("IfcProduct"):
+            if el.is_a("IfcSpace") or el.is_a("IfcWall") or el.is_a("IfcSlab"):
+                nm_ = (el.Name or "")
+            else:
+                nm_ = ((el.Name or "") + " " + (getattr(el, "ObjectType", None) or ""))
+            if AIR_FIRE_RE.search(nm_):
+                air["fire"].append(nm_.strip()[:40])
+            elif el.is_a("IfcWindow") and AIR_SKY_RE.search(nm_):
+                air["sky"].append(nm_.strip()[:40])
+    except Exception:
+        pass
+    for it in items:
+        ex_ = it.pop("_ext", None)
+        if it["kind"] == "Door" and ex_ is not None:
+            it["external"] = sum(1 for x in ex_ if x) * 2 > len(ex_)
+        it.pop("_els", None); it.pop("_pos", None); it.pop("_fl", None)
+    items = ifc_merge_variants(items)
+    floor_order = [n_ for n_, _e in storeys]
+    for it in items:
+        for f_ in it.get("by_floor", {}):
+            if f_ not in floor_order: floor_order.append(f_)
+    return {"floors": floor_order, "rooms": rooms, "items": items, "north": north, "gross": round(gross, 2), "solid_doors": ext_noglass,
+            "excluded": excluded_n, "dups": dup_n, "n_spaces": n_spaces, "geo_area": geo_area_n,
+            "no_area": no_area_n, "no_area_names": no_area_names, "room_report": rep_lines, "n_zones": len(ifc.by_type("IfcZone")), "n_storeys": len(ifc.by_type("IfcBuildingStorey")),
+            "n_win": len(ifc.by_type("IfcWindow")), "n_door": len(ifc.by_type("IfcDoor")), "placed": placed, "unplaced": unplaced, "faced": n_faced,
+            "latlon": ifc_site_latlon(ifc), "air": air, "shading": _safe_shading(path)}
+
+
+
+# ---------------- Sun, 3D views and Annex B loads (indicative; not a certified simulation) ----------------
+ANNEX_B_BANDS = ["00:00-08:00", "08:00-11:00", "11:00-18:00", "18:00-22:00", "22:00-00:00"]
+ANNEX_B_HRS = [8, 3, 7, 4, 2]
+ANNEX_B_POP = [(0.88, 1.00, 1.00), (0.37, 0.43, 0.43), (0.36, 0.43, 0.43), (0.73, 0.97, 0.97), (1.00, 1.00, 1.00)]
+ANNEX_B_LIGHT = [(0.13, 0.09, 0.09), (0.13, 0.20, 0.20), (0.14, 0.14, 0.14), (0.24, 0.30, 0.30), (0.10, 0.18, 0.18)]
+ANNEX_B_HOTW_BANDS = ["00:00-04:00", "04:00-08:00", "08:00-16:00", "16:00-20:00", "20:00-00:00"]
+ANNEX_B_HOTW = [(0.05, 0.05, 0.05), (0.25, 0.25, 0.25), (0.10, 0.10, 0.10), (0.25, 0.25, 0.25), (0.35, 0.35, 0.35)]
+ANNEX_B = {"sensible_w": 75.0, "meal_w": 30.0, "tmin": 19.0, "tmax": 25.0, "share": 95.0, "light_w_m2": 4.0,
+           "hotw_l": 115.0, "store_l": 50.0, "hotw_cat1": 64.0, "store_cat1": 45.0, "cop": 2.5}
+
+
+def solar_pos(lat, lon, doy, hour, tz=2.0):
+    """(altitude, azimuth) in degrees; azimuth clockwise from north. lat is negative in the south, lon positive east.
+    NOAA solar position (Spencer fractional-year series); `hour` is the clock time in zone tz (South Africa: UTC+2, no daylight saving)."""
+    import math
+    g = 2.0 * math.pi / 365.0 * (doy - 1 + (hour - 12.0) / 24.0)
+    eot = 229.18 * (0.000075 + 0.001868 * math.cos(g) - 0.032077 * math.sin(g) - 0.014615 * math.cos(2 * g)
+                    - 0.040849 * math.sin(2 * g))
+    d = (0.006918 - 0.399912 * math.cos(g) + 0.070257 * math.sin(g) - 0.006758 * math.cos(2 * g)
+         + 0.000907 * math.sin(2 * g) - 0.002697 * math.cos(3 * g) + 0.00148 * math.sin(3 * g))
+    st = hour * 60.0 + eot + 4.0 * lon - 60.0 * tz            # true solar time, minutes
+    w = math.radians(st / 4.0 - 180.0)
+    ph = math.radians(lat)
+    sa = math.sin(ph) * math.sin(d) + math.cos(ph) * math.cos(d) * math.cos(w)
+    alt = math.asin(max(-1.0, min(1.0, sa)))
+    az = math.degrees(math.atan2(math.sin(w), math.cos(w) * math.sin(ph) - math.tan(d) * math.cos(ph))) + 180.0
+    return math.degrees(alt), az % 360.0
+
+
+def epw_clock_zone(w):
+    """The time zone the hours of a weather file really use. PVGIS files are in UTC while the header may say otherwise, so the
+    hour of the day when the sun is strongest (solar noon) is compared with the site's longitude."""
+    import numpy as np
+    g = np.asarray(w["GHI"][:8760], float).reshape(365, 24)
+    prof = g.sum(axis=0)
+    if prof.sum() <= 0:
+        return float(w.get("tz", 2.0))
+    hrs = np.arange(24) + 0.5
+    obs = float((prof * hrs).sum() / prof.sum())            # clock hour of the energy-weighted midday
+    best, bd = float(w.get("tz", 2.0)), 99.0
+    for tz in sorted({float(w.get("tz", 2.0)), 0.0, 1.0, 2.0, round(w["lon"] / 15.0)}):
+        pred = 12.0 - (4.0 * (w["lon"] - 15.0 * tz)) / 60.0       # clock time of mean solar noon in that zone (equation of time averages out)
+        if abs(pred - obs) < bd:
+            best, bd = tz, abs(pred - obs)
+    return best
+
+
+def clear_sky(alt_deg, doy):
+    """(direct normal, diffuse horizontal) in W/m2 for a clear sky (Meinel air-mass model). Upper bound."""
+    import math
+    if alt_deg <= 0.5:
+        return 0.0, 0.0
+    am = 1.0 / (math.sin(math.radians(alt_deg)) + 0.50572 * (alt_deg + 6.07995) ** -1.6364)
+    e0 = 1367.0 * (1 + 0.033 * math.cos(math.radians(360.0 * doy / 365.0)))
+    dni = e0 * 0.7 ** (am ** 0.678)
+    dhi = 0.1 * dni * math.sin(math.radians(alt_deg)) + 15.0
+    return dni, dhi
+
+
+_MID_DOY = [15, 46, 74, 105, 135, 166, 196, 227, 258, 288, 319, 349]
+_MDAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+
+
+def facade_solar(lat, lon, north=0.0, tz=2.0):
+    """Clear-sky solar energy on a vertical wall facing each of the 8 compass sectors: {sector: [kWh/m2 per month]}."""
+    import math
+    sec = {"N": 0, "NE": 45, "E": 90, "SE": 135, "S": 180, "SW": 225, "W": 270, "NW": 315}
+    out = {k: [0.0] * 12 for k in sec}
+    for m, doy in enumerate(_MID_DOY):
+        for h10 in range(0, 240, 5):
+            hr = h10 / 10.0 + 0.25
+            alt, az = solar_pos(lat, lon, doy, hr, tz)
+            dni, dhi = clear_sky(alt, doy)
+            if dni <= 0:
+                continue
+            ghi = dni * math.sin(math.radians(alt)) + dhi
+            for k, a in sec.items():
+                c = math.cos(math.radians(alt)) * math.cos(math.radians(az - a))
+                w_ = dni * max(0.0, c) + 0.5 * dhi + 0.1 * ghi
+                out[k][m] += w_ * 0.5 * _MDAYS[m] / 1000.0
+    return out
+
+
+
+# ---------------- Weather data (EPW): PVGIS typical year for the site, or the user's own .epw file ----------------
+def parse_epw(text):
+    """Hourly weather from EPW text: {'name','lat','lon','tz','elev','T','RH','GHI','DNI','DHI','WS'} (numpy arrays)."""
+    import numpy as np
+    lines = text.splitlines()
+    head = lines[0].split(",") if lines else []
+    loc = {"name": (head[1] if len(head) > 1 else "").strip(), "country": (head[3] if len(head) > 3 else "").strip(),
+           "lat": float(head[6]), "lon": float(head[7]), "tz": float(head[8]), "elev": float(head[9])}
+    rows = [ln.split(",") for ln in lines[8:] if ln.count(",") > 20]
+    if len(rows) < 8000:
+        raise ValueError("The weather file does not hold a full year of hourly data.")
+    col = lambda i: np.array([float(r[i]) for r in rows[:8760]], float)
+    loc.update({"T": col(6), "RH": col(8), "GHI": col(13), "DNI": col(14), "DHI": col(15), "WS": col(21)})
+    return loc
+
+
+def fetch_pvgis_epw(lat, lon, timeout=60):
+    """Typical meteorological year (EPW text) for a point from the EU PVGIS service. Needs an internet connection."""
+    import urllib.request
+    last = None
+    for ver in ("v5_3", "v5_2"):
+        url = (f"https://re.jrc.ec.europa.eu/api/{ver}/tmy?lat={lat:.5f}&lon={lon:.5f}&outputformat=epw"
+               "&startyear=2005&endyear=2020")
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "MCP-SANS-Compliance-Suite"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                txt = r.read().decode("utf-8", "replace")
+            if txt.upper().startswith("LOCATION"):
+                return txt
+            last = txt[:200]
+        except Exception as ex:
+            last = str(ex)
+    raise RuntimeError(last or "no answer")
+
+
+def weather_stats(w, north=0.0):
+    """Monthly climate and the sun on each facade from a real weather year (kWh/m2 per month)."""
+    import numpy as np, math
+    T, GHI, DNI, DHI = w["T"], w["GHI"], w["DNI"], w["DHI"]
+    mon = np.concatenate([[m] * (d * 24) for m, d in enumerate(_MDAYS)])
+    out = {"tmean": [], "tmin": [], "tmax": [], "ghi": [], "hdh": [], "cdh": []}
+    for m in range(12):
+        sel = mon == m
+        out["tmean"].append(float(T[sel].mean())); out["tmin"].append(float(T[sel].min())); out["tmax"].append(float(T[sel].max()))
+        out["ghi"].append(float(GHI[sel].sum()) / 1000.0)
+        out["hdh"].append(float(np.clip(19.0 - T[sel], 0, None).sum()) / 1000.0)
+        out["cdh"].append(float(np.clip(T[sel] - 25.0, 0, None).sum()) / 1000.0)
+    sec = {"N": 0, "NE": 45, "E": 90, "SE": 135, "S": 180, "SW": 225, "W": 270, "NW": 315}
+    fs = {k: [0.0] * 12 for k in sec}
+    hours = np.arange(8760)
+    wtz = epw_clock_zone(w)
+    out["tz"] = wtz
+    for h in hours:
+        if GHI[h] <= 0 and DNI[h] <= 0:
+            continue
+        doy = int(h // 24) + 1
+        alt, az = solar_pos(w["lat"], w["lon"], doy, (h % 24) + 0.5, wtz)
+        if alt <= 0:
+            continue
+        ca = math.cos(math.radians(alt))
+        m = int(mon[h])
+        for k, a in sec.items():
+            c = ca * math.cos(math.radians(az - a))
+            fs[k][m] += (DNI[h] * max(0.0, c) + 0.5 * DHI[h] + 0.1 * GHI[h]) / 1000.0
+    out["fs"] = fs
+    out["t_year"] = float(T.mean())
+    out["ghi_year"] = float(GHI.sum()) / 1000.0
+    out["name"] = w["name"]; out["lat"] = w["lat"]; out["lon"] = w["lon"]
+    return out
+
+
+def weather_chart(w, size=(700, 230)):
+    """Daily mean, highest and lowest dry-bulb temperature through the year (QImage)."""
+    import numpy as np, math
+    from PySide6.QtGui import QImage
+    W, H = size
+    img = QImage(W, H, QImage.Format_RGB32)
+    img.fill(QColor(255, 255, 255))
+    p = QPainter(img)
+    p.setRenderHint(QPainter.Antialiasing)
+    T = w["T"][:8760].reshape(365, 24)
+    mx, mn, av = T.max(axis=1), T.min(axis=1), T.mean(axis=1)
+    lo, hi = math.floor(mn.min() / 5) * 5, math.ceil(mx.max() / 5) * 5
+    L, R, Tp, B = 40, W - 12, 12, H - 28
+    X = lambda d: L + (R - L) * d / 364.0
+    Y = lambda t: B - (B - Tp) * (t - lo) / float(hi - lo)
+    p.setPen(QPen(QColor(215, 215, 215), 1))
+    for t in range(int(lo), int(hi) + 1, 5):
+        p.drawLine(L, int(Y(t)), R, int(Y(t)))
+        p.setPen(QColor(90, 90, 90)); p.drawText(6, int(Y(t)) + 4, f"{t}"); p.setPen(QPen(QColor(215, 215, 215), 1))
+    for m, d0 in enumerate([0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]):
+        p.setPen(QColor(90, 90, 90)); p.drawText(int(X(d0)) + 3, B + 16, "JFMAMJJASOND"[m])
+    for arr, col in ((mx, "#C8102E"), (mn, "#2d5fb3"), (av, "#1B7F3B")):
+        pen = QPen(QColor(col)); pen.setWidthF(1.3); p.setPen(pen)
+        for d in range(364):
+            p.drawLine(QPointF(X(d), Y(arr[d])), QPointF(X(d + 1), Y(arr[d + 1])))
+    p.setPen(QColor(40, 40, 40))
+    x0 = L + 8
+    for nm, col in (("daily high", "#C8102E"), ("daily mean", "#1B7F3B"), ("daily low", "#2d5fb3")):
+        p.setPen(QPen(QColor(col), 3)); p.drawLine(x0, Tp + 6, x0 + 16, Tp + 6)
+        p.setPen(QColor(40, 40, 40)); p.drawText(x0 + 20, Tp + 10, nm + " (°C)"); x0 += 120
+    p.end()
+    return img
+
+
+
+def ifc_door_external(path):
+    """{door tag: True/False/None}: is the door in an outside wall? Worked out again from the IFC file."""
+    import ifcopenshell
+    ifc = ifcopenshell.open(path)
+    scale = 1.0
+    try:
+        import ifcopenshell.util.unit as _u
+        scale = float(_u.calculate_unit_scale(ifc))
+    except Exception:
+        pass
+    spaces = _ifc_space_tris(ifc)
+    votes = {}
+    for el in ifc.by_type("IfcDoor"):
+        tag = re.sub(r"_\d+$", "", (el.Name or "").strip().upper())
+        if not tag:
+            continue
+        v = _ifc_is_external(el, scale, spaces)
+        if v is not None:
+            votes.setdefault(tag, []).append(v)
+    return {t: (sum(1 for x in v if x) * 2 > len(v)) for t, v in votes.items()}
+
+
+def ifc_meshes(path):
+    """Triangles of the building from the IFC file, in world metres: [(kind, verts Nx3, faces Mx3)]."""
+    import numpy as np
+    import ifcopenshell, ifcopenshell.geom
+    ifc = ifcopenshell.open(path)
+    st = ifcopenshell.geom.settings()
+    st.set(st.USE_WORLD_COORDS, True)
+    kinds = {"IfcWall": "wall", "IfcWallStandardCase": "wall", "IfcSlab": "slab", "IfcRoof": "roof",
+             "IfcWindow": "window", "IfcDoor": "door", "IfcColumn": "wall", "IfcBeam": "wall",
+             "IfcCovering": "slab", "IfcStair": "slab", "IfcRailing": "wall"}
+    scale = 1.0
+    try:
+        u = ifcopenshell.util.unit.calculate_unit_scale(ifc)
+        scale = float(u)
+    except Exception:
+        pass
+    out = []
+    for cls, kind in kinds.items():
+        for el in ifc.by_type(cls):
+            if cls == "IfcSlab" and (getattr(el, "PredefinedType", "") == "ROOF"):
+                k2 = "roof"
+            else:
+                k2 = kind
+            try:
+                sh = ifcopenshell.geom.create_shape(st, el)
+                v = np.array(sh.geometry.verts, float).reshape(-1, 3) * (scale if scale != 1.0 else 1.0)
+                f = np.array(sh.geometry.faces, int).reshape(-1, 3)
+                if len(f):
+                    out.append((k2, v, f))
+            except Exception:
+                continue
+    return out
+
+
+def _shadow_factors(P, sd, rng_pad=0.0):
+    """Shadow map seen from the sun. Returns a function (points Nx3 -> 1.0 lit / 0.0 in shadow)."""
+    import numpy as np
+    from PySide6.QtGui import QImage
+    z = np.array([0.0, 0.0, 1.0])
+    ru = np.cross(sd, z)
+    if np.linalg.norm(ru) < 1e-6:
+        ru = np.array([1.0, 0.0, 0.0])
+    ru /= np.linalg.norm(ru)
+    vu = np.cross(sd, ru)
+    allp = P.reshape(-1, 3)
+    u, v, d = allp @ ru, allp @ vu, allp @ sd
+    u0, u1, v0, v1, d0, d1 = u.min(), u.max(), v.min(), v.max(), d.min(), d.max()
+    N = 1800
+    k = (N - 4) / max(u1 - u0, v1 - v0, 1e-6)
+    img = QImage(N, N, QImage.Format_RGB32)
+    img.fill(QColor(0, 0, 0))
+    p = QPainter(img)
+    p.setRenderHint(QPainter.Antialiasing, False)
+    p.setPen(Qt.NoPen)
+    uu = (P @ ru - u0) * k + 2
+    vv = (P @ vu - v0) * k + 2
+    dd = (P @ sd)
+    dc = dd.mean(axis=1)
+    scale = 16777000.0 / max(d1 - d0, 1e-6)
+    order = np.argsort(dc)                        # far from the sun first, nearest drawn last
+    for i in order:
+        val = int(1 + (dc[i] - d0) * scale)
+        p.setBrush(QColor((val >> 16) & 255, (val >> 8) & 255, val & 255))
+        p.drawPolygon(QPolygonF([QPointF(float(uu[i, j]), float(vv[i, j])) for j in range(3)]))
+    p.end()
+    buf = np.frombuffer(img.constBits(), np.uint8).reshape(N, img.bytesPerLine() // 4, 4)[:, :N, :]
+    depth = (buf[:, :, 2].astype(np.int64) << 16) | (buf[:, :, 1].astype(np.int64) << 8) | buf[:, :, 0].astype(np.int64)
+    bias = 0.30 * scale
+
+    def lit(pts):
+        px = np.clip(((pts @ ru - u0) * k + 2).astype(int), 0, N - 1)
+        py = np.clip(((pts @ vu - v0) * k + 2).astype(int), 0, N - 1)
+        mine = 1 + (pts @ sd - d0) * scale
+        return (depth[py, px] <= mine + bias).astype(float)
+    return lit
+
+
+def render_views(meshes, north, sun_az, sun_alt, size=(520, 340), views=(45, 135, 225, 315), title_sun=""):
+    """Isometric images (QImage) of the building lit from the sun with cast shadows, plus the ground and a north arrow.
+    north = world bearing of true north (degrees clockwise from the plan's top), so a compass azimuth A is world bearing A + north."""
+    import numpy as np, math
+    from PySide6.QtGui import QImage
+    allv = np.vstack([m[1] for m in meshes])
+    lo, hi = allv.min(axis=0), allv.max(axis=0)
+    ctr = (lo + hi) / 2.0
+    rad = float(np.linalg.norm(hi - lo)) / 2.0 or 1.0
+    sb = math.radians(sun_az + north)
+    sd = np.array([math.sin(sb) * math.cos(math.radians(sun_alt)), math.cos(sb) * math.cos(math.radians(sun_alt)),
+                   math.sin(math.radians(sun_alt))])
+    base = {"wall": (226, 214, 214), "slab": (200, 200, 205), "roof": (120, 112, 118), "window": (110, 160, 205),
+            "door": (150, 110, 80)}
+    # all triangles once: outward normals (away from the element's own centre), colour class, sun light and shadow
+    Ps, Ks, Ns = [], [], []
+    for kind, v, f in meshes:
+        P = v[f]
+        n = np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0])
+        ln = np.linalg.norm(n, axis=1); ln[ln == 0] = 1
+        n = n / ln[:, None]
+        flip = ((P.mean(axis=1) - v.mean(axis=0)) * n).sum(axis=1) < 0
+        n[flip] *= -1
+        Ps.append(P); Ns.append(n); Ks.extend([kind] * len(P))
+    P = np.vstack(Ps); Nn = np.vstack(Ns)
+    sun_up = sun_alt > 0.5
+    if sun_up:
+        lamb = np.clip(Nn @ sd, 0.0, None)
+        cen_all = P.mean(axis=1)
+        try:
+            lit_fn = _shadow_factors(P, sd)
+            shadow = lit_fn(cen_all + Nn * 0.05)
+        except Exception:
+            lit_fn, shadow = None, np.ones(len(P))
+        light = 0.34 + 0.66 * lamb * shadow
+    else:
+        lit_fn = None
+        light = np.full(len(P), 0.30)
+    # ground: a grid so the building's shadow falls on it
+    G = 36
+    gx = np.linspace(-1.15, 1.15, G + 1) * rad + ctr[0]
+    gy = np.linspace(-1.15, 1.15, G + 1) * rad + ctr[1]
+    gcx, gcy = (gx[:-1] + gx[1:]) / 2, (gy[:-1] + gy[1:]) / 2
+    gpts = np.array([[x, y, lo[2]] for y in gcy for x in gcx])
+    gshade = lit_fn(gpts + np.array([0, 0, 0.05])) if lit_fn else np.ones(len(gpts))
+    if not sun_up:
+        gshade = np.zeros(len(gpts))
+    imgs = []
+    el = math.radians(28)
+    cen = P.mean(axis=1)
+    for vaz in views:
+        a = math.radians(vaz)
+        fwd = np.array([-math.sin(a) * math.cos(el), -math.cos(a) * math.cos(el), -math.sin(el)])
+        right = np.cross(fwd, [0, 0, 1.0]); right /= np.linalg.norm(right)
+        up = np.cross(right, fwd)
+        depth = (cen - ctr) @ fwd
+        # back faces (turned away from the camera) are skipped: the walls in front hide them
+        vis = (Nn @ fwd) < 0.02
+        idx = [i for i in np.argsort(-depth) if vis[i]]
+        W, H = size
+        img = QImage(W, H, QImage.Format_RGB32)
+        img.fill(QColor(246, 247, 249))
+        p = QPainter(img)
+        p.setRenderHint(QPainter.Antialiasing)
+        sc = min(W, H) * 0.52 / rad
+
+        def proj(q):
+            d = q - ctr
+            return QPointF(W / 2 + float(d @ right) * sc, H / 2 + 12 - float(d @ up) * sc)
+        p.setPen(Qt.NoPen)
+        p.setRenderHint(QPainter.Antialiasing, False)
+        cells = []
+        for j in range(G):
+            for i in range(G):
+                c4 = [np.array([gx[i], gy[j], lo[2] - 0.02]), np.array([gx[i + 1], gy[j], lo[2] - 0.02]),
+                      np.array([gx[i + 1], gy[j + 1], lo[2] - 0.02]), np.array([gx[i], gy[j + 1], lo[2] - 0.02])]
+                cells.append((float(((c4[0] + c4[2]) / 2 - ctr) @ fwd), c4, gshade[j * G + i]))
+        for _d, c4, sh in sorted(cells, key=lambda t: -t[0]):
+            f_ = 0.62 + 0.38 * sh if sun_up else 0.55
+            p.setBrush(QColor(int(112 * f_), int(170 * f_), int(96 * f_)))
+            p.drawPolygon(QPolygonF([proj(q) for q in c4]))
+        p.setRenderHint(QPainter.Antialiasing, True)
+        for i in idx:
+            c = base.get(Ks[i], (210, 210, 210))
+            li = light[i]
+            p.setBrush(QColor(int(c[0] * li), int(c[1] * li), int(c[2] * li)))
+            p.setPen(QPen(QColor(60, 60, 60, 70), 0.35))
+            p.drawPolygon(QPolygonF([proj(q) for q in P[i]]))
+        # north arrow: true north is at world bearing +north
+        nb = math.radians(north)
+        nv = np.array([math.sin(nb), math.cos(nb), 0.0])
+        a0 = QPointF(W - 60, 44)
+        dx_, dy_ = float(nv @ right), float(nv @ up)
+        a1 = QPointF(a0.x() + dx_ * 24, a0.y() - dy_ * 24 * 0.7)
+        p.setPen(QPen(QColor(30, 30, 30), 2))
+        p.drawLine(a0, a1)
+        p.setBrush(QColor(30, 30, 30))
+        p.drawEllipse(a1, 3, 3)
+        p.setPen(QColor(30, 30, 30))
+        p.drawText(QPointF(a1.x() + 5, a1.y() - 3), "N")
+        # sun arrow: where the sun is, projected the same way
+        if sun_up:
+            sv = np.array([sd[0], sd[1], 0.0])
+            sdx, sdy = float(sv @ right), float(sv @ up)
+            b0 = QPointF(W - 60, 80)
+            p.setPen(QPen(QColor(220, 140, 0), 2))
+            p.drawLine(b0, QPointF(b0.x() + sdx * 24, b0.y() - sdy * 24 * 0.7))
+            p.setBrush(QColor(255, 190, 0))
+            p.drawEllipse(QPointF(b0.x() + sdx * 24, b0.y() - sdy * 24 * 0.7), 4, 4)
+            p.setPen(QColor(150, 90, 0))
+            p.drawText(QPointF(b0.x() + sdx * 24 + 7, b0.y() - sdy * 24 * 0.7 + 4), "sun")
+        if title_sun:
+            p.setPen(QColor(60, 60, 60))
+            p.drawText(8, H - 8, title_sun)
+        p.end()
+        imgs.append(img)
+    return imgs
+
+
+def sun_path_image(lat, lon, size=(520, 340)):
+    """Sun altitude against the hour of the day on the solstices and the equinox (QImage)."""
+    from PySide6.QtGui import QImage
+    W, H = size
+    img = QImage(W, H, QImage.Format_RGB32)
+    img.fill(QColor(255, 255, 255))
+    p = QPainter(img)
+    p.setRenderHint(QPainter.Antialiasing)
+    L, R, T, B = 46, W - 14, 18, H - 36
+    p.setPen(QPen(QColor(200, 200, 200), 1))
+    for a in range(0, 91, 15):
+        y = B - (B - T) * a / 90.0
+        p.drawLine(L, int(y), R, int(y))
+        p.setPen(QColor(90, 90, 90)); p.drawText(8, int(y) + 4, f"{a}°"); p.setPen(QPen(QColor(200, 200, 200), 1))
+    for h in range(4, 21, 2):
+        x = L + (R - L) * (h - 4) / 16.0
+        p.drawLine(int(x), T, int(x), B)
+        p.setPen(QColor(90, 90, 90)); p.drawText(int(x) - 12, B + 16, f"{h:02d}:00"); p.setPen(QPen(QColor(200, 200, 200), 1))
+    for name, doy, col in (("21 Dec (summer)", 355, "#C8102E"), ("21 Mar / 23 Sep", 80, "#E08A1E"), ("21 Jun (winter)", 172, "#2d5fb3")):
+        pen = QPen(QColor(col)); pen.setWidthF(2.0); p.setPen(pen)
+        prev = None
+        for t10 in range(40, 201, 2):
+            h = t10 / 10.0
+            alt, _az = solar_pos(lat, lon, doy, h)
+            pt = QPointF(L + (R - L) * (h - 4) / 16.0, B - (B - T) * max(alt, 0) / 90.0)
+            if prev is not None and alt > 0:
+                p.drawLine(prev, pt)
+            prev = pt if alt > 0 else None
+    p.setPen(QColor(40, 40, 40))
+    x0 = L + 8
+    for name, col in (("21 Dec (summer)", "#C8102E"), ("21 Mar / 23 Sep", "#E08A1E"), ("21 Jun (winter)", "#2d5fb3")):
+        p.setPen(QPen(QColor(col), 3)); p.drawLine(x0, T + 8, x0 + 16, T + 8)
+        p.setPen(QColor(40, 40, 40)); p.drawText(x0 + 20, T + 12, name); x0 += 130
+    p.end()
+    return img
+
+
+
+def ifc_health_check(path, res):
+    """What could make the numbers wrong in this IFC model, in plain words, with the fix in Archicad.
+    [(level 'error' | 'warn' | 'ok', title, detail, fix)]"""
+    out = []
+    add = lambda lv, t, d="", f="": out.append((lv, t, d, f))
+    rooms = res.get("rooms") or []
+    items = res.get("items") or []
+    if not rooms:
+        add("error", "No rooms (IfcSpace) found", "Without rooms there is no floor area, so light and ventilation cannot be worked out.",
+            "In Archicad make sure every room is a Zone and that Zones are exported to IFC (IFC Translators > Spaces).")
+    bad = [r["name"] for r in rooms if not str(r.get("name", "")).strip() or re.fullmatch(r"(space|zone|room|ifcspace)[\s\-_.]*\d*", str(r.get("name", "")).strip(), re.I)]
+    if bad:
+        add("warn", f"{len(bad)} room(s) with no real name", ", ".join(bad[:6]), "Give every Zone a name (Kitchen, Bedroom 1, Bath...): the report and the ventilation rules use the name.")
+    na = res.get("no_area_names") or []
+    if na:
+        add("warn", f"{len(na)} room(s) with no area", ", ".join(na[:6]), "Check these Zones have a boundary and a floor area in Archicad.")
+    nof = [r["name"] for r in rooms if not r.get("floor")]
+    if nof:
+        add("warn", f"{len(nof)} room(s) not on a named storey", ", ".join(nof[:6]), "Assign each Zone to a storey in Archicad.")
+    if res.get("north") is None or abs(float(res.get("north") or 0.0)) < 1e-6:
+        add("warn", "North is 0 degrees (plan top)", "Window facings and the sun use this. Fine only if your plan really has north at the top.",
+            "In Archicad set Project Location / Project North, then export again. Or set north from the Google Earth plot.")
+    ll = res.get("latlon")
+    if not ll or not (-36.0 <= ll[0] <= -21.0 and 15.0 <= ll[1] <= 34.0):
+        add("warn", "No site position inside South Africa in the model", "The energy zone and the sun will use the town you pick.",
+            "Set the site latitude / longitude in Archicad (Project Location), or import the Google Earth KML.")
+    doors = [i for i in items if i.get("kind") == "Door"]
+    unk = [i["tag"] for i in doors if "external" not in i]
+    if unk:
+        add("warn", f"{len(unk)} door type(s) where inside or outside could not be told", ", ".join(unk[:8]),
+            "Name entrance doors 'Front door', 'Back door' etc., or tick Exterior on them in Archicad.")
+    nog = [i["tag"] for i in items if i.get("kind") == "Window" and not i.get("glazed_m2")]
+    if nog:
+        add("warn", f"{len(nog)} window type(s) with no glass area", ", ".join(nog[:8]), "Check the window has a glazing panel in the library part.")
+    if res.get("unplaced"):
+        add("warn", f"{res['unplaced']} window/door(s) not linked to a room", "", "Check they sit in a wall next to a Zone.")
+    if res.get("placed") and res.get("faced") is not None and res["faced"] < res["placed"]:
+        add("warn", "Some windows have no facing worked out", f"{res.get('faced')} of {res['placed']}",
+            "The wall or room on one side is missing. Check the Zones touch the walls.")
+    if res.get("dups"):
+        add("warn", f"{res['dups']} duplicate window/door element(s)", "", "Remove stacked copies in Archicad.")
+    try:
+        import ifcopenshell
+        ifc = ifcopenshell.open(path)
+        noname = [e for cls in ("IfcDoor", "IfcWindow") for e in ifc.by_type(cls) if not (e.Name or "").strip()]
+        if noname:
+            add("warn", f"{len(noname)} window/door(s) with no name or tag", "", "Give every opening an ID (W1, D1...) in Archicad so the schedule can group them.")
+        if not ifc.by_type("IfcBuildingStorey"):
+            add("error", "No storeys in the model", "", "Set up Stories in Archicad and export them.")
+    except Exception:
+        pass
+    if not any(o[0] in ("error", "warn") for o in out):
+        add("ok", "Nothing wrong found", f"{len(rooms)} rooms, {len(items)} window/door types.", "")
+    return out
+
+
+class _HwSizeBox(QComboBox):
+    """Drop-down of real cylinder sizes that behaves like a number box (value / setValue / valueChanged)."""
+    valueChanged = Signal(float)
+
+    def __init__(self, none_text):
+        super().__init__()
+        self._none = none_text
+        self.addItem(none_text, 0.0)
+        self.currentIndexChanged.connect(lambda *_a: self.valueChanged.emit(self.value()))
+
+    def value(self):
+        d = self.currentData()
+        return float(d or 0.0)
+
+    def _select(self, v):
+        v = float(v or 0.0)
+        for i in range(self.count()):
+            if abs(float(self.itemData(i) or 0.0) - v) < 1e-9:
+                self.setCurrentIndex(i)
+                return
+        self.addItem(f"{v:g} L (not a standard size)", v)
+        self.setCurrentIndex(self.count() - 1)
+
+    def setValue(self, v):
+        self._select(v)
+
+    def set_sizes(self, sizes):
+        cur = self.value()
+        self.blockSignals(True)
+        self.clear()
+        self.addItem(self._none, 0.0)
+        for x in sizes:
+            self.addItem(f"{x:g} L", float(x))
+        self._select(cur)
+        self.blockSignals(False)
+
+
+class _HwRowFilter(QObject):
+    """Selects the hot water table row when its widgets are clicked or focused; Delete removes the selected row."""
+    def __init__(self, owner, key=None):
+        super().__init__(owner)
+        self.owner, self.key = owner, key
+
+    def eventFilter(self, obj, ev):
+        t = ev.type()
+        if self.key is not None and t in (QEvent.Type.MouseButtonPress, QEvent.Type.FocusIn):
+            self.owner._hw_select(self.key)
+        elif self.key is None and t == QEvent.Type.KeyPress and ev.key() == Qt.Key_Delete:
+            self.owner._hw_delete_selected()
+            return True
+        return False
+
+
+# Lighting rules: (kind of room, words in the room name, hours the lights are on each day, watts per light, m2 of floor per light).
+# Starting values: the designer edits them (Lighting rules button). The 7 W LED light is an assumption, not a standard value.
+LT_DEFAULT_RULES = [
+    ["Bathrooms, toilets, showers", "bath|shower|toilet|wc|w\\.c|ensuite|en-suite|powder|cloak", 2.0, 7.0, 4.0],
+    ["Bedrooms", "bed|nursery|guest room|sleeping", 4.0, 7.0, 5.0],
+    ["Kitchens", "kitchen|scullery|pantry|kitchenette", 5.0, 7.0, 4.0],
+    ["Lounge, living, family", "lounge|living|family|tv room|sitting|open plan|great room", 5.0, 7.0, 5.0],
+    ["Dining", "dining|breakfast", 3.0, 7.0, 5.0],
+    ["Study, office", "study|office|studio", 6.0, 7.0, 5.0],
+    ["Passages, halls, stairs", "pass|hall|corridor|entrance|foyer|lobby|stair|landing|entry", 2.0, 7.0, 5.0],
+    ["Laundry, stores, garage", "laundry|utility|store|garage|linen|cupboard|closet|wardrobe|dress|cellar|plant|meter|bin", 1.0, 7.0, 6.0],
+    ["Covered outdoor (patio, stoep)", "patio|stoep|veranda|verandah|balcony|porch|deck|braai|carport|terrace", 3.0, 7.0, 6.0],
+    ["All other rooms", ".*", 3.0, 7.0, 5.0]]
+LT_LPD = 4.0     # SANS 10400-XA:2021 table 12: maximum lighting power density for H2, H3 and H4 (W per m2 of net floor area)
+LT_EXT_PRESETS = [("Door or entrance light", 7.0, 4.0), ("Security / flood light", 20.0, 10.0), ("Garden or path light", 5.0, 8.0),
+                  ("Driveway or parking light", 10.0, 10.0), ("Patio / stoep light", 7.0, 4.0)]
+
+HW_SYSTEMS = ["(not chosen yet)", "Heat pump (domestic)", "Solar water heater with electric backup",
+              "Gas heater (LPG / natural gas)", "Heat recovery or renewable fuel (biomass, biogas)",
+              "Electric resistance geyser only",
+              "Electric geyser kept, justified by a rational design",
+              "Electric geyser as main, solar as supplement"]
+
+
+# Real products (Kwikot, South Africa): Superline electric geysers from kwikot.com (50, 100 and 150 L at 600 kPa, 200 and 250 L at 400 kPa);
+# KwikSol direct solar systems from the Kwikot specification sheet (July 2017): cylinder, element, panel model, panels and aperture area.
+# Models change, so the supplier must confirm the current range.
+HW_ELEC_SIZES = [50, 100, 150, 200, 250]
+HW_SOLAR_PKG = {150: ("SOL-150-DIR", 1, 2.0, "SOL-PANEL-2B", 2), 200: ("SOL-200-DIR", 1, 2.5, "SOL-PANEL-2.5", 2),
+                300: ("SOL-300-DIR", 2, 2.0, "SOL-PANEL-2B", 3)}     # code, panels in the package, m2 per panel, panel model, element kW
+
+
+HW_MODELS = ["Automatic (smallest that fits)", "Kwikot Superline electric geyser (50 to 250 L)",
+             "Kwikot KwikSol Direct, flat plate (frost-free areas)", "Kwikot KwikSol Indirect, flat plate (frost-prone areas)",
+             "Kwikot Megaflo 450 L (central, vertical or horizontal)"]
+# KwikSol Indirect: kwikot.com lists a 200 L flat-plate system but no panel data, so the panel area is ASSUMED to match the Direct 200 L package.
+HW_IND_PKG = {200: ("panel area assumed", 1, 2.5, "flat plate panel", 2)}
+
+
+def hw_catalog(system, model):
+    """(solar packages {cylinder L: (code, panels, m2 per panel, panel model, element kW)}, electric geyser sizes) for a hot water system and model."""
+    pkgs = HW_IND_PKG if int(model or 0) == 3 else HW_SOLAR_PKG
+    elec = [450] if int(model or 0) == 4 else HW_ELEC_SIZES
+    return pkgs, elec
+
+
+def hw_product(o):
+    """Which Kwikot product a row's cylinder / collector entries correspond to (text for the screen and the reports)."""
+    import math
+    if o.get("units_text"):
+        return o["units_text"]
+    cyl, pre = o.get("main_cyl", o["cyl"]), o.get("pre", 0)
+    solar = o["system"].startswith("Solar") or o["system"].startswith("Electric geyser as main")
+    model = int(o.get("model", 0) or 0)
+    pkgs, elec = hw_catalog(o["system"], model)
+    if not cyl:
+        return "Cylinder size not entered"
+    if solar and int(cyl) in pkgs:
+        code, n0, m2, pm, kw = pkgs[int(cyl)]
+        n = max(n0, int(math.ceil((o.get("coll") or 0) / m2 - 1e-9)))
+        kind_ = "indirect" if model == 3 else "direct"
+        txt = f"Kwikot KwikSol {int(cyl)} L {kind_} ({code}, {kw} kW element) with {n} x {pm} ({m2:.1f} m2 each, {n * m2:.1f} m2 in all)"
+        if n > n0:
+            txt += f"; the package has {n0}, so {n - n0} extra panel(s): confirm with Kwikot that the cylinder takes them"
+    elif solar:
+        txt = f"{int(cyl)} L is not a standard Kwikot KwikSol size for this model ({', '.join(str(k) for k in sorted(pkgs))} L)"
+    elif int(cyl) in elec:
+        txt = (f"Kwikot Megaflo {int(cyl)} L" if model == 4 else f"Kwikot Superline {int(cyl)} L electric geyser")
+    else:
+        txt = f"{int(cyl)} L is not a standard size for this Kwikot model ({', '.join(str(k) for k in elec)} L)"
+    if solar and model in (1, 4):
+        txt += " (the model chosen is not a solar system: KwikSol Direct sizes shown)"
+    if (not solar) and model in (2, 3):
+        txt += " (KwikSol is a solar model but this system is not solar: Superline sizes shown)"
+    if pre:
+        txt += f"; pre-heat tank {'Kwikot ' + ('Megaflo' if model == 4 else 'Superline') + ' ' + str(int(pre)) + ' L' if int(pre) in elec else str(int(pre)) + ' L (not a standard Kwikot size)'}"
+    return txt
+
+
+def hw_coll_panels(system, model, cyl, coll):
+    """(number of solar collector panels, m2 per panel) for a solar row: the package panels of the chosen KwikSol cylinder, plus extras."""
+    import math
+    if not (system.startswith("Solar") or system.startswith("Electric geyser as main")):
+        return 0, 0.0
+    pkgs, _el = hw_catalog(system, model)
+    if cyl and int(cyl) in pkgs:
+        _c, n0, m2, _pm, _kw = pkgs[int(cyl)]
+        return max(n0, int(math.ceil((coll or 0) / m2 - 1e-9))), m2
+    return (int(math.ceil((coll or 0) / 2.0 - 1e-9)) if coll else 0), 2.0
+
+
+def _hw_is_solar(system):
+    return system.startswith("Solar") or system.startswith("Electric geyser as main")
+
+
+# ---------------------------------------------------------------- solar thermal (v81)
+ST_COLLECTORS = [
+    ("Flat plate, selective coating (typical)", 0.78, 3.8, 0.012),
+    ("Evacuated tube, heat pipe (typical)", 0.68, 1.4, 0.006),
+    ("Evacuated tube, direct flow (typical)", 0.72, 1.6, 0.007),
+    ("Low-cost flat plate / thermosyphon (typical)", 0.72, 5.0, 0.015),
+    ("Own values from the collector test certificate", 0.75, 4.0, 0.010),
+]
+_ST_YIELD = [None]      # kWh a year per m2 of collector from the solar thermal design, when the designer asks the hot water check to use it
+
+
+def st_weather_fallback(lat, lon):
+    """A clear-sky x 0.75 year when no weather file is loaded (hourly arrays like a weather file; temperature is a plain estimate)."""
+    import numpy as np, math
+    G = np.zeros(8760); DN = np.zeros(8760); DF = np.zeros(8760); T = np.zeros(8760)
+    for h in range(8760):
+        doy = h // 24 + 1
+        hr = h % 24
+        alt, _az = solar_pos(lat, lon, doy, hr + 0.5)
+        dni, dhi = clear_sky(alt, doy)
+        if alt > 0:
+            DN[h] = dni * 0.75; DF[h] = dhi * 0.75
+            G[h] = DN[h] * math.sin(math.radians(alt)) + DF[h]
+        T[h] = 18.0 + (-5.0 if lat < 0 else 5.0) * math.cos(2 * math.pi * (doy - 15) / 365.0) + 4.0 * math.sin(math.pi * (hr - 9) / 12.0)
+    return {"T": T, "GHI": G, "DNI": DN, "DHI": DF, "lat": lat, "lon": lon, "name": "estimated clear-sky year (no weather file loaded)", "tz": 2.0, "_est": True}
+
+
+def solar_thermal_calc(w, area, tilt, azim, eta0, a1, a2, persons, lit_pp, store_l, t_set=60.0, t_mean=45.0, loss=0.90, albedo=0.2):
+    """Hour by hour solar thermal estimate. Sun on the tilted collector from DNI/DHI/GHI, collector efficiency from the usual
+    eta0 - a1*dT/G - a2*dT^2/G curve, then per day: heat delivered = min(collector heat - tank loss, heat the hot water needs)."""
+    import numpy as np, math
+    G = np.asarray(w["GHI"][:8760], float); DN = np.asarray(w["DNI"][:8760], float)
+    DF = np.asarray(w["DHI"][:8760], float); T = np.asarray(w["T"][:8760], float)
+    sun = w.get("_sun")
+    if sun is None:
+        tz = epw_clock_zone(w)
+        alt = np.zeros(8760); az = np.zeros(8760)
+        for h in range(8760):
+            if G[h] <= 0 and DN[h] <= 0:
+                continue
+            a_, z_ = solar_pos(w["lat"], w["lon"], h // 24 + 1, h % 24 + 0.5, tz)
+            alt[h], az[h] = a_, z_
+        sun = (np.radians(alt), np.radians(az))
+        w["_sun"] = sun
+    alt_r, az_r = sun
+    up = alt_r > 0
+
+    def plane(tilt_, azim_):
+        b = math.radians(tilt_)
+        cth = np.sin(alt_r) * math.cos(b) + np.cos(alt_r) * math.sin(b) * np.cos(az_r - math.radians(azim_))
+        gt = DN * np.clip(cth, 0, None) + DF * (1 + math.cos(b)) / 2.0 + G * albedo * (1 - math.cos(b)) / 2.0
+        return np.where(up, gt, 0.0)
+    gt = plane(tilt, azim)
+    dT = t_mean - T
+    with np.errstate(divide="ignore", invalid="ignore"):
+        eta = np.where(gt >= 100.0, eta0 - a1 * dT / gt - a2 * dT * dT / gt, 0.0)
+    eta = np.clip(eta, 0.0, eta0)
+    q = eta * gt / 1000.0 * loss                                    # kWh per m2 of collector each hour, after pipe loss
+    mon = np.concatenate([[m] * (d * 24) for m, d in enumerate(_MDAYS)])
+    day_q = q.reshape(365, 24).sum(axis=1) * area                   # collector heat per day, kWh
+    day_i = gt.reshape(365, 24).sum(axis=1) / 1000.0
+    mon_d = np.concatenate([[m] * d for m, d in enumerate(_MDAYS)])
+    rows, surplus_days = [], 0
+    tot = {"irr": 0.0, "out": 0.0, "need": 0.0, "sol": 0.0}
+    loss_day = store_l * 0.0075                                     # standing heat loss of the solar cylinder, kWh a day
+    for m in range(12):
+        sel = mon == m
+        tmean = float(T[sel].mean())
+        t_cold = min(22.0, max(10.0, tmean))
+        need_d = persons * lit_pp * 4.186 * (t_set - t_cold) / 3600.0
+        dm = mon_d == m
+        out_m = float(day_q[dm].sum())
+        sol_d = np.clip(np.minimum(day_q[dm] - loss_day, need_d), 0.0, None)
+        surplus_days += int(((day_q[dm] - loss_day) > need_d * 1.5).sum()) if need_d > 0 else 0
+        need_m = need_d * _MDAYS[m]
+        sol_m = float(sol_d.sum())
+        irr_m = float(day_i[dm].sum())
+        rows.append({"m": m, "irr": irr_m, "out": out_m, "need": need_m, "sol": sol_m, "aux": max(0.0, need_m - sol_m),
+                     "f": (sol_m / need_m * 100.0) if need_m > 0 else 0.0, "tcold": t_cold})
+        tot["irr"] += irr_m; tot["out"] += out_m; tot["need"] += need_m; tot["sol"] += sol_m
+    scan = []
+    for t_ in (0, 10, 20, 30, 40, 50, 60):
+        scan.append((t_, float(plane(t_, azim).sum()) / 1000.0))
+    best = max(scan, key=lambda x: x[1])
+    scan_az = []
+    for a_ in (-90, -45, 0, 45, 90):
+        scan_az.append((a_, float(plane(tilt, a_).sum()) / 1000.0))
+    cur = float(gt.sum()) / 1000.0
+    out_m2 = tot["out"] / area if area > 0 else 0.0
+    return {"rows": rows, "irr_year": cur, "out_year": tot["out"], "out_m2": out_m2, "need_year": tot["need"], "sol_year": tot["sol"],
+            "aux_year": max(0.0, tot["need"] - tot["sol"]), "f": (tot["sol"] / tot["need"] * 100.0) if tot["need"] > 0 else 0.0,
+            "surplus_days": surplus_days, "scan": scan, "best_tilt": best[0], "best_irr": best[1], "scan_az": scan_az,
+            "deliv_m2": (tot["sol"] / area) if area > 0 else 0.0, "l_per_m2": (store_l / area) if area > 0 else 0.0,
+            "est": bool(w.get("_est")), "wname": w.get("name", ""), "loss_day": loss_day}
+
+
+def hw_pv_calc(persons, system, cyl_l, coll_m2, ghi_year, light_kwh, lit_pp=115.0, t_cold=15.0, store_pp=50.0, cop=2.5, panel_w=550.0):
+    """SANS 10400-XA clause 6.1 hot water check (at least 50 % of the annual hot water from something other than electric
+    resistance, storage table 10, solar storage 50 % larger) plus an indicative PV size. Figures are estimates."""
+    import math
+    litres = persons * lit_pp * 365.0
+    e_th = litres * 4.186 * (60.0 - t_cold) / 3600.0                     # kWh a year to heat the water to 60 C
+    o = {"persons": persons, "litres": litres, "e_th": e_th, "system": system, "cyl": cyl_l, "coll": coll_m2, "ghi": ghi_year}
+    sys_ok, share, elec, note = None, None, e_th, ""
+    yield_m2 = ghi_year * 1.10 * 0.45 * 0.80                              # kWh per m2 of collector a year (tilt, efficiency, losses)
+    if _ST_YIELD[0]:
+        yield_m2 = float(_ST_YIELD[0])                                    # from the solar thermal design section
+    o["yield_m2"] = yield_m2
+    solar = _hw_is_solar(system)
+    if system.startswith("Heat pump"):
+        sys_ok, share, elec = True, 100.0, e_th / cop
+        note = f"Heat pump: a permitted technology (XA 6.1.3). Electricity at COP {cop:.1f}."
+    elif solar:
+        f = min(0.90, coll_m2 * yield_m2 / e_th) if e_th > 0 and coll_m2 > 0 else 0.0
+        share, elec = f * 100.0, e_th * (1.0 - f)
+        sys_ok = f >= 0.5
+        o["area50"], o["area70"] = 0.5 * e_th / yield_m2 if yield_m2 else 0.0, 0.7 * e_th / yield_m2 if yield_m2 else 0.0
+        if system.startswith("Electric geyser as main"):
+            note = ("The electric geyser is the main heater and solar is the supplement: solar covers about %.0f %% of the hot water. "
+                    "Clause 6.1 needs the solar share to reach 50 %%, so the collectors must be big enough for that." % share)
+        else:
+            note = ("Solar covers about %.0f %% of the hot water; the electric element may supply at most 50 %% (XA 6.1.2)." % share)
+    elif system.startswith("Gas"):
+        sys_ok, share, elec = True, 100.0, 0.0
+        o["gas_kwh"] = e_th / 0.85
+        note = "Gas: a permitted technology (XA 6.1.4 and 6.1.5)."
+    elif system.startswith("Heat recovery"):
+        sys_ok, share, elec = True, 100.0, 0.0
+        note = "Heat recovery or renewable fuel: a permitted technology (XA 6.1)."
+    elif "rational design" in system:
+        sys_ok, share, elec = False, 0.0, e_th
+        o["rd"] = True
+        note = ("This does not meet clause 6.1 as it stands: it needs a rational design by a competent person "
+                "showing the building still meets the energy requirement (for example with solar PV or a heat pump on other loads).")
+    elif system.startswith("Electric"):
+        sys_ok, share, elec = False, 0.0, e_th
+        note = "Electric resistance alone does not comply: at least 50 % must come from solar, a heat pump, gas, heat recovery or renewable fuel."
+    o.update({"sys_ok": sys_ok, "share": share, "elec_hw": elec, "note": note})
+    req_store = persons * store_pp * (1.5 if solar else 1.0)
+    o["store_req"] = req_store
+    o["store_ok"] = (cyl_l >= req_store - 1e-9) if cyl_l and cyl_l > 0 else None
+    elec_tot = elec + light_kwh
+    spec = ghi_year * 0.78 * 1.05                                         # kWh per kWp a year (performance ratio, tilt)
+    kwp = elec_tot / spec if spec > 0 else 0.0
+    o.update({"light_kwh": light_kwh, "elec_tot": elec_tot, "kwp": kwp, "panels": int(math.ceil(kwp * 1000.0 / panel_w)) if kwp > 0 else 0, "panel_w": panel_w,
+              "elec_day": elec / 365.0, "elec_hw_panels": int(math.ceil(elec / (spec * panel_w / 1000.0))) if (spec > 0 and elec > 0) else 0,
+              "full_panels": int(math.ceil(e_th / (spec * panel_w / 1000.0))) if spec > 0 else 0,
+              "spec_yield": spec})
+    o["roof_m2"] = o["panels"] * 2.6
+    return o
+
+
+class _NorthPreview(QWidget):
+    """Small map: the plot from the KML (north up) with the building outline turned to one candidate angle."""
+
+    def __init__(self, site_xy, model_poly, angle, parent=None):
+        super().__init__(parent)
+        self.site, self.model, self.angle = site_xy, model_poly, angle
+        self.setMinimumSize(210, 210)
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(QColor(255, 255, 255, 30), 1))
+        p.setBrush(QColor(20, 21, 25))
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 10, 10)
+        _a, ck = _poly_area_centroid(self.site)
+        _a2, cm = _poly_area_centroid(self.model)
+        placed = rotate_pts(self.model, self.angle, cm, ck)
+        pts = self.site + placed
+        xs = [q[0] for q in pts]; ys = [q[1] for q in pts]
+        w_, h_ = max(max(xs) - min(xs), 1e-6), max(max(ys) - min(ys), 1e-6)
+        sc = min((self.width() - 40) / w_, (self.height() - 40) / h_)
+        ox = (self.width() - w_ * sc) / 2 - min(xs) * sc
+        oy = (self.height() + h_ * sc) / 2 + min(ys) * sc
+
+        def poly(P):
+            return QPolygonF([QPointF(ox + x * sc, oy - y * sc) for x, y in P])
+        p.setPen(QPen(QColor(200, 200, 205), 1.4))
+        p.setBrush(QColor(255, 255, 255, 22))
+        p.drawPolygon(poly(self.site))
+        p.setPen(QPen(QColor("#ff4056"), 1.6))
+        p.setBrush(QColor(200, 16, 46, 120))
+        p.drawPolygon(poly(placed))
+        # north arrow (north is up on this map)
+        p.setPen(QPen(QColor("white"), 2))
+        p.drawLine(QPointF(self.width() - 22, 40), QPointF(self.width() - 22, 18))
+        p.drawLine(QPointF(self.width() - 22, 18), QPointF(self.width() - 27, 26))
+        p.drawLine(QPointF(self.width() - 22, 18), QPointF(self.width() - 17, 26))
+        p.drawText(QRectF(self.width() - 34, 40, 24, 16), Qt.AlignCenter, "N")
+        p.end()
+
+
+class KmlNorthDialog(QDialog):
+    """Pick which turning of the building fits the plot (the best match first)."""
+
+    def __init__(self, parent, site_xy, model_poly, cands, ifc_north):
+        super().__init__(parent)
+        self.setWindowTitle("Which way is north on your plan?")
+        self.angle = None
+        lay = QVBoxLayout(self)
+        t = QLabel("The red shape is your building from the IFC model, turned to sit on the plot from your KML file "
+                   "(north is up on these maps). Choose the one that matches where the building really stands.")
+        t.setWordWrap(True)
+        lay.addWidget(t)
+        if ifc_north is not None:
+            n = QLabel(f"<span style='color:rgba(255,255,255,150)'>For comparison, the IFC model itself says north "
+                       f"is {ifc_north:g}\u00b0.</span>")
+            lay.addWidget(n)
+        row = QHBoxLayout()
+        for c in cands[:4]:
+            box = QVBoxLayout()
+            box.addWidget(_NorthPreview(site_xy, model_poly, c["angle"]))
+            cap = f"North on plan: {c['angle']:g}\u00b0" + (f"   (match {c['score'] * 100:.0f}%)" if c["score"] is not None else "")
+            lb = QLabel(cap)
+            lb.setAlignment(Qt.AlignCenter)
+            box.addWidget(lb)
+            b = QPushButton("Use this one")
+            b.setProperty("accent", True)
+            b.clicked.connect(lambda _=False, a=c["angle"]: (setattr(self, "angle", a), self.accept()))
+            box.addWidget(b)
+            row.addLayout(box)
+        lay.addLayout(row)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        lay.addWidget(cancel, 0, Qt.AlignRight)
+
+
+class ProjectWizard(QDialog):
+    """Step 1: create the project - what it is called, where it is and what kind of building it is."""
+
+    def __init__(self, win, editing=False):
+        super().__init__(win)
+        self.win = win
+        self.editing = editing
+        self.result_action = None          # "create", "open" or None
+        self.setWindowTitle("Create your project" if not editing else "Project details")
+        self.setMinimumWidth(620)
+        outer = QVBoxLayout(self)
+        outer.setSpacing(12)
+        head = QLabel("<span style='font-size:22px; font-weight:700;'>"
+                      + ("Project details" if editing else "Create your project") + "</span><br>"
+                      "<span>Step 1: tell us about the building. This fills in the reports for you, "
+                      "and you can change anything later.</span>")
+        head.setWordWrap(True)
+        outer.addWidget(head)
+
+        def box(title):
+            b = IconGroupBox(title)
+            b.setObjectName("xaGroup")
+            g = QGridLayout(b)
+            g.setContentsMargins(14, 10, 14, 12)
+            g.setHorizontalSpacing(12)
+            g.setVerticalSpacing(8)
+            g.setColumnStretch(1, 1)
+            outer.addWidget(b)
+            return g
+
+        rd = win.rd
+        g = box("1  The project")
+        self.name = QLineEdit(rd.get("project", ""))
+        self.name.setPlaceholderText("e.g. Smith residence, or the job number")
+        self.owner = QLineEdit(rd.get("owner", ""))
+        self.owner.setPlaceholderText("Client / property owner (optional)")
+        g.addWidget(QLabel("Project name"), 0, 0)
+        g.addWidget(self.name, 0, 1)
+        g.addWidget(QLabel("Owner / client"), 1, 0)
+        g.addWidget(self.owner, 1, 1)
+
+        g = box("2  Where is the building?")
+        self.site = QLineEdit(rd.get("details", ""))
+        self.site.setPlaceholderText("Erf number, street and suburb (optional)")
+        self.prov = QComboBox()
+        self.prov.addItem("(choose province)")
+        self.prov.addItem("(search all provinces)")
+        self.prov.addItems(list(XA_REGIONS))
+        self.prov.setMaxVisibleItems(15)
+        self.town = QComboBox()
+        self.town.setMaxVisibleItems(25)
+        self.town.setEditable(True)        # type a few letters to find a place
+        self.town.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        from PySide6.QtWidgets import QCompleter
+        self.town.completer().setFilterMode(Qt.MatchFlag.MatchContains)
+        self.town.completer().setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.town.completer().setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        self.town.lineEdit().setPlaceholderText("Type to search, or pick from the list")
+        self.own_zone = QComboBox()
+        self.own_zone.addItems(XA_ZONES)
+        self.own_zone.setVisible(False)
+        self.own_zone_lbl = QLabel("Energy zone (choose it yourself)")
+        self.own_zone_lbl.setVisible(False)
+        self.zone_lbl = QLabel("The town sets the climatic energy zone.")
+        self.zone_lbl.setWordWrap(True)
+        g.addWidget(QLabel("Site"), 0, 0)
+        g.addWidget(self.site, 0, 1)
+        g.addWidget(QLabel("Province"), 1, 0)
+        g.addWidget(self.prov, 1, 1)
+        g.addWidget(QLabel("Town"), 2, 0)
+        g.addWidget(self.town, 2, 1)
+        g.addWidget(self.zone_lbl, 3, 1)
+        g.addWidget(self.own_zone_lbl, 4, 0)
+        g.addWidget(self.own_zone, 4, 1)
+        self.prov.currentTextChanged.connect(self._fill_towns)
+        self.town.editTextChanged.connect(self._town_changed)
+
+        g = box("3  What kind of building?")
+        self.house = QCheckBox("One house on its own")
+        self.units = QCheckBox("Flats or townhouses (several units)")
+        self.house.setChecked(not UNIT_MODE[0])
+        self.units.setChecked(UNIT_MODE[0])
+        self.house.toggled.connect(lambda on: self.units.setChecked(not on) if on == self.units.isChecked() else None)
+        self.units.toggled.connect(lambda on: self.house.setChecked(not on) if on == self.house.isChecked() else None)
+        self.units.setStyleSheet("")
+        self.occ = QComboBox()
+        self.occ.setMaxVisibleItems(32)
+        self.occ.addItems(XA_OCCUPANCY)
+        self.occ.setCurrentText(rd.get("occupancy") or RD_DEFAULTS["occupancy"])
+        self.storeys = QSpinBox()
+        self.storeys.setRange(1, len(FLOOR_NAMES))
+        self.storeys.setValue(max(len(win.floors), 1))
+        g.addWidget(self.house, 0, 0, 1, 2)
+        g.addWidget(self.units, 1, 0, 1, 2)
+        g.addWidget(QLabel("Number of storeys"), 2, 0)
+        g.addWidget(self.storeys, 2, 1)
+        g.addWidget(QLabel("Occupancy class"), 3, 0)
+        g.addWidget(self.occ, 3, 1)
+        hint = QLabel("A house is calculated per floor. With several units, each unit gets its own light, "
+                      "ventilation, glazing and energy check. Most houses and flats are H4 (dwelling house) "
+                      "or H3 (domestic residence).")
+        hint.setObjectName("xaSub")
+        hint.setWordWrap(True)
+        g.addWidget(hint, 4, 0, 1, 2)
+
+        self.more_btn = QPushButton("More details for the report (architect, competent person)  \u25BE")
+        self.more_btn.setFlat(True)
+        outer.addWidget(self.more_btn)
+        self.more = QWidget()
+        mg = QGridLayout(self.more)
+        mg.setContentsMargins(14, 0, 14, 0)
+        mg.setColumnStretch(1, 1)
+        self.arch = QLineEdit(rd.get("architect", ""))
+        self.comp = QLineEdit(rd.get("prepared_by", ""))
+        self.reg = QLineEdit(rd.get("reg_no", ""))
+        self.firm = QLineEdit(rd.get("company", ""))
+        for r, (lab, wdg) in enumerate((("Architecture firm", self.arch), ("Report prepared by (company)", self.firm),
+                                        ("Competent person", self.comp), ("Registration number", self.reg))):
+            mg.addWidget(QLabel(lab), r, 0)
+            mg.addWidget(wdg, r, 1)
+        self.more.setVisible(False)
+        outer.addWidget(self.more)
+        self.more_btn.clicked.connect(lambda: self.more.setVisible(not self.more.isVisible()))
+
+        self.err = QLabel("")
+        self.err.setStyleSheet("color:#ff9a9a;")
+        outer.addWidget(self.err)
+        row = QHBoxLayout()
+        if not editing:
+            ob = QPushButton("Open an existing project...")
+            ob.clicked.connect(lambda: self._finish("open"))
+            row.addWidget(ob)
+            sb = QPushButton("Skip for now")
+            sb.clicked.connect(self.reject)
+            row.addWidget(sb)
+        else:
+            cb = QPushButton("Cancel")
+            cb.clicked.connect(self.reject)
+            row.addWidget(cb)
+        row.addStretch()
+        go = QPushButton("Save details" if editing else "Create project  \u2192")
+        go.setDefault(True)
+        go.setMinimumHeight(38)
+        go.clicked.connect(lambda: self._finish("create"))
+        row.addWidget(go)
+        outer.addLayout(row)
+
+        xa = win.xa_prov.currentText()
+        pv = xa if xa in XA_REGIONS else "(choose province)"
+        self.prov.setCurrentText(pv if pv != "(choose province)" or xa != "(all provinces)" else "(choose province)")
+        self._fill_towns(self.prov.currentText())
+        t = win.xa_town.currentText()
+        if t in XA_TOWNS:
+            if self.town.findText(t) < 0:
+                self._fill_towns("(choose province)")
+            self.town.setCurrentText(t)
+
+    def _fill_towns(self, pv):
+        names = XA_REGIONS.get(pv)
+        if pv == "(search all provinces)":
+            names = sorted(XA_TOWNS)
+        if names is None:
+            names = []
+        self.town.blockSignals(True)
+        self.town.clear()
+        self.town.addItems(["(choose town)"] + list(names))
+        self.town.blockSignals(False)
+        self._town_changed(self.town.currentText())
+
+    def _resolve_town(self, t):
+        t = (t or "").strip()
+        return t + " *" if t not in XA_TOWNS and (t + " *") in XA_TOWNS else t
+
+    def _town_changed(self, t):
+        t = self._resolve_town(t)
+        listed = t in XA_TOWNS
+        typed = bool(t) and t != "(choose town)" and not listed
+        self.own_zone.setVisible(typed)
+        self.own_zone_lbl.setVisible(typed)
+        if listed:
+            self.zone_lbl.setText(xa_town_note(t))
+        elif typed:
+            self.zone_lbl.setText(f"'{t}' is not in the list. Choose its energy zone yourself "
+                                  "(from the SANS 204 climatic zone map, or the nearest listed town).")
+        else:
+            self.zone_lbl.setText("The town sets the climatic energy zone. You can also set the zone yourself later.")
+
+    def _finish(self, action):
+        if action == "create" and not self.name.text().strip():
+            self.err.setText("Please give the project a name so your reports and files are easy to find.")
+            self.name.setFocus()
+            return
+        self.err.setText("")
+        self.result_action = action
+        self.accept()
+
+    def apply(self):
+        """Write the answers into the project."""
+        w = self.win
+        w.rd["project"] = self.name.text().strip()
+        w.rd["owner"] = self.owner.text().strip()
+        w.rd["details"] = self.site.text().strip()
+        w.rd["architect"] = self.arch.text().strip()
+        w.rd["prepared_by"] = self.comp.text().strip()
+        w.rd["reg_no"] = self.reg.text().strip()
+        if self.firm.text().strip():
+            w.rd["company"] = self.firm.text().strip()
+        w.rd["occupancy"] = self.occ.currentText()
+        w._rd_to_widgets()
+        pv = self.prov.currentText()
+        t = self._resolve_town(self.town.currentText())
+        if t in XA_TOWNS:
+            prov = pv if pv in XA_REGIONS and t in XA_REGIONS[pv] else \
+                next((k for k, v in XA_PROVINCES.items() if t in v), pv)
+            w.xa_prov.setCurrentText(prov)
+            w._xa_fill_towns(prov, t)
+            w.xa_town.setCurrentText(t)
+        elif t and t != "(choose town)":
+            w.xa_zone.setCurrentText(self.own_zone.currentText())
+            w.xa_sel.setText(f"{t}: energy zone {self.own_zone.currentText()} (chosen by you).")
+            if t.lower() not in (w.rd.get("details") or "").lower():
+                w.rd["details"] = ((w.rd.get("details") or "") + (", " if w.rd.get("details") else "") + t)
+                w._rd_to_widgets()
+        w._set_units_mode(self.units.isChecked())
+        n = self.storeys.value()
+        if not self.editing:
+            w.floors = FLOOR_NAMES[:n]
+            w._refresh_floor_widgets(select=w.floors[0])
+        else:
+            w._set_storeys(n)
+        w._refresh_home_summary()
+
+
+ZA_MAP_DATA = json.loads(r'''{"bounds":[16.3,33.0,-35.0,-22.0],"step":0.1,"rows":[".167",".133,32,.32",".127,310,.30",".127,322,.18",".126,324,.17",".124,54,322,.17",".119,515,317,.16",".119,519,311,52,.16",".117,522,39,53,.16",".117,522,37,56,.15",".116,523,35,58,.15",".115,524,34,59,.15",".113,526,32,511,.15",".113,539,.15",".110,542,.15",".108,545,.14",".107,547,.13",".107,547,.13",".106,549,.12",".106,549,.12",".106,550,.11",".106,550,.11",".105,551,.11",".104,552,.11",".102,555,.10",".102,534,26,515,.10",".99,535,29,513,31,.10",".96,537,210,512,32,.10",".37,51,.58,57,.1,529,210,511,33,.10",".37,52,.57,536,211,510,34,.10",".37,54,.54,534,22,52,210,59,35,.10",".37,54,.54,533,24,53,28,59,35,.10",".37,55,.52,533,11,24,55,26,59,35,.10",".37,55,.25,16,.21,510,11,521,12,24,57,24,59,35,.10",".37,56,.23,18,.20,59,13,520,11,25,58,23,59,35,.10",".37,56,.22,110,.18,510,13,519,12,26,519,35,.10",".37,57,.21,112,52,.13,510,15,517,13,26,519,35,.10",".37,57,.21,114,51,.1,51,.5,51,.2,512,16,515,14,26,517,.1,52,33,.11",".37,58,.19,116,518,110,514,15,27,515,.4,33,.11",".37,58,.19,118,514,113,52,18,53,15,29,512,.7,31,.11",".37,58,.18,120,513,124,23,14,215,56,.19",".37,58,.18,122,510,125,25,11,217,54,.20",".37,58,.16,125,58,126,223,53,.21",".37,57,.15,129,56,126,224,51,.22",".37,56,.16,130,53,127,224,42,.22",".37,56,.15,161,224,42,.22",".37,56,.13,51,163,222,43,.22",".37,56,.12,52,163,221,44,.22",".37,57,.1,53,.1,54,.1,53,163,220,46,.11,43,.4,32,.1",".37,520,162,221,47,.10,45,h4,.1",".37,521,158,224,47,.10,44,h5,.1",".37,521,157,225,48,.8,43,h6,.2",".37,521,157,226,49,.7,41,h7,.2",".37,521,157,226,416,h7,.3",".37,521,156,227,415,h8,.3",".37,521,156,227,414,h9,.3",".37,521,156,227,414,h9,.3",".37,521,157,226,413,h9,.4",".37,521,156,226,51,412,h10,.4",".37,521,154,226,54,411,h10,.4",".7,51,.29,521,153,224,58,49,h11,.4",".6,53,.28,521,152,223,511,48,h11,.4",".5,56,.26,522,150,223,513,45,h12,.5",".5,56,.26,522,151,222,514,42,h13,.6",".5,55,.26,523,151,26,65,210,515,h15,.6",".2,59,.22,526,150,27,66,29,512,43,h15,.6",".2,59,.21,527,150,28,64,.3,26,510,46,h14,.7",".3,510,.1,51,.15,529,150,28,61,.7,25,58,22,47,h11,.9",".3,515,.6,51,.5,529,149,29,.9,24,51,28,48,h10,.10",".4,555,149,26,.14,211,48,h8,.12",".5,554,149,26,.15,211,47,h7,.13",".5,554,149,25,.17,210,47,h6,.14",".6,553,150,23,.19,29,46,h6,.15",".6,553,150,22,.20,27,47,h6,.16",".7,553,149,22,.20,26,47,h6,.17",".7,553,149,.21,25,49,h5,.18",".7,553,147,.22,25,410,h4,.19",".8,552,147,21,.20,63,21,411,h5,.19",".8,552,144,24,.20,63,21,411,h5,.19",".8,551,141,29,.19,62,24,48,h5,.20",".9,549,138,214,.16,64,26,44,h6,.21",".9,548,133,65,216,.10,69,27,41,h7,.22",".9,547,134,66,215,.9,69,28,h8,.22",".10,545,135,67,215,.7,610,28,h7,.23",".11,543,135,69,213,62,.5,610,29,h7,.23",".11,539,139,610,28,67,.4,21,69,29,h6,.24",".12,534,143,611,27,610,.1,24,65,29,h6,.25",".12,533,144,612,26,610,27,63,29,h5,.26",".13,532,144,613,25,610,218,h6,.26",".13,532,143,629,218,h5,.27",".14,531,143,628,211,41,26,h5,.28",".15,529,144,629,29,43,h9,.29",".15,529,143,22,628,27,45,h8,.30",".16,528,143,24,627,24,47,h7,.31",".17,527,143,25,626,24,47,h6,.32",".18,525,144,27,625,22,48,h4,.34",".19,524,144,29,67,24,612,21,49,h3,.35",".19,524,134,.1,19,225,67,410,h2,.36",".20,523,144,226,63,412,h2,.37",".20,523,144,227,414,h1,.38",".20,520,23,145,226,414,.39",".20,517,26,134,.1,110,226,413,.40",".20,514,210,144,224,414,.41",".20,41,510,214,143,223,414,.42",".20,43,58,214,143,213,42,27,414,.43",".20,43,57,216,142,213,46,21,415,.44",".20,42,58,28,.1,28,141,213,413,55,42,.46",".16,41,.1,44,57,221,118,24,115,214,413,55,.48",".16,45,58,226,112,27,112,51,213,413,55,.49",".16,45,57,232,16,210,19,55,210,413,54,.50",".17,43,58,219,41,230,15,510,26,414,53,.51",".17,43,57,220,42,231,12,513,22,415,52,.53",".18,41,58,219,44,231,41,515,49,53,43,.55",".18,44,15,219,45,230,43,514,47,56,.56",".20,43,14,217,47,229,45,513,46,55,.58",".20,43,13,217,49,227,48,512,44,54,.60",".21,43,11,217,411,213,43,29,414,57,43,53,.62",".22,43,216,413,211,428,52,.4,41,52,.65",".22,43,212,11,22,414,25,434,.74",".21,44,211,13,416,22,436,.74",".20,47,29,13,423,.3,42,.1,43,.7,48,.81",".20,41,.5,210,12,420,.24,43,.82",".21,41,.3,41,29,421,.111",".25,22,.1,27,421,.111",".30,24,49,.1,42,.121",".30,24,47,.126",".32,22,46,.127",".33,21,44,.129",".167",".167"],"provs":{"Northern Cape":[[[[17.08,-28.03],[17.18,-28.1],[17.21,-28.23],[17.35,-28.23],[17.4,-28.4],[17.32,-28.47],[17.42,-28.59],[17.4,-28.7],[17.58,-28.68],[17.63,-28.76],[17.75,-28.75],[17.91,-28.78],[18.17,-28.9],[18.31,-28.88],[18.4,-28.9],[18.75,-28.84],[18.95,-28.87],[19.01,-28.93],[19.12,-28.96],[19.29,-28.88],[19.24,-28.79],[19.27,-28.74],[19.46,-28.71],[19.57,-28.53],[19.98,-28.42],[19.98,-24.75],[20.11,-24.88],[20.36,-25.03],[20.44,-25.17],[20.43,-25.2],[20.52,-25.28],[20.54,-25.38],[20.61,-25.43],[20.61,-25.46],[20.66,-25.47],[20.62,-25.5],[20.67,-25.59],[20.64,-25.62],[20.72,-25.73],[20.73,-25.83],[20.76,-25.82],[20.79,-25.89],[20.8,-26.07],[20.84,-26.13],[20.62,-26.43],[20.61,-26.49],[20.63,-26.6],[20.61,-26.75],[20.69,-26.89],[20.91,-26.8],[21.12,-26.87],[21.43,-26.82],[21.66,-26.86],[21.76,-26.8],[21.78,-26.68],[22.06,-26.62],[22.25,-26.35],[22.34,-26.32],[22.45,-26.21],[22.55,-26.21],[22.62,-26.11],[22.71,-26.13],[22.7,-26.41],[22.82,-26.45],[22.92,-26.16],[22.99,-26.16],[22.99,-26.09],[23.06,-26.1],[23.1,-25.99],[23.37,-26.02],[23.35,-26.08],[23.23,-26.06],[23.22,-26.12],[23.3,-26.14],[23.22,-26.27],[23.28,-26.34],[23.27,-26.48],[23.46,-26.53],[23.58,-26.62],[23.49,-26.74],[23.85,-26.89],[23.93,-26.87],[23.99,-26.91],[24.01,-27.07],[23.96,-27.1],[23.89,-27.26],[24.08,-27.36],[24.03,-27.51],[24.04,-27.59],[24.12,-27.63],[24.09,-27.7],[24.11,-27.74],[24.41,-27.68],[24.44,-27.7],[24.41,-27.76],[24.45,-27.78],[24.36,-27.9],[24.45,-27.98],[24.44,-28.04],[24.52,-28.1],[24.61,-28.0],[24.62,-27.9],[24.69,-27.83],[24.7,-27.73],[24.67,-27.68],[24.69,-27.64],[24.8,-27.61],[24.79,-27.68],[25.03,-27.71],[24.82,-27.91],[24.93,-28.1],[25.01,-28.07],[24.98,-28.19],[24.9,-28.29],[24.91,-28.35],[24.84,-28.58],[24.87,-28.65],[24.34,-29.65],[24.43,-29.78],[24.66,-29.9],[24.69,-29.97],[24.78,-29.99],[24.91,-30.2],[25.03,-30.28],[25.04,-30.33],[25.18,-30.46],[25.29,-30.54],[25.36,-30.55],[25.47,-30.61],[25.48,-30.76],[25.52,-30.8],[25.49,-30.85],[25.51,-30.93],[25.48,-31.03],[25.35,-31.23],[25.22,-31.2],[24.77,-31.39],[24.56,-31.4],[24.5,-31.7],[24.18,-31.75],[24.15,-31.79],[24.0,-31.72],[23.86,-31.8],[23.81,-31.73],[23.7,-31.67],[23.4,-31.68],[23.29,-31.75],[23.07,-31.98],[23.03,-31.89],[22.61,-31.78],[22.52,-31.68],[22.29,-31.57],[22.14,-31.85],[22.09,-31.89],[22.08,-32.0],[22.1,-32.06],[21.97,-32.2],[21.85,-32.24],[21.6,-32.22],[21.42,-32.35],[21.31,-32.38],[21.19,-32.46],[21.12,-32.61],[20.87,-32.68],[20.82,-32.72],[20.78,-32.86],[20.71,-32.92],[20.55,-32.9],[20.42,-32.94],[20.19,-32.74],[20.08,-32.46],[20.08,-32.41],[20.21,-32.28],[20.17,-32.19],[19.92,-32.36],[19.63,-32.44],[19.58,-32.53],[19.6,-32.6],[19.53,-32.64],[19.47,-32.58],[19.49,-32.47],[19.43,-32.31],[19.49,-32.23],[19.48,-32.08],[19.33,-32.03],[19.25,-31.95],[19.26,-31.88],[19.19,-31.92],[19.03,-31.89],[19.07,-31.75],[19.07,-31.58],[19.01,-31.47],[19.0,-31.29],[18.94,-31.2],[18.9,-31.01],[18.94,-30.72],[18.84,-30.7],[18.74,-30.58],[18.56,-30.47],[18.51,-30.48],[18.46,-30.53],[18.41,-30.5],[18.25,-30.78],[18.16,-30.82],[18.02,-30.78],[17.97,-30.82],[17.83,-31.06],[17.82,-31.17],[17.77,-31.16],[17.62,-30.93],[17.45,-30.64],[17.45,-30.6],[17.28,-30.35],[17.09,-29.83],[17.01,-29.54],[16.84,-29.21],[16.82,-29.1],[16.6,-28.86],[16.56,-28.71],[16.47,-28.62],[16.49,-28.57],[16.67,-28.46],[16.7,-28.49],[16.74,-28.48],[16.8,-28.37],[16.77,-28.27],[16.82,-28.26],[16.81,-28.22],[16.86,-28.21],[16.84,-28.17],[16.89,-28.16],[16.89,-28.08],[17.08,-28.03]]]],"KwaZulu-Natal":[[[[28.98,-28.91],[28.86,-28.77],[28.94,-28.61],[29.04,-28.55],[29.19,-28.54],[29.23,-28.44],[29.41,-28.36],[29.49,-28.26],[29.59,-28.25],[29.66,-28.16],[29.67,-28.1],[29.63,-28.04],[29.72,-27.81],[29.68,-27.66],[29.77,-27.58],[29.76,-27.54],[29.72,-27.52],[29.72,-27.48],[29.81,-27.46],[29.86,-27.38],[30.15,-27.38],[30.4,-27.27],[30.44,-27.31],[30.6,-27.31],[30.69,-27.27],[30.83,-27.33],[30.9,-27.31],[30.98,-27.35],[31.15,-27.32],[31.24,-27.23],[31.53,-27.31],[31.97,-27.32],[31.94,-27.1],[31.99,-26.81],[32.35,-26.86],[32.89,-26.85],[32.84,-27.12],[32.68,-27.52],[32.55,-28.17],[32.44,-28.37],[32.4,-28.39],[32.43,-28.43],[32.39,-28.54],[32.08,-28.8],[32.02,-28.78],[31.99,-28.81],[32.02,-28.83],[32.07,-28.81],[32.01,-28.87],[31.89,-28.92],[31.77,-28.92],[31.78,-28.95],[31.37,-29.33],[31.19,-29.56],[31.06,-29.79],[31.06,-29.87],[31.02,-29.87],[31.0,-29.9],[31.06,-29.87],[31.06,-29.9],[30.89,-30.05],[30.61,-30.53],[30.2,-31.08],[30.06,-30.85],[29.97,-30.83],[29.94,-30.78],[29.79,-30.71],[29.61,-30.69],[29.46,-30.62],[29.33,-30.66],[29.22,-30.62],[29.19,-30.64],[29.12,-30.58],[29.16,-30.55],[29.15,-30.51],[29.2,-30.44],[29.3,-30.37],[29.3,-30.32],[29.26,-30.27],[29.24,-30.3],[29.13,-30.25],[29.1,-30.17],[29.12,-30.09],[29.02,-29.98],[29.15,-29.91],[29.11,-29.83],[29.11,-29.75],[29.16,-29.67],[29.28,-29.61],[29.28,-29.49],[29.4,-29.43],[29.44,-29.34],[29.32,-29.15],[29.31,-29.09],[29.21,-29.07],[29.06,-28.97],[29.04,-28.92],[28.98,-28.91]]]],"Free State":[[[[28.86,-28.77],[28.7,-28.69],[28.67,-28.6],[28.62,-28.57],[28.56,-28.61],[28.38,-28.63],[28.3,-28.71],[28.15,-28.7],[28.01,-28.88],[27.93,-28.85],[27.86,-28.92],[27.75,-28.91],[27.71,-28.99],[27.64,-29.04],[27.66,-29.07],[27.63,-29.07],[27.61,-29.13],[27.52,-29.22],[27.53,-29.26],[27.45,-29.29],[27.35,-29.48],[27.26,-29.54],[27.02,-29.62],[27.0,-29.67],[27.08,-29.74],[27.2,-29.98],[27.27,-30.03],[27.31,-30.13],[27.38,-30.14],[27.34,-30.21],[27.38,-30.31],[27.35,-30.32],[27.4,-30.37],[27.33,-30.39],[27.36,-30.43],[27.29,-30.43],[27.32,-30.46],[27.3,-30.49],[27.13,-30.5],[27.12,-30.54],[27.01,-30.53],[27.03,-30.59],[26.97,-30.59],[26.93,-30.65],[26.85,-30.68],[26.78,-30.64],[26.63,-30.68],[26.49,-30.63],[26.44,-30.56],[26.28,-30.58],[26.15,-30.49],[26.14,-30.53],[26.06,-30.51],[25.94,-30.57],[25.89,-30.54],[25.86,-30.6],[25.73,-30.68],[25.63,-30.65],[25.61,-30.61],[25.47,-30.61],[25.36,-30.55],[25.29,-30.54],[25.04,-30.33],[25.03,-30.28],[24.91,-30.2],[24.78,-29.99],[24.69,-29.97],[24.66,-29.9],[24.43,-29.78],[24.34,-29.65],[24.87,-28.65],[24.85,-28.52],[24.91,-28.35],[24.9,-28.27],[24.98,-28.19],[25.01,-28.07],[25.07,-28.05],[25.13,-27.93],[25.21,-27.89],[25.27,-27.8],[25.58,-27.65],[25.65,-27.67],[25.8,-27.58],[25.99,-27.64],[26.02,-27.71],[26.06,-27.72],[26.08,-27.61],[26.23,-27.49],[26.25,-27.43],[26.32,-27.42],[26.36,-27.39],[26.51,-27.39],[26.45,-27.35],[26.49,-27.25],[26.41,-27.18],[26.58,-27.09],[26.58,-27.05],[26.63,-27.0],[26.69,-27.02],[26.74,-26.96],[26.86,-26.91],[26.92,-26.96],[26.93,-26.86],[27.0,-26.92],[27.18,-26.92],[27.18,-26.96],[27.31,-26.86],[27.39,-26.9],[27.47,-26.88],[27.52,-26.78],[27.62,-26.73],[27.64,-26.76],[27.76,-26.78],[27.96,-26.67],[28.04,-26.82],[28.14,-26.88],[28.17,-26.86],[28.2,-26.9],[28.4,-26.94],[28.43,-26.98],[28.49,-26.97],[28.55,-27.01],[28.53,-27.06],[28.66,-27.01],[28.62,-26.98],[28.65,-26.96],[28.82,-27.04],[28.88,-27.04],[28.99,-27.0],[29.06,-27.03],[29.11,-27.15],[29.21,-27.14],[29.33,-27.21],[29.34,-27.24],[29.44,-27.25],[29.63,-27.51],[29.69,-27.49],[29.71,-27.45],[29.77,-27.45],[29.72,-27.48],[29.77,-27.59],[29.68,-27.66],[29.72,-27.81],[29.63,-28.04],[29.67,-28.1],[29.66,-28.16],[29.59,-28.25],[29.49,-28.26],[29.41,-28.36],[29.23,-28.44],[29.19,-28.54],[28.97,-28.57],[28.86,-28.77]]]],"Eastern Cape":[[[[28.64,-30.13],[28.86,-30.07],[29.02,-29.98],[29.12,-30.09],[29.1,-30.17],[29.13,-30.25],[29.24,-30.3],[29.26,-30.27],[29.3,-30.32],[29.3,-30.37],[29.2,-30.44],[29.15,-30.51],[29.16,-30.55],[29.12,-30.58],[29.14,-30.61],[29.33,-30.66],[29.47,-30.62],[29.61,-30.69],[29.79,-30.71],[29.94,-30.78],[29.97,-30.83],[30.06,-30.85],[30.2,-31.08],[29.86,-31.41],[29.74,-31.46],[29.54,-31.64],[29.41,-31.68],[29.21,-31.94],[29.15,-31.97],[28.87,-32.29],[28.55,-32.56],[28.34,-32.71],[28.16,-32.79],[28.09,-32.89],[27.9,-33.04],[27.73,-33.11],[27.1,-33.53],[26.48,-33.76],[26.29,-33.77],[25.96,-33.71],[25.79,-33.74],[25.68,-33.8],[25.63,-33.86],[25.61,-33.93],[25.7,-34.03],[25.41,-34.03],[25.19,-33.96],[24.95,-33.99],[24.91,-34.01],[24.92,-34.07],[24.84,-34.13],[24.86,-34.18],[24.83,-34.21],[24.48,-34.16],[24.16,-34.05],[23.98,-34.04],[23.92,-34.02],[23.81,-34.01],[23.64,-33.98],[23.69,-33.87],[23.51,-33.78],[23.37,-33.78],[23.44,-33.71],[23.63,-33.62],[23.51,-33.46],[23.26,-33.4],[22.75,-33.4],[22.75,-33.33],[22.92,-33.1],[22.95,-32.94],[23.07,-32.85],[23.07,-32.78],[23.11,-32.83],[23.33,-32.81],[23.37,-32.77],[23.28,-32.67],[23.24,-32.51],[23.24,-32.42],[23.33,-32.35],[23.6,-32.32],[23.76,-32.2],[23.89,-32.23],[24.03,-32.17],[24.09,-32.12],[24.11,-32.02],[24.18,-31.95],[24.13,-31.89],[24.15,-31.76],[24.5,-31.7],[24.56,-31.4],[24.77,-31.39],[25.22,-31.2],[25.38,-31.21],[25.51,-30.93],[25.49,-30.87],[25.52,-30.8],[25.48,-30.76],[25.47,-30.61],[25.61,-30.61],[25.63,-30.65],[25.73,-30.68],[25.86,-30.6],[25.89,-30.54],[25.94,-30.57],[26.06,-30.51],[26.14,-30.53],[26.15,-30.49],[26.28,-30.58],[26.44,-30.56],[26.49,-30.63],[26.63,-30.68],[26.78,-30.64],[26.85,-30.68],[26.93,-30.65],[26.97,-30.59],[27.03,-30.59],[27.01,-30.53],[27.12,-30.54],[27.13,-30.5],[27.3,-30.49],[27.32,-30.46],[27.29,-30.43],[27.36,-30.43],[27.33,-30.39],[27.4,-30.37],[27.35,-30.32],[27.45,-30.31],[27.71,-30.58],[28.08,-30.66],[28.08,-30.59],[28.14,-30.5],[28.13,-30.46],[28.23,-30.37],[28.24,-30.33],[28.2,-30.3],[28.22,-30.27],[28.29,-30.24],[28.38,-30.14],[28.54,-30.11],[28.64,-30.13]]]],"Limpopo":[[[[29.25,-22.18],[29.38,-22.19],[29.46,-22.16],[29.53,-22.17],[29.57,-22.14],[29.76,-22.13],[30.14,-22.29],[30.22,-22.29],[30.33,-22.34],[30.49,-22.31],[30.63,-22.33],[30.84,-22.28],[31.09,-22.34],[31.15,-22.32],[31.26,-22.36],[31.54,-23.16],[31.53,-23.46],[31.64,-23.59],[31.74,-23.84],[31.86,-23.96],[31.78,-23.97],[31.71,-24.05],[31.65,-24.01],[31.59,-24.05],[31.45,-24.02],[31.25,-24.1],[31.2,-24.04],[31.08,-24.08],[31.11,-24.13],[31.05,-24.19],[31.06,-24.32],[31.19,-24.31],[31.24,-24.37],[31.16,-24.38],[31.17,-24.44],[31.22,-24.43],[31.26,-24.51],[31.22,-24.56],[30.98,-24.58],[30.97,-24.53],[30.88,-24.54],[30.74,-24.46],[30.73,-24.58],[30.67,-24.62],[30.72,-24.7],[30.64,-24.74],[30.66,-24.82],[30.62,-24.86],[30.49,-24.95],[30.42,-24.85],[30.35,-24.88],[30.18,-24.86],[30.19,-25.02],[30.15,-25.03],[30.15,-25.11],[30.03,-25.07],[29.98,-25.09],[30.01,-25.15],[30.0,-25.33],[29.79,-25.37],[29.77,-25.39],[29.67,-25.37],[29.53,-25.41],[29.35,-25.4],[29.34,-25.38],[29.14,-25.39],[29.17,-25.3],[29.1,-25.32],[29.04,-25.27],[29.04,-25.14],[29.09,-25.15],[29.13,-25.11],[29.02,-25.06],[28.97,-25.07],[28.9,-24.96],[28.94,-24.94],[28.92,-24.9],[28.68,-24.97],[28.61,-25.0],[28.63,-25.05],[28.36,-25.18],[28.39,-25.22],[28.61,-25.16],[28.66,-25.25],[28.37,-25.32],[28.29,-25.32],[28.23,-25.23],[28.13,-25.2],[28.09,-25.12],[28.2,-25.13],[28.22,-25.08],[28.1,-25.01],[27.97,-24.99],[27.71,-25.01],[27.67,-24.97],[27.62,-24.98],[27.52,-25.1],[27.49,-25.06],[27.37,-25.06],[27.29,-25.01],[27.17,-24.98],[27.06,-24.85],[27.02,-24.72],[26.94,-24.79],[26.75,-24.87],[26.44,-24.81],[26.4,-24.63],[26.53,-24.46],[26.69,-24.33],[26.84,-24.27],[26.97,-23.72],[27.01,-23.64],[27.07,-23.66],[27.06,-23.6],[27.14,-23.57],[27.13,-23.53],[27.21,-23.52],[27.2,-23.49],[27.35,-23.39],[27.36,-23.42],[27.41,-23.39],[27.43,-23.41],[27.55,-23.36],[27.61,-23.22],[27.65,-23.23],[27.7,-23.19],[27.75,-23.22],[27.79,-23.16],[27.77,-23.13],[27.93,-23.06],[27.94,-22.96],[28.04,-22.91],[28.05,-22.84],[28.15,-22.77],[28.2,-22.67],[28.3,-22.6],[28.62,-22.56],[28.82,-22.49],[28.85,-22.45],[28.91,-22.45],[28.97,-22.38],[28.96,-22.31],[29.04,-22.22],[29.25,-22.18]]]],"North West":[[[[26.33,-24.62],[26.4,-24.63],[26.44,-24.81],[26.73,-24.87],[26.94,-24.79],[27.02,-24.72],[27.06,-24.85],[27.17,-24.98],[27.29,-25.01],[27.37,-25.06],[27.49,-25.06],[27.52,-25.1],[27.62,-24.98],[27.67,-24.97],[27.71,-25.01],[27.97,-24.99],[28.1,-25.01],[28.22,-25.08],[28.2,-25.13],[28.11,-25.11],[28.08,-25.15],[28.14,-25.21],[28.23,-25.23],[28.29,-25.32],[28.24,-25.35],[28.17,-25.33],[28.17,-25.37],[28.05,-25.4],[27.97,-25.36],[27.95,-25.41],[28.03,-25.47],[28.0,-25.52],[28.05,-25.54],[28.05,-25.56],[27.98,-25.55],[27.92,-25.83],[27.73,-25.88],[27.65,-25.85],[27.64,-25.8],[27.53,-25.84],[27.46,-25.89],[27.39,-26.12],[27.29,-26.15],[27.32,-26.29],[27.19,-26.38],[27.23,-26.5],[27.16,-26.53],[27.19,-26.57],[27.23,-26.57],[27.24,-26.64],[27.33,-26.62],[27.35,-26.58],[27.41,-26.64],[27.57,-26.65],[27.58,-26.7],[27.61,-26.7],[27.58,-26.76],[27.52,-26.78],[27.48,-26.87],[27.39,-26.9],[27.31,-26.86],[27.18,-26.96],[27.18,-26.92],[27.0,-26.92],[26.93,-26.86],[26.92,-26.96],[26.86,-26.91],[26.74,-26.96],[26.69,-27.02],[26.63,-27.0],[26.58,-27.05],[26.58,-27.09],[26.41,-27.18],[26.49,-27.25],[26.45,-27.35],[26.51,-27.39],[26.36,-27.39],[26.32,-27.42],[26.25,-27.43],[26.23,-27.49],[26.08,-27.61],[26.06,-27.71],[26.02,-27.71],[25.99,-27.64],[25.87,-27.62],[25.82,-27.58],[25.65,-27.67],[25.58,-27.65],[25.5,-27.68],[25.27,-27.8],[25.21,-27.89],[25.13,-27.93],[25.07,-28.05],[24.94,-28.1],[24.82,-27.91],[25.03,-27.71],[24.79,-27.68],[24.8,-27.61],[24.76,-27.61],[24.67,-27.67],[24.7,-27.73],[24.69,-27.83],[24.62,-27.9],[24.61,-28.0],[24.52,-28.1],[24.44,-28.04],[24.45,-27.98],[24.36,-27.9],[24.45,-27.78],[24.41,-27.76],[24.44,-27.7],[24.41,-27.68],[24.11,-27.74],[24.09,-27.7],[24.12,-27.63],[24.04,-27.59],[24.03,-27.51],[24.08,-27.36],[23.89,-27.26],[23.96,-27.1],[24.01,-27.07],[23.99,-26.91],[23.93,-26.87],[23.85,-26.89],[23.49,-26.74],[23.58,-26.62],[23.46,-26.53],[23.27,-26.48],[23.28,-26.34],[23.22,-26.27],[23.3,-26.14],[23.22,-26.12],[23.23,-26.06],[23.35,-26.08],[23.37,-26.02],[23.1,-25.99],[23.06,-26.1],[22.99,-26.09],[22.99,-26.16],[22.92,-26.16],[22.82,-26.45],[22.7,-26.41],[22.71,-26.13],[22.62,-26.11],[22.66,-26.02],[22.72,-25.98],[22.71,-25.89],[22.77,-25.83],[22.74,-25.78],[22.81,-25.68],[22.84,-25.48],[23.01,-25.31],[23.07,-25.33],[23.27,-25.26],[23.46,-25.28],[23.92,-25.63],[23.99,-25.62],[24.01,-25.65],[24.18,-25.63],[24.34,-25.75],[24.46,-25.74],[24.66,-25.82],[24.83,-25.83],[25.05,-25.74],[25.18,-25.76],[25.39,-25.74],[25.59,-25.62],[25.84,-25.02],[25.88,-24.89],[25.87,-24.75],[26.33,-24.62]]]],"Mpumalanga":[[[[31.87,-24.16],[31.99,-24.5],[31.97,-25.48],[32.0,-25.64],[31.91,-25.81],[31.95,-25.96],[31.83,-25.98],[31.43,-25.74],[31.34,-25.74],[31.12,-25.91],[31.04,-26.1],[30.8,-26.4],[30.78,-26.47],[30.8,-26.81],[30.88,-26.77],[30.96,-26.89],[30.98,-27.04],[31.14,-27.2],[31.24,-27.23],[31.15,-27.32],[30.98,-27.35],[30.9,-27.31],[30.83,-27.33],[30.69,-27.27],[30.6,-27.31],[30.44,-27.31],[30.39,-27.27],[30.15,-27.38],[29.86,-27.38],[29.81,-27.46],[29.71,-27.45],[29.69,-27.49],[29.63,-27.51],[29.44,-27.25],[29.34,-27.24],[29.33,-27.21],[29.21,-27.14],[29.11,-27.15],[29.06,-27.03],[28.99,-27.0],[28.88,-27.04],[28.82,-27.04],[28.65,-26.96],[28.62,-26.98],[28.66,-27.01],[28.53,-27.06],[28.55,-27.01],[28.49,-26.97],[28.43,-26.98],[28.4,-26.94],[28.26,-26.89],[28.41,-26.76],[28.4,-26.66],[28.51,-26.61],[28.53,-26.5],[28.63,-26.54],[28.64,-26.51],[28.77,-26.52],[28.8,-26.43],[28.86,-26.4],[28.81,-26.31],[28.72,-26.34],[28.63,-26.29],[28.62,-26.25],[28.53,-26.22],[28.5,-26.08],[28.58,-26.06],[28.63,-25.97],[28.87,-26.0],[28.88,-25.9],[28.96,-25.84],[28.96,-25.7],[29.09,-25.5],[29.03,-25.51],[29.0,-25.57],[28.95,-25.6],[28.92,-25.55],[28.87,-25.56],[28.85,-25.5],[28.8,-25.54],[28.86,-25.63],[28.81,-25.65],[28.83,-25.69],[28.76,-25.71],[28.77,-25.65],[28.73,-25.63],[28.71,-25.68],[28.67,-25.66],[28.63,-25.53],[28.63,-25.33],[28.78,-25.23],[28.75,-25.11],[28.43,-25.22],[28.37,-25.22],[28.37,-25.17],[28.63,-25.05],[28.61,-25.0],[28.68,-24.97],[28.92,-24.9],[28.94,-24.94],[28.9,-24.96],[28.97,-25.07],[29.02,-25.06],[29.13,-25.11],[29.09,-25.15],[29.04,-25.14],[29.04,-25.27],[29.1,-25.32],[29.17,-25.3],[29.14,-25.39],[29.34,-25.38],[29.35,-25.4],[29.53,-25.41],[29.67,-25.37],[29.77,-25.39],[29.79,-25.37],[29.86,-25.37],[29.89,-25.34],[30.0,-25.33],[30.01,-25.15],[29.98,-25.09],[30.03,-25.07],[30.15,-25.11],[30.15,-25.03],[30.19,-25.02],[30.18,-24.86],[30.35,-24.88],[30.42,-24.85],[30.49,-24.95],[30.62,-24.86],[30.66,-24.82],[30.64,-24.74],[30.72,-24.7],[30.67,-24.62],[30.73,-24.58],[30.74,-24.46],[30.88,-24.54],[30.97,-24.53],[30.98,-24.58],[31.22,-24.56],[31.26,-24.51],[31.22,-24.43],[31.17,-24.44],[31.16,-24.38],[31.24,-24.37],[31.19,-24.31],[31.06,-24.32],[31.05,-24.19],[31.11,-24.13],[31.08,-24.08],[31.2,-24.04],[31.25,-24.1],[31.45,-24.02],[31.59,-24.05],[31.65,-24.01],[31.71,-24.05],[31.78,-23.97],[31.86,-23.96],[31.87,-24.16]]]],"Western Cape":[[[[23.64,-33.98],[23.39,-34.03],[23.36,-34.07],[23.41,-34.11],[23.06,-34.08],[23.05,-34.04],[23.0,-34.03],[23.03,-34.09],[22.94,-34.08],[22.8,-34.04],[22.8,-33.99],[22.73,-33.98],[22.79,-34.03],[22.58,-33.99],[22.46,-34.06],[22.19,-34.08],[22.11,-34.14],[22.13,-34.19],[21.95,-34.22],[21.89,-34.34],[21.75,-34.39],[21.54,-34.35],[21.31,-34.42],[21.06,-34.36],[20.91,-34.36],[20.81,-34.4],[20.87,-34.44],[20.84,-34.47],[20.66,-34.44],[20.48,-34.47],[20.22,-34.68],[20.07,-34.74],[20.04,-34.77],[20.06,-34.8],[20.0,-34.82],[19.86,-34.75],[19.64,-34.77],[19.4,-34.6],[19.3,-34.62],[19.36,-34.5],[19.29,-34.41],[19.12,-34.4],[19.09,-34.36],[19.14,-34.29],[19.09,-34.34],[18.82,-34.38],[18.82,-34.18],[18.86,-34.15],[18.8,-34.09],[18.56,-34.07],[18.48,-34.11],[18.44,-34.16],[18.49,-34.34],[18.45,-34.34],[18.31,-34.14],[18.36,-34.05],[18.33,-34.06],[18.31,-34.03],[18.37,-33.93],[18.48,-33.9],[18.49,-33.86],[18.43,-33.7],[18.32,-33.57],[18.28,-33.45],[18.15,-33.36],[18.08,-33.2],[17.95,-33.1],[18.01,-33.09],[18.1,-33.2],[18.13,-33.2],[18.04,-33.1],[18.02,-33.01],[17.94,-33.01],[17.95,-33.03],[17.9,-33.04],[17.86,-32.91],[17.88,-32.87],[17.84,-32.82],[17.9,-32.79],[17.91,-32.73],[17.97,-32.7],[18.04,-32.77],[18.12,-32.77],[18.3,-32.61],[18.34,-32.45],[18.32,-32.34],[18.35,-32.26],[18.28,-31.89],[18.2,-31.7],[17.77,-31.16],[17.82,-31.17],[17.83,-31.06],[17.97,-30.82],[18.02,-30.78],[18.16,-30.82],[18.25,-30.78],[18.41,-30.5],[18.46,-30.53],[18.51,-30.48],[18.56,-30.47],[18.74,-30.58],[18.84,-30.7],[18.94,-30.72],[18.9,-31.01],[18.94,-31.2],[19.0,-31.29],[19.01,-31.47],[19.07,-31.58],[19.07,-31.75],[19.03,-31.89],[19.19,-31.92],[19.26,-31.88],[19.25,-31.95],[19.33,-32.03],[19.48,-32.08],[19.49,-32.23],[19.43,-32.31],[19.49,-32.47],[19.47,-32.58],[19.53,-32.64],[19.59,-32.61],[19.57,-32.56],[19.61,-32.46],[19.8,-32.37],[19.92,-32.36],[20.17,-32.19],[20.21,-32.28],[20.08,-32.41],[20.1,-32.52],[20.19,-32.74],[20.42,-32.94],[20.55,-32.9],[20.71,-32.92],[20.78,-32.86],[20.82,-32.72],[20.87,-32.68],[21.12,-32.61],[21.19,-32.46],[21.31,-32.38],[21.52,-32.29],[21.55,-32.24],[21.72,-32.21],[21.85,-32.24],[21.97,-32.2],[22.1,-32.06],[22.08,-32.0],[22.09,-31.89],[22.14,-31.85],[22.29,-31.57],[22.52,-31.68],[22.61,-31.78],[23.03,-31.89],[23.07,-31.98],[23.29,-31.75],[23.4,-31.68],[23.7,-31.67],[23.81,-31.73],[23.86,-31.8],[23.96,-31.73],[24.02,-31.72],[24.07,-31.77],[24.15,-31.79],[24.13,-31.89],[24.18,-31.95],[24.11,-32.02],[24.09,-32.12],[23.89,-32.23],[23.76,-32.2],[23.6,-32.32],[23.33,-32.35],[23.24,-32.42],[23.28,-32.67],[23.37,-32.77],[23.33,-32.81],[23.11,-32.83],[23.07,-32.78],[23.07,-32.85],[22.95,-32.94],[22.92,-33.1],[22.74,-33.36],[22.75,-33.4],[23.26,-33.4],[23.44,-33.43],[23.56,-33.5],[23.63,-33.62],[23.62,-33.64],[23.44,-33.71],[23.37,-33.78],[23.51,-33.78],[23.69,-33.87],[23.64,-33.98]]],[[[37.66,-46.83],[37.82,-46.84],[37.9,-46.89],[37.81,-46.97],[37.6,-46.95],[37.58,-46.9],[37.66,-46.83]]],[[[37.86,-46.64],[37.9,-46.6],[37.98,-46.62],[37.94,-46.65],[37.86,-46.64]]]],"Gauteng":[[[[27.58,-26.74],[27.61,-26.7],[27.58,-26.7],[27.57,-26.65],[27.41,-26.64],[27.35,-26.58],[27.33,-26.62],[27.24,-26.64],[27.23,-26.57],[27.19,-26.57],[27.16,-26.53],[27.23,-26.5],[27.19,-26.38],[27.32,-26.29],[27.29,-26.15],[27.39,-26.12],[27.46,-25.89],[27.64,-25.8],[27.65,-25.85],[27.73,-25.88],[27.92,-25.83],[27.98,-25.55],[28.05,-25.56],[28.05,-25.54],[28.0,-25.52],[28.03,-25.47],[27.95,-25.41],[27.97,-25.36],[28.05,-25.4],[28.17,-25.37],[28.17,-25.33],[28.24,-25.35],[28.29,-25.32],[28.43,-25.32],[28.53,-25.27],[28.64,-25.26],[28.66,-25.23],[28.61,-25.16],[28.75,-25.11],[28.78,-25.23],[28.63,-25.33],[28.63,-25.53],[28.67,-25.66],[28.71,-25.68],[28.73,-25.63],[28.77,-25.65],[28.76,-25.71],[28.83,-25.69],[28.81,-25.65],[28.86,-25.63],[28.8,-25.54],[28.85,-25.5],[28.87,-25.56],[28.92,-25.55],[28.95,-25.6],[29.0,-25.57],[29.03,-25.51],[29.09,-25.5],[28.96,-25.7],[28.96,-25.84],[28.88,-25.9],[28.87,-26.0],[28.63,-25.97],[28.58,-26.06],[28.5,-26.08],[28.5,-26.13],[28.53,-26.14],[28.53,-26.22],[28.62,-26.25],[28.63,-26.29],[28.72,-26.34],[28.81,-26.31],[28.86,-26.4],[28.8,-26.43],[28.77,-26.52],[28.64,-26.51],[28.63,-26.54],[28.53,-26.5],[28.51,-26.61],[28.4,-26.66],[28.41,-26.76],[28.26,-26.89],[28.2,-26.9],[28.17,-26.86],[28.14,-26.88],[28.04,-26.82],[27.96,-26.67],[27.76,-26.78],[27.58,-26.74]]]]},"towns":{"Alice":[-32.79,26.83],"Aliwal North":[-30.69,26.71],"Burgersdorp":[-31.0,26.33],"Butterworth":[-32.33,28.15],"Cradock":[-32.16,25.62],"East London":[-33.02,27.91],"Fort Beaufort":[-32.77,26.63],"Grahamstown":[-33.3,26.53],"Kruisfontein":[-34.0,24.73],"Mdantsane":[-32.93,27.78],"Port Alfred":[-33.59,26.88],"Queenstown":[-31.9,26.88],"Ugie":[-31.2,28.23],"Gqeberha *":[-33.96,25.61],"Jeffreys Bay *":[-34.05,24.92],"Humansdorp *":[-34.03,24.77],"Kariega *":[-33.76,25.4],"Stutterheim *":[-32.57,27.42],"Gonubie *":[-32.94,28.01],"Mthatha *":[-31.59,28.78],"Whittlesea *":[-32.18,26.82],"Allanridge":[-27.75,26.64],"Bethlehem":[-28.23,28.31],"Bloemfontein":[-29.12,26.21],"Bothaville":[-27.39,26.62],"Bultfontein":[-28.29,26.15],"Ficksburg":[-28.87,27.88],"Fouriesburg":[-28.62,28.21],"Frankfort":[-27.28,28.5],"Harrismith":[-28.27,29.13],"Heilbron":[-27.28,27.97],"Hennenman":[-27.98,27.02],"Hoopstad":[-27.83,25.91],"Koppies":[-27.24,27.57],"Marquard":[-28.66,27.43],"Odendaalsrus":[-27.87,26.69],"Parys":[-26.9,27.46],"Reitz":[-27.8,28.43],"Senekal":[-28.32,27.62],"Theunissen":[-28.41,26.7],"Villiers":[-27.03,28.6],"Virginia":[-28.1,26.87],"Vredefort":[-27.01,27.36],"Welkom":[-27.98,26.74],"Kroonstad *":[-27.65,27.23],"Sasolburg *":[-26.81,27.82],"Phuthaditjhaba *":[-28.52,28.82],"Winburg *":[-28.52,27.01],"Zastron *":[-30.3,27.08],"Ladybrand *":[-29.19,27.46],"Thaba Nchu *":[-29.21,26.84],"Botshabelo *":[-29.27,26.73],"Bronkhorstspruit":[-25.81,28.74],"Carletonville":[-26.36,27.4],"Germiston":[-26.23,28.18],"Johannesburg":[-26.2,28.04],"Krugersdorp":[-26.09,27.78],"Nigel":[-26.43,28.48],"Pretoria":[-25.74,28.19],"Randfontein":[-26.18,27.7],"Roodepoort":[-26.16,27.87],"Springs":[-26.25,28.4],"Vanderbijlpark":[-26.71,27.84],"Vereeniging":[-26.67,27.93],"Midrand *":[-25.98,28.12],"Randburg *":[-26.09,28.0],"Soweto *":[-26.27,27.86],"Benoni *":[-26.19,28.32],"Boksburg *":[-26.21,28.26],"Brakpan *":[-26.24,28.37],"Alberton *":[-26.27,28.12],"Edenvale *":[-26.14,28.15],"Centurion *":[-25.86,28.19],"Soshanguve *":[-25.47,28.1],"Cullinan *":[-25.67,28.52],"Durban":[-29.86,31.03],"Empangeni":[-28.76,31.89],"Estcourt":[-29.01,29.87],"Eshowe":[-28.89,31.47],"Glencoe":[-28.18,30.15],"Greytown":[-29.06,30.59],"Kokstad":[-30.55,29.42],"Kwadukuza":[-29.33,31.29],"Ladysmith":[-28.56,29.78],"Margate":[-30.86,30.37],"Mooi River":[-29.21,29.99],"Mtubatuba":[-28.42,32.18],"Newcastle":[-27.76,29.93],"Pietermaritzburg":[-29.62,30.39],"Pinetown":[-29.82,30.89],"Port Shepstone":[-30.74,30.45],"Richards Bay":[-28.78,32.04],"Tongaat":[-29.57,31.12],"Vryheid":[-27.77,30.79],"Scottburgh *":[-30.29,30.75],"Howick *":[-29.48,30.23],"Dundee *":[-28.17,30.23],"Duiwelskloof":[-23.69,30.14],"Louis Trichardt":[-23.04,29.9],"Modimolle":[-24.7,28.4],"Musina":[-22.35,30.04],"Northam":[-24.96,27.27],"Polokwane":[-23.9,29.47],"Thohoyandou":[-22.95,30.48],"Tzaneen":[-23.83,30.16],"Vaalwater":[-24.3,28.11],"Mokopane *":[-24.19,29.01],"Phalaborwa *":[-23.94,31.14],"Giyani *":[-23.3,30.72],"Thabazimbi *":[-24.59,27.41],"Acornhoek":[-24.59,31.09],"Barberton":[-25.79,31.05],"Belfast":[-25.69,30.04],"Bethal":[-26.46,29.47],"Breyten":[-26.3,29.99],"Emalahleni":[-25.87,29.23],"Ermelo":[-26.53,29.98],"Komatipoort":[-25.43,31.95],"Mbombela":[-25.48,30.97],"Piet Retief":[-27.01,30.81],"Standerton":[-26.93,29.24],"Volksrust":[-27.37,29.88],"White River *":[-25.33,31.01],"Secunda *":[-26.55,29.17],"Sabie *":[-25.1,30.78],"Lydenburg *":[-25.1,30.44],"Hendrina *":[-26.16,29.72],"Bloemhof":[-27.65,25.61],"Brits":[-25.63,27.78],"Christiana":[-27.91,25.16],"Coligny":[-26.33,26.32],"Klerksdorp":[-26.85,26.67],"Koster":[-25.86,26.9],"Lichtenburg":[-26.15,26.16],"Makwassie":[-27.32,25.99],"Mmabatho":[-25.85,25.63],"Orkney":[-26.98,26.67],"Ottosdal":[-26.81,26.01],"Potchefstroom":[-26.72,27.1],"Rustenburg":[-25.67,27.24],"Vryburg":[-26.96,24.73],"Wolmaransstad":[-27.2,25.98],"Zeerust":[-25.54,26.08],"Hartbeespoort *":[-25.73,27.87],"Mafikeng *":[-25.87,25.64],"Stilfontein *":[-26.84,26.77],"De Aar":[-30.65,24.01],"Kimberley":[-28.73,24.76],"Postmasburg":[-28.33,23.07],"Upington":[-28.45,21.26],"Warrenton":[-28.11,24.85],"Ashton":[-33.83,20.06],"Beaufort West":[-32.36,22.58],"Bredasdorp":[-34.53,20.04],"Caledon":[-34.23,19.43],"Cape Town":[-33.93,18.42],"Ceres":[-33.37,19.31],"George":[-33.96,22.46],"Hermanus":[-34.42,19.23],"Knysna":[-34.04,23.05],"Malmesbury":[-33.46,18.73],"Moorreesburg":[-33.15,18.66],"Paarl":[-33.73,18.98],"Riversdale":[-34.09,21.26],"Robertson":[-33.8,19.89],"Stellenbosch":[-33.93,18.87],"Vredendal":[-31.67,18.5],"Vredenburg":[-32.91,17.99],"Worcester":[-33.65,19.45],"Oudtshoorn *":[-33.6,22.2],"Dysselsdorp *":[-33.58,22.44],"Plettenberg Bay *":[-34.05,23.37],"Swellendam *":[-34.02,20.44],"Montagu *":[-33.79,20.12],"Franschhoek *":[-33.91,19.12],"Wellington *":[-33.64,19.01],"Somerset West *":[-34.08,18.82],"Durbanville *":[-33.83,18.65],"Atlantis *":[-33.57,18.48],"Muizenberg *":[-34.1,18.48],"Kuils River *":[-33.94,18.71],"Gansbaai *":[-34.58,19.35],"Grabouw *":[-34.15,19.02],"Port Elizabeth":[-33.96,25.6],"Umtata":[-31.59,28.78],"Uitenhage":[-33.76,25.4],"Graaff-Reinet":[-32.25,24.53],"King William's Town":[-32.88,27.4],"Bisho":[-32.85,27.44],"Port St Johns":[-31.62,29.54],"Aberdeen":[-32.48,24.05],"Bedford":[-32.69,26.08],"Cathcart":[-32.3,27.14],"Dordrecht":[-31.37,27.05],"Elliot":[-31.33,27.85],"Lady Grey":[-30.72,27.22],"Maclear":[-31.07,28.35],"Matatiele":[-30.34,28.81],"Molteno":[-31.4,26.36],"Jamestown":[-31.12,26.74],"Willowmore":[-33.29,23.49],"Tarkastad":[-32.0,26.26],"Barkly East":[-30.97,27.59],"Kirkwood":[-33.4,25.44],"Addo":[-33.55,25.69],"Cookhouse":[-32.74,25.8]}}''')
+ZA_ZONE_COLOURS = {"1": "#b9873a", "2": "#6f9a62", "3": "#b04a2c", "4": "#4f86b0", "5": "#b8ac4c",
+                   "5H": "#2a8579", "6": "#3a50ad", "7": "#7452b0"}
+
+
+class ZaZoneMap(QWidget):
+    """Clickable map of South Africa. Shading comes from the SANS 10400-XA Annex C town table (each spot takes
+    the zone of the nearest listed town); borders are the nine provinces. Click anywhere to pick the province
+    and the nearest listed town, which sets the energy zone."""
+    picked = Signal(str, str)      # province, town ("" when the province has no listed town nearby)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        d = ZA_MAP_DATA
+        self.lon0, self.lon1, self.lat0, self.lat1 = d["bounds"]
+        self.step = d["step"]
+        self.cosk = 0.875
+        self.rows = []
+        for r in d["rows"]:
+            runs = []
+            for tok in r.split(","):
+                ch, n = tok[0], tok[1:]
+                runs.append(("5H" if ch == "h" else ch, int(n)))
+            self.rows.append(runs)
+        self.provs = d["provs"]
+        self.towns = d["towns"]
+        self.town_pv = {t: next((k for k, v in XA_PROVINCES.items() if t in v), "") for t in self.towns}
+        self.sel_pv = ""
+        self.sel_town = ""
+        self.hover_pv = ""
+        self.click_ll = None        # (lon, lat) of the last click
+        self.click_km = 0.0
+        self.near_list = []
+        self._paths = {}
+        self._cache = None
+        self.zoom = 1.0
+        self.pan = QPointF(0, 0)
+        self._press = None
+        self._drag = QPointF(0, 0)
+        self._dragging = False
+        self.setMouseTracking(True)
+        self.setMinimumSize(440, 380)
+        self.setCursor(Qt.PointingHandCursor)
+        self._btns = []
+        for txt, tip, fn in (("+", "Zoom in", lambda: self.zoom_by(1.6)), ("\u2212", "Zoom out", lambda: self.zoom_by(1 / 1.6)),
+                             ("Reset", "Show the whole country", self.reset_view)):
+            b = QPushButton(txt, self)
+            b.setToolTip(tip)
+            b.setCursor(Qt.ArrowCursor)
+            b.setFixedSize(34 if len(txt) == 1 else 62, 28)
+            b.setStyleSheet("QPushButton{background:rgba(30,31,36,235);border:1px solid rgba(255,255,255,0.18);"
+                            "border-radius:7px;color:white;font-weight:bold;padding:0px;min-width:0px;"
+                            "min-height:0px;font-size:13px;}"
+                            "QPushButton:hover{background:#c8102e;border-color:#ff4056;}")
+            b.clicked.connect(lambda _=False, f=fn: f())
+            self._btns.append(b)
+
+    def sizeHint(self):
+        return QSize(640, 540)
+
+    def _base(self):
+        W = (self.lon1 - self.lon0) * self.cosk
+        H = self.lat1 - self.lat0
+        sc = min((self.width() - 8) / W, (self.height() - 8) / H)
+        return W, H, sc, (self.width() - W * sc) / 2, (self.height() - H * sc) / 2
+
+    def _tf(self):
+        W, H, sc0, ox0, oy0 = self._base()
+        return sc0 * self.zoom, ox0 + self.pan.x(), oy0 + self.pan.y()
+
+    def _clamp(self):
+        W, H, sc0, ox0, oy0 = self._base()
+        sc = sc0 * self.zoom
+        px, py = self.pan.x(), self.pan.y()
+        for axis in (0, 1):
+            size = (W if axis == 0 else H) * sc
+            view = self.width() if axis == 0 else self.height()
+            o0 = ox0 if axis == 0 else oy0
+            v = px if axis == 0 else py
+            if size <= view - 16:
+                v = (view - size) / 2 - o0
+            else:
+                lo = view - 12 - size - o0
+                hi = 12 - o0
+                v = max(lo, min(hi, v))
+            if axis == 0:
+                px = v
+            else:
+                py = v
+        self.pan = QPointF(px, py)
+
+    def _refresh_view(self):
+        self._cache = None
+        self._paths = {}
+        self.update()
+
+    def zoom_by(self, f, anchor=None):
+        nz = max(1.0, min(14.0, self.zoom * f))
+        if abs(nz - self.zoom) < 1e-6:
+            return
+        a = anchor if anchor is not None else QPointF(self.width() / 2, self.height() / 2)
+        lon, lat = self._lonlat(a)
+        self.zoom = nz
+        n = self._xy(lon, lat)
+        self.pan = QPointF(self.pan.x() + a.x() - n.x(), self.pan.y() + a.y() - n.y())
+        self._clamp()
+        self._refresh_view()
+
+    def reset_view(self):
+        self.zoom = 1.0
+        self.pan = QPointF(0, 0)
+        self._refresh_view()
+
+    def wheelEvent(self, e):
+        d = e.angleDelta().y()
+        if d:
+            self.zoom_by(1.35 if d > 0 else 1 / 1.35, e.position())
+        e.accept()
+
+    def zoom_to(self, lon, lat, z=6.0):
+        """Centre the map on a place and zoom in (used when a town is typed in)."""
+        self.zoom = max(self.zoom, z)
+        c = self._xy(lon, lat)
+        self.pan = QPointF(self.pan.x() + self.width() / 2 - c.x(), self.pan.y() + self.height() / 2 - c.y())
+        self._clamp()
+        self._refresh_view()
+
+    def _xy(self, lon, lat):
+        sc, ox, oy = self._tf()
+        return QPointF(ox + (lon - self.lon0) * self.cosk * sc, oy + (self.lat1 - lat) * sc)
+
+    def _lonlat(self, pt):
+        sc, ox, oy = self._tf()
+        return (self.lon0 + (pt.x() - ox) / (self.cosk * sc), self.lat1 - (pt.y() - oy) / sc)
+
+    def resizeEvent(self, e):
+        x = self.width() - 10
+        for b in reversed(self._btns):
+            x -= b.width()
+            b.move(x, 10)
+            x -= 6
+        self._clamp()
+        self._cache = None
+        self._paths = {}
+        super().resizeEvent(e)
+
+    def _build_paths(self):
+        from PySide6.QtGui import QPainterPath
+        self._paths = {}
+        for name, polys in self.provs.items():
+            path = QPainterPath()
+            path.setFillRule(Qt.OddEvenFill)
+            for rings in polys:
+                for ring in rings:
+                    pts = [self._xy(x, y) for x, y in ring]
+                    path.addPolygon(QPolygonF(pts))
+                    path.closeSubpath()
+            self._paths[name] = path
+
+    def _province_at(self, pt):
+        if not self._paths:
+            self._build_paths()
+        for n, p in self._paths.items():
+            if p.contains(pt):
+                return n
+        return ""
+
+    def _nearest_town(self, pt, pv):
+        lon, lat = self._lonlat(pt)
+        best, bd = "", 1e9
+        for t, (la, lo) in self.towns.items():
+            if pv and self.town_pv.get(t) != pv:
+                continue
+            dd = (la - lat) ** 2 + ((lo - lon) * self.cosk) ** 2
+            if dd < bd:
+                best, bd = t, dd
+        return best
+
+    def set_state(self, province, town):
+        pv = "Western Cape" if province == "Southern Cape" else province
+        if (pv, town) != (self.sel_pv, self.sel_town):
+            self.sel_pv, self.sel_town = (pv if pv in ZA_MAP_DATA["provs"] else ""), town
+            self.update()
+
+    def _render_base(self):
+        from PySide6.QtGui import QPixmap, QPainterPath
+        dpr = self.devicePixelRatioF()
+        pm = QPixmap(int(self.width() * dpr), int(self.height() * dpr))
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        if not self._paths:
+            self._build_paths()
+        sc = self._tf()[0]
+        cell = self.step * sc
+        for name, path in self._paths.items():
+            p.save()
+            p.setClipPath(path)
+            p.setPen(Qt.NoPen)
+            for r, runs in enumerate(self.rows):
+                lat = self.lat1 - r * self.step
+                c = 0
+                for z, n in runs:
+                    if z != ".":
+                        tl = self._xy(self.lon0 + c * self.step, lat)
+                        p.setBrush(QColor(ZA_ZONE_COLOURS.get(z, "#888")))
+                        p.drawRect(QRectF(tl.x() - 0.4, tl.y() - 0.4, n * cell * self.cosk + 0.8, cell + 0.8))
+                    c += n
+            p.restore()
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(QColor(12, 12, 16, 230), 1.2))
+        for path in self._paths.values():
+            p.drawPath(path)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, 105))
+        for t, (la, lo) in self.towns.items():
+            c = self._xy(lo, la)
+            p.drawEllipse(c, 1.3 + min(self.zoom, 6.0) * 0.45, 1.3 + min(self.zoom, 6.0) * 0.45)
+        p.end()
+        self._cache = pm
+
+    def nearby(self, pt, pv=None, n=10):
+        """The n listed towns nearest to a clicked point: [(town, km)], and the km of the farthest."""
+        lon, lat = self._lonlat(pt)
+        L = []
+        for t, (la, lo) in self.towns.items():
+            km = 111.0 * (((la - lat) ** 2 + ((lo - lon) * self.cosk) ** 2) ** 0.5)
+            L.append((km, t))
+        L.sort()
+        close = [x for x in L if x[0] <= 120.0][:n]
+        L = close if len(close) >= 5 else L[:5]
+        return [(t, km) for km, t in L]
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        card = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        p.setPen(QPen(QColor(255, 255, 255, 22), 1))
+        p.setBrush(QColor(20, 21, 25))
+        p.drawRoundedRect(card, 12, 12)
+        if self._cache is None:
+            self._render_base()
+        p.drawPixmap(int(self._drag.x()), int(self._drag.y()), self._cache)
+        if self.click_ll and self.sel_pv:
+            c = self._xy(*self.click_ll)
+            r = max(14.0, self.click_km / 111.0 * self._tf()[0])
+            p.setBrush(QColor(255, 64, 86, 28))
+            p.setPen(QPen(QColor(255, 64, 86, 170), 1.2, Qt.DashLine))
+            p.drawEllipse(c, r, r)
+        for pv, col, w in ((self.hover_pv, QColor(255, 255, 255, 38), 0), (self.sel_pv, QColor(255, 255, 255), 2.6)):
+            if pv and pv in self._paths:
+                if w:
+                    p.setBrush(Qt.NoBrush)
+                    p.setPen(QPen(QColor(0, 0, 0, 200), w + 2.0))
+                    p.drawPath(self._paths[pv])
+                    p.setPen(QPen(QColor("#ff4056"), w))
+                    p.drawPath(self._paths[pv])
+                else:
+                    p.setPen(Qt.NoPen)
+                    p.setBrush(col)
+                    p.drawPath(self._paths[pv])
+        # province names
+        f = p.font()
+        f.setPointSizeF(max(7.0, min(9.5, self.width() / 62.0)))
+        f.setBold(True)
+        p.setFont(f)
+        spots = {"Western Cape": (20.4, -33.3), "Northern Cape": (21.0, -29.6), "Eastern Cape": (26.6, -32.4),
+                 "Free State": (26.3, -28.6), "KwaZulu-Natal": (30.7, -28.7), "Gauteng": (28.1, -26.45),
+                 "Mpumalanga": (30.5, -25.5), "Limpopo": (29.3, -23.5), "North West": (25.6, -26.4)}
+        for name in self._paths:
+            lon, lat = spots.get(name, (0, 0))
+            c = self._xy(lon, lat)
+            rect = QRectF(c.x() - 60, c.y() - 9, 120, 18)
+            p.setPen(QColor(0, 0, 0, 200))
+            for dx, dy in ((1, 1), (-1, 1), (1, -1), (-1, -1)):
+                p.drawText(rect.translated(dx * 0.8, dy * 0.8), Qt.AlignCenter, name)
+            p.setPen(QColor(245, 245, 248))
+            p.drawText(rect, Qt.AlignCenter, name)
+        if self.zoom >= 2.6:
+            f2 = p.font()
+            f2.setPointSizeF(8.0)
+            f2.setBold(False)
+            p.setFont(f2)
+            for t, (la, lo) in self.towns.items():
+                c = self._xy(lo, la)
+                if -40 < c.x() < self.width() + 40 and -10 < c.y() < self.height() + 10:
+                    r = QRectF(c.x() + 5, c.y() - 8, 130, 16)
+                    p.setPen(QColor(0, 0, 0, 210))
+                    for dx, dy in ((1, 1), (-1, 1), (1, -1), (-1, -1)):
+                        p.drawText(r.translated(dx * 0.7, dy * 0.7), Qt.AlignLeft | Qt.AlignVCenter, t.rstrip(" *"))
+                    p.setPen(QColor(236, 236, 240))
+                    p.drawText(r, Qt.AlignLeft | Qt.AlignVCenter, t.rstrip(" *"))
+        p.setPen(QColor(255, 255, 255, 110))
+        f3 = p.font()
+        f3.setPointSizeF(8.0)
+        p.setFont(f3)
+        p.drawText(QRectF(12, self.height() - 24, self.width() - 24, 18), Qt.AlignLeft | Qt.AlignVCenter,
+                   "Scroll to zoom \u00b7 drag to move \u00b7 click a dot for that exact town")
+        if self.sel_town in self.towns:
+            la, lo = self.towns[self.sel_town]
+            c = self._xy(lo, la)
+            p.setPen(QPen(QColor("white"), 2))
+            p.setBrush(QColor("#ff4056"))
+            p.drawEllipse(c, 5.5, 5.5)
+        p.end()
+
+    def _town_at(self, pt, px=9.0):
+        best, bd = "", px * px
+        for t, (la, lo) in self.towns.items():
+            c = self._xy(lo, la)
+            dd = (c.x() - pt.x()) ** 2 + (c.y() - pt.y()) ** 2
+            if dd < bd:
+                best, bd = t, dd
+        return best
+
+    def mouseMoveEvent(self, e):
+        pt = e.position()
+        if self._press is not None and (e.buttons() & Qt.LeftButton):
+            d = pt - self._press
+            if self._dragging or abs(d.x()) + abs(d.y()) > 5:
+                self._dragging = True
+                self._drag = d
+                self.setCursor(Qt.ClosedHandCursor)
+                self.update()
+            return
+        pv = self._province_at(pt)
+        if pv != self.hover_pv:
+            self.hover_pv = pv
+            self.update()
+        if pv:
+            t = self._town_at(pt) or self._nearest_town(pt, pv)
+            z = XA_TOWNS.get(t, "")
+            from PySide6.QtWidgets import QToolTip
+            QToolTip.showText(e.globalPosition().toPoint(),
+                              f"{pv}" + (f"\n{'Town' if self._town_at(pt) else 'Nearest listed town'}: "
+                                         f"{t.rstrip(' *')}  (zone {z})" if t else ""), self)
+        self.setCursor(Qt.PointingHandCursor if pv else Qt.ArrowCursor)
+
+    def leaveEvent(self, e):
+        self.hover_pv = ""
+        self.update()
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self._press = e.position()
+            self._dragging = False
+            self._drag = QPointF(0, 0)
+
+    def mouseDoubleClickEvent(self, e):
+        self.zoom_by(2.0, e.position())
+
+    def mouseReleaseEvent(self, e):
+        if e.button() != Qt.LeftButton or self._press is None:
+            return
+        pt = e.position()
+        if self._dragging:
+            self.pan = QPointF(self.pan.x() + self._drag.x(), self.pan.y() + self._drag.y())
+            self._drag = QPointF(0, 0)
+            self._dragging = False
+            self._press = None
+            self._clamp()
+            self.setCursor(Qt.PointingHandCursor)
+            self._refresh_view()
+            return
+        self._press = None
+        pv = self._province_at(pt)
+        town = self._town_at(pt)
+        if town:
+            pv = self.town_pv.get(town) or pv
+            la, lo = self.towns[town]
+            pt = self._xy(lo, la)
+        if pv:
+            self.click_ll = self._lonlat(pt)
+            near = self.nearby(pt)
+            if town and all(t != town for t, _k in near):
+                near = [(town, 0.0)] + near[:-1]
+            self.click_km = max(near[-1][1] if near else 0.0, 40.0)
+            self.near_list = near
+            self.picked.emit(pv, town or self._nearest_town(pt, pv))
+
+
+
+# ---------------------------------------------------------------- simulation export: gbXML and EnergyPlus IDF (v81)
+SIM_HEAT_SP, SIM_COOL_SP = 19.0, 25.0          # comfort band used for the ideal-loads thermostat (same band as the weather statistics)
+
+
+def write_epw(w, path):
+    """Write the hourly weather held in memory as an EPW file (used when the project has no weather file on disk)."""
+    import math
+    hdr = ["LOCATION,%s,,ZAF,%s,000000,%.4f,%.4f,%.1f,%.1f" % ((w.get("name") or "Site").replace(",", " "), "MCP SANS Compliance Suite", w["lat"], w["lon"], w.get("tz", 2.0), w.get("elev", 0.0)),
+           "DESIGN CONDITIONS,0", "TYPICAL/EXTREME PERIODS,0", "GROUND TEMPERATURES,0", "HOLIDAYS/DAYLIGHT SAVING,No,0,0,0",
+           "COMMENTS 1,Written from the weather held in the program", "COMMENTS 2,", "DATA PERIODS,1,1,Data,Sunday, 1/ 1,12/31"]
+    rh_ = w.get("RH")
+    ws_ = w.get("WS")
+    out = []
+    h = 0
+    for m, nd in enumerate(_MDAYS):
+        for d in range(nd):
+            for hr in range(24):
+                T = float(w["T"][h]); rh = float(rh_[h]) if rh_ is not None else 50.0
+                rh = min(100.0, max(1.0, rh))
+                a = math.log(rh / 100.0) + 17.62 * T / (243.12 + T)
+                dp = 243.12 * a / (17.62 - a)
+                f = ["2001", str(m + 1), str(d + 1), str(hr + 1), "60", "?9?9?9?9E0?9?9?9?9?9?9?9?9?9?9?9?9?9?9?9*9*9?9?9?9", "%.1f" % T, "%.1f" % dp, "%.0f" % rh,
+                     "101325", "0", "0", "9999", "%.0f" % w["GHI"][h], "%.0f" % w["DNI"][h], "%.0f" % w["DHI"][h], "999999", "999999", "999999", "9999",
+                     "0", "%.1f" % (float(ws_[h]) if ws_ is not None else 2.0), "5", "5", "9999", "99999", "9", "999999999", "999", "0.999", "999", "99", "999", "0", "99"]
+                out.append(",".join(f))
+                h += 1
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("\n".join(hdr + out) + "\n")
+
+
+def sim_read_geometry(path, north_deg=0.0, external_re=None):
+    """Rooms (IfcSpace), windows and doors from an IFC file as geometry in metres, turned so that +Y is true north.
+    Returns {'spaces': [...], 'openings': [...], 'storeys': [...], 'skipped': [...]}."""
+    import numpy as np, math, ifcopenshell, ifcopenshell.geom as G
+    from shapely.geometry import Polygon
+    from shapely.ops import unary_union
+    from shapely.geometry.polygon import orient
+    ifc = ifcopenshell.open(path)
+    st = G.settings()
+    try:
+        st.set("use-world-coords", True)
+    except Exception:
+        st.set(st.USE_WORLD_COORDS, True)
+    th = math.radians(north_deg)
+    ct, sn = math.cos(th), math.sin(th)
+
+    def rot(x, y):                                   # model frame -> frame with true north up (+Y)
+        return (x * ct - y * sn, x * sn + y * ct)
+
+    def storey_name(el):
+        for rel in getattr(el, "Decomposes", None) or []:
+            o = rel.RelatingObject
+            if o.is_a("IfcBuildingStorey"):
+                return o.Name or "Level"
+        for rel in getattr(el, "ContainedInStructure", None) or []:
+            o = rel.RelatingStructure
+            if o.is_a("IfcBuildingStorey"):
+                return o.Name or "Level"
+        return "Level"
+
+    def mesh(el):
+        g = G.create_shape(st, el).geometry
+        return np.array(g.verts, float).reshape(-1, 3), np.array(g.faces, int).reshape(-1, 3)
+    spaces, skipped = [], []
+    for sp in ifc.by_type("IfcSpace"):
+        nm = (getattr(sp, "LongName", None) or getattr(sp, "Name", None) or "Room").strip()
+        try:
+            v, f = mesh(sp)
+        except Exception:
+            skipped.append(nm + " (no shape)"); continue
+        tri = []
+        for a, b, c in f:
+            p0, p1, p2 = v[a], v[b], v[c]
+            n = np.cross(p1 - p0, p2 - p0)
+            if np.linalg.norm(n) < 1e-9:
+                continue
+            if n[2] / np.linalg.norm(n) < -0.9:      # a floor face (normal down)
+                tri.append(Polygon([rot(*p0[:2]), rot(*p1[:2]), rot(*p2[:2])]).buffer(0))
+        if not tri:
+            skipped.append(nm + " (no floor face)"); continue
+        u = unary_union(tri).buffer(0.005).buffer(-0.005)
+        if u.geom_type == "MultiPolygon":
+            u = max(u.geoms, key=lambda g_: g_.area)
+        u = orient(u.simplify(0.02), 1.0)
+        if u.area < 0.3:
+            skipped.append(nm + " (tiny)"); continue
+        if float(v[:, 2].max() - v[:, 2].min()) < 1.0:
+            skipped.append(nm + " (no height)"); continue
+        spaces.append({"name": nm, "id": (getattr(sp, "Name", "") or ""), "storey": storey_name(sp), "poly": list(u.exterior.coords)[:-1],
+                       "z0": float(v[:, 2].min()), "z1": float(v[:, 2].max()), "area": float(u.area),
+                       "external": bool(external_re and external_re.search(nm))})
+    openings = []
+    for cls, kind in (("IfcWindow", "Window"), ("IfcDoor", "Door")):
+        for el in ifc.by_type(cls):
+            try:
+                v, _f = mesh(el)
+            except Exception:
+                continue
+            xy = np.array([rot(x, y) for x, y, _z in v])
+            openings.append({"name": (el.Name or kind), "kind": kind, "storey": storey_name(el), "xy": xy.tolist(),
+                             "z0": float(v[:, 2].min()), "z1": float(v[:, 2].max())})
+    storeys = sorted({s_["storey"] for s_ in spaces}, key=lambda n: min(s_["z0"] for s_ in spaces if s_["storey"] == n))
+    return {"spaces": spaces, "openings": openings, "storeys": storeys, "skipped": skipped}
+
+
+def sim_build_model(geo, meta=None):
+    """Zones, surfaces and openings from the room shapes. Walls with no room next to them are exterior, walls shared with another room
+    are interior (adiabatic in EnergyPlus), the lowest floor sits on the ground and the top ceiling is the roof."""
+    import math
+    from shapely.geometry import Polygon, Point
+    from shapely.geometry.polygon import orient
+    meta = meta or {}
+    zones = []
+    for i, s_ in enumerate(geo["spaces"]):
+        if s_["external"]:
+            continue
+        z = dict(s_)
+        z["zid"] = "Z%02d" % (len(zones) + 1)
+        z["pg"] = Polygon(s_["poly"])
+        m = meta.get(i) or {}
+        z["label"] = ("%s - %s" % (m.get("unit_label"), s_["name"]) if m.get("unit_label") else s_["name"]) + " [%s]" % s_["storey"]
+        z["unit"] = m.get("unit_label", "")
+        z["lights_w"], z["lights_h"] = m.get("lights_w", 0.0), m.get("lights_h", 0.0)
+        zones.append(z)
+    names = {}
+    for z in zones:                                   # names must be unique
+        n = z["label"]
+        names[n] = names.get(n, 0) + 1
+        if names[n] > 1:
+            z["label"] = "%s (%d)" % (n, names[n])
+    if not zones:
+        raise ValueError("No rooms with a usable shape were found in the IFC file.")
+    zmin = min(z["z0"] for z in zones)
+    surfaces = []
+    sid = [0]
+
+    def add(z, kind, pts, bc, cons, extra=None):
+        sid[0] += 1
+        d = {"id": "S%03d" % sid[0], "zid": z["zid"], "kind": kind, "pts": pts, "bc": bc, "cons": cons, "ops": [], "adj": None}
+        if extra:
+            d.update(extra)
+        surfaces.append(d)
+        return d
+    for z in zones:
+        pts = z["poly"]
+        n = len(pts)
+        z["edges"] = []
+        for i in range(n):
+            a, b = pts[i], pts[(i + 1) % n]
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            L = math.hypot(dx, dy)
+            if L < 0.05:
+                continue
+            nx, ny = dy / L, -dx / L
+            probe = Point((a[0] + b[0]) / 2 + nx * 0.2, (a[1] + b[1]) / 2 + ny * 0.2)
+            nb = None
+            for o in zones:
+                if o is z or o["storey"] != z["storey"] and abs(o["z0"] - z["z0"]) > 0.5:
+                    continue
+                if o["pg"].buffer(0.3).contains(probe):
+                    nb = o; break
+            wall = [(a[0], a[1], z["z0"]), (b[0], b[1], z["z0"]), (b[0], b[1], z["z1"]), (a[0], a[1], z["z1"])]
+            azi = math.degrees(math.atan2(nx, ny)) % 360.0
+            s = add(z, "InteriorWall" if nb else "ExteriorWall", wall, "Adiabatic" if nb else "Outdoors", "int_wall" if nb else "ext_wall",
+                    {"tilt": 90.0, "az": azi, "a": a, "b": b, "L": L, "h": z["z1"] - z["z0"], "nb": nb["zid"] if nb else None})
+            z["edges"].append(s)
+    for z in zones:
+        # floor: on the ground, over a room below, or exposed underneath
+        below = [(o, z["pg"].intersection(o["pg"]).area) for o in zones if o is not z and o["z0"] < z["z0"] - 0.5 and abs(z["z0"] - o["z1"]) < 0.6]
+        below = max(below, key=lambda t: t[1]) if below else None
+        fl = list(reversed([(x, y, z["z0"]) for x, y in z["poly"]]))
+        if z["z0"] <= zmin + 0.3:
+            add(z, "SlabOnGrade", fl, "Ground", "floor_ground", {"tilt": 180.0, "az": 0.0, "nb": None})
+        elif below and below[1] >= 0.5 * z["pg"].area:
+            add(z, "InteriorFloor", fl, "Adiabatic", "floor_int", {"tilt": 180.0, "az": 0.0, "nb": below[0]["zid"]})
+        else:
+            add(z, "RaisedFloor", fl, "Outdoors", "floor_exp", {"tilt": 180.0, "az": 0.0, "nb": None})
+        above = [(o, z["pg"].intersection(o["pg"]).area) for o in zones if o is not z and abs(o["z0"] - z["z1"]) < 0.8 and o["z0"] > z["z0"] + 0.5]
+        above = max(above, key=lambda t: t[1]) if above else None
+        top = [(x, y, z["z1"]) for x, y in z["poly"]]
+        if above and above[1] >= 0.5 * z["pg"].area:
+            add(z, "Ceiling", top, "Adiabatic", "floor_int", {"tilt": 0.0, "az": 0.0, "nb": above[0]["zid"]})
+        else:
+            add(z, "Roof", top, "Outdoors", "roof", {"tilt": 0.0, "az": 0.0, "nb": None})
+    # windows and doors go on the nearest exterior wall of the room they sit in
+    ops, unplaced = [], 0
+    for o in geo["openings"]:
+        xs = [p[0] for p in o["xy"]]; ys = [p[1] for p in o["xy"]]
+        cx, cy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
+        best, bd = None, 0.6
+        for s in surfaces:
+            if s["kind"] != "ExteriorWall":
+                continue
+            zz = next(q for q in zones if q["zid"] == s["zid"])
+            if not (zz["z0"] - 0.3 <= (o["z0"] + o["z1"]) / 2.0 <= zz["z1"] + 0.3):
+                continue
+            ax, ay = s["a"]; bx, by = s["b"]
+            t = ((cx - ax) * (bx - ax) + (cy - ay) * (by - ay)) / (s["L"] ** 2)
+            if t < -0.05 or t > 1.05:
+                continue
+            d = abs((cx - ax) * (by - ay) - (cy - ay) * (bx - ax)) / s["L"]
+            if d < bd:
+                best, bd = s, d
+        if not best:
+            unplaced += 1
+            continue
+        ax, ay = best["a"]; ux, uy = (best["b"][0] - ax) / best["L"], (best["b"][1] - ay) / best["L"]
+        proj = [(x - ax) * ux + (y - ay) * uy for x, y in o["xy"]]
+        u0, u1 = max(0.02, min(proj)), min(best["L"] - 0.02, max(proj))
+        z0 = max(best["pts"][0][2] + 0.02, o["z0"]); z1 = min(best["pts"][2][2] - 0.02, o["z1"])
+        if u1 - u0 < 0.1 or z1 - z0 < 0.1:
+            unplaced += 1
+            continue
+        pts = [(ax + ux * u0, ay + uy * u0, z1), (ax + ux * u0, ay + uy * u0, z0), (ax + ux * u1, ay + uy * u1, z0), (ax + ux * u1, ay + uy * u1, z1)]
+        d = {"name": o["name"], "kind": o["kind"], "pts": pts, "w": u1 - u0, "h": z1 - z0}
+        best["ops"].append(d)
+        ops.append(d)
+    return {"zones": zones, "surfaces": surfaces, "unplaced": unplaced, "n_ops": len(ops), "zmin": zmin}
+
+
+_SIM_DENS = [("brick", 1800, 840), ("block", 1400, 840), ("concrete", 2300, 840), ("plaster", 1200, 840), ("gypsum", 800, 1090), ("plasterboard", 800, 1090),
+             ("fibre", 1400, 1000), ("timber", 600, 1600), ("wood", 600, 1600), ("sheet", 7800, 500), ("tile", 2000, 840), ("screed", 2100, 840),
+             ("polystyrene", 20, 1400), ("eps", 20, 1400), ("xps", 30, 1400), ("wool", 40, 840), ("isotherm", 35, 1400), ("insulation", 40, 1000),
+             ("glass", 2500, 840), ("soil", 1500, 1000), ("stone", 2200, 840)]
+
+
+def sim_material_props(name):
+    n = (name or "").lower()
+    for k, d, c in _SIM_DENS:
+        if k in n:
+            return d, c
+    return 1800, 840
+
+
+def sim_constructions(elements, zone):
+    """{'ext_wall', 'int_wall', 'roof', 'floor_ground', 'floor_int', 'floor_exp'}: each {'name', 'layers': [{'name','t','lam','rfix','dens','cp'}], 'r_default'}.
+    The first build-up of the right type that the designer entered; a plain resistance (the SANS 204 minimum for the zone) when none was entered."""
+    def pick(prefixes):
+        for el in elements or []:
+            t = el.get("type", "")
+            if any(t.startswith(p) for p in prefixes) and el.get("layers"):
+                return el
+        return None
+    want = {"ext_wall": (("Wall - heavy", "Wall - light"), "Wall - heavy (>= 270 kg/m2)", 0.6),
+            "int_wall": (("Internal wall",), None, 0.3),
+            "roof": (("Roof",), "Roof / ceiling", 3.7),
+            "floor_ground": (("Floor on ground",), None, 0.2),
+            "floor_int": (("Floor within",), None, 0.3),
+            "floor_exp": (("Suspended floor", "Floor with underfloor"), "Suspended floor", 1.5)}
+    out = {}
+    for key, (pref, req_t, dflt) in want.items():
+        el = pick(pref)
+        if el:
+            lay = []
+            for l in el["layers"]:
+                d, c = sim_material_props(l.get("mat"))
+                lay.append({"name": l.get("mat") or "Layer", "t": float(l.get("t") or 0) / 1000.0, "lam": float(l.get("lam") or 0),
+                            "rfix": float(l.get("rfix") or 0), "dens": d, "cp": c})
+            out[key] = {"name": el.get("name") or key, "layers": lay, "r_default": 0.0, "src": "your build-up: " + (el.get("name") or key)}
+        else:
+            r = dflt
+            if req_t:
+                try:
+                    r = max(0.2, xa_required_r(zone, req_t) - 0.2)
+                except Exception:
+                    r = dflt
+            out[key] = {"name": key, "layers": [], "r_default": r, "src": "no build-up entered: plain R %.2f" % r}
+    return out
+
+
+def _sim_cons_layers(c):
+    """Material list for a construction: [(kind, name, props)] outside to inside."""
+    res = []
+    for i, l in enumerate(c["layers"]):
+        nm = "%s %s L%d" % (c["key"], (l["name"] or "layer")[:24], i + 1)
+        if l["rfix"] > 0 or l["lam"] <= 0 or l["t"] <= 0:
+            r = l["rfix"] if l["rfix"] > 0 else 0.05
+            res.append(("nomass", nm, {"r": r}))
+        else:
+            res.append(("mass", nm, {"t": l["t"], "lam": l["lam"], "dens": l["dens"], "cp": l["cp"]}))
+    if not res:
+        res.append(("nomass", c["key"] + " resistance", {"r": c["r_default"]}))
+    return res
+
+
+def _sim_sched_pieces(hours, start=18.0):
+    """Evening lighting schedule: on for `hours` from `start`, wrapping past midnight. Returns [(until_hour, value)] covering 24 h."""
+    h = max(0.0, min(24.0, hours))
+    if h <= 0:
+        return [(24, 0.0)]
+    end = start + h
+    if end <= 24:
+        out = [(start, 0.0), (end, 1.0)]
+        if end < 24:
+            out.append((24, 0.0))
+        return out
+    wrap = end - 24
+    return [(wrap, 1.0), (start, 0.0), (24, 1.0)]
+
+
+def sim_write_idf(model, cons, glass, loc, path, epw_name="weather.epw", infil_ach=0.5, tground=18.0, glass_default=(5.6, 0.77)):
+    """EnergyPlus 24.1 input file: geometry, constructions, ideal-loads heating and cooling with a 19-25 C band, evening lighting, monthly loads."""
+    import math
+    L = []
+
+    def obj(*fields):
+        it = [str(x) for x in fields]
+        L.append(it[0] + (",\n  " + ",\n  ".join(it[1:]) if len(it) > 1 else "") + ";\n")
+
+    def fmt(x):
+        return ("%.4f" % x)
+    obj("Version", "24.1")
+    obj("SimulationControl", "No", "No", "No", "No", "Yes")
+    obj("Building", "Building", "0", "Suburbs", "0.04", "0.4", "FullExterior", "25", "6")
+    obj("Timestep", "4")
+    obj("HeatBalanceAlgorithm", "ConductionTransferFunction")
+    obj("SurfaceConvectionAlgorithm:Inside", "TARP")
+    obj("SurfaceConvectionAlgorithm:Outside", "DOE-2")
+    obj("GlobalGeometryRules", "UpperLeftCorner", "CounterClockWise", "World")
+    obj("Site:Location", "Site", fmt(loc["lat"]), fmt(loc["lon"]), fmt(loc["tz"]), fmt(loc.get("elev", 0.0)))
+    obj("Site:GroundTemperature:BuildingSurface", *([fmt(tground)] * 12))
+    obj("RunPeriod", "Year", "1", "1", "", "12", "31", "", "", "Yes", "Yes", "No", "Yes", "Yes")
+    obj("ScheduleTypeLimits", "Any Number")
+    obj("Schedule:Constant", "Always On", "Any Number", "1")
+    obj("Schedule:Constant", "Heating Setpoint", "Any Number", fmt(SIM_HEAT_SP))
+    obj("Schedule:Constant", "Cooling Setpoint", "Any Number", fmt(SIM_COOL_SP))
+    obj("Schedule:Constant", "Dual Setpoint Type", "Any Number", "4")
+    obj("ThermostatSetpoint:DualSetpoint", "Comfort band", "Heating Setpoint", "Cooling Setpoint")
+    # ---- materials and constructions
+    seen_m, cons_names = set(), {}
+    for key, c in cons.items():
+        c["key"] = key
+        lay = _sim_cons_layers(c)
+        names = []
+        for kind, nm, p in lay:
+            if nm not in seen_m:
+                seen_m.add(nm)
+                if kind == "nomass":
+                    obj("Material:NoMass", nm, "MediumRough", fmt(p["r"]), "0.9", "0.7", "0.7")
+                else:
+                    obj("Material", nm, "MediumRough", fmt(p["t"]), fmt(p["lam"]), fmt(float(p["dens"])), fmt(float(p["cp"])), "0.9", "0.7", "0.7")
+            names.append(nm)
+        obj("Construction", "C " + key, *names)
+        cons_names[key] = "C " + key
+    obj("Material:NoMass", "Door leaf", "MediumRough", "0.25", "0.9", "0.7", "0.7")
+    obj("Construction", "C door", "Door leaf")
+    gl_used = {}
+
+    def gl_for(name):
+        g = glass.get(name) or glass.get(name.upper()) or glass.get("*") or glass_default
+        key = "%.2f_%.2f" % (g[0], g[1])
+        if key not in gl_used:
+            gl_used[key] = "Glazing %s" % key
+            obj("WindowMaterial:SimpleGlazingSystem", gl_used[key], fmt(g[0]), fmt(g[1]), fmt(0.8 * g[1] / 0.77 if g[1] <= 0.77 else 0.8))
+            obj("Construction", "C " + gl_used[key], gl_used[key])
+        return "C " + gl_used[key]
+    # ---- zones
+    sched_done = set()
+    for z in model["zones"]:
+        zn = z["label"]
+        obj("Zone", zn, "0", "0", "0", "0", "1", "1", "autocalculate", "autocalculate")
+        obj("ZoneInfiltration:DesignFlowRate", zn + " infiltration", zn, "Always On", "AirChanges/Hour", "", "", "", fmt(infil_ach), "1", "0", "0", "0")
+        if z["lights_w"] > 0 and z["lights_h"] > 0:
+            sn = "Lights %.1fh" % z["lights_h"]
+            if sn not in sched_done:
+                sched_done.add(sn)
+                pcs = _sim_sched_pieces(z["lights_h"])
+                f = ["Schedule:Compact", sn, "Any Number", "Through: 12/31", "For: AllDays"]
+                for u, v in pcs:
+                    f += ["Until: %02d:%02d" % (int(u) % 24 if u < 24 else 24, int(round((u - int(u)) * 60))), fmt(v)]
+                obj(*f)
+            obj("Lights", zn + " lights", zn, sn, "Watts/Area" if False else "LightingLevel", fmt(z["lights_w"]), "", "", "0", "0.2", "0.6", "0.2", "General")
+        obj("ZoneControl:Thermostat", zn + " thermostat", zn, "Dual Setpoint Type", "ThermostatSetpoint:DualSetpoint", "Comfort band")
+        obj("ZoneHVAC:IdealLoadsAirSystem", zn + " ideal", "Always On", zn + " supply node", "", "", "50", "13", "0.0156", "0.0077", "NoLimit", "", "", "NoLimit")
+        obj("NodeList", zn + " inlets", zn + " supply node")
+        obj("ZoneHVAC:EquipmentList", zn + " equipment", "SequentialLoad", "ZoneHVAC:IdealLoadsAirSystem", zn + " ideal", "1", "1", "", "")
+        obj("ZoneHVAC:EquipmentConnections", zn, zn + " equipment", zn + " inlets", "", zn + " air node", zn + " return node")
+    # ---- surfaces
+    names = {}
+    for s in model["surfaces"]:
+        z = next(q for q in model["zones"] if q["zid"] == s["zid"])
+        names[s["id"]] = "%s %s" % (z["label"], s["id"])
+    for s in model["surfaces"]:
+        z = next(q for q in model["zones"] if q["zid"] == s["zid"])
+        st = {"ExteriorWall": "Wall", "InteriorWall": "Wall", "SlabOnGrade": "Floor", "InteriorFloor": "Floor", "RaisedFloor": "Floor", "Ceiling": "Ceiling", "Roof": "Roof"}[s["kind"]]
+        sun = "SunExposed" if s["bc"] == "Outdoors" else "NoSun"
+        wind = "WindExposed" if s["bc"] == "Outdoors" else "NoWind"
+        f = ["BuildingSurface:Detailed", names[s["id"]], st, cons_names[s["cons"]], z["label"], "", s["bc"], "", sun, wind, "autocalculate", str(len(s["pts"]))]
+        for p in s["pts"]:
+            f += [fmt(p[0]), fmt(p[1]), fmt(p[2])]
+        obj(*f)
+        for i, o in enumerate(s["ops"]):
+            tp = "Window" if o["kind"] == "Window" else "Door"
+            cn = gl_for(o["name"]) if o["kind"] == "Window" else "C door"
+            f = ["FenestrationSurface:Detailed", "%s %s %d" % (names[s["id"]], tp, i + 1), tp, cn, names[s["id"]], "", "autocalculate", "", "1", "4"]
+            for p in o["pts"]:
+                f += [fmt(p[0]), fmt(p[1]), fmt(p[2])]
+            obj(*f)
+    obj("OutputControl:Table:Style", "HTML")
+    obj("Output:Table:SummaryReports", "AllSummary")
+    obj("Output:Variable", "*", "Zone Ideal Loads Zone Total Heating Energy", "Monthly")
+    obj("Output:Variable", "*", "Zone Ideal Loads Zone Total Cooling Energy", "Monthly")
+    obj("Output:Variable", "*", "Zone Mean Air Temperature", "Monthly")
+    if any(z["lights_w"] > 0 for z in model["zones"]):
+        obj("Output:Meter", "InteriorLights:Electricity", "Monthly")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("!- Written by %s. Rooms from the IFC model; walls with no room beside them are exterior, shared walls are adiabatic.\n\n" % APP_NAME)
+        fh.write("\n".join(L))
+
+
+def sim_write_gbxml(model, cons, glass, loc, path, project="Building", glass_default=(5.6, 0.77)):
+    import xml.etree.ElementTree as ET
+    NS = "http://www.gbxml.org/schema"
+    ET.register_namespace("", NS)
+    q = lambda t: "{%s}%s" % (NS, t)
+    root = ET.Element(q("gbXML"), {"version": "6.01", "useSIUnitsForResults": "true", "temperatureUnit": "C", "lengthUnit": "Meters",
+                                  "areaUnit": "SquareMeters", "volumeUnit": "CubicMeters"})
+    camp = ET.SubElement(root, q("Campus"), {"id": "campus1"})
+    lc = ET.SubElement(camp, q("Location"))
+    ET.SubElement(lc, q("Longitude")).text = "%.5f" % loc["lon"]
+    ET.SubElement(lc, q("Latitude")).text = "%.5f" % loc["lat"]
+    ET.SubElement(lc, q("Elevation")).text = "%.1f" % loc.get("elev", 0.0)
+    ET.SubElement(lc, q("Name")).text = loc.get("name") or "Site"
+    b = ET.SubElement(camp, q("Building"), {"id": "bld1", "buildingType": "MultiFamily" if len({z["unit"] for z in model["zones"] if z["unit"]}) > 1 else "SingleFamily"})
+    ET.SubElement(b, q("Area")).text = "%.2f" % sum(z["pg"].area for z in model["zones"])
+    levels = sorted({(z["storey"], round(z["z0"], 3)) for z in model["zones"]}, key=lambda t: t[1])
+    stid = {}
+    for i, (n, e_) in enumerate(levels):
+        stid[n] = "st%d" % (i + 1)
+    seen = set()
+    for n, e_ in levels:
+        if n in seen:
+            continue
+        seen.add(n)
+        s_ = ET.SubElement(b, q("BuildingStorey"), {"id": stid[n]})
+        ET.SubElement(s_, q("Name")).text = n
+        ET.SubElement(s_, q("Level")).text = "%.3f" % e_
+
+    def loop(parent, pts):
+        pg = ET.SubElement(parent, q("PlanarGeometry"))
+        pl = ET.SubElement(pg, q("PolyLoop"))
+        for p in pts:
+            cp = ET.SubElement(pl, q("CartesianPoint"))
+            for c_ in p:
+                ET.SubElement(cp, q("Coordinate")).text = "%.4f" % c_
+    for z in model["zones"]:
+        sp = ET.SubElement(b, q("Space"), {"id": "sp_" + z["zid"], "zoneIdRef": "zn_" + z["zid"], "buildingStoreyIdRef": stid[z["storey"]]})
+        ET.SubElement(sp, q("Name")).text = z["label"]
+        ET.SubElement(sp, q("Area")).text = "%.3f" % z["pg"].area
+        ET.SubElement(sp, q("Volume")).text = "%.3f" % (z["pg"].area * (z["z1"] - z["z0"]))
+        loop(sp, [(x, y, z["z0"]) for x, y in z["poly"]])
+    # surfaces: shared walls and floors appear once, with both rooms
+    emitted = set()
+    for s in model["surfaces"]:
+        nb = s.get("nb")
+        key = None
+        if nb and s["kind"] == "InteriorWall":
+            if nb < s["zid"] and any(o["zid"] == nb and o.get("nb") == s["zid"] and o["kind"] == "InteriorWall" for o in model["surfaces"]):
+                continue
+        if nb and s["kind"] in ("InteriorFloor", "Ceiling"):
+            key = tuple(sorted([s["zid"], nb]))
+            if key in emitted:
+                continue
+            emitted.add(key)
+        stype = {"InteriorFloor": "InteriorFloor", "Ceiling": "Ceiling"}.get(s["kind"], s["kind"])
+        if s["kind"] == "Ceiling":
+            stype = "InteriorFloor"
+        el = ET.SubElement(camp, q("Surface"), {"id": s["id"], "surfaceType": stype, "constructionIdRef": "con_" + s["cons"],
+                                                "exposedToSun": "true" if s["bc"] == "Outdoors" else "false"})
+        ET.SubElement(el, q("Name")).text = s["id"]
+        ET.SubElement(el, q("AdjacentSpaceId"), {"spaceIdRef": "sp_" + s["zid"]})
+        if nb:
+            ET.SubElement(el, q("AdjacentSpaceId"), {"spaceIdRef": "sp_" + nb})
+        rg = ET.SubElement(el, q("RectangularGeometry"))
+        ET.SubElement(rg, q("Azimuth")).text = "%.2f" % s["az"]
+        cp = ET.SubElement(rg, q("CartesianPoint"))
+        for c_ in s["pts"][0]:
+            ET.SubElement(cp, q("Coordinate")).text = "%.4f" % c_
+        ET.SubElement(rg, q("Tilt")).text = "%.2f" % s["tilt"]
+        zz = next(q_ for q_ in model["zones"] if q_["zid"] == s["zid"])
+        if s["kind"] in ("ExteriorWall", "InteriorWall"):
+            ET.SubElement(rg, q("Height")).text = "%.4f" % s["h"]; ET.SubElement(rg, q("Width")).text = "%.4f" % s["L"]
+        else:
+            ET.SubElement(rg, q("Height")).text = "%.4f" % (zz["pg"].bounds[3] - zz["pg"].bounds[1])
+            ET.SubElement(rg, q("Width")).text = "%.4f" % (zz["pg"].bounds[2] - zz["pg"].bounds[0])
+        loop(el, s["pts"])
+        for i, o in enumerate(s["ops"]):
+            op = ET.SubElement(el, q("Opening"), {"id": "%s_o%d" % (s["id"], i + 1), "openingType": "FixedWindow" if o["kind"] == "Window" else "NonSlidingDoor"})
+            if o["kind"] == "Window":
+                g = glass.get(o["name"]) or glass.get(o["name"].upper()) or glass.get("*") or glass_default
+                op.set("windowTypeIdRef", "win_%.2f_%.2f" % (g[0], g[1]))
+            else:
+                op.set("constructionIdRef", "con_door")
+            ET.SubElement(op, q("Name")).text = o["name"]
+            r2 = ET.SubElement(op, q("RectangularGeometry"))
+            ET.SubElement(r2, q("Height")).text = "%.4f" % o["h"]; ET.SubElement(r2, q("Width")).text = "%.4f" % o["w"]
+            loop(op, o["pts"])
+    # constructions, layers, materials, window types, zones
+    mats, lays = [], []
+    for key, c in cons.items():
+        c["key"] = key
+        cl = ET.SubElement(root, q("Construction"), {"id": "con_" + key})
+        ET.SubElement(cl, q("Name")).text = c["name"]
+        r_tot = 0.0
+        ids = []
+        for i, (kind, nm, p) in enumerate(_sim_cons_layers(c)):
+            lid = "lay_%s_%d" % (key, i + 1)
+            mid = "mat_%s_%d" % (key, i + 1)
+            ids.append(lid)
+            lays.append((lid, mid))
+            mats.append((mid, nm, kind, p))
+            r_tot += p["r"] if kind == "nomass" else p["t"] / p["lam"]
+        ET.SubElement(cl, q("U-value"), {"unit": "WPerSquareMeterK"}).text = "%.4f" % ((1.0 / (r_tot + 0.21)) if r_tot > 0 else 1.0)
+        for lid in ids:
+            ET.SubElement(cl, q("LayerId"), {"layerIdRef": lid})
+    cd = ET.SubElement(root, q("Construction"), {"id": "con_door"})
+    ET.SubElement(cd, q("Name")).text = "Door"
+    ET.SubElement(cd, q("U-value"), {"unit": "WPerSquareMeterK"}).text = "2.5"
+    used = set()
+    for s in model["surfaces"]:
+        for o in s["ops"]:
+            if o["kind"] == "Window":
+                g = glass.get(o["name"]) or glass.get(o["name"].upper()) or glass.get("*") or glass_default
+                used.add(g)
+    for lid, mid in lays:
+        ET.SubElement(ET.SubElement(root, q("Layer"), {"id": lid}), q("MaterialId"), {"materialIdRef": mid})
+    for mid, nm, kind, p in mats:
+        m = ET.SubElement(root, q("Material"), {"id": mid})
+        ET.SubElement(m, q("Name")).text = nm
+        if kind == "nomass":
+            ET.SubElement(m, q("R-value"), {"unit": "SquareMeterKPerW"}).text = "%.4f" % p["r"]
+        else:
+            ET.SubElement(m, q("Thickness"), {"unit": "Meters"}).text = "%.4f" % p["t"]
+            ET.SubElement(m, q("Conductivity"), {"unit": "WPerMeterK"}).text = "%.4f" % p["lam"]
+            ET.SubElement(m, q("Density"), {"unit": "KgPerCubicM"}).text = "%.1f" % p["dens"]
+            ET.SubElement(m, q("SpecificHeat"), {"unit": "JPerKgK"}).text = "%.1f" % p["cp"]
+    for g in sorted(used):
+        w = ET.SubElement(root, q("WindowType"), {"id": "win_%.2f_%.2f" % (g[0], g[1])})
+        ET.SubElement(w, q("Name")).text = "Glazing U %.2f SHGC %.2f" % (g[0], g[1])
+        ET.SubElement(w, q("U-value"), {"unit": "WPerSquareMeterK"}).text = "%.3f" % g[0]
+        ET.SubElement(w, q("SolarHeatGainCoeff"), {"unit": "Fraction"}).text = "%.3f" % g[1]
+    for z in model["zones"]:
+        zn = ET.SubElement(root, q("Zone"), {"id": "zn_" + z["zid"]})
+        ET.SubElement(zn, q("Name")).text = z["label"]
+    dh = ET.SubElement(root, q("DocumentHistory"))
+    pi = ET.SubElement(dh, q("ProgramInfo"), {"id": "pi1"})
+    ET.SubElement(pi, q("ProductName")).text = APP_NAME
+    ET.SubElement(pi, q("Platform")).text = "Windows"
+    tree = ET.ElementTree(root)
+    try:
+        ET.indent(tree, space="  ")
+    except Exception:
+        pass
+    tree.write(path, encoding="UTF-8", xml_declaration=True)
+
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle(APP_NAME)
+        self.resize(1100, 700)
+        self.current_file = None
+        self.results = []
+        self._worker = None
+        self._loading = False
+        self.last_ocr_text = ""
+        self.floors = ["Ground Floor", "First Floor"]
+        self._start_mtime = _script_mtime()
+
+        central = QWidget()
+        self.setCentralWidget(central)
+        layout = QVBoxLayout(central)
+
+        top = QHBoxLayout()
+        top.addWidget(QLabel("Occupancy rule:"))
+        self.rule_box = QComboBox()
+        self.rule_box.addItems(list(RULES.keys()))
+        top.addWidget(self.rule_box)
+        self.frame_chk = QCheckBox("Deduct frames:")
+        self.frame_chk.setToolTip(
+            "Off: sizes are counted as the full opening including frames.\n"
+            "On: the frame width (set separately for windows and doors) is taken off every side of each window/door "
+            "(and of each opening sash) before light and ventilation are worked out.")
+        self.frame_spin = QDoubleSpinBox()
+        self.frame_spin.setRange(0, 200)
+        self.frame_spin.setValue(50)
+        self.frame_spin.setSuffix(" mm windows")
+        self.door_frame_spin = QDoubleSpinBox()
+        self.door_frame_spin.setRange(0, 200)
+        self.door_frame_spin.setValue(50)
+        self.door_frame_spin.setSuffix(" mm doors")
+        self.door_frame_spin.setToolTip("Door frames are usually a different width to window frames.")
+        top.addWidget(self.frame_chk)
+        top.addWidget(self.frame_spin)
+        top.addWidget(self.door_frame_spin)
+        self.skip_chk = QCheckBox("Skip doors with no glass")
+        self.skip_chk.setChecked(True)
+        self.skip_chk.setToolTip(
+            "On: only glazed (outer-wall) doors are used. Doors with a Total Glazed Area of 0 "
+            "are internal doors - they are not imported from a schedule and are left out of "
+            "the light and ventilation sums.")
+        self.skip_chk.toggled.connect(lambda on: SKIP_UNGLAZED.__setitem__(0, bool(on)))
+        top.addWidget(self.skip_chk)
+        self.sash_chk = QCheckBox("Manual sash size")
+        self.sash_chk.setToolTip("Show the sash W/H/No. columns to type an exact opening size "
+                                 "by hand. Not needed when the openings are read from the drawing.")
+        self.sash_chk.toggled.connect(self._toggle_sash_cols)
+        top.addWidget(self.sash_chk)
+        top.addWidget(QLabel("Glazing limit %"))
+        self.glaze_spin = QDoubleSpinBox()
+        self.glaze_spin.setRange(1, 100)
+        self.glaze_spin.setDecimals(1)
+        self.glaze_spin.setValue(GLAZE_LIMIT[0])
+        self.glaze_spin.setToolTip("Maximum glazing as a % of the net floor area. Above this a "
+                                   "rational design is needed.")
+        self.glaze_spin.valueChanged.connect(lambda v: GLAZE_LIMIT.__setitem__(0, float(v)))
+        top.addWidget(self.glaze_spin)
+        top.addStretch()
+        self.lv_ifc_chk = QCheckBox("Use IFC model for windows and doors")
+        self.lv_ifc_chk.setToolTip("Brings the windows and doors from your IFC model into the schedules below, "
+                                   "with sizes, glass and opening areas. Rooms still come from your floor plan.")
+        self.lv_ifc_chk.toggled.connect(self._lv_ifc_toggled)
+        top.addWidget(self.lv_ifc_chk)
+        self.lv_ifc_rooms_chk = QCheckBox("Use IFC model for rooms and floors")
+        self.lv_ifc_rooms_chk.setToolTip("Creates the floors (Ground Floor, First Floor ...) and their rooms in the "
+                                         "Rooms tab from the zones in your IFC model.")
+        self.lv_ifc_rooms_chk.toggled.connect(self._lv_ifc_rooms_toggled)
+        top.addWidget(self.lv_ifc_rooms_chk)
+        for label, fn in [
+            ("Import windows (PDF / screenshot)...", self.import_schedule_any),
+            ("Paste windows screenshot", self.paste_schedule_clipboard),
+            ("Import floor plan (PDF / screenshot)...", self.import_rooms_any),
+            ("Paste floor plan screenshot", self.paste_rooms_clipboard),
+        ]:
+            b = QPushButton(label)
+            b.clicked.connect(fn)
+            top.addWidget(b)
+        self.main_tabs = QTabWidget()
+        layout.addWidget(self.main_tabs)
+        self.home_page = QWidget()
+        self.main_tabs.addTab(self.home_page, "Home")
+        lv_page = QWidget()
+        lv_lay = QVBoxLayout(lv_page)
+        lv_lay.setContentsMargins(0, 6, 0, 0)
+        lv_lay.addLayout(top)
+        self.tabs = QTabWidget()
+        lv_lay.addWidget(self.tabs)
+        self.main_tabs.addTab(lv_page, "Light && Ventilation")
+
+        tip = ("The size of the part that actually opens (one sash or leaf). When W and H "
+               "are filled in, the ventilation area is No. of sashes x W x H and the "
+               "Openable % is worked out from it.")
+
+        def make_sched_table():
+            t = QTableWidget(0, 12)
+            t.setHorizontalHeaderLabels(
+                ["Tag", "Width mm", "Height mm", "Glazed %", "Openable %", "Type",
+                 "Opening style", "Opening sash W mm", "Opening sash H mm", "No. of sashes",
+                 "Qty in schedule", "Glazed m2 (schedule)"])
+            for c in (7, 8, 9):
+                t.horizontalHeaderItem(c).setToolTip(tip)
+            t.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+            t.itemChanged.connect(self._on_sched_changed)
+            for c in (7, 8, 9):
+                t.setColumnHidden(c, True)
+            return t
+
+        self.internal_tags = set()     # door tags known to have no glass (internal doors)
+        self.sched_panes = {}          # tag -> pane rectangles read from the schedule drawing
+        self.sched_geom = {}           # tag -> exact layout of the 3D back view (frame, panes, hinges)
+        self.sched_table = make_sched_table()
+        self.door_table = make_sched_table()
+        self._hover = HoverFilter(self)
+        for _t in (self.sched_table, self.door_table):
+            _t.setMouseTracking(True)
+            _t.viewport().setMouseTracking(True)
+            _t.viewport().installEventFilter(self._hover)
+        self.tabs.addTab(self._with_buttons(self.sched_table, self.add_sched_row), "1  Windows")
+        self.tabs.addTab(self._with_buttons(
+            self.door_table, lambda: self.add_sched_row(None, self.door_table)), "2  Doors")
+
+        self.combined = {}      # open-plan room name -> the rooms it was made from
+        self._units_chks = []
+        self.room_table = QTableWidget(0, 8)
+        self.room_table.horizontalHeader().setSectionsClickable(True)
+        self.room_table.horizontalHeader().setSortIndicatorShown(False)
+        self.room_table.horizontalHeader().sectionClicked.connect(lambda c: self._sort_rooms(c))
+        self.room_table.horizontalHeader().setToolTip("Click a heading to sort the rooms by it. Click again to reverse.")
+        self.room_table.setHorizontalHeaderLabels(
+            ["Room", "Net area m2", "Windows / doors (click to choose)", "Internal room", "Artificial light OK", "Floor",
+             "Unit (flat / townhouse)", "Windows face (side of plan)"])
+        self.room_table.setColumnHidden(6, True)
+        self.room_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        rooms_page = self._with_buttons(
+            self.room_table, self.add_room_row,
+            extra=[("Combine selected rooms (open plan)", self._combine_rooms),
+                   ("Split combined room", self._split_rooms),
+                   ("Clear windows/doors from rooms", self._clear_room_windows)])
+        fbar = QHBoxLayout()
+        fbar.addWidget(QLabel("Floor:"))
+        self.floor_filter = QComboBox()
+        self.floor_filter.addItem("All floors")
+        self.floor_filter.addItems(self.floors)
+        self.floor_filter.setCurrentIndex(1)
+        self.floor_filter.currentTextChanged.connect(lambda _t: self._apply_floor_filter())
+        fbar.addWidget(self.floor_filter)
+        self.unit_filter = QComboBox()
+        self.unit_filter.addItem("All units", "")
+        self.unit_filter.setToolTip("Show only the rooms of one unit")
+        self.unit_filter.currentIndexChanged.connect(lambda _i: self._apply_floor_filter())
+        self.unit_filter.setVisible(False)
+        fbar.addWidget(self.unit_filter)
+        self.name_filter = QLineEdit()
+        self.name_filter.setPlaceholderText("Search room or window...")
+        self.name_filter.setClearButtonEnabled(True)
+        self.name_filter.setMaximumWidth(210)
+        self.name_filter.setToolTip("Show only rooms whose name or windows match, for example Kitchen or W3")
+        self.name_filter.textChanged.connect(lambda _t: self._apply_floor_filter())
+        fbar.addWidget(self.name_filter)
+        b_add = QPushButton("Add floor...")
+        b_add.clicked.connect(self.add_floor)
+        b_ren = QPushButton("Rename floor...")
+        b_ren.clicked.connect(self.rename_floor)
+        fbar.addWidget(b_add)
+        fbar.addWidget(b_ren)
+        fbar.addSpacing(18)
+        fbar.addWidget(self._make_units_chk())
+        self.assign_unit_btn = QPushButton("Assign unit to selected rooms...")
+        self.assign_unit_btn.clicked.connect(self._assign_unit)
+        self.assign_unit_btn.setVisible(False)
+        fbar.addWidget(self.assign_unit_btn)
+        fbar.addStretch()
+        rooms_page.layout().insertLayout(0, fbar)
+        self._hidden_text = HiddenTextDelegate(self.room_table)
+        self.room_table.setItemDelegateForColumn(2, self._hidden_text)
+        self.tabs.addTab(rooms_page, "3  Rooms")
+
+        self.result_table = QTableWidget(0, 12)
+        self.result_table.setHorizontalHeaderLabels(
+            ["Floor", "Room", "Area m2", "Glazed m2", "Light %", "Light",
+             "Openable m2", "Vent %", "Ventilation", "Glazing %", "Glazing limit", "Notes"])
+        self.result_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self._glass_delegate = GlassCellDelegate(self.result_table)
+        self.result_table.setItemDelegateForColumn(5, self._glass_delegate)
+        self.result_table.setItemDelegateForColumn(8, self._glass_delegate)
+        for _c in (9, 10):                              # per-room glazing columns are not shown
+            self.result_table.setColumnHidden(_c, True)
+        res_widget = QWidget()
+        rl = QVBoxLayout(res_widget)
+        run = QPushButton("Run compliance check")
+        run.clicked.connect(self.run_check)
+        rl.addWidget(run)
+        self.house_table = QTableWidget(0, 5)
+        self.house_table.setHorizontalHeaderLabels(
+            ["Whole building / floor", "Net floor area m2", "Glazing: actual of max",
+             "Natural light: actual of min", "Ventilation: actual of min"])
+        self.house_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.house_table.verticalHeader().setVisible(False)
+        self.house_table.setMinimumHeight(70)
+        self._glass_delegate2 = GlassCellDelegate(self.house_table)
+        for c in (2, 3, 4):
+            self.house_table.setItemDelegateForColumn(c, self._glass_delegate2)
+        self.res_split = GripSplitter(Qt.Orientation.Vertical)    # drag the bar between the two tables
+        self.res_split.setChildrenCollapsible(False)
+        self.res_split.setHandleWidth(14)
+        self.res_split.addWidget(self.house_table)      # the summary sits above the room-by-room table
+        self.res_split.addWidget(self.result_table)
+        self.res_split.setStretchFactor(0, 0)
+        self.res_split.setStretchFactor(1, 1)
+        self.res_split.setSizes([170, 420])
+        rl.addWidget(self.res_split, 1)
+        assign_btn = QPushButton("Show which windows are in which room...")
+        assign_btn.clicked.connect(self._show_assignments)
+        rl.addWidget(assign_btn)
+        prev_btn = QPushButton("Preview PDF report")
+        prev_btn.clicked.connect(self.preview_pdf_report)
+        rl.addWidget(prev_btn)
+        pdf_btn = QPushButton("Export PDF report (for ArchiCAD / drawings)...")
+        pdf_btn.clicked.connect(self.export_pdf_report)
+        rl.addWidget(pdf_btn)
+        self.summary = QLabel("")
+        rl.addWidget(self.summary)
+        self.tabs.addTab(res_widget, "4  Results")
+        self._build_xa_tab()
+        self._build_home()
+
+        self.assign_table = QTableWidget(0, 8)
+        self.assign_table.setHorizontalHeaderLabels(
+            ["Room", "Window / door", "Qty", "Size mm", "Opening style",
+             "Glazed m2 (total)", "Openable m2 (total)", "Note"])
+        self.assign_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self._assign_dialog = None
+
+        self._build_menu()
+        self.add_sched_row(["W01", "1200", "1200", "85", "50", "Window"])
+        self.add_room_row(["Bedroom 1", "12.0", "W01:1", False])
+
+    def _with_buttons(self, table, add_fn, extra=()):
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.addWidget(table)
+        h = QHBoxLayout()
+        add = QPushButton("Add row")
+        add.clicked.connect(lambda: add_fn())
+        sel = QPushButton("Select all")
+        sel.clicked.connect(lambda: self._select_all(table))
+        rem = QPushButton("Remove selected")
+        rem.clicked.connect(lambda: self._remove_selected(table))
+        rall = QPushButton("Remove all")
+        rall.clicked.connect(lambda: self._remove_all(table))
+        for b_ in (add, sel, rem, rall):
+            h.addWidget(b_)
+        for text, fn in extra:
+            xb = QPushButton(text)
+            xb.clicked.connect(lambda _c=False, f=fn: f())
+            h.addWidget(xb)
+        h.addStretch()
+        v.addLayout(h)
+        return w
+
+    def _visible_rows(self, table):
+        return [r for r in range(table.rowCount()) if not table.isRowHidden(r)]
+
+    def _select_all(self, table):
+        from PySide6.QtCore import QItemSelectionModel as QSM
+        table.clearSelection()
+        sm = table.selectionModel()
+        for r in self._visible_rows(table):
+            sm.select(table.model().index(r, 0),
+                      QSM.SelectionFlag.Select | QSM.SelectionFlag.Rows)
+
+    def _remove_all(self, table):
+        rows = self._visible_rows(table)
+        if not rows:
+            return
+        what = ("windows" if table is self.sched_table
+                else "doors" if table is self.door_table else "rooms")
+        extra = ""
+        if table is self.room_table and self.floor_filter.currentText() != "All floors":
+            extra = f" on '{self.floor_filter.currentText()}'"
+        ans = QMessageBox.question(
+            self, APP_NAME, f"Remove all {len(rows)} {what}{extra}? This cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        for r in reversed(rows):
+            table.removeRow(r)
+
+    def _remove_selected(self, table):
+        rows = sorted({i.row() for i in table.selectedIndexes()
+                       if not table.isRowHidden(i.row())}, reverse=True)
+        for r in rows:
+            table.removeRow(r)
+
+    def add_sched_row(self, values=None, table=None):
+        T = table if table is not None else self.sched_table
+        is_door = T is self.door_table
+        values = list(values or (["", "900", "2100", "0", "100", "Door"] if is_door
+                                 else ["", "900", "1200", "85", "50", "Window"]))
+        defaults = {6: "Custom", 7: "", 8: "", 9: "1", 10: "1", 11: ""}
+        while len(values) < 12:
+            values.append(defaults[len(values)])
+        self._loading = True
+        r = T.rowCount()
+        T.insertRow(r)
+        for c, v in enumerate(values):
+            if c == 5:
+                box = QComboBox()
+                box.addItems(["Door"] if is_door else ["Window", "Skylight"])
+                box.setCurrentText(str(v))
+                T.setCellWidget(r, c, box)
+            elif c == 6:
+                sb = QComboBox()
+                sb.addItems(STYLE_LABELS)
+                sb.setCurrentText(str(v) if str(v) in STYLE_LABELS else "Custom")
+                sb.currentIndexChanged.connect(lambda _i, b=sb: self._style_changed(b))
+                T.setCellWidget(r, c, sb)
+            else:
+                T.setItem(r, c, QTableWidgetItem(str(v)))
+        self._loading = False
+        self._recalc_row(r, T)
+
+    def _style_changed(self, box):
+        """Picking an opening style fills in the Openable % and clears the sash size."""
+        pct = STYLE_PCT.get(box.currentText())
+        if pct is None:
+            return
+        for T in (self.sched_table, self.door_table):
+            for r in range(T.rowCount()):
+                if T.cellWidget(r, 6) is box:
+                    self._loading = True
+                    T.item(r, 4).setText(f"{pct:g}")
+                    for c in (7, 8):
+                        T.item(r, c).setText("")
+                    self._loading = False
+                    return
+
+    def _on_sched_changed(self, item):
+        if self._loading:
+            return
+        T, r, c = item.tableWidget(), item.row(), item.column()
+        g_it, m_it = T.item(r, 3), T.item(r, 11)
+        if g_it is not None and m_it is not None:
+            self._loading = True
+            try:
+                if c == 3:                 # typing a Glazed % replaces the schedule's m2 figure
+                    m_it.setText("")
+                elif c in (1, 2, 11):      # keep Glazed % in step with the glazed area
+                    w, h, ga = self._num(T.item(r, 1)), self._num(T.item(r, 2)), self._num(m_it)
+                    if ga > 0 and w > 0 and h > 0:
+                        g_it.setText(f"{min(100.0, ga / (w * h / 1e6) * 100.0):.1f}")
+            finally:
+                self._loading = False
+        if c in (1, 2, 7, 8, 9):
+            self._recalc_row(r, T)
+
+    def _toggle_sash_cols(self, on):
+        for T in (self.sched_table, self.door_table):
+            for c in (7, 8, 9):
+                T.setColumnHidden(c, not on)
+
+    def _recalc_row(self, r, table=None):
+        """With an opening sash size entered, work the Openable % out from it."""
+        T = table if table is not None else self.sched_table
+
+        def num(c):
+            it = T.item(r, c)
+            return self._num(it) if it else 0.0
+        w, h, sw, sh = num(1), num(2), num(7), num(8)
+        qty = num(9) or 1.0
+        if w > 0 and h > 0 and sw > 0 and sh > 0 and T.item(r, 4):
+            pct = min(100.0, qty * sw * sh / (w * h) * 100.0)
+            self._loading = True
+            T.item(r, 4).setText(f"{pct:.1f}")
+            sb = T.cellWidget(r, 6)
+            if sb is not None:
+                sb.blockSignals(True)
+                sb.setCurrentText("Custom")
+                sb.blockSignals(False)
+            self._loading = False
+
+    def add_room_row(self, values=None):
+        values = values or ["", "0", "", False]
+        r = self.room_table.rowCount()
+        self.room_table.insertRow(r)
+        for c in range(3):
+            self.room_table.setItem(r, c, QTableWidgetItem(str(values[c])))
+        tb = QPushButton()
+        tb.clicked.connect(lambda _=False, b=tb: self._edit_room_windows(self._row_of_widget(b, 2)))
+        self.room_table.setCellWidget(r, 2, tb)
+        self._sync_tag_button(r)
+        chk = QCheckBox()
+        chk.setChecked(bool(values[3]))
+        self.room_table.setCellWidget(r, 3, chk)
+        art = QCheckBox()
+        art.setToolTip("Accept artificial lighting if the window is smaller than the natural "
+                       "light minimum (usually bathrooms/toilets). Confirm with your council.")
+        art.setChecked(bool(values[4]) if len(values) > 4
+                       else bool(WET_ROOM_RE.search(str(values[0]))))
+        self.room_table.setCellWidget(r, 4, art)
+        fl = values[5] if len(values) > 5 and values[5] else self._current_floor()
+        if fl not in self.floors:
+            self.floors.append(fl)
+            self._refresh_floor_widgets()
+        fb = QComboBox()
+        fb.addItems(self.floors)
+        fb.setCurrentText(fl)
+        fb.currentTextChanged.connect(lambda _t: self._apply_floor_filter())
+        self.room_table.setCellWidget(r, 5, fb)
+        self.room_table.setItem(r, 6, QTableWidgetItem(str(values[6]) if len(values) > 6 and values[6] else ""))
+        fi = QTableWidgetItem(str(values[7]) if len(values) > 7 and values[7] else "")
+        fi.setForeground(QColor(0, 0, 0, 0))
+        self.room_table.setItem(r, 7, fi)
+        fc = QComboBox()
+        fc.setToolTip("Which side of your plan sheet this room's windows face. The program turns that into a real "
+                      "compass direction using the north angle (Energy XA tab), because SANS 10400-XA treats "
+                      "W/NW/N/NE/E glazing differently from SW/S/SE glazing.")
+        fc.activated.connect(lambda _i, b=fc: self._facing_chosen(self._row_of_widget(b, 7)))
+        self.room_table.setCellWidget(r, 7, fc)
+        self._fill_facing_combo(r)
+        self._apply_floor_filter()
+
+    # ---- which way a room's windows face ----
+    def _north_deg(self):
+        try:
+            return float(str(self.rd.get("north", "") or self.xa_north.text()).replace(",", ".").replace("deg", "").strip() or 0)
+        except (ValueError, AttributeError):
+            return 0.0
+
+    def _merge_facing(self, parts):
+        """Facing of rooms joined into one open-plan room: every window keeps its own direction."""
+        by_tag = {}
+        for p in parts:
+            base, over = parse_facing(p.get("facing", ""))
+            for tag, qty in parse_tags(p.get("tags", "")).items():
+                for code, q in facing_parts(base, over, tag, qty):
+                    a = face_angle(code)
+                    if a is not None and q > 0:
+                        by_tag.setdefault(tag, []).extend([a] * max(1, int(round(q))))
+        return _ifc_facing_string(by_tag) if by_tag else ""
+
+    def _fill_facing_combo(self, r):
+        fc = self.room_table.cellWidget(r, 7)
+        it = self.room_table.item(r, 7)
+        if fc is None or it is None:
+            return
+        base, over = parse_facing(it.text())
+        north = self._north_deg()
+        fc.blockSignals(True)
+        fc.clear()
+        fc.addItem("(not set)", "")
+        if base.startswith("@"):
+            fc.addItem(f"From the IFC model  \u2192  {compass_sector(base, north)}", base)
+        for code, (label, _a) in PLAN_SIDES.items():
+            fc.addItem(f"{label}  \u2192  {compass_sector(code, north)}", code)
+        fc.setCurrentIndex(max(0, fc.findData(base)))
+        def _ov(v):
+            return " + ".join(f"{compass_sector(x.split(':')[0], north)}" + (f" x{x.split(':')[1]}" if ":" in x else "")
+                              for x in v.split("|"))
+        extra = ", ".join(f"{k} faces {_ov(v)}" for k, v in over.items())
+        fc.setToolTip(fc.toolTip().split("\n\n")[0] + (f"\n\nIndividual windows: {extra}" if extra else ""))
+        fc.blockSignals(False)
+
+    def _refresh_facing_labels(self):
+        for r in range(self.room_table.rowCount()):
+            self._fill_facing_combo(r)
+
+    def _facing_chosen(self, r):
+        if r < 0:
+            return
+        fc = self.room_table.cellWidget(r, 7)
+        it = self.room_table.item(r, 7)
+        base, over = parse_facing(it.text())
+        it.setText(make_facing(fc.currentData() or "", over))
+        self._fill_facing_combo(r)
+
+    # ---- choosing windows for a room from the schedule ----
+    def _row_of_widget(self, w, col):
+        for r in range(self.room_table.rowCount()):
+            if self.room_table.cellWidget(r, col) is w:
+                return r
+        return -1
+
+    def _sync_tag_button(self, r, flagged=None):
+        btn = self.room_table.cellWidget(r, 2)
+        it = self.room_table.item(r, 2)
+        if not btn or not it:
+            return
+        it.setForeground(QColor(0, 0, 0, 0))   # the button shows the text instead
+        txt = it.text().strip()
+        shown = ", ".join(f"{t} \u00d7{n:g}" for t, n in parse_tags(txt).items())
+        btn.setText((shown or "Choose windows...") + "  \u25be")
+        btn.setToolTip("Click to pick the windows and doors for this room from your schedule.")
+        if flagged is not None:
+            btn.setProperty("flag", bool(flagged))
+        btn.setStyleSheet("")   # re-apply the theme (amber tint when flagged)
+        btn.style().unpolish(btn)
+        btn.style().polish(btn)
+
+    def _mark_tags_button(self, r):
+        self._sync_tag_button(r, flagged=True)
+
+    def _sort_rooms(self, col):
+        """Click a column heading of the Rooms table to sort by it (click again to reverse)."""
+        T = self.room_table
+        if T.rowCount() < 2 or col not in (0, 1, 2, 3, 4, 5, 6, 7):
+            return
+        asc = not (getattr(self, "_sort_col", None) == col and getattr(self, "_sort_asc", True))
+        self._sort_col, self._sort_asc = col, asc
+        nat = lambda t: [int(x) if x.isdigit() else x.lower() for x in re.split(r"(\d+)", t or "")]
+        rows = []
+        for r in range(T.rowCount()):
+            d = self._room_row_dict(r)
+            btn = T.cellWidget(r, 2)
+            d["_flag"] = bool(btn.property("flag")) if btn else False
+            d["_hl"] = [(T.item(r, 1).toolTip() or "x") if (T.item(r, 1) and T.item(r, 1).background().style() != Qt.BrushStyle.NoBrush) else ""]
+            rows.append(d)
+        fl_order = {f: i for i, f in enumerate(self.floors)}
+        def num(x):
+            try: return float(str(x).replace(",", "."))
+            except ValueError: return 0.0
+        def key(d):
+            if col == 0: return (nat(d["name"]),)
+            if col == 1: return (num(d["area"]),)
+            if col == 2: return (nat(d["tags"]),)
+            if col == 3: return (d["internal"],)
+            if col == 4: return (d["art"],)
+            if col == 5: return (fl_order.get(d["floor"], 99), nat(d["name"]))
+            if col == 7: return (parse_facing(d["facing"])[0] == "", list(PLAN_SIDES).index(parse_facing(d["facing"])[0]) if parse_facing(d["facing"])[0] else 0, nat(d["name"]))
+            u = unit_label(d["unit"]) if d["unit"] else ""
+            return (0 if d["unit"] else 1, nat(u), nat(d["name"]))        # rooms with no unit go last
+        if col in (3, 4):
+            rows.sort(key=key, reverse=asc)        # ticked rooms first on the first click
+        else:
+            rows.sort(key=key, reverse=not asc)
+            if col == 6 and not asc: rows.sort(key=lambda d: (0 if d["unit"] else 1))
+        scroll = T.verticalScrollBar().value()
+        self._loading = True
+        T.setRowCount(0)
+        for d in rows:
+            self.add_room_row([d["name"], d["area"], d["tags"], d["internal"], d["art"], d["floor"], d["unit"], d["facing"]])
+            r = T.rowCount() - 1
+            if d["_flag"]: self._sync_tag_button(r, flagged=True)
+            if d["_hl"][0]:
+                T.item(r, 1).setBackground(YELLOW); T.item(r, 1).setToolTip(d["_hl"][0])
+        self._loading = False
+        T.verticalScrollBar().setValue(scroll)
+        hv = T.horizontalHeader()
+        hv.setSortIndicatorShown(True)
+        hv.setSortIndicator(col, Qt.SortOrder.AscendingOrder if asc else Qt.SortOrder.DescendingOrder)
+        self._apply_floor_filter()
+
+    def _room_row_dict(self, r):
+        T = self.room_table
+        name, area, tags = T.item(r, 0), T.item(r, 1), T.item(r, 2)
+        chk, art = T.cellWidget(r, 3), T.cellWidget(r, 4)
+        return {"name": name.text().strip() if name else "", "area": area.text() if area else "0",
+                "tags": tags.text() if tags else "", "internal": bool(chk and chk.isChecked()),
+                "art": bool(art and art.isChecked()), "floor": self._floor_of_row(r),
+                "unit": (T.item(r, 6).text().strip() if T.item(r, 6) else ""),
+                "facing": (T.item(r, 7).text().strip() if T.item(r, 7) else "")}
+
+    def _combine_rooms(self):
+        """Open plan: merge the selected rooms (e.g. Lounge + Dining + Kitchen) into ONE room.
+        Floor areas add up and so do the windows, so light and ventilation are checked
+        against the combined space."""
+        sel = sorted({i.row() for i in self.room_table.selectedIndexes()
+                      if not self.room_table.isRowHidden(i.row())})
+        if len(sel) < 2:
+            QMessageBox.information(self, APP_NAME,
+                                    "Select two or more rooms first (click the room numbers on the left, "
+                                    "hold Ctrl to pick several), then press this button.")
+            return
+        parts = [self._room_row_dict(r) for r in sel]
+        if len({p["floor"] for p in parts}) > 1:
+            QMessageBox.information(self, APP_NAME, "Only rooms on the same floor can be combined.")
+            return
+        if len({p["unit"] for p in parts}) > 1:
+            QMessageBox.information(self, APP_NAME, "Only rooms in the same unit can be combined.")
+            return
+        area = sum(self._num_text(p["area"]) for p in parts)
+        tags = {}
+        for p in parts:
+            for t, n in parse_tags(p["tags"]).items():
+                tags[t] = tags.get(t, 0) + n
+        default = " / ".join(p["name"] for p in parts)
+        name, ok = QInputDialog.getText(
+            self, APP_NAME, f"Name for the combined room ({area:.2f} m2):", text=default)
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        for r in reversed(sel):
+            self.room_table.removeRow(r)
+        text = ", ".join(f"{t}:{n:g}" for t, n in tags.items())
+        self.combined[name] = parts
+        self.add_room_row([name, f"{area:.2f}", text, False,
+                           all(p["art"] for p in parts), parts[0]["floor"], parts[0].get("unit", ""),
+                           self._merge_facing(parts)])
+        self.statusBar().showMessage(
+            f"Combined {len(parts)} rooms into '{name}' ({area:.2f} m2). "
+            "Select it and press 'Split combined room' to undo.")
+
+    def _num_text(self, t):
+        try:
+            return float(str(t).replace(",", ".").strip() or 0)
+        except ValueError:
+            return 0.0
+
+    def _split_rooms(self):
+        sel = sorted({i.row() for i in self.room_table.selectedIndexes()}, reverse=True)
+        done = 0
+        for r in sel:
+            it = self.room_table.item(r, 0)
+            name = it.text().strip() if it else ""
+            if name in self.combined:
+                parts = self.combined.pop(name)
+                self.room_table.removeRow(r)
+                for p in parts:
+                    self.add_room_row([p["name"], p["area"], p["tags"], p["internal"], p["art"], p["floor"],
+                                       p.get("unit", ""), p.get("facing", "")])
+                done += 1
+        if not done:
+            QMessageBox.information(self, APP_NAME,
+                                    "Select a room that was made with 'Combine selected rooms' first.")
+
+    def _clear_room_windows(self):
+        """Empty the windows/doors of the selected rooms (or all shown rooms if none selected),
+        e.g. when the screenshot was read wrongly, so they can be chosen by hand."""
+        sel = sorted({i.row() for i in self.room_table.selectedIndexes()
+                      if not self.room_table.isRowHidden(i.row())})
+        rows = sel or self._visible_rows(self.room_table)
+        if not rows:
+            return
+        what = f"the {len(rows)} selected room(s)" if sel else f"all {len(rows)} room(s) shown"
+        ans = QMessageBox.question(
+            self, APP_NAME,
+            f"Remove every window and door from {what}? You can then choose them by hand "
+            "with the 'Choose windows...' buttons.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        for r in rows:
+            it = self.room_table.item(r, 2)
+            if it:
+                it.setText("")
+            self._sync_tag_button(r, flagged=False)
+
+    def _pane_menu(self, parent, cur, gpos, glazed_pct=None):
+        """Menu to choose how a pane opens (ventilation) and, optionally, the glazed %.
+        Returns ("kind", (kind, apex)), ("glaze", None) or None."""
+        from PySide6.QtWidgets import QMenu
+        m_ = QMenu(parent)
+        for label, kv in _OP_CHOICES:
+            a_ = m_.addAction(("\u2713  " if kv == cur else "     ") + label); a_.setData(("kind", kv))
+        if glazed_pct is not None:
+            m_.addSeparator()
+            g_ = m_.addAction(f"Glazed area of this opening: {glazed_pct:g}%  -  change...")
+            g_.setData(("glaze", None))
+        chosen = m_.exec(gpos)
+        if chosen is None or chosen.data() is None:
+            return None
+        return chosen.data()
+
+    def _sched_rows_for(self, tag):
+        for T in (self.sched_table, self.door_table):
+            for rr in range(T.rowCount()):
+                ti = T.item(rr, 0)
+                if ti and ti.text().strip().upper() == tag:
+                    yield T, rr
+
+    def _sched_apply_panes(self, tag, kinds):
+        """Change how the panes of a schedule window/door open; updates the drawing and the opening %."""
+        op = self.read_schedule().get(tag)
+        if op is None:
+            return None
+        g = self.sched_geom.get(tag)
+        if not (isinstance(g, dict) and g.get("panes")):
+            g = {"aspect": op.width_mm / max(op.height_mm, 1.0), "panes": [(0.06, 0.06, 0.94, 0.94, "fixed", "")]}
+        it = {"width": op.width_mm, "height": op.height_mm, "geom": g, "glazed_m2": op.glazed_m2 or None}
+        _ifc_apply_ops(it, kinds)
+        self.sched_geom[tag] = it["geom"]
+        self.sched_panes[tag] = it["panes"]
+        for T, rr in self._sched_rows_for(tag):
+            self._loading = True
+            try:
+                pct_ = it["openable"]
+                if not op.glazed_area_m2 and op.clear_m2 > 0:
+                    pct_ = min(100.0, pct_ / 100.0 * (it["glazed_m2"] or op.glazed_m2) / op.clear_m2 * 100.0)
+                T.item(rr, 4).setText(f"{pct_:.1f}")
+                for c_ in (7, 8):
+                    if T.item(rr, c_): T.item(rr, c_).setText("")
+                sb = T.cellWidget(rr, 6)
+                if sb:
+                    sb.blockSignals(True); sb.setCurrentText("Custom"); sb.blockSignals(False)
+            finally:
+                self._loading = False
+            self._recalc_row(rr, T)
+        self.statusBar().showMessage(
+            f"{tag}: opening panes changed - the schedule now counts {it['openable']:g}% of its glass as ventilation.")
+        return self.read_schedule().get(tag)
+
+    def _sched_set_glazed(self, tag, parent=None):
+        """Ask for a new glazed % for a schedule window/door and store it. Returns the new Opening or None."""
+        op = self.read_schedule().get(tag)
+        if op is None:
+            return None
+        cur = (op.glazed_m2 / op.area_m2 * 100.0) if op.area_m2 > 0 else op.glazed_pct
+        val, ok = QInputDialog.getDouble(parent or self, APP_NAME, f"Glazed % of {tag} (share of the opening that is glass):",
+                                         round(cur, 1), 0.0, 100.0, 1)
+        if not ok:
+            return None
+        for T, rr in self._sched_rows_for(tag):
+            T.item(rr, 3).setText(f"{val:g}")          # typing a Glazed % replaces the schedule's m2 figure
+        self.statusBar().showMessage(f"{tag}: glazed area set to {val:g}%.")
+        return self.read_schedule().get(tag)
+
+    def _edit_room_windows(self, r):
+        if r < 0:
+            return
+        sched = self.read_schedule()
+        if not sched:
+            QMessageBox.information(self, APP_NAME,
+                                    "Import or add your windows on the Schedule tab first.")
+            return
+        cur = parse_tags(self.room_table.item(r, 2).text() if self.room_table.item(r, 2) else "")
+        name = self.room_table.item(r, 0).text() if self.room_table.item(r, 0) else "room"
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Windows and doors in {name}")
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel("How many of each window / door are in this room?"))
+        area = QScrollArea()
+        area.setWidgetResizable(True)
+        inner = QWidget()
+        grid = QGridLayout(inner)
+        spins = {}
+        facecombos = {}
+        base0, over0 = parse_facing(self.room_table.item(r, 7).text() if self.room_table.item(r, 7) else "")
+        widgets_ = []
+        labs_ = {}
+
+        def lab_text(tag, op):
+            return (f"<b>{tag}</b> &nbsp; {op.width_mm:g} x {op.height_mm:g} mm &nbsp; "
+                    f"<span style='color:rgba(255,255,255,150)'>{op.kind}, "
+                    f"{op.openable_m2:.2f} m\u00b2 opens</span>")
+        for i, (tag, op) in enumerate(sched.items()):
+            lab = QLabel(lab_text(tag, op))
+            sp = QSpinBox()
+            sp.setRange(0, 50)
+            sp.setValue(int(cur.get(tag, 0)))
+            spins[tag] = sp
+            widgets_.append((lab, sp, tag))
+            labs_[tag] = lab
+            sp.setFixedWidth(84)
+            grid.addWidget(lab, i, 0)
+            grid.addWidget(sp, i, 1)
+            fcb = QComboBox()
+            fcb.addItem("faces: same as room", "")
+            for code, (lbl, _a) in PLAN_SIDES.items():
+                fcb.addItem(f"faces: {lbl} \u2192 {compass_sector(code, self._north_deg())}", code)
+            ov_ = over0.get(tag.upper(), "")
+            if ov_ and fcb.findData(ov_) < 0:
+                fcb.addItem("faces: from the IFC model (" + " + ".join(
+                    compass_sector(x.split(":")[0], self._north_deg()) + (f" x{x.split(':')[1]}" if ":" in x else "")
+                    for x in ov_.split("|")) + ")", ov_)
+            fcb.setCurrentIndex(max(0, fcb.findData(ov_)))
+            fcb.setToolTip("Only change this when this window is on a different side from the rest of the room "
+                           "(a corner room, for example).")
+            facecombos[tag.upper()] = fcb
+            grid.addWidget(fcb, i, 2)
+        extra_tags = [t for t in cur if t not in sched]
+        for j, tag in enumerate(extra_tags, start=len(sched)):
+            lab = QLabel(f"<b>{tag}</b> &nbsp; <span style='color:#ff9a9a'>not in your schedule</span>")
+            sp = QSpinBox()
+            sp.setRange(0, 50)
+            sp.setValue(int(cur.get(tag, 0)))
+            spins[tag] = sp
+            sp.setFixedWidth(84)
+            grid.addWidget(lab, j, 0)
+            grid.addWidget(sp, j, 1)
+        grid.setRowStretch(len(sched) + len(extra_tags), 1)
+        grid.setColumnStretch(0, 1)
+        grid.setHorizontalSpacing(14)
+        grid.setContentsMargins(0, 0, 12, 0)
+        area.setWidget(inner)
+        lay.addWidget(area)
+        row = QHBoxLayout()
+        wipe = QPushButton("Remove everything")
+        wipe.setToolTip("Set every window/door in this room to 0, then choose them by hand.")
+        wipe.clicked.connect(lambda: [sp.setValue(0) for sp in spins.values()])
+        row.addWidget(wipe)
+        ok = QPushButton("Done")
+        ok.setProperty("accent", True)
+        cancel = QPushButton("Cancel")
+        ok.clicked.connect(dlg.accept)
+        cancel.clicked.connect(dlg.reject)
+        row.addStretch()
+        row.addWidget(cancel)
+        row.addWidget(ok)
+        lay.addLayout(row)
+        dlg.resize(700, min(120 + 46 * len(spins), 560))
+        # hover any window/door line to see it drawn (glass, opening panes) on the LEFT of this dialog;
+        # click a pane in the drawing to choose which panes open (they count as ventilation)
+        pop = OpeningPreview(dlg)
+        win_ = self
+
+        class _RoomHover(QObject):
+            def __init__(h):
+                super().__init__(dlg)
+                h.map = {}
+                h.cur = None
+                h.want = None
+                h.menu_open = False
+                h.hide_t = QTimer(h); h.hide_t.setSingleShot(True); h.hide_t.setInterval(500)
+                h.hide_t.timeout.connect(h._maybe_hide)
+                h.dwell = QTimer(h); h.dwell.setSingleShot(True); h.dwell.setInterval(300)
+                h.dwell.timeout.connect(h._switch)
+                pop.on_pick = h.pick
+                pop.on_enter = lambda: (h.hide_t.stop(), h.dwell.stop())
+                pop.on_leave = h.hide_t.start
+            def _maybe_hide(h):
+                if h.menu_open or pop.underMouse():
+                    return
+                pop.hide(); h.cur = None
+            def _switch(h):
+                if h.want and h.want != h.cur and not pop.underMouse():
+                    h.show_tag(h.want)
+            def _geom_for(h, tag, op):
+                g = win_.sched_geom.get(tag)
+                if not (isinstance(g, dict) and g.get("panes")):
+                    g = {"aspect": op.width_mm / max(op.height_mm, 1.0),
+                         "panes": [(0.06, 0.06, 0.94, 0.94, "fixed", "")]}
+                    win_.sched_geom[tag] = g
+                return g
+            def show_tag(h, tag):
+                op = sched.get(tag)
+                if op is None:
+                    return
+                h.cur = tag
+                g = h._geom_for(tag, op)
+                from PySide6.QtGui import QGuiApplication
+                gm = dlg.frameGeometry()
+                sc = QGuiApplication.screenAt(gm.center()) or QGuiApplication.primaryScreen()
+                av = sc.availableGeometry()
+                pw, ph = pop.width(), pop.height()
+                y = max(av.top() + 4, min(gm.top() + 40, av.bottom() - ph - 4))
+                if gm.left() - 8 - pw >= av.left():                 # preferred: left of the dialog
+                    pt = QPoint(gm.left() - 8 - pw, y)
+                elif gm.right() + 8 + pw <= av.right():
+                    pt = QPoint(gm.right() + 8, y)
+                else:
+                    pt = QPoint(max(av.left(), gm.left() + 20), max(av.top(), gm.bottom() - ph - 20))
+                if pop.isVisible():
+                    pt = pop.pos()
+                pop.show_for(op, win_.sched_panes.get(tag), pt, g)
+            def pick(h, i, gpos):
+                tag = h.cur
+                op = sched.get(tag) if tag else None
+                if op is None:
+                    return
+                g = h._geom_for(tag, op)
+                if i >= len(g["panes"]):
+                    return
+                q = g["panes"][i]
+                cur = (q[4], q[5] if len(q) > 5 else "")
+                share = (op.glazed_m2 / op.area_m2 * 100.0) if op.area_m2 > 0 else op.glazed_pct
+                h.menu_open = True
+                ch = win_._pane_menu(dlg, cur, gpos, share)
+                h.menu_open = False
+                if ch is None:
+                    h.hide_t.start(); return
+                if ch[0] == "glaze":
+                    new = win_._sched_set_glazed(tag, dlg)
+                else:
+                    kinds = [(x[4], x[5] if len(x) > 5 else "") for x in g["panes"]]
+                    kinds[i] = tuple(ch[1])
+                    new = win_._sched_apply_panes(tag, kinds)
+                if new is not None:
+                    sched[tag] = new
+                    if tag in labs_:
+                        labs_[tag].setText(lab_text(tag, new))
+                    h.show_tag(tag)
+            def eventFilter(h, obj, ev):
+                t = ev.type()
+                if t in (QEvent.Type.Enter, QEvent.Type.MouseMove) and obj in h.map:
+                    h.hide_t.stop()
+                    tag = h.map[obj]
+                    if not pop.isVisible():
+                        h.show_tag(tag)
+                    elif tag != h.cur:
+                        h.want = tag; h.dwell.start()     # switch only after resting on the line
+                    else:
+                        h.want = None; h.dwell.stop()
+                elif t == QEvent.Type.Leave and obj in h.map:
+                    h.dwell.stop(); h.hide_t.start()
+                return False
+        rh = _RoomHover()
+        for lab_, sp_, tag_ in widgets_:
+            for w_ in (lab_, sp_):
+                w_.setMouseTracking(True)
+                w_.installEventFilter(rh)
+                rh.map[w_] = tag_
+        note = QLabel("Hover a window or door to see it on the left. Click a pane in the drawing to choose "
+                      "which panes open (green = ventilation). This updates the schedule.")
+        note.setWordWrap(True); note.setObjectName("xaSub")
+        lay.insertWidget(1, note)
+        dlg.finished.connect(lambda *_: pop.hide())
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        parts = [f"{t}:{sp.value()}" for t, sp in spins.items() if sp.value() > 0]
+        self.room_table.item(r, 2).setText(", ".join(parts))
+        used = {k.upper() for k, sp in spins.items() if sp.value() > 0}
+        over1 = {t: fcb.currentData() for t, fcb in facecombos.items() if fcb.currentData() and t in used}
+        self.room_table.item(r, 7).setText(make_facing(base0, over1))
+        self._fill_facing_combo(r)
+        self._sync_tag_button(r, flagged=False)
+
+    # ---- several units in one building (flats / townhouses) ----
+    def _ifc_active(self):
+        d = getattr(self, "ifc_data", None)
+        return bool(self.rd.get("has_ifc")) and bool(d and (d.get("rooms") or d.get("items")))
+
+    def xa_rooms(self):
+        """Rooms for Energy (XA) and the rational design report: the IFC model when one is loaded,
+        otherwise the rooms typed or imported from the floor-plan screenshots."""
+        if not self._ifc_active():
+            return self.read_rooms()
+        out = []
+        face = {}
+        for rm in self.read_rooms():                # facing is set in the Rooms table, matched by name and floor
+            if rm.facing:
+                face[(rm.name.lower(), rm.floor)] = rm.facing
+        for r in self.ifc_data["rooms"]:
+            tags = ", ".join(f"{t}:{n}" for t, n in sorted((r.get("tags") or {}).items()))
+            fl = r.get("floor") or "Ground Floor"
+            out.append(Room(r["name"], float(r["area"]), tags, False, False, fl, r.get("unit", ""),
+                            r.get("facing") or face.get((r["name"].lower(), fl), "")))
+        return out
+
+    @staticmethod
+    def _ifc_opening(it):
+        return Opening(
+            it["tag"].upper(), float(it["width"]), float(it["height"]), float(it.get("glazed", 85)),
+            float(it.get("openable", 50)), it.get("kind", "Window"), it.get("style", "Custom"), 0.0, 0.0, 1.0, 0.0,
+            float(it.get("qty", 1)), float(it.get("glazed_m2") or 0.0))
+
+    def xa_schedule(self):
+        if not self._ifc_active():
+            return self.read_schedule()
+        return {it["tag"].upper(): self._ifc_opening(it) for it in self.ifc_data["items"]}
+
+    def _make_ifc_row(self, compact=False):
+        """One shared 'I have an IFC model' tick box + import button (Home, Light && Ventilation, Energy)."""
+        if not hasattr(self, "_ifc_rows"):
+            self._ifc_rows = []
+        w = QWidget(); h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 0)
+        chk = QCheckBox("I have an IFC model")
+        chk.setToolTip("Tick this if you can export an IFC model from Archicad. Rooms, windows, doors, "
+                       "floor areas and north are then read from the model and used for Energy (XA) and the "
+                       "rational design report. Light & Ventilation keeps using your screenshots.")
+        btn = QPushButton("Import IFC model...")
+        btn.clicked.connect(lambda *_: self.import_ifc())
+        lab = QLabel("")
+        lab.setObjectName("xaSub")
+        rbtn = QPushButton("Check windows && doors...".replace("&&", "&"))
+        rbtn.clicked.connect(lambda *_: self.review_ifc())
+        h.addWidget(chk); h.addWidget(btn); h.addWidget(rbtn)
+        if not compact:
+            h.addWidget(lab, 1)
+        else:
+            lab.hide()
+        chk.toggled.connect(self._set_has_ifc)
+        self._ifc_rows.append((chk, btn, lab))
+        btn._rbtn = rbtn
+        self._sync_ifc_rows()
+        return w
+
+    def _sync_ifc_rows(self):
+        on = bool(self.rd.get("has_ifc")) if hasattr(self, "rd") else False
+        name = os.path.basename(getattr(self, "ifc_path", "") or "")
+        info = getattr(self, "ifc_info", "")
+        for chk, btn, lab in getattr(self, "_ifc_rows", []):
+            chk.blockSignals(True); chk.setChecked(on); chk.blockSignals(False)
+            btn.setEnabled(on)
+            if hasattr(btn, "_rbtn"):
+                btn._rbtn.setEnabled(on and bool(getattr(self, "ifc_data", None)))
+            lab.setText((f"Loaded: {name}  {info}" if name else "Not imported yet. Export an IFC from Archicad "
+                         "with zones and quantities.") if on else "")
+
+    def _set_has_ifc(self, on):
+        self.rd["has_ifc"] = "1" if on else ""
+        self._sync_ifc_rows()
+        if on and not self.rd.get("ifc_loaded"):
+            QTimer.singleShot(0, self.import_ifc)
+
+    def _make_units_chk(self):
+        chk = QCheckBox("This building has several units (flats / townhouses) - calculate per unit")
+        chk.setToolTip("On: each room is given a unit, and light, ventilation, glazing and the energy "
+                       "fenestration check are totalled per unit (and for the entire block).\n"
+                       "Off: results are totalled per floor.")
+        chk.setChecked(UNIT_MODE[0])
+        chk.toggled.connect(self._set_units_mode)
+        self._units_chks.append(chk)
+        return chk
+
+    def _set_units_mode(self, on):
+        UNIT_MODE[0] = bool(on)
+        for c in self._units_chks:
+            if c.isChecked() != UNIT_MODE[0]:
+                c.blockSignals(True)
+                c.setChecked(UNIT_MODE[0])
+                c.blockSignals(False)
+        self.room_table.setColumnHidden(6, not UNIT_MODE[0])
+        try:   # show the Unit column right after the room name
+            hv = self.room_table.horizontalHeader()
+            hv.setSectionsMovable(True)
+            if UNIT_MODE[0] and hv.visualIndex(6) != 1:
+                hv.moveSection(hv.visualIndex(6), 1)
+        except Exception:
+            pass
+        self.assign_unit_btn.setVisible(UNIT_MODE[0])
+        self._apply_floor_filter()
+        self._xa_autofill()
+        try:
+            self._refresh_home_summary()
+        except Exception:
+            pass
+        self.house_table.setHorizontalHeaderLabels(
+            ["Block / unit" if UNIT_MODE[0] else "Whole building / floor", "Net floor area m2",
+             "Glazing: actual of max", "Natural light: actual of min", "Ventilation: actual of min"])
+        if hasattr(self, "xa_fen_table"):
+            self.xa_fen_table.setHorizontalHeaderItem(
+                0, QTableWidgetItem("Unit" if UNIT_MODE[0] else "Storey"))
+        self.statusBar().showMessage(
+            "Per-unit mode ON: give each room a unit on the Rooms step, then run the checks again."
+            if UNIT_MODE[0] else "Per-unit mode off: results are totalled per floor.", 8000)
+
+    def _assign_unit(self):
+        sel = sorted({i.row() for i in self.room_table.selectedIndexes()
+                      if not self.room_table.isRowHidden(i.row())})
+        if not sel:
+            QMessageBox.information(self, APP_NAME,
+                                    "Select the rooms of one unit first (click the room numbers on the left, "
+                                    "hold Ctrl or Shift to pick several), then press this button.")
+            return
+        have = []
+        for r in range(self.room_table.rowCount()):
+            it = self.room_table.item(r, 6)
+            if it and it.text().strip() and it.text().strip() not in have:
+                have.append(it.text().strip())
+        name, ok = QInputDialog.getItem(self, APP_NAME, f"Unit name for the {len(sel)} selected room(s):",
+                                        have or ["Unit 1"], 0, True)
+        if not ok or not name.strip():
+            return
+        for r in sel:
+            self.room_table.setItem(r, 6, QTableWidgetItem(name.strip()))
+
+    # ---- floors / storeys ----
+    def _current_floor(self):
+        t = self.floor_filter.currentText() if hasattr(self, "floor_filter") else ""
+        return t if t in self.floors else self.floors[0]
+
+    def _floor_of_row(self, r):
+        fb = self.room_table.cellWidget(r, 5)
+        return fb.currentText() if fb else self.floors[0]
+
+    def _apply_floor_filter(self):
+        want = self.floor_filter.currentText()
+        uf = getattr(self, "unit_filter", None)
+        nf = getattr(self, "name_filter", None)
+        T = self.room_table
+        unit_of = lambda r: (T.item(r, 6).text().strip() if T.item(r, 6) else "")
+        if uf is not None:                       # keep the unit list in step with the rooms
+            units = sorted({unit_of(r) for r in range(T.rowCount()) if unit_of(r)},
+                           key=lambda u: (len(u), u))
+            have = [uf.itemData(i) for i in range(1, uf.count())]
+            extra = ["__none__"] if any(not unit_of(r) for r in range(T.rowCount())) and units else []
+            if have != units + extra:
+                cur = uf.currentData()
+                uf.blockSignals(True)
+                uf.clear(); uf.addItem("All units", "")
+                for u in units: uf.addItem(unit_label(u), u)
+                for e in extra: uf.addItem("No unit", e)
+                i = uf.findData(cur)
+                uf.setCurrentIndex(i if i >= 0 else 0)
+                uf.blockSignals(False)
+            uf.setVisible(UNIT_MODE[0] and bool(units))
+        uw = (uf.currentData() or "") if (uf is not None and UNIT_MODE[0]) else ""
+        txt = (nf.text().strip().lower() if nf is not None else "")
+        for r in range(T.rowCount()):
+            hide = want != "All floors" and self._floor_of_row(r) != want
+            if not hide and uw:
+                hide = (unit_of(r) != "") if uw == "__none__" else (unit_of(r) != uw)
+            if not hide and txt:
+                nm = T.item(r, 0).text().lower() if T.item(r, 0) else ""
+                tg = T.item(r, 2).text().lower() if T.item(r, 2) else ""
+                hide = txt not in nm and txt not in tg and txt not in unit_label(unit_of(r)).lower()
+            T.setRowHidden(r, hide)
+
+    def _refresh_floor_widgets(self, select=None):
+        cur = select or self.floor_filter.currentText()
+        self.floor_filter.blockSignals(True)
+        self.floor_filter.clear()
+        self.floor_filter.addItem("All floors")
+        self.floor_filter.addItems(self.floors)
+        self.floor_filter.setCurrentText(cur if cur in self.floors or cur == "All floors"
+                                         else self.floors[0])
+        self.floor_filter.blockSignals(False)
+        for r in range(self.room_table.rowCount()):
+            fb = self.room_table.cellWidget(r, 5)
+            if fb:
+                keep = fb.currentText()
+                fb.blockSignals(True)
+                fb.clear()
+                fb.addItems(self.floors)
+                fb.setCurrentText(keep if keep in self.floors else self.floors[0])
+                fb.blockSignals(False)
+        self._apply_floor_filter()
+
+    def add_floor(self):
+        name, ok = QInputDialog.getText(self, APP_NAME, "Name of the new floor:",
+                                        text=f"Floor {len(self.floors)}")
+        name = name.strip()
+        if ok and name and name not in self.floors:
+            self.floors.append(name)
+            self._refresh_floor_widgets(select=name)
+
+    def rename_floor(self):
+        old = self.floor_filter.currentText()
+        if old not in self.floors:
+            QMessageBox.information(self, APP_NAME, "Pick one floor in the Floor box first.")
+            return
+        name, ok = QInputDialog.getText(self, APP_NAME, f"New name for '{old}':", text=old)
+        name = name.strip()
+        if ok and name and (name == old or name not in self.floors):
+            rows = [r for r in range(self.room_table.rowCount()) if self._floor_of_row(r) == old]
+            self.floors[self.floors.index(old)] = name
+            self._refresh_floor_widgets(select=name)
+            for r in rows:
+                self.room_table.cellWidget(r, 5).setCurrentText(name)
+            self._apply_floor_filter()
+
+    @staticmethod
+    def _num(item, default=0.0):
+        try:
+            return float(item.text().replace(",", ".")) if item else default
+        except ValueError:
+            return default
+
+    def read_schedule(self):
+        sched = {}
+        on = self.frame_chk.isChecked()
+        for T, fr in ((self.sched_table, self.frame_spin.value() if on else 0.0),
+                      (self.door_table, self.door_frame_spin.value() if on else 0.0)):
+            for r in range(T.rowCount()):
+                tag_item = T.item(r, 0)
+                tag = tag_item.text().strip().upper() if tag_item else ""
+                if not tag:
+                    continue
+                box = T.cellWidget(r, 5)
+                sbox = T.cellWidget(r, 6)
+                sched[tag] = Opening(
+                    tag, self._num(T.item(r, 1)),
+                    self._num(T.item(r, 2)),
+                    self._num(T.item(r, 3)),
+                    self._num(T.item(r, 4)),
+                    box.currentText() if box else "Window",
+                    sbox.currentText() if sbox else "Custom",
+                    self._num(T.item(r, 7)),
+                    self._num(T.item(r, 8)),
+                    self._num(T.item(r, 9), 1.0) or 1.0, fr,
+                    self._num(T.item(r, 10), 1.0) or 1.0,
+                    self._num(T.item(r, 11)))
+        return sched
+
+    def read_rooms(self):
+        rooms = []
+        for r in range(self.room_table.rowCount()):
+            name = self.room_table.item(r, 0)
+            tags = self.room_table.item(r, 2)
+            chk = self.room_table.cellWidget(r, 3)
+            art = self.room_table.cellWidget(r, 4)
+            if not name or not name.text().strip():
+                continue
+            rooms.append(Room(name.text().strip(),
+                              self._num(self.room_table.item(r, 1)),
+                              tags.text() if tags else "",
+                              chk.isChecked() if chk else False,
+                              art.isChecked() if art else False,
+                              self._floor_of_row(r),
+                              (self.room_table.item(r, 6).text().strip() if self.room_table.item(r, 6) else ""),
+                              (self.room_table.item(r, 7).text().strip() if self.room_table.item(r, 7) else "")))
+        return rooms
+
+    def run_check(self):
+        try: self._xa_autofill()
+        except Exception: pass
+        sched = self.read_schedule()
+        all_rooms = self.read_rooms()
+        rooms = [rm for rm in all_rooms if not excluded_reason(rm.name)]
+        skipped = [(rm, excluded_reason(rm.name)) for rm in all_rooms if excluded_reason(rm.name)]
+        light_pct = RULES[self.rule_box.currentText()]
+        self.results = [check_room(rm, sched, light_pct) for rm in rooms]
+        t = self.result_table
+        t.setRowCount(0)
+        passed = 0
+        green, red = QColor(198, 239, 206), QColor(255, 199, 206)
+        for res in self.results:
+            r = t.rowCount()
+            t.insertRow(r)
+            notes = []
+            if res["circulation"]:
+                notes.append("Passage/circulation: no natural light or ventilation area required "
+                             "(artificial lighting where needed)")
+            elif res["no_area"]:
+                notes.append("No floor area entered - cannot be checked")
+            if res["missing"]:
+                notes.append("Unknown tags: " + ", ".join(res["missing"]))
+            if res.get("detail"):
+                notes.append("Glazed: " + " + ".join(res["detail"]))
+            if res.get("assumed"):
+                notes.append("100% glass ASSUMED for " + ", ".join(res["assumed"]) +
+                             " - no schedule glazed area; type it into 'Glazed m2 (schedule)'")
+            if res.get("art_used"):
+                notes.append("Natural light below the minimum - relies on artificial lighting "
+                             "(confirm your council accepts this)")
+            if not res["light_ok"]:
+                notes.append("Needs artificial lighting or more glazing")
+            if not res["vent_ok"]:
+                notes.append("Needs mechanical ventilation or larger openable area")
+            if res["internal"] and not res["circulation"]:
+                notes.append("Internal room - check mechanical ventilation")
+            cells = [
+                (f"{res['group']}  ({res['floor']})" if UNIT_MODE[0] else res["floor"]), res["room"], f"{res['area']:.2f}", f"{res['glazed']:.2f}",
+                f"{res['light_pct']:.1f}% (min {res['light_req']:.2f} m2)",
+                ("PASS (artificial light)" if res.get("art_used") else "PASS")
+                if res["light_ok"] else "FAIL",
+                f"{res['openable']:.2f}",
+                f"{res['vent_pct']:.1f}% (min {res['vent_req']:.2f} m2)",
+                "PASS" if res["vent_ok"] else "FAIL",
+                f"{res['glaze_pct']:.1f}% (max {GLAZE_LIMIT[0]:g}% = {res['glaze_max']:.2f} m2)",
+                "WITHIN LIMIT" if res["glaze_ok"] else "RATIONAL DESIGN", "; ".join(notes)]
+            for c, v in enumerate(cells):
+                item = QTableWidgetItem(v)
+                if c == 5:
+                    item.setData(Qt.ItemDataRole.UserRole, "pass" if res["light_ok"] else "fail")
+                if c == 8:
+                    item.setData(Qt.ItemDataRole.UserRole, "pass" if res["vent_ok"] else "fail")
+                if c == 10:
+                    item.setData(Qt.ItemDataRole.UserRole, "pass" if res["glaze_ok"] else "fail")
+                t.setItem(r, c, item)
+            if not res["glaze_ok"]:
+                notes_item = t.item(r, 11)
+                notes_item.setText(f"Glazing is over {GLAZE_LIMIT[0]:g}% of the floor area - a rational "
+                                   "design is needed. " + notes_item.text())
+            if res["light_ok"] and res["vent_ok"]:
+                passed += 1
+        for rm, why in skipped:      # listed for information only, never counted
+            r = t.rowCount()
+            t.insertRow(r)
+            vals = [(f"{room_group(rm.floor, rm.unit)}  ({rm.floor})" if UNIT_MODE[0] else rm.floor), rm.name,
+                    f"{rm.area_m2:.2f}", "-", "-", "n/a", "-", "-", "n/a", "-", "n/a", why]
+            for c, v in enumerate(vals):
+                it = QTableWidgetItem(v)
+                it.setForeground(QColor(170, 170, 170))
+                t.setItem(r, c, it)
+        per = []
+        for fl in dict.fromkeys(r["group"] for r in self.results):
+            rs = [r for r in self.results if r["group"] == fl]
+            per.append(f"{fl}: {sum(1 for r in rs if r['light_ok'] and r['vent_ok'])} of {len(rs)}")
+        self.summary.setText(f"{passed} of {len(self.results)} rooms pass both checks   |   "
+                             + "   ".join(per) + "\n" + glazing_summary(self.results))
+        self._fill_house_table()
+        self._fill_assignments(rooms, sched)
+        self._goto_lv(3)
+
+    def _show_assignments(self):
+        if self._assign_dialog is None:
+            d = QDialog(self)
+            d.setWindowTitle("Windows and doors per room")
+            d.resize(1100, 520)
+            lay = QVBoxLayout(d)
+            lay.addWidget(self.assign_table)
+            self._assign_dialog = d
+        self._assign_dialog.show()
+        self._assign_dialog.raise_()
+
+    def _fill_house_table(self):
+        t = self.house_table
+        t.setRowCount(0)
+        for g in house_totals(self.results):
+            r = t.rowCount()
+            t.insertRow(r)
+            t.setItem(r, 0, QTableWidgetItem(g["scope"]))
+            t.setItem(r, 1, QTableWidgetItem(f"{g['area']:.2f}"))
+            for c, (item, perm, act, ok, kind) in enumerate(g["rows"], start=2):
+                it = QTableWidgetItem(f"{act:.2f}  of  {'max' if kind == 'max' else 'min'} {perm:.2f}")
+                it.setData(Qt.ItemDataRole.UserRole, "pass" if ok else "fail")
+                it.setToolTip(item + (" - " + ("within the limit" if ok else "over the limit: rational design needed")
+                                      if kind == "max" else " - " + ("passes" if ok else "fails")))
+                t.setItem(r, c, it)
+
+    def _fill_assignments(self, rooms, sched):
+        """List which windows/doors belong to which room, and which are in no room."""
+        t = self.assign_table
+        t.setRowCount(0)
+        used = set()
+        grey = QColor(255, 255, 255, 34)
+        red = QColor(255, 60, 72, 80)
+
+        def add(vals, color=None, bold=False):
+            r = t.rowCount()
+            t.insertRow(r)
+            for c, v in enumerate(vals):
+                it = QTableWidgetItem(v)
+                if color:
+                    it.setBackground(color)
+                if bold:
+                    f = it.font(); f.setBold(True); it.setFont(f)
+                t.setItem(r, c, it)
+
+        for rm in rooms:
+            tags = parse_tags(rm.tags)
+            add([rm.name, "", "", "", "", "", "", f"{rm.floor} - {len(tags)} window/door tag(s)"], grey, True)
+            for tag, qty in tags.items():
+                op = sched.get(tag)
+                if op is None:
+                    add(["", tag, f"{qty:g}", "?", "", "", "", "Not in the schedule"], red)
+                    continue
+                used.add(tag)
+                if not op.counts:
+                    add(["", tag, f"{qty:g}", f"{op.width_mm:g} x {op.height_mm:g}", op.style,
+                         "0.00", "0.00", "Internal door (no glass) - not counted"], grey)
+                    continue
+                add(["", tag, f"{qty:g}", f"{op.width_mm:g} x {op.height_mm:g}", op.style,
+                     f"{op.glazed_m2 * qty:.2f}", f"{op.openable_m2 * qty:.2f}", ""])
+        loose = [k for k, o in sched.items() if k not in used and o.counts]
+        if loose:
+            add(["NOT IN ANY ROOM", "", "", "", "", "", "", f"{len(loose)} tag(s)"], red, True)
+            for tag in loose:
+                op = sched[tag]
+                add(["", tag, "", f"{op.width_mm:g} x {op.height_mm:g}", op.style, "", "",
+                     "In the schedule but not given to any room"])
+
+    def _build_menu(self):
+        mb = self.menuBar()
+        m = mb.addMenu("File")
+
+        def add(menu, text, fn):
+            act = QAction(text, self)
+            act.triggered.connect(lambda *_a, f=fn: f())
+            menu.addAction(act)
+            return act
+        add(m, "New project...", lambda: self.project_wizard())
+        add(m, "Open project...", self.open_project)
+        self.recent_menu = m.addMenu("Recent projects")
+        self._rebuild_recent_menu()
+        rv = m.addMenu("Revisions")
+        add(rv, "Save revision...", self.save_revision)
+        add(rv, "Compare with a revision...", self.compare_revision)
+        add(rv, "Restore a revision...", self.restore_revision)
+        add(rv, "Open the revisions folder", self.open_revisions_folder)
+        add(m, "Save project", self.save_project)
+        add(m, "Save project as...", self.save_project_as)
+        m.addSeparator()
+        im = m.addMenu("Import")
+        add(im, "IFC model (for Energy XA and rational design)...", self.import_ifc)
+        im.addSeparator()
+        add(im, "Windows (PDF / screenshot)...", self.import_schedule_any)
+        add(im, "Paste windows screenshot", self.paste_schedule_clipboard)
+        add(im, "Floor plan (PDF / screenshot)...", self.import_rooms_any)
+        add(im, "Paste floor plan screenshot", self.paste_rooms_clipboard)
+        im.addSeparator()
+        add(im, "Schedule CSV...", self.import_schedule_csv)
+        add(im, "Rooms CSV...", self.import_rooms_csv)
+        rp = m.addMenu("Reports")
+        lv = rp.addMenu("Light && Ventilation".replace("&&", "&&"))
+        add(lv, "Preview PDF report", self.preview_pdf_report)
+        add(lv, "Export PDF report...", self.export_pdf_report)
+        add(lv, "Export report CSV...", self.export_report)
+        add(lv, "Export pages as PNG (for Archicad)...", lambda: self.export_pages_png("lv"))
+        xa = rp.addMenu("Energy (XA)")
+        add(xa, "Export XA energy report...", self.export_xa_pdf)
+        add(xa, "Export pages as PNG (for Archicad)...", lambda: self.export_pages_png("xa"))
+        rd = rp.addMenu("Rational design")
+        add(rd, "Report details...", self.rd_dialog)
+        add(rd, "Preview report", lambda: self.preview_pdf_report(self._write_rd_pdf, self._run_xa_quiet))
+        add(rd, "Export report...", self.export_rd_pdf)
+        add(rd, "Export pages as PNG (for Archicad)...", lambda: self.export_pages_png("rd"))
+        add(rp, "Compliance summary sheet (PNG / PDF for Archicad)...", self.export_summary_block)
+        add(rp, "Simulation export for DesignBuilder / EnergyPlus (gbXML + IDF + weather)...", self.export_simulation)
+        tl = m.addMenu("Tools")
+        add(tl, "Show text the reader saw...", self.show_last_text)
+        add(tl, "Show detected openings...", self.show_overlay)
+        add(tl, "IFC room report (areas the program used)...", self.show_ifc_report)
+        add(tl, "IFC health check...", lambda: self.show_ifc_health())
+        add(tl, "Online mode (API key)...", self.online_settings)
+        add(tl, "Save icon pack (SVG files)...", self.save_icon_pack)
+        vm = m.addMenu("Appearance")
+        add(vm, "Dark Studio (flat, crisp)" + ("   \u2713" if studio() else ""), lambda: self.set_theme("studio"))
+        add(vm, "Liquid glass (old look)" + ("" if studio() else "   \u2713"), lambda: self.set_theme("glass"))
+        m.addSeparator()
+        self.update_act = add(m, "Restart the program" if FROZEN else "Update - reload the latest program", self.restart_app)
+        add(m, "Update from downloaded file...", self.update_from_download)
+        if FROZEN:
+            add(m, "Check for updates now", lambda: self.gh_check(manual=True))
+            add(m, "Update settings (GitHub)...", self.gh_settings)
+            va_ = add(m, "Version %s" % (app_version() or "-"), lambda: None)
+            va_.setEnabled(False)
+        m.addSeparator()
+        add(m, "Quit", self.close)
+        self._gh_new = None
+        self._gh_busy = False
+        self._gh_next = 0.0
+        self._update_ready = False
+        self._update_src = ""
+        self.update_btn = QPushButton("\u27F3  Update available - click to update")
+        self.update_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.update_btn.setStyleSheet(
+            "QPushButton{background:#c01020;color:white;border:1px solid #ff4050;border-radius:8px;"
+            "padding:3px 14px;font-weight:bold;}QPushButton:hover{background:#e01830;}")
+        self.update_btn.setToolTip("Installs the newer program and reloads it in this same window.\n"
+                                   "Your project is kept and the window does not close and reopen.")
+        self.update_btn.clicked.connect(self.update_now)
+        self.update_btn.hide()
+        self.statusBar().addWidget(self.update_btn)
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self.check_for_update)
+        self._timer.start(3000)
+
+    def _set_project_label(self, note=""):
+        name = os.path.basename(self.current_file) if getattr(self, "current_file", None) else "not saved yet"
+        txt = f"Current project: {name}" + (f"   ({note})" if note else "")
+        if hasattr(self, "home_proj_lbl"):
+            self.home_proj_lbl.setText(txt)
+        self.setWindowTitle(f"{APP_NAME}  -  {name}")
+        try:
+            self._refresh_home_summary()
+        except Exception:
+            pass
+
+    def project_wizard(self, editing=False):
+        """Step 1. Returns True when a project was created (or its details saved)."""
+        if not editing:
+            has_data = bool(self.sched_table.rowCount() or self.door_table.rowCount() or self.room_table.rowCount()
+                            or self.xa_elements)
+            if has_data:
+                r = QMessageBox.question(
+                    self, APP_NAME, "Start a new project? Anything not saved will be lost.",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+                if r != QMessageBox.StandardButton.Yes:
+                    return False
+            self.new_project(ask=False)
+        d = ProjectWizard(self, editing)
+        if d.exec() != QDialog.DialogCode.Accepted:
+            return False
+        if d.result_action == "open":
+            self.open_project()
+            return False
+        d.apply()
+        self._set_project_label("new" if not editing else "details saved")
+        self._refresh_home_summary()
+        self.main_tabs.setCurrentIndex(0)
+        return True
+
+    def start_on_launch(self):
+        if getattr(self, "current_file", None):
+            return
+        self.project_wizard()
+
+    def building_kind(self):
+        n = len(self.floors)
+        return ("Block of units (flats / townhouses)" if UNIT_MODE[0] else "House") + \
+               f", {n} storey" + ("" if n == 1 else "s")
+
+    def _set_storeys(self, n, ask=True):
+        """Make the building n storeys: add standard floor names, or drop the top floors
+        (rooms on a dropped floor move to the highest floor that stays)."""
+        n = max(1, min(int(n), len(FLOOR_NAMES)))
+        if n == len(self.floors):
+            return True
+        if n > len(self.floors):
+            self.floors = self.floors + [f for f in FLOOR_NAMES if f not in self.floors][:n - len(self.floors)]
+        else:
+            drop = self.floors[n:]
+            used = [r for r in range(self.room_table.rowCount())
+                    if self.room_table.cellWidget(r, 5) and self.room_table.cellWidget(r, 5).currentText() in drop]
+            if used and ask:
+                ans = QMessageBox.question(
+                    self, APP_NAME, f"{len(used)} room(s) are on {', '.join(drop)}.\n"
+                    f"Move them to {self.floors[n - 1]} and remove the extra floor(s)?")
+                if ans != QMessageBox.StandardButton.Yes:
+                    return False
+            self.floors = self.floors[:n]
+            for r in used:
+                fb = self.room_table.cellWidget(r, 5)
+                fb.blockSignals(True)
+                fb.setCurrentText(self.floors[-1])
+                fb.blockSignals(False)
+        self._refresh_floor_widgets(select=self.floors[0])
+        return True
+
+    def _home_kind_changed(self, *_):
+        if getattr(self, "_home_busy", False):
+            return
+        want_n = self.home_storeys.value()
+        self._home_busy = True
+        self._set_units_mode(self.home_kind.currentIndex() == 1)
+        self._set_storeys(want_n)
+        self._home_busy = False
+        self._refresh_home_summary()
+
+    def _refresh_home_summary(self):
+        if not hasattr(self, "home_summary"):
+            return
+        rd = self.rd
+        town = self.xa_town.currentText()
+        zone = self.xa_zone.currentText()
+        place = (f"{town}, {self.xa_prov.currentText()}  (energy zone {zone})"
+                 if town in XA_TOWNS else "not chosen yet")
+        kind = self.building_kind()
+        lines = [f"<b style='font-size:16px'>{html.escape(rd.get('project') or 'Unnamed project')}</b>",
+                 f"Owner: {html.escape(rd.get('owner') or '-')}",
+                 f"Site: {html.escape(rd.get('details') or '-')}",
+                 f"Location: {html.escape(place)}",
+                 f"Building: {kind}, {html.escape(rd.get('occupancy') or '')}"]
+        self.home_summary.setText("<br>".join(lines))
+        if hasattr(self, "home_kind"):
+            self._home_busy = True
+            self.home_kind.setCurrentIndex(1 if UNIT_MODE[0] else 0)
+            self.home_storeys.setValue(len(self.floors))
+            self._home_busy = False
+        if hasattr(self, "xa_tables") and hasattr(self, "xa_zone"):
+            self._xa_refresh()
+
+    def new_project(self, ask=True):
+        has_data = bool(self.sched_table.rowCount() or self.door_table.rowCount() or self.room_table.rowCount()
+                        or self.xa_elements)
+        if ask and has_data:
+            r = QMessageBox.question(
+                self, APP_NAME, "Start a new project? Anything not saved will be lost.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+            if r != QMessageBox.StandardButton.Yes:
+                return
+        self.internal_tags = set()
+        self.ifc_data = None
+        self.ifc_path = ""
+        self.ifc_info = ""
+        self.sched_panes = {}
+        self.sched_geom = {}
+        self.sched_table.setRowCount(0)
+        self.door_table.setRowCount(0)
+        self.room_table.setRowCount(0)
+        self.result_table.setRowCount(0)
+        self.summary.setText("")
+        self.xa_elements = []
+        self.xa_glass = {}
+        self.rd = dict(RD_DEFAULTS)
+        self._rd_to_widgets()
+        self._xa_refresh()
+        self.current_file = None
+        self.floors = ["Ground Floor", "First Floor"]
+        self._refresh_floor_widgets(select="Ground Floor")
+        self._set_units_mode(False)
+        self._set_project_label("new")
+        self._mark_clean()
+
+    def project_data(self):
+        return {
+            "rule": self.rule_box.currentText(),
+            "deduct_frames": self.frame_chk.isChecked(),
+            "skip_unglazed": self.skip_chk.isChecked(),
+            "glaze_limit": self.glaze_spin.value(),
+            "frame_mm": self.frame_spin.value(),
+            "door_frame_mm": self.door_frame_spin.value(),
+            "internal_tags": sorted(self.internal_tags),
+            "floors": list(self.floors),
+            "schedule": [vars(o) for o in self.read_schedule().values()],
+            "rooms": [vars(r) for r in self.read_rooms()],
+            "combined": self.combined,
+            "xa": {"province": self.xa_prov.currentText(), "town": self.xa_town.currentText(), "zone": self.xa_zone.currentText(),
+                   "limit": self.xa_limit.value(), "zone11": self.xa_zone11.currentText(),
+                   "elements": self.xa_elements, "glass": self.xa_glass, "air": self.air_state(), "hw": self.hw_state(), "lt": self.lt_state()},
+            "rd": self.rd,
+            "ifc": getattr(self, "ifc_data", None),
+            "unit_mode": UNIT_MODE[0],
+            "panes": self.sched_panes,
+            "geom": self.sched_geom,
+        }
+
+    def save_project(self):
+        if not self.current_file:
+            return self.save_project_as()
+        try:
+            with open(self.current_file, "w", encoding="utf-8") as f:
+                json.dump(self.project_data(), f, indent=2)
+        except Exception as e:
+            QMessageBox.warning(self, APP_NAME, f"The project could not be saved:\n{e}")
+            return
+        import datetime
+        self._set_project_label("saved " + datetime.datetime.now().strftime("%H:%M:%S"))
+        self._recent_add(self.current_file)
+        self._mark_clean()
+        self.statusBar().showMessage(f"Project saved: {self.current_file}", 8000)
+
+    def save_project_as(self):
+        start = self.current_file or os.path.join(os.path.expanduser("~"), "Documents", "My project.mcplv.json")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save project", start, "MCP project (*.mcplv.json);;All files (*)")
+        if path:
+            if not path.endswith(".json"):
+                path += ".mcplv.json"
+            self.current_file = path
+            self.save_project()
+
+    # ---- recent projects (File menu) ----
+    def _recent_file(self):
+        d = os.path.join(os.path.expanduser("~"), "MOT_XA_Energy")
+        try:
+            os.makedirs(d, exist_ok=True)
+        except OSError:
+            pass
+        return os.path.join(d, "recent_projects.json")
+
+    def _recent_load(self):
+        try:
+            with open(self._recent_file(), encoding="utf-8") as f:
+                lst = json.load(f)
+            return [p for p in lst if isinstance(p, str)][:10]
+        except Exception:
+            return []
+
+    def _recent_save(self, lst):
+        try:
+            with open(self._recent_file(), "w", encoding="utf-8") as f:
+                json.dump(lst[:10], f, indent=1)
+        except Exception:
+            pass
+
+    def _recent_add(self, path):
+        path = os.path.abspath(path)
+        lst = [p for p in self._recent_load() if os.path.normcase(p) != os.path.normcase(path)]
+        lst.insert(0, path)
+        self._recent_save(lst)
+        self._rebuild_recent_menu()
+
+    def _recent_clear(self):
+        self._recent_save([])
+        self._rebuild_recent_menu()
+
+    def _rebuild_recent_menu(self):
+        menu = getattr(self, "recent_menu", None)
+        if menu is None:
+            return
+        menu.clear()
+        lst = self._recent_load()
+        if not lst:
+            a = QAction("(no recent projects yet)", self)
+            a.setEnabled(False)
+            menu.addAction(a)
+            return
+        for i, p in enumerate(lst, 1):
+            name = os.path.basename(p)
+            for suf in (".mcplv.json", ".json"):
+                if name.lower().endswith(suf):
+                    name = name[:-len(suf)]
+                    break
+            exists = os.path.exists(p)
+            a = QAction(f"{i}   {name}" + ("" if exists else "   (file not found)"), self)
+            a.setToolTip(p)
+            a.setStatusTip(p)
+            a.setEnabled(exists)
+            a.triggered.connect(lambda *_a, pp=p: self.open_project_path(pp))
+            menu.addAction(a)
+        menu.addSeparator()
+        c = QAction("Clear the list", self)
+        c.triggered.connect(lambda *_a: self._recent_clear())
+        menu.addAction(c)
+
+    # ---------- auto-save, crash recovery, revisions ----------
+    def _autosave_path(self):
+        d = os.path.join(os.path.expanduser("~"), "MOT_XA_Energy", "autosave")
+        try:
+            os.makedirs(d, exist_ok=True)
+        except OSError:
+            pass
+        return os.path.join(d, "autosave.json")
+
+    def _has_work(self):
+        return bool(self.sched_table.rowCount() or self.door_table.rowCount() or self.room_table.rowCount() or self.xa_elements
+                    or getattr(self, "ifc_data", None))
+
+    def _data_hash(self):
+        import hashlib
+        try:
+            return hashlib.md5(json.dumps(self.project_data(), sort_keys=True, default=str).encode("utf-8")).hexdigest()
+        except Exception:
+            return ""
+
+    def _mark_clean(self):
+        self._clean_hash = self._data_hash()
+
+    def start_autosave(self, minutes=2):
+        self._autosave_hash = ""
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.timeout.connect(self._autosave_now)
+        self._autosave_timer.start(int(minutes * 60000))
+
+    def _autosave_now(self):
+        """A safety copy of the work every couple of minutes, only when something changed."""
+        try:
+            if not self._has_work():
+                return
+            h = self._data_hash()
+            if h == getattr(self, "_autosave_hash", ""):
+                return
+            import datetime
+            data = self.project_data()
+            data["_current_file"] = self.current_file
+            data["_saved_at"] = datetime.datetime.now().strftime("%d %B %Y %H:%M")
+            p = self._autosave_path()
+            with open(p + ".tmp", "w", encoding="utf-8") as f:
+                json.dump(data, f)
+            os.replace(p + ".tmp", p)
+            self._autosave_hash = h
+        except Exception:
+            pass
+
+    def _autosave_clear(self):
+        try:
+            os.remove(self._autosave_path())
+        except OSError:
+            pass
+
+    def check_recovery(self):
+        """At start-up: offer the work that was open when the program last stopped without saving. True when restored."""
+        p = self._autosave_path()
+        if not os.path.exists(p):
+            return False
+        try:
+            with open(p, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            self._autosave_clear()
+            return False
+        when = data.get("_saved_at", "earlier")
+        name = os.path.basename(data.get("_current_file") or "") or "an unsaved project"
+        r = QMessageBox.question(self, APP_NAME, f"The program did not close normally last time.\n\nRestore {name} from the "
+                                 f"automatic copy made on {when}?",
+                                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.Yes)
+        if r != QMessageBox.StandardButton.Yes:
+            self._autosave_clear()
+            return False
+        self.new_project(ask=False)
+        self.current_file = data.get("_current_file")
+        try:
+            self._apply_project_data(data)
+        except Exception as e:
+            QMessageBox.warning(self, APP_NAME, f"The work was restored only partly:\n{e}")
+        self._set_project_label("restored from the automatic copy")
+        self.statusBar().showMessage("Restored from the automatic copy. Save the project to keep it.", 12000)
+        return True
+
+    def closeEvent(self, ev):
+        try:
+            if self._has_work() and self._data_hash() != getattr(self, "_clean_hash", None):
+                b = QMessageBox(self)
+                b.setWindowTitle(APP_NAME)
+                b.setText("Save your project before closing?")
+                sv = b.addButton("Save", QMessageBox.ButtonRole.AcceptRole)
+                b.addButton("Don't save", QMessageBox.ButtonRole.DestructiveRole)
+                cn = b.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+                b.exec()
+                if b.clickedButton() is cn:
+                    ev.ignore()
+                    return
+                if b.clickedButton() is sv:
+                    self.save_project()
+                    if self._data_hash() != getattr(self, "_clean_hash", None):      # the save was cancelled or failed
+                        ev.ignore()
+                        return
+            self._autosave_clear()
+        except Exception:
+            pass
+        ev.accept()
+
+    def _rev_dir(self):
+        if not self.current_file:
+            return None
+        base = self.current_file
+        for suf in (".mcplv.json", ".json"):
+            if base.lower().endswith(suf):
+                base = base[:-len(suf)]
+                break
+        d = base + "_revisions"
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _rev_list(self):
+        """[(path, label, note, saved)] newest first."""
+        out = []
+        d = self._rev_dir()
+        if not d:
+            return out
+        for fn in sorted(os.listdir(d), reverse=True):
+            if not fn.lower().endswith(".json"):
+                continue
+            p = os.path.join(d, fn)
+            try:
+                with open(p, encoding="utf-8") as f:
+                    meta = json.load(f).get("_rev", {})
+            except Exception:
+                continue
+            out.append((p, meta.get("label", fn), meta.get("note", ""), meta.get("saved", "")))
+        return out
+
+    def save_revision(self):
+        if not self.current_file:
+            QMessageBox.information(self, APP_NAME, "Save the project first (File > Save project as...). Revisions are kept next to it.")
+            return
+        import datetime
+        label, ok = QInputDialog.getText(self, "Save revision", "Revision name:", text=f"Rev {self.rd.get('rev', '0')}")
+        if not ok or not label.strip():
+            return
+        note, ok2 = QInputDialog.getText(self, "Save revision", "What changed? (optional note):")
+        if not ok2:
+            return
+        data = self.project_data()
+        now = datetime.datetime.now()
+        data["_rev"] = {"label": label.strip(), "note": note.strip(), "saved": now.strftime("%d %B %Y %H:%M")}
+        safe = re.sub(r"[^A-Za-z0-9]+", "_", label.strip()).strip("_") or "rev"
+        p = os.path.join(self._rev_dir(), f"{now.strftime('%Y%m%d_%H%M%S')}_{safe}.json")
+        try:
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+        except Exception as e:
+            QMessageBox.warning(self, APP_NAME, f"The revision could not be saved:\n{e}")
+            return
+        self.statusBar().showMessage(f"Revision saved: {label.strip()}", 8000)
+
+    def _pick_revision(self, title):
+        revs = self._rev_list()
+        if not revs:
+            QMessageBox.information(self, APP_NAME, "There are no revisions of this project yet. Use File > Revisions > Save revision.")
+            return None
+        names = [f"{lab}   -   {sv}" + (f"   ({nt})" if nt else "") for _p, lab, nt, sv in revs]
+        pick, ok = QInputDialog.getItem(self, APP_NAME, title, names, 0, False)
+        if not ok:
+            return None
+        return revs[names.index(pick)]
+
+    @staticmethod
+    def diff_projects(old, new):
+        """Plain-English list of what changed between two project dictionaries."""
+        out = []
+
+        def rooms(d):
+            seen, res = {}, {}
+            for r in d.get("rooms", []) or []:
+                k = (r.get("floor", ""), r.get("unit", ""), r.get("name", ""))
+                seen[k] = seen.get(k, 0) + 1
+                res[k + (seen[k],)] = float(r.get("area_m2", 0) or 0)
+            return res
+        a, b = rooms(old), rooms(new)
+        lab = lambda k: f"{k[2]}" + (f" ({k[0]}{', ' + k[1] if k[1] else ''})" if k[0] or k[1] else "")
+        for k in b:
+            if k not in a:
+                out.append(f"Room added: {lab(k)}, {b[k]:.2f} m2")
+        for k in a:
+            if k not in b:
+                out.append(f"Room removed: {lab(k)}, {a[k]:.2f} m2")
+        for k in a:
+            if k in b and abs(a[k] - b[k]) > 0.005:
+                out.append(f"Room area changed: {lab(k)}  {a[k]:.2f} -> {b[k]:.2f} m2")
+
+        def sched(d):
+            return {o.get("tag", ""): o for o in d.get("schedule", []) or []}
+        a, b = sched(old), sched(new)
+        for t in b:
+            if t not in a:
+                out.append(f"Window / door added: {t}")
+        for t in a:
+            if t not in b:
+                out.append(f"Window / door removed: {t}")
+        for t in a:
+            if t in b:
+                ch = []
+                for k, nm in (("width_mm", "width"), ("height_mm", "height"), ("glazed_pct", "glazed %"), ("openable_pct", "openable %"),
+                              ("sched_qty", "quantity"), ("kind", "type")):
+                    if a[t].get(k) != b[t].get(k):
+                        ch.append(f"{nm} {a[t].get(k)} -> {b[t].get(k)}")
+                if ch:
+                    out.append(f"{t}: " + ", ".join(ch))
+        xo, xn = old.get("xa") or {}, new.get("xa") or {}
+        for k, nm in (("province", "Province"), ("town", "Town"), ("zone", "Energy zone"), ("zone11", "SANS 204 zone"), ("limit", "Fenestration limit")):
+            if xo.get(k) != xn.get(k):
+                out.append(f"{nm}: {xo.get(k)} -> {xn.get(k)}")
+
+        def els(d):
+            return {e_.get("name", ""): e_ for e_ in (d.get("xa") or {}).get("elements", []) or []}
+        a, b = els(old), els(new)
+        for t in b:
+            if t not in a:
+                out.append(f"Assembly added: {t}")
+        for t in a:
+            if t not in b:
+                out.append(f"Assembly removed: {t}")
+        for t in a:
+            if t in b and (a[t].get("layers") != b[t].get("layers") or a[t].get("type") != b[t].get("type")):
+                out.append(f"Assembly changed: {t}")
+        ga, gb = xo.get("glass") or {}, xn.get("glass") or {}
+        for t in gb:
+            if t in ga:
+                for k, nm in (("U", "glass U"), ("S", "solar gain"), ("P", "overhang P")):
+                    if ga[t].get(k) != gb[t].get(k):
+                        out.append(f"{t}: {nm} {ga[t].get(k)} -> {gb[t].get(k)}")
+        ro, rn = old.get("rd") or {}, new.get("rd") or {}
+        skip = {"epw", "lon", "ifc_loaded", "has_ifc"}
+        for k in sorted(set(ro) | set(rn)):
+            if k not in skip and str(ro.get(k, "")) != str(rn.get(k, "")):
+                out.append(f"Report detail '{k}': {str(ro.get(k, ''))[:40]} -> {str(rn.get(k, ''))[:40]}")
+        io, inn = old.get("ifc") or {}, new.get("ifc") or {}
+        if (io.get("rooms") and inn.get("rooms") and len(io["rooms"]) != len(inn["rooms"])):
+            out.append(f"IFC model: {len(io['rooms'])} -> {len(inn['rooms'])} rooms")
+        if old.get("unit_mode") != new.get("unit_mode"):
+            out.append("Several-units mode changed")
+        return out
+
+    def compare_revision(self):
+        pick = self._pick_revision("Compare the current work with which revision?")
+        if not pick:
+            return
+        try:
+            with open(pick[0], encoding="utf-8") as f:
+                old = json.load(f)
+        except Exception as e:
+            QMessageBox.warning(self, APP_NAME, f"Could not read that revision:\n{e}")
+            return
+        diff = self.diff_projects(old, self.project_data())
+        import html as _h
+        from PySide6.QtWidgets import QTextBrowser
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Changes since {pick[1]}")
+        dlg.resize(680, 520)
+        lay = QVBoxLayout(dlg)
+        tb = QTextBrowser()
+        tb.setHtml(f"<p><b>{_h.escape(pick[1])}</b> ({_h.escape(pick[3])}) compared with the current work.</p>"
+                   + ("<ul>" + "".join(f"<li>{_h.escape(x)}</li>" for x in diff) + "</ul>" if diff
+                      else "<p>No changes found.</p>"))
+        lay.addWidget(tb)
+        bt = QPushButton("Close")
+        bt.clicked.connect(dlg.accept)
+        lay.addWidget(bt)
+        dlg.exec()
+
+    def restore_revision(self):
+        pick = self._pick_revision("Restore which revision?")
+        if not pick:
+            return
+        r = QMessageBox.question(self, APP_NAME, f"Replace the current work with '{pick[1]}'?\n\nThe current work is kept "
+                                 "first as a revision called 'Before restore', so nothing is lost.",
+                                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        if r != QMessageBox.StandardButton.Yes:
+            return
+        import datetime
+        try:
+            cur = self.project_data()
+            now = datetime.datetime.now()
+            cur["_rev"] = {"label": "Before restore", "note": f"kept before restoring {pick[1]}", "saved": now.strftime("%d %B %Y %H:%M")}
+            with open(os.path.join(self._rev_dir(), f"{now.strftime('%Y%m%d_%H%M%S')}_Before_restore.json"), "w", encoding="utf-8") as f:
+                json.dump(cur, f)
+            with open(pick[0], encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            QMessageBox.warning(self, APP_NAME, f"The revision could not be restored:\n{e}")
+            return
+        keep = self.current_file
+        self.new_project(ask=False)
+        self.current_file = keep
+        try:
+            self._apply_project_data(data)
+        except Exception as e:
+            QMessageBox.warning(self, APP_NAME, f"The revision restored only partly:\n{e}")
+        self._set_project_label(f"restored {pick[1]}")
+
+    def open_revisions_folder(self):
+        d = self._rev_dir()
+        if not d:
+            QMessageBox.information(self, APP_NAME, "Save the project first. Revisions are kept next to it.")
+            return
+        try:
+            if os.name == "nt":
+                os.startfile(d)
+            else:
+                import subprocess
+                subprocess.Popen(["xdg-open", d])
+        except Exception:
+            QMessageBox.information(self, APP_NAME, d)
+
+    def open_project(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open project", os.path.dirname(self.current_file) if self.current_file else "",
+            "MCP project (*.json);;All files (*)")
+        if not path:
+            return
+        self.open_project_path(path)
+
+    def open_project_path(self, path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            QMessageBox.warning(self, APP_NAME, f"Could not open file: {e}")
+            return
+        self.new_project(ask=False)
+        self.current_file = path
+        try:
+            self._apply_project_data(data)
+        except Exception as e:
+            QMessageBox.warning(self, APP_NAME, f"The project opened only partly:\n{e}")
+        self._set_project_label("opened")
+        self._recent_add(path)
+        self._mark_clean()
+        self.statusBar().showMessage(f"Project opened: {path}", 8000)
+
+    def _apply_project_data(self, data):
+        if data.get("floors"):
+            self.floors = list(data["floors"])
+            self._refresh_floor_widgets(select="All floors")
+        if data.get("rule") in RULES:
+            self.rule_box.setCurrentText(data["rule"])
+        self.frame_chk.setChecked(bool(data.get("deduct_frames", False)))
+        self.skip_chk.setChecked(bool(data.get("skip_unglazed", True)))
+        self.glaze_spin.setValue(float(data.get("glaze_limit", 20.0) or 20.0))
+        self.internal_tags = set(data.get("internal_tags", []))
+        self.frame_spin.setValue(float(data.get("frame_mm", 50) or 0))
+        self.door_frame_spin.setValue(float(data.get("door_frame_mm", data.get("frame_mm", 50)) or 0))
+        for o in data.get("schedule", []):
+            self.add_sched_row([o["tag"], o["width_mm"], o["height_mm"],
+                                o["glazed_pct"], o["openable_pct"], o.get("kind", "Window"),
+                                o.get("style", "Custom"), o.get("sash_w_mm") or "",
+                                o.get("sash_h_mm") or "", o.get("sash_qty", 1),
+                                o.get("sched_qty", 1), o.get("glazed_area_m2") or ""],
+                               self.door_table if o.get("kind") == "Door" else self.sched_table)
+        for r in data.get("rooms", []):
+            self.add_room_row([r["name"], r["area_m2"], r.get("tags", ""),
+                               r.get("internal", False), r.get("artificial_light", False),
+                               r.get("floor", ""), r.get("unit", ""), r.get("facing", "")])
+        self.combined = dict(data.get("combined", {}) or {})
+        xa = data.get("xa") or {}
+        if xa:
+            pv = xa.get("province", "(all provinces)")
+            self.xa_prov.setCurrentText(pv if pv in XA_REGIONS else "(all provinces)")
+            self._xa_fill_towns(self.xa_prov.currentText(), xa.get("town"))
+            self.xa_zone.setCurrentText(xa.get("zone", "1"))
+            self.xa_limit.setValue(float(xa.get("limit", 20.0) or 20.0))
+            self.xa_zone11.setCurrentText(xa.get("zone11", "1"))
+            self.xa_elements = list(xa.get("elements", []))
+            self.xa_glass = dict(xa.get("glass", {}))
+            self.air_set_state(xa.get("air"))
+            self.lt_set_state(xa.get("lt"))
+            self.hw_set_state(xa.get("hw"))
+            self._xa_refresh()
+        self.rd = dict(RD_DEFAULTS)
+        self.rd.update({k: str(v) for k, v in (data.get("rd") or {}).items() if k in RD_DEFAULTS})
+        self.ifc_data = data.get("ifc") or None
+        if self.ifc_data and self.ifc_data.get("items"):
+            self.ifc_data["items"] = ifc_merge_variants(
+                [i for i in self.ifc_data["items"] if not ifc_excluded(i.get("tag", ""))])
+        self.ifc_path = (self.ifc_data or {}).get("path", "")
+        self.ifc_info = ("(%d rooms, %d window/door types)" % (len(self.ifc_data["rooms"]), len(self.ifc_data["items"]))
+                         if self.ifc_data else "")
+        self._rd_to_widgets()
+        self._set_units_mode(bool(data.get("unit_mode", False)))
+        self.sched_panes = {k: [tuple(p) for p in v] for k, v in (data.get("panes") or {}).items()}
+        self.sched_geom = {k: {"aspect": v.get("aspect", 1.0), "panes": [tuple(q) for q in v.get("panes", [])]}
+                           for k, v in (data.get("geom") or {}).items() if isinstance(v, dict)}
+        self.floor_filter.setCurrentIndex(0 if len(self.floors) > 1 else 1)
+        self._apply_floor_filter()
+
+    # ---- update: reload the latest program file without opening run_app.bat ----
+    def check_for_update(self):
+        if FROZEN:
+            import time
+            if not self._update_ready and not self._gh_busy and time.time() >= self._gh_next:
+                self.gh_check()
+            return
+        if self._update_ready:
+            return
+        cands = self._download_candidates()
+        if cands:
+            self._update_ready = True
+            self._update_src = cands[0]
+            self.update_btn.setText("\u27F3  Update available (new file in Downloads) - click to update")
+            self.update_btn.show()
+        elif _script_mtime() != self._start_mtime:
+            self._update_ready = True
+            self._update_src = ""
+            self.update_act.setText("Update available - click to reload")
+            self.update_btn.setText("\u27F3  Update available - click to update")
+            self.update_btn.show()
+
+    def gh_settings(self):
+        repo, ok = QInputDialog.getText(self, APP_NAME, "GitHub repository that holds the releases (owner/name):", text=gh_repo_name())
+        if not ok:
+            return
+        tok, ok = QInputDialog.getText(self, APP_NAME, "GitHub token with read access to that repository\n(Settings > Developer settings > Fine-grained tokens > Contents: Read-only).\nLeave blank to keep the saved one.",
+                                       QLineEdit.EchoMode.Password)
+        if not ok:
+            return
+        SETTINGS["gh_repo"] = repo.strip()
+        if tok.strip():
+            SETTINGS["gh_token"] = tok.strip()
+        save_settings()
+        self._gh_next = 0.0
+        self.gh_check(manual=True)
+
+    def gh_check(self, manual=False):
+        import time
+        self._gh_busy = True
+        self._gh_next = time.time() + 3 * 3600
+        th = _GhThread("check", gh_repo_name(), SETTINGS.get("gh_token", ""), parent=self)
+        self._gh_th = th
+
+        def done(res, err):
+            self._gh_busy = False
+            if err:
+                self._gh_next = time.time() + 1800
+                if manual:
+                    QMessageBox.information(self, APP_NAME, "Could not check for updates.\n" + err)
+                return
+            cur = app_version()
+            if res["ver"] > cur:
+                self._gh_new = res
+                self._update_ready = True
+                self.update_btn.setText("\u27F3  Update available (version %d) - click to update" % res["ver"])
+                self.update_btn.show()
+                self.update_act.setText("Update available - click to install")
+                if manual:
+                    QMessageBox.information(self, APP_NAME, "Version %d is available (you have %d). Click the red update button at the bottom." % (res["ver"], cur))
+            elif manual:
+                QMessageBox.information(self, APP_NAME, "You have the latest version (%d)." % cur)
+        th.done.connect(done)
+        th.start()
+
+    def _gh_install(self):
+        """Save the work, download the installer, run it quietly and leave. The new program opens with the work restored."""
+        info = self._gh_new
+        try:
+            data = self.project_data()
+            data["_current_file"] = self.current_file
+            data["_dirty"] = self._data_hash() != getattr(self, "_clean_hash", None)
+            with open(os.path.join(tempfile.gettempdir(), "mot_lv_restore.json"), "w", encoding="utf-8") as f:
+                json.dump(data, f)
+        except Exception as e:
+            QMessageBox.warning(self, APP_NAME, f"Could not save your work before updating:\n{e}")
+            return
+        dest = os.path.join(tempfile.gettempdir(), info["name"])
+        dlg = QProgressDialog("Downloading version %d..." % info["ver"], "Cancel", 0, 100, self)
+        dlg.setWindowModality(Qt.WindowModality.WindowModal)
+        dlg.setMinimumDuration(0)
+        th = _GhThread("download", gh_repo_name(), SETTINGS.get("gh_token", ""), info["asset_id"], dest, parent=self)
+        self._gh_th = th
+        loop = {"err": None, "path": None, "fin": False}
+        th.prog.connect(lambda g, t: dlg.setValue(int(100 * g / t)) if t else None)
+        dlg.canceled.connect(lambda: setattr(th, "stop", True))
+
+        def done(res, err):
+            loop["fin"], loop["path"], loop["err"] = True, res, err
+        th.done.connect(done)
+        th.start()
+        while not loop["fin"]:
+            QApplication.processEvents()
+            th.wait(40)
+        dlg.close()
+        if loop["err"] or not loop["path"]:
+            self.update_btn.setEnabled(True)
+            self.update_btn.setText("\u27F3  Update failed - click to retry")
+            if loop["err"] and loop["err"] != "Cancelled.":
+                QMessageBox.warning(self, APP_NAME, "The update could not be downloaded:\n" + loop["err"])
+            return
+        if QProcess.startDetached(loop["path"], ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS"]):
+            self._autosave_clear()
+            QApplication.instance().quit()
+        else:
+            QMessageBox.warning(self, APP_NAME, "The installer could not be started:\n" + loop["path"])
+
+    def update_now(self):
+        """One click: install the newer file (if it is a download), then reload inside the same window."""
+        if FROZEN:
+            if self._gh_new:
+                self.update_btn.setEnabled(False)
+                self.update_btn.setText("Updating...")
+                QApplication.processEvents()
+                self._gh_install()
+            return
+        self.update_btn.setEnabled(False)
+        self.update_btn.setText("Updating...")
+        QApplication.processEvents()
+        if self._update_src and not self._install_file(self._update_src):
+            self.update_btn.setEnabled(True)
+            self.update_btn.setText("\u27F3  Update failed - click to retry")
+            return
+        self.restart_app(seamless=True)
+
+    def _download_candidates(self):
+        """Newer copies of this program sitting in the Downloads folder (newest first)."""
+        import glob
+        me = os.path.abspath(__file__)
+        base = os.path.splitext(os.path.basename(me))[0]
+        found = []
+        for d in {os.path.join(os.path.expanduser("~"), "Downloads")}:
+            for f in glob.glob(os.path.join(d, base + "*.py")):
+                try:
+                    if os.path.getmtime(f) > os.path.getmtime(me) + 1:
+                        found.append(f)
+                except OSError:
+                    pass
+        return sorted(found, key=os.path.getmtime, reverse=True)
+
+    def _install_file(self, path):
+        import py_compile, shutil
+        me = os.path.abspath(__file__)
+        try:
+            tmp = os.path.join(tempfile.gettempdir(), "mot_update_check.py")
+            shutil.copyfile(path, tmp)
+            py_compile.compile(tmp, doraise=True)
+            with open(tmp, encoding="utf-8", errors="ignore") as f:
+                if "class MainWindow" not in f.read():
+                    raise ValueError("That file is not this program.")
+            shutil.copyfile(me, me + ".bak")
+            shutil.copyfile(path, me)
+            return True
+        except Exception as e:
+            QMessageBox.warning(self, APP_NAME, f"Update failed, nothing was changed:\n{e}")
+            return False
+
+    def update_from_download(self):
+        """Install a new copy of the program (from Downloads, or any file you pick) and reload."""
+        if FROZEN:
+            QMessageBox.information(self, APP_NAME, "This packaged version cannot update itself.")
+            return
+        cands = self._download_candidates()
+        path = cands[0] if cands else ""
+        if not path:
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Choose the new program file (no newer copy was found in Downloads)",
+                os.path.join(os.path.expanduser("~"), "Downloads"), "Python (*.py)")
+            if not path:
+                return
+        if self._install_file(path):
+            self.restart_app(seamless=True)
+
+    def save_icon_pack(self):
+        """Write every program icon as an SVG file (red, white and dark versions) to a folder you pick."""
+        d = QFileDialog.getExistingDirectory(self, "Choose where to save the icon pack")
+        if not d:
+            return
+        n = 0
+        try:
+            for variant, col in (("red", "#d8132b"), ("white", "#ffffff"), ("dark", "#16171a")):
+                folder = os.path.join(d, "MCP_icons", variant)
+                os.makedirs(folder, exist_ok=True)
+                for name in ICON_SVG:
+                    with open(os.path.join(folder, f"mcp_{name}.svg"), "w", encoding="utf-8") as f:
+                        f.write(icon_svg(name, col))
+                    n += 1
+        except Exception as e:
+            QMessageBox.warning(self, APP_NAME, f"Could not save the icons: {e}")
+            return
+        QMessageBox.information(self, APP_NAME, f"{n} icon files saved in:\n{os.path.join(d, 'MCP_icons')}")
+
+    def set_theme(self, name):
+        if SETTINGS.get("theme", "studio") == name:
+            return
+        SETTINGS["theme"] = name
+        save_settings()
+        self.restart_app(seamless=True)
+
+    def restart_app(self, seamless=False):
+        """Save the current work, relaunch the program and load the work back in.
+        seamless: the new window opens at the same place and size, and this one only
+        goes away once the new one is on screen, so it looks like the same window updating."""
+        try:
+            data = self.project_data()
+            data["_current_file"] = self.current_file
+            data["_dirty"] = self._data_hash() != getattr(self, "_clean_hash", None)
+            path = os.path.join(tempfile.gettempdir(), "mot_lv_restore.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+        except Exception as e:
+            QMessageBox.warning(self, APP_NAME, f"Could not save your work for the restart: {e}")
+            return
+        exe = sys.executable
+        if not FROZEN:
+            pw = os.path.join(os.path.dirname(exe), "pythonw.exe")
+            if os.name == "nt" and os.path.exists(pw):
+                exe = pw
+            args = [os.path.abspath(__file__), "--restore", path]
+        else:
+            args = ["--restore", path]
+        flag = ""
+        if seamless:
+            g = self.geometry()
+            flag = os.path.join(tempfile.gettempdir(), "mot_new_ready.flag")
+            try:
+                os.remove(flag)
+            except OSError:
+                pass
+            args += ["--geom", "%d,%d,%d,%d,%d" % (g.x(), g.y(), g.width(), g.height(),
+                                                    1 if self.isMaximized() else 0), "--ready", flag]
+        if QProcess.startDetached(exe, args):
+            self._autosave_clear()
+            if not seamless:
+                QApplication.instance().quit()
+                return
+            import time
+            t0 = time.time()
+
+            def wait_new():
+                if os.path.exists(flag) or time.time() - t0 > 40:
+                    self.hide()                    # the new window is already in the same spot: this one just goes away
+                    QApplication.instance().quit()
+                else:
+                    QTimer.singleShot(40, wait_new)
+            self.statusBar().showMessage("Loading the new version...")
+            wait_new()
+        else:
+            QMessageBox.warning(self, APP_NAME, "Could not restart the program.")
+
+    def restore_from(self, path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            os.remove(path)
+        except Exception:
+            return
+        self.new_project()
+        self.current_file = data.get("_current_file")
+        self._apply_project_data(data)
+        if not data.get("_dirty"):
+            self._mark_clean()
+
+    # ---- importing from PDFs and screenshots (everything runs offline) ----
+    def _confirm_replace(self, table, what):
+        if table.rowCount() == 0:
+            return True
+        ans = QMessageBox.question(
+            self, APP_NAME, f"Replace the current {what} with the imported data?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        return ans == QMessageBox.StandardButton.Yes
+
+    def _install_ifcopenshell(self, then):
+        """The program is offline by default, so ask first, then install the IFC reader once."""
+        if FROZEN:
+            QMessageBox.warning(self, APP_NAME, "This packaged version does not include the IFC reader. "
+                                "Please use the Python version of the program.")
+            return
+        ans = QMessageBox.question(
+            self, APP_NAME,
+            "IFC import needs a small extra component (ifcopenshell, about 40 MB).\n\n"
+            "Install it now? This needs an internet connection once. Everything else stays offline.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+
+        def work():
+            import subprocess
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            last = ""
+            for extra in ([], ["--user"]):
+                r = subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "ifcopenshell"] + extra,
+                                   capture_output=True, text=True, creationflags=flags)
+                if r.returncode == 0:
+                    return True
+                last = (r.stderr or r.stdout or "").strip().splitlines()[-1:] or ["unknown error"]
+            raise RuntimeError(last[0])
+
+        def done(_ok):
+            import importlib
+            importlib.invalidate_caches()
+            try:
+                import ifcopenshell  # noqa
+            except Exception:
+                QMessageBox.warning(self, APP_NAME, "The component was installed but could not be loaded yet. "
+                                    "Please restart the program and try again.")
+                return
+            QMessageBox.information(self, APP_NAME, "Installed. Now choose your IFC file.")
+            then()
+        self._run_bg(work, done, "Installing the IFC reader... this can take a minute.",
+                     "Could not install the IFC reader (check your internet connection)")
+
+    def import_ifc(self):
+        try:
+            import ifcopenshell  # noqa
+        except Exception:
+            self._install_ifcopenshell(self.import_ifc)
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "IFC model from Archicad", "", "IFC model (*.ifc *.ifczip)")
+        if not path:
+            return
+        def done(res):
+            self.rd["ifc_loaded"] = "1"
+            self.rd["has_ifc"] = "1"
+            self.ifc_path = path
+            self.ifc_data = {"rooms": res["rooms"], "items": res["items"], "path": path,
+                             "floors": res.get("floors") or [], "north": res.get("north"), "air": res.get("air") or {},
+                             "latlon": res.get("latlon")}
+            ll = res.get("latlon")
+            if ll and -36.0 <= ll[0] <= -21.0 and 15.0 <= ll[1] <= 34.0 and not getattr(self, "_lat_manual", False):
+                self.xa_lat.setText(f"{abs(ll[0]):.4f}")          # the model's own site position (inside South Africa) drives the sun
+                self.rd["lon"] = f"{ll[1]:.5f}"
+                self._coord_src = "IFC model"
+            self.ifc_report = res.get("room_report") or []
+            self.ifc_info = "(%d rooms, %d window/door types)" % (len(res["rooms"]), len(res["items"]))
+            self._ifc_counts = {k: res.get(k) for k in ("no_area_names", "unplaced", "faced", "n_win", "n_door", "dups")}
+            self.ifc_data["shading"] = res.get("shading") or {}
+            if res["north"] is not None:
+                cur = self.xa_north.text().strip()
+                try:
+                    differs = bool(cur) and abs(((float(cur.replace(",", ".")) - res["north"] + 180) % 360) - 180) > 0.5
+                except ValueError:
+                    differs = bool(cur)
+                if not cur or (differs and getattr(self, "_north_src", "") != "kml"):
+                    self.xa_north.setText("%g" % res["north"])   # the model's own north drives the window facings
+                    self._north_src = "ifc"
+                elif differs:
+                    QMessageBox.information(self, APP_NAME, "The IFC model says north is %g degrees, but the north you "
+                                            "set from the Google Earth plot (%s degrees) was kept." % (res["north"], cur))
+            self._sync_ifc_rows()
+            try:                                   # tell him straight away what in the model could spoil the numbers
+                iss = ifc_health_check(path, {**res, "latlon": res.get("latlon")})
+                self.ifc_health = iss
+                if any(x[0] in ("error", "warn") for x in iss):
+                    n_ = sum(1 for x in iss if x[0] in ("error", "warn"))
+                    r_ = QMessageBox.question(self, APP_NAME, f"The IFC model was imported. The health check found {n_} thing(s) "
+                                              "worth fixing in Archicad. Show them now?",
+                                              QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                              QMessageBox.StandardButton.Yes)
+                    if r_ == QMessageBox.StandardButton.Yes:
+                        self.show_ifc_health(iss)
+            except Exception:
+                pass
+            self._xa_autofill()
+            found = ("The IFC file contains: %d rooms (IfcSpace), %d storeys, %d windows, %d doors."
+                     % (res.get("n_spaces", 0), res.get("n_storeys", 0), res.get("n_win", 0), res.get("n_door", 0)))
+            if not res.get("n_spaces"):
+                QMessageBox.warning(self, APP_NAME, found + "\n\nThere are no rooms in this file. In Archicad: make sure the "
+                                    "Zones are visible (on a visible layer) and included in the IFC export filter, "
+                                    "then export again.")
+            elif not res["rooms"]:
+                QMessageBox.warning(self, APP_NAME, found + "\n\nThe rooms have no area, and no area could be worked out "
+                                    "from their shape. In the Archicad IFC translator, turn on exporting base "
+                                    "quantities (and zone geometry), then export again.")
+            if not res["rooms"] and not res["items"]:
+                pass
+            else:
+                nd = sum(1 for i in res["items"] if i["kind"] == "Door" and (i.get("glazed") or 0) > 0)
+                nsd = res.get("solid_doors", 0)
+                msg = ("IFC model loaded: %d rooms and %d window/door types.\n\n"
+                       "Glazed doors counted: %d." % (len(res["rooms"]), len(res["items"]), nd))
+                msg += "\n" + found
+                if res.get("geo_area"):
+                    msg += " Room areas worked out from the room shapes: %d." % res["geo_area"]
+                msg += " (See File > Tools > IFC room report to check every room's area.)"
+                if res.get("no_area"):
+                    msg += (" Rooms skipped because no area could be found: %d (%s)."
+                            % (res["no_area"], ", ".join(str(n_) for n_ in res.get("no_area_names", [])[:12])))
+                if nsd:
+                    msg += " Door types with no glass found in the model (left out): %d." % nsd
+                if res.get("dups"):
+                    msg += (" Duplicates removed (the same window or door exported twice on the same spot): %d."
+                            % res["dups"])
+                if res.get("placed") or res.get("unplaced"):
+                    msg += (" Windows and doors put into the nearest room by position: %d (could not place: %d)."
+                            % (res.get("placed", 0), res.get("unplaced", 0)))
+                if res.get("faced"):
+                    msg += (" Which way each window faces was read from the model's walls and rooms: %d of %d windows "
+                            "and doors (used for the orientation check in Energy XA; true north %s degrees)."
+                            % (res["faced"], res.get("n_win", 0) + res.get("n_door", 0),
+                               ("%g" % res["north"]) if res.get("north") is not None else "not set in the model"))
+                if res.get("excluded"):
+                    msg += (" Gates and garage doors (G1, G2 ... and anything named gate or garage) were left out: %d."
+                            % res["excluded"])
+                msg += ("\n\nIt is used for Energy (XA) and the rational design report. Light & Ventilation "
+                        "can use its windows and doors too: tick the IFC box in that tab.\n\n"
+                        "Hover over a window in the Energy (XA) windows table to see its back view.")
+                if self.rd.get("lv_ifc"):
+                    self._apply_ifc_to_lv()
+                if self.rd.get("lv_ifc_rooms"):
+                    self._apply_ifc_rooms_to_lv()
+                msg += "\n\nThe next window lets you check the glazed and opening percentages, and mark glazed doors."
+                QMessageBox.information(self, APP_NAME, msg)
+                QTimer.singleShot(0, self.review_ifc)
+        self._run_bg(lambda: read_ifc_model(path), done, "Reading the IFC model...")
+
+    def _lv_ifc_rooms_toggled(self, on):
+        self.rd["lv_ifc_rooms"] = "1" if on else ""
+        if not on or getattr(self, "_lv_busy", False):
+            return
+        if not getattr(self, "ifc_data", None) or not self.ifc_data.get("rooms"):
+            QMessageBox.information(self, APP_NAME, "Choose your IFC model first.")
+            self.import_ifc()
+            return
+        self._apply_ifc_rooms_to_lv()
+
+    def _apply_ifc_rooms_to_lv(self):
+        """Create the floors and rooms of the Rooms tab from the IFC spaces (zones), lowest storey first."""
+        d = getattr(self, "ifc_data", None)
+        if not d or not d.get("rooms"):
+            return
+        rooms = []
+        for r in d["rooms"]:
+            c = dict(r)
+            c["tags"] = dict(c.get("tags") or {})
+            c["floor"] = c.get("floor") or "Ground Floor"
+            rooms.append(c)
+        order = []
+        for r in sorted(rooms, key=lambda x: x.get("elev", 0.0)):
+            if r["floor"] not in order: order.append(r["floor"])
+        self._fill_rooms(rooms, 0, "IFC model")
+        try:   # lowest storey first in the floor lists
+            rest = [f for f in self.floors if f not in order]
+            self.floors = order + rest
+            self._refresh_floor_widgets(select="All floors")
+        except Exception:
+            pass
+
+    def _lv_ifc_toggled(self, on):
+        self.rd["lv_ifc"] = "1" if on else ""
+        if not on or getattr(self, "_lv_busy", False):
+            return
+        if not getattr(self, "ifc_data", None) or not self.ifc_data.get("items"):
+            QMessageBox.information(self, APP_NAME, "Choose your IFC model first.")
+            self.import_ifc()
+            return
+        self._apply_ifc_to_lv()
+
+    def _apply_ifc_to_lv(self):
+        """Put the IFC windows and doors into the Light & Ventilation window and door schedules."""
+        d = getattr(self, "ifc_data", None)
+        if not d or not d.get("items"):
+            return
+        items = []
+        for it in d["items"]:
+            c = dict(it)
+            c["flag"] = list(c.get("flag") or [])
+            c["panes"] = [tuple(q) for q in (c.get("panes") or [])]
+            g = c.get("geom")
+            c["geom"] = ({"aspect": g.get("aspect", 1.0), "panes": [tuple(q) for q in g.get("panes", [])]}
+                         if isinstance(g, dict) else None)
+            items.append(c)
+        self._fill_schedule(items, "IFC model")
+
+    def show_ifc_report(self):
+        """Lists every room (IfcSpace) of the IFC with the area that was used and everything the file stores on it."""
+        rep_ = getattr(self, "ifc_report", None)
+        if not rep_:
+            QMessageBox.information(self, APP_NAME, "Import an IFC model first.")
+            return
+        dlg = QDialog(self); dlg.setWindowTitle("What the IFC says about each room"); dlg.resize(900, 560)
+        v = QVBoxLayout(dlg)
+        t = QLabel("Every room (zone) in the IFC with the area the program used, and the values the file stores on it. "
+                   "Use Copy and send it if an area is wrong or missing.")
+        t.setWordWrap(True); v.addWidget(t)
+        ed = QPlainTextEdit(); ed.setReadOnly(True); ed.setPlainText("\n\n".join(rep_)); v.addWidget(ed, 1)
+        row = QHBoxLayout()
+        cp = QPushButton("Copy"); cp.clicked.connect(lambda: QApplication.clipboard().setText(ed.toPlainText()))
+        ok = QPushButton("Close"); ok.clicked.connect(dlg.accept)
+        row.addStretch(); row.addWidget(cp); row.addWidget(ok); v.addLayout(row)
+        dlg.exec()
+
+    def review_ifc(self):
+        """Check and correct the windows and doors read from the IFC model (glazed % and opening %)."""
+        d = getattr(self, "ifc_data", None)
+        if not d or not d.get("items"):
+            QMessageBox.information(self, APP_NAME, "Import an IFC model first.")
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("IFC windows and doors - check them")
+        dlg.resize(900, 520)
+        v = QVBoxLayout(dlg)
+        t = QLabel("These were read from your IFC model. A door only counts in the energy check if it has glass: "
+                   "give a glazed door its Glazed % (for example 70 for a glass sliding door). "
+                   "Opening % is the share of the glass that opens. Change anything that is wrong.")
+        t.setWordWrap(True); v.addWidget(t)
+        fl_names = list(d.get("floors") or [])
+        for it_ in d["items"]:
+            for f_ in (it_.get("by_floor") or {}):
+                if f_ not in fl_names: fl_names.append(f_)
+        heads = ["Tag", "Type", "Width mm", "Height mm", "Qty total", "Glazed %", "Opening %", "Counts", "Panes open"] + fl_names
+        tb = QTableWidget(len(d["items"]), len(heads)); tb.setHorizontalHeaderLabels(heads)
+        tb.verticalHeader().setVisible(False)
+        tb.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        tb.horizontalHeader().setSectionResizeMode(8, QHeaderView.ResizeMode.ResizeToContents)
+        tb.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)
+        def counts_text(it):
+            return "Yes" if it.get("kind") != "Door" or (it.get("glazed") or 0) > 0 else "No (solid door)"
+        for r, it in enumerate(d["items"]):
+            vals = [it["tag"], it.get("kind", ""), "%d" % round(it["width"]), "%d" % round(it["height"]),
+                    "%g" % it.get("qty", 1), "%g" % round(it.get("glazed", 0), 1), "%g" % round(it.get("openable", 0), 1),
+                    counts_text(it)]
+            for c, val in enumerate(vals):
+                cell = QTableWidgetItem(val)
+                if c not in (5, 6):
+                    cell.setFlags(cell.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                if it.get("note"):
+                    cell.setToolTip(it["note"])
+                tb.setItem(r, c, cell)
+        def pane_label(it, i, q):
+            xc, yc = (q[0] + q[2]) / 2, (q[1] + q[3]) / 2
+            hpos = "left" if xc < 0.38 else ("right" if xc > 0.62 else "middle")
+            vpos = "top" if yc < 0.38 else ("bottom" if yc > 0.62 else "middle")
+            wcm = (q[2] - q[0]) * it["width"] / 10; hcm = (q[3] - q[1]) * it["height"] / 10
+            return "Pane %d  (%s %s, %d x %d cm)" % (i + 1, vpos, hpos, round(wcm), round(hcm))
+        def set_panes(r):
+            it = d["items"][r]
+            g = it.get("geom") or {"aspect": 1.0, "panes": [(0.06, 0.06, 0.94, 0.94, "fixed", "")]}
+            pn = [tuple(q) for q in g["panes"]]
+            pd = QDialog(dlg); pd.setWindowTitle("%s - which panes open?" % it["tag"])
+            pl = QVBoxLayout(pd)
+            tl = QLabel("Pick how each pane opens. The green sash (glass + its frame) and the ventilation "
+                        "area are worked out from this.")
+            tl.setWordWrap(True); pl.addWidget(tl)
+            boxes = []
+            for i, q in enumerate(pn):
+                row = QHBoxLayout(); row.addWidget(QLabel(pane_label(it, i, q)), 1)
+                cb = QComboBox(); cb.addItems([c[0] for c in _OP_CHOICES])
+                cur = (q[4], (q[5] if len(q) > 5 else ""))
+                for ci, c in enumerate(_OP_CHOICES):
+                    if c[1] == cur or (cur[0] == "hinged" and cur[1] == "X" and ci == 1):
+                        cb.setCurrentIndex(ci)
+                row.addWidget(cb); pl.addLayout(row); boxes.append(cb)
+            ob = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+            ob.accepted.connect(pd.accept); ob.rejected.connect(pd.reject); pl.addWidget(ob)
+            if not pd.exec(): return
+            it["geom"] = {"aspect": g.get("aspect", 1.0), "panes": pn}
+            _ifc_apply_ops(it, [_OP_CHOICES[b.currentIndex()][1] for b in boxes])
+            dlg._busy = True
+            tb.item(r, 6).setText("%g" % it["openable"]); tb.item(r, 5).setText("%g" % round(it.get("glazed", 0), 1))
+            tb.item(r, 7).setText(counts_text(it))
+            dlg._busy = False
+        for r, it in enumerate(d["items"]):
+            bt = QPushButton("Set...")
+            bt.clicked.connect(lambda _=False, r=r: set_panes(r))
+            tb.setCellWidget(r, 8, bt)
+            for fi, fn_ in enumerate(fl_names):
+                n_ = (it.get("by_floor") or {}).get(fn_, 0)
+                wi = QTableWidgetItem(str(n_) if n_ else "-")
+                wi.setFlags(wi.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                wi.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                wi.setToolTip("How many of this type are on %s" % fn_)
+                tb.setItem(r, 9 + fi, wi)
+        v.addWidget(tb, 1)
+        tb.setMouseTracking(True); tb.viewport().setMouseTracking(True)
+        class _RowHover(QObject):
+            def __init__(h, win):
+                super().__init__(tb); h.win = win; h.pop = OpeningPreview(dlg); h.last = -1
+                h.timer = QTimer(h); h.timer.setSingleShot(True); h.timer.setInterval(450)
+                h.timer.timeout.connect(h._maybe_hide)
+                h.menu_open = False
+                h.want = -1
+                h.dwell = QTimer(h); h.dwell.setSingleShot(True); h.dwell.setInterval(350)
+                h.dwell.timeout.connect(h._switch)
+                h.pop.on_pick = h.pick
+                h.pop.on_enter = lambda: (h.timer.stop(), h.dwell.stop())
+                h.pop.on_leave = h.timer.start
+            def _switch(h):
+                if 0 <= h.want < len(d["items"]) and h.want != h.last and not h.pop.underMouse():
+                    h.last = h.want; h.show_row(h.last, h.pop.pos())
+            def _maybe_hide(h):
+                if h.menu_open or h.pop.underMouse(): return
+                h.pop.hide(); h.last = -1
+            def dock_pos(h):
+                from PySide6.QtGui import QGuiApplication
+                gm = dlg.frameGeometry(); sc = QGuiApplication.screenAt(gm.center()) or QGuiApplication.primaryScreen()
+                av = sc.availableGeometry(); pw, ph = h.pop.width(), h.pop.height()
+                y = max(av.top() + 4, min(gm.top() + 40, av.bottom() - ph - 4))
+                if gm.right() + 8 + pw <= av.right(): return QPoint(gm.right() + 8, y)
+                if gm.left() - 8 - pw >= av.left(): return QPoint(gm.left() - 8 - pw, y)
+                return QPoint(max(av.left(), gm.right() - pw - 20), max(av.top(), gm.bottom() - ph - 20))
+            def show_row(h, r, pos):
+                it = d["items"][r]
+                g = it.get("geom")
+                h.pop.show_for(h.win._ifc_opening(it), [tuple(q) for q in (it.get("panes") or [])] or None, pos,
+                               {"aspect": g.get("aspect", 1.0), "panes": [tuple(q) for q in g.get("panes", [])]}
+                               if isinstance(g, dict) else None)
+            def pick(h, i, gpos):
+                r = h.last
+                if r < 0 or r >= len(d["items"]): return
+                it = d["items"][r]
+                g = it.get("geom")
+                if not isinstance(g, dict) or i >= len(g.get("panes", [])): return
+                from PySide6.QtWidgets import QMenu
+                m_ = QMenu(dlg)
+                cur = (g["panes"][i][4], g["panes"][i][5] if len(g["panes"][i]) > 5 else "")
+                for label, kv in _OP_CHOICES:
+                    a_ = m_.addAction(("\u2713  " if kv == cur else "     ") + label); a_.setData(kv)
+                h.menu_open = True
+                chosen = m_.exec(gpos)
+                h.menu_open = False
+                if chosen is None or chosen.data() is None:
+                    h.timer.start(); return
+                kinds = [(q[4], q[5] if len(q) > 5 else "") for q in g["panes"]]
+                kinds[i] = tuple(chosen.data())
+                _ifc_apply_ops(it, kinds)
+                dlg._busy = True
+                tb.item(r, 6).setText("%g" % it["openable"]); tb.item(r, 5).setText("%g" % round(it.get("glazed", 0), 1))
+                tb.item(r, 7).setText(counts_text(it))
+                dlg._busy = False
+                h.show_row(r, h.pop.pos())
+            def eventFilter(h, obj, ev):
+                t = ev.type()
+                if t == QEvent.Type.MouseMove:
+                    r = tb.rowAt(int(ev.position().y()))
+                    if r < 0 or r >= len(d["items"]):
+                        h.timer.start(); return False
+                    h.timer.stop()
+                    if r != h.last:
+                        if h.pop.isVisible():
+                            h.want = r; h.dwell.start()          # switch rows only after resting on the row
+                        else:
+                            h.last = r; h.show_row(r, h.dock_pos())
+                    else:
+                        h.want = r; h.dwell.stop()
+                elif t == QEvent.Type.Leave:
+                    h.dwell.stop(); h.timer.start()
+                elif t in (QEvent.Type.Wheel, QEvent.Type.MouseButtonPress):
+                    h.pop.hide(); h.last = -1
+                return False
+        _hov = _RowHover(self)
+        tb.viewport().installEventFilter(_hov)
+        dlg.finished.connect(lambda *_: _hov.pop.hide())
+        t.setText(t.text() + " Hover over a row to see the window or door drawn with its glass and opening area, and click a pane in the drawing to change how it opens.")
+        def num(r, c, dflt):
+            try: return max(0.0, min(100.0, float(tb.item(r, c).text().replace(",", "."))))
+            except Exception: return dflt
+        def edited(r, c):
+            if getattr(dlg, "_busy", False): return
+            if c not in (5, 6): return
+            it = d["items"][r]
+            it["glazed"] = num(r, 5, it.get("glazed", 0)); it["openable"] = num(r, 6, it.get("openable", 0))
+            it["glazed_m2"] = round(it["width"] * it["height"] / 1e6 * it["glazed"] / 100.0, 3)
+            it["flag"] = []
+            dlg._busy = True
+            tb.item(r, 7).setText(counts_text(it))
+            dlg._busy = False
+        tb.cellChanged.connect(edited)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+        bb.accepted.connect(dlg.accept); v.addWidget(bb)
+        dlg.exec()
+        if self.rd.get("lv_ifc"):
+            self._apply_ifc_to_lv()
+        self._xa_autofill()
+        if hasattr(self, "xa_fen_table"):
+            try: self._run_xa_quiet()
+            except Exception: pass
+
+    def _fill_schedule(self, items, source, skipped=None):
+        skipped = sorted(set(skipped or []))
+        if not items:
+            msg = (f"No windows or doors were found in the {source}. Make sure the tags "
+                   "(like W01) and the sizes are visible and large enough to read.")
+            if skipped:
+                msg += f"\n\nRows with a tag but no readable size: {', '.join(skipped)}."
+            if source == "screenshot":
+                msg += "\n\nSee File > Show text the reader saw, to check what it could read."
+            QMessageBox.information(self, APP_NAME, msg)
+            return
+        items = merge_identical(items)
+        all_items = list(items)
+        for it_ in items:
+            if it_.get("panes"):
+                self.sched_panes[it_["tag"].upper()] = it_["panes"]
+            if it_.get("geom"):
+                self.sched_geom[it_["tag"].upper()] = it_["geom"]
+        n_skipped = []
+        if self.skip_chk.isChecked():
+            keep = []
+            for it in items:
+                if it.get("kind") == "Door" and (it.get("glazed") or 0) <= 0 and 3 not in it["flag"]:
+                    n_skipped.append(it["tag"])
+                else:
+                    keep.append(it)
+            items = keep
+        base = lambda t: re.sub(r"_\d+$", "", t.upper())
+        glazed_bases = {base(i["tag"]) for i in items if i.get("kind") == "Door"}
+        for t in n_skipped:
+            if base(t) not in glazed_bases:
+                self.internal_tags.add(base(t))
+        for i in items:                      # a tag that is now in the schedule is no longer "internal"
+            self.internal_tags.discard(base(i["tag"]))
+        if not items:
+            QMessageBox.information(
+                self, APP_NAME,
+                f"Nothing to add: the {len(n_skipped)} door(s) found ({', '.join(n_skipped)}) have "
+                "no glass, so they are internal doors. Untick 'Skip doors with no glass' to add them.")
+            return
+        # An import ADDS to the schedule. A tag that is already there is updated.
+        # Doors go to the Doors tab, windows to the Windows tab.
+        n_new = n_upd = guessed = 0
+        for T, its in ((self.sched_table, [i for i in items if i.get("kind") != "Door"]),
+                       (self.door_table, [i for i in items if i.get("kind") == "Door"])):
+            have = {}
+            for r in range(T.rowCount()):
+                ti = T.item(r, 0)
+                if ti and ti.text().strip():
+                    have[ti.text().strip().upper()] = r
+            n_new += sum(1 for it in its if it["tag"].upper() not in have)
+            n_upd += sum(1 for it in its if it["tag"].upper() in have)
+            for r in sorted((have[it["tag"].upper()] for it in its if it["tag"].upper() in have),
+                            reverse=True):
+                T.removeRow(r)
+            for it in its:
+                self.add_sched_row([it["tag"], round(it["width"]), round(it["height"]),
+                                    round(it["glazed"], 1), round(it["openable"], 1),
+                                    it["kind"], it.get("style", "Custom"),
+                                    round(it.get("sash_w", 0)) or "",
+                                    round(it.get("sash_h", 0)) or "",
+                                    it.get("sash_qty", 1), it.get("qty", 1),
+                                    round(it.get("glazed_m2", 0), 2) or ""], T)
+                if it.get("note"):
+                    for c in (4, 6):
+                        cell = T.item(T.rowCount() - 1, c)
+                        if cell:
+                            cell.setToolTip(it["note"])
+                if (it.get("glazed_m2") or 0) <= 0 and not (it.get("kind") == "Door" and (it.get("glazed") or 0) <= 0):
+                    cell = T.item(T.rowCount() - 1, 11)
+                    if cell:
+                        cell.setBackground(YELLOW)
+                        cell.setToolTip("Not found in the screenshot - type the schedule's Total Glazed Area (m2) here")
+                if it["flag"]:
+                    guessed += 1
+                    r = T.rowCount() - 1
+                    for c in it["flag"]:
+                        if T.item(r, c):
+                            T.item(r, c).setBackground(YELLOW)
+        has_doors = any(i.get("kind") == "Door" for i in items)
+        has_wins = any(i.get("kind") != "Door" for i in items)
+        self._goto_lv(1 if has_doors and not has_wins else 0)
+        msg = (f"Read {len(items)} windows/doors from the {source}: {n_new} added to your "
+               f"schedule" + (f", {n_upd} already there and updated" if n_upd else "") + ".")
+        # --- glazing check: what was read, and the schedule's own total ---
+        read = [f"{it['tag']} {it['glazed_m2']:.2f}" for it in items if (it.get("glazed_m2") or 0) > 0]
+        if read:
+            msg += "\n\nGlazed area read from the schedule (m2 per unit): " + ", ".join(read) + "."
+        miss = [it["tag"] for it in items if (it.get("glazed_m2") or 0) <= 0
+                and not (it.get("kind") == "Door" and (it.get("glazed") or 0) <= 0)]
+        if miss:
+            msg += (f"\n\nNo 'Total Glazed Area' value was found for {', '.join(miss)}, so 100% glass "
+                    "is assumed (yellow). Make sure the bottom row of the schedule is in the "
+                    "screenshot, or type the area into 'Glazed m2 (schedule)'.")
+        for tot in sorted({it["sched_total"] for it in all_items if it.get("sched_total")}):
+            grp = [it for it in all_items if it.get("sched_total") == tot]
+            ssum = sum((it.get("qty") or 1) * (it.get("glazed_m2") or 0) for it in grp)
+            if abs(ssum - tot) <= 0.02:
+                msg += (f"\n\nCheck passed: quantity x glazed area of {', '.join(i['tag'] for i in grp)} "
+                        f"adds up to the schedule's total ({tot:.2f} m2).")
+            elif ssum < tot:
+                msg += (f"\n\nCheck: the schedule's total is {tot:.2f} m2 and the rows add up to "
+                        f"{ssum:.2f} m2 for one of each. This can be the quantities (not readable from a picture - "
+                        "fill in 'Qty in schedule') or a value in the total row that was misread.")
+            else:
+                msg += (f"\n\nCheck: the schedule's total is {tot:.2f} m2 but the rows add up to "
+                        f"{ssum:.2f} m2 - a glazed value or a quantity was misread. Compare with the schedule.")
+        if n_skipped:
+            msg += (f"\n\n{len(n_skipped)} door(s) with no glass were NOT added "
+                    f"({', '.join(n_skipped)}): they are internal doors. Untick 'Skip doors "
+                    "with no glass' at the top if you want them listed.")
+        multi = [f"{it['tag']} x{it['qty']:g}" for it in items if (it.get("qty") or 1) > 1]
+        if multi:
+            msg += ("\n\nIdentical entries were combined into one row with a quantity: "
+                    + ", ".join(multi) + ". (Qty in schedule column.)")
+        if ONLINE_NOTE[0]:
+            msg += "\n\n" + ONLINE_NOTE[0]
+        if LAST_OVERLAY and any(it.get("note") for it in items):
+            msg += ("\n\nThe opening of each window was worked out from the opening symbols in "
+                    "your drawing. Check it at File > Show detected openings (green = opens, "
+                    "blue = sliding, red = fixed).")
+        unnamed = [it["tag"] for it in items if 0 in it["flag"]]
+        if unnamed:
+            msg += (f"\n\n{len(unnamed)} row(s) had no readable ID (the reader often misses "
+                    f"single digits), so they were named {unnamed[0]}"
+                    f"{' ... ' + unnamed[-1] if len(unnamed) > 1 else ''}. Rename them (yellow "
+                    "Tag cells) to match the tags on your plan.")
+        with_sash = sum(1 for it in items if it.get("sash_w"))
+        if with_sash:
+            msg += (f"\n\n{with_sash} had a second, smaller size in the drawing text; it was "
+                    "used as the opening sash size (yellow).")
+        if guessed:
+            msg += (f"\n\nFor {guessed} of them some values were not in the drawing, so "
+                    "typical values were filled in (yellow cells).")
+        msg += ("\n\nFor accurate ventilation, enter the size of the part that actually opens "
+                "in 'Opening sash W/H mm' (and 'No. of sashes'). Until then the app only "
+                "estimates from a percentage.")
+        if skipped:
+            msg += (f"\n\nThese rows had a tag but no readable size, so they were NOT added: "
+                    f"{', '.join(skipped)}. Add them by hand.")
+        if source == "screenshot":
+            msg += ("\n\nIf windows are missing, open File > Show text the reader saw to "
+                    "see what it could read.")
+        QMessageBox.information(self, APP_NAME, msg)
+
+    def _fill_rooms(self, rooms, unassigned, source):
+        if not rooms:
+            QMessageBox.information(
+                self, APP_NAME,
+                f"No rooms with an area (like '12.50 m2') were found in the {source}. "
+                "The room labels need to be visible and large enough to read.")
+            return
+        multi = any(r.get("floor") for r in rooms)
+        floor = self._current_floor()
+        targets = sorted({r["floor"] for r in rooms}) if multi else [floor]
+        if multi:                          # a CAD sheet with several floor plans: floors are made for you
+            for fl in targets:
+                if fl not in self.floors:
+                    self.floors.append(fl)
+            self._refresh_floor_widgets(select="All floors")
+        mine = [r for r in range(self.room_table.rowCount()) if self._floor_of_row(r) in targets]
+        if mine:
+            ans = QMessageBox.question(
+                self, APP_NAME,
+                f"Replace the {len(mine)} room(s) on {', '.join(repr(t) for t in targets)} with the "
+                "imported rooms? Rooms on other floors are kept.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if ans != QMessageBox.StandardButton.Yes:
+                return
+            for r in reversed(mine):
+                self.room_table.removeRow(r)
+        sched_now = self.read_schedule()
+        dropped = 0
+        for rm in rooms:
+            keep = {}
+            for t, n in rm["tags"].items():
+                op = sched_now.get(t.upper())
+                tb = re.sub(r"_\d+$", "", t.upper())
+                if op is not None and not op.counts:
+                    dropped += 1          # internal door - not part of the calculation
+                    continue
+                if (self.skip_chk.isChecked() and op is None
+                        and re.match(r"^(SD|DR|D)-?\d", t.upper())):
+                    dropped += 1          # a door that is not a glazed door in your schedule
+                    continue
+                keep[t] = n
+            rm["tags"] = keep
+            tags = ", ".join(f"{t}:{n}" for t, n in sorted(rm["tags"].items()))
+            self.add_room_row([rm["name"], f"{rm['area']:.2f}", tags, False,
+                               bool(WET_ROOM_RE.search(rm["name"])), rm.get("floor") or floor,
+                               rm.get("unit", ""), rm.get("facing", "")])
+            self._mark_tags_button(self.room_table.rowCount() - 1)
+            if rm.get("area_guess"):
+                ai = self.room_table.item(self.room_table.rowCount() - 1, 1)
+                ai.setBackground(YELLOW)
+                ai.setToolTip("Area copied from the matching room - check it against your plan.")
+        if any(rm.get("unit") for rm in rooms):
+            try:
+                self._set_units_mode(True)
+            except Exception:
+                pass
+        self._goto_lv(2)
+        if multi:
+            per = ", ".join(f"{sum(1 for r in rooms if r['floor'] == t)} on '{t}'" for t in targets)
+            msg = f"Imported {len(rooms)} rooms from the {source}: {per}."
+        else:
+            msg = f"Imported {len(rooms)} rooms onto '{floor}' from the {source}."
+        if ONLINE_NOTE[0]:
+            msg += "\n\n" + ONLINE_NOTE[0]
+        if dropped:
+            msg += (f"\n\n{dropped} door tag(s) (internal doors, or doors not in your door schedule) "
+                    "were left out: only glazed outer doors from your door schedule are selected. "
+                    "Import the door schedule first, or add a door yourself with the "
+                    "'Choose windows...' button.")
+        if unassigned:
+            msg += f"\n\n{unassigned} tag(s) were too far from any room and were left out."
+        msg += ("\n\nEach window/door tag is given to the nearest room label, so tags next to "
+                "a wall can land in the neighbouring room. Check the amber window buttons "
+                "against your drawing before running the check.")
+        QMessageBox.information(self, APP_NAME, msg)
+
+    def import_schedule_pdf(self, path=None):
+        if fitz is None:
+            QMessageBox.warning(self, APP_NAME, "PDF import needs PyMuPDF (pip install pymupdf).")
+            return
+        if not path:
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Window and door schedule PDF", "", "PDF (*.pdf)")
+        if not path:
+            return
+        self._run_bg(lambda: extract_schedule_pdf(path),
+                     lambda items: self._fill_schedule(items, "PDF"),
+                     "Reading the PDF... a big drawing can take a little while.")
+
+    def import_rooms_pdf(self, path=None):
+        if fitz is None:
+            QMessageBox.warning(self, APP_NAME, "PDF import needs PyMuPDF (pip install pymupdf).")
+            return
+        if not path:
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Floor plan PDF", "", "PDF (*.pdf)")
+        if not path:
+            return
+        known = set(self.read_schedule().keys()) or None
+        self._run_bg(lambda: extract_rooms_pdf(path, known),
+                     lambda res: self._fill_rooms(res[0], res[1], "PDF"),
+                     "Reading the PDF... a big drawing can take a little while.")
+
+    def _load_images(self, paths):
+        images = []
+        for p in paths:
+            img = QImage(p)
+            if img.isNull():
+                QMessageBox.warning(self, APP_NAME, f"Could not open image: {p}")
+                return None
+            images.append(img)
+        return images
+
+    def _split_picks(self, title):
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, title, "", "PDF or screenshots (*.pdf *.png *.jpg *.jpeg *.bmp)")
+        if not paths:
+            return None, None
+        pdfs = [p for p in paths if p.lower().endswith(".pdf")]
+        imgs = [p for p in paths if not p.lower().endswith(".pdf")]
+        if pdfs and imgs:
+            QMessageBox.warning(self, APP_NAME, "Choose either a PDF or screenshots, not both.")
+            return None, None
+        return pdfs, imgs
+
+    def import_schedule_any(self):
+        pdfs, imgs = self._split_picks("Windows / doors - PDF or screenshot(s)")
+        if pdfs:
+            self.import_schedule_pdf(pdfs[0])
+        elif imgs:
+            images = self._load_images(imgs)
+            if images:
+                self._read_schedule_images(images)
+
+    def import_rooms_pdfs(self, paths):
+        """Several house PDFs at once: each house gets its own floors, e.g. 'PTN 36 - Ground Floor'."""
+        known = set(self.read_schedule().keys()) or None
+
+        def work():
+            allr, un = [], 0
+            for path in paths:
+                rooms, u = extract_rooms_pdf(path, known)
+                name = _pdf_drawing_name(fitz.open(path))
+                for r in rooms:
+                    r["floor"] = f"{name} - {r['floor']}" if name and r.get("floor") else r.get("floor", "")
+                allr += rooms
+                un += u
+            return allr, un
+        self._run_bg(work, lambda res: self._fill_rooms(res[0], res[1], f"{len(paths)} PDFs"),
+                     "Reading the PDFs... a big drawing can take a little while.")
+
+    def import_rooms_any(self):
+        pdfs, imgs = self._split_picks("Floor plan - PDF or screenshot(s)")
+        if len(pdfs or []) > 1:
+            self.import_rooms_pdfs(pdfs)
+        elif pdfs:
+            self.import_rooms_pdf(pdfs[0])
+        elif imgs:
+            images = self._load_images(imgs)
+            if images:
+                self._read_rooms_images(images)
+
+    def _clipboard_image(self):
+        img = QApplication.clipboard().image()
+        if img.isNull():
+            QMessageBox.information(
+                self, APP_NAME,
+                "There is no screenshot on the clipboard. Press Win+Shift+S, drag over the "
+                "drawing, then click this button again.")
+            return None
+        return [img]
+
+    def paste_schedule_clipboard(self):
+        images = self._clipboard_image()
+        if images:
+            self._read_schedule_images(images)
+
+    def paste_rooms_clipboard(self):
+        images = self._clipboard_image()
+        if images:
+            self._read_rooms_images(images)
+
+    def _run_bg(self, work, on_done, label, err_text="Could not read the file"):
+        dlg = QProgressDialog(label, None, 0, 0, self)
+        dlg.setWindowModality(Qt.WindowModality.WindowModal)
+        dlg.setMinimumDuration(0)
+        dlg.show()
+        worker = BgWorker(work)
+        self._worker = worker
+
+        def finished(result, err):
+            dlg.close()
+            if err:
+                QMessageBox.warning(self, APP_NAME, f"{err_text}: {err}")
+                return
+            try:
+                on_done(result)
+            except Exception as e:
+                QMessageBox.warning(self, APP_NAME, f"Could not use the result: {e}")
+
+        worker.done.connect(finished)
+        worker.start()
+
+    def _read_schedule_images(self, images):
+        def done(res):
+            items, skipped, text = res
+            self.last_ocr_text = text
+            self._fill_schedule(items, "screenshot", skipped)
+        self._run_bg(lambda: extract_schedule_images(images), done,
+                     "Reading the screenshot (offline)... the first read takes a little longer.")
+
+    def _read_rooms_images(self, images):
+        known = set(self.read_schedule().keys()) or None
+
+        def done(res):
+            rooms, unassigned, text = res
+            self.last_ocr_text = text
+            self._fill_rooms(rooms, unassigned, "screenshot")
+        self._run_bg(lambda: extract_rooms_images(images, known), done,
+                     "Reading the screenshot (offline)... the first read takes a little longer.")
+
+    def refresh_mode_pill(self):
+        pill = getattr(self, "mode_pill", None)
+        if pill is None:
+            return
+        if online_ready():
+            pill.setText("Online AI")
+            pill.setStyleSheet("background: rgba(255,50,64,90); border: 1px solid rgba(255,150,158,200);"
+                               "border-radius: 11px; padding: 3px 10px; color: #ffffff; font-weight: 600;")
+            if studio():
+                pill.setStyleSheet("background: #d8132b; border: 1px solid #d8132b;"
+                                   "border-radius: 11px; padding: 3px 10px; color: #ffffff; font-weight: 600;")
+        else:
+            pill.setText("Offline")
+            pill.setStyleSheet("background: rgba(255,255,255,26); border: 1px solid rgba(255,255,255,90);"
+                               "border-radius: 11px; padding: 3px 10px; color: #ffffff; font-weight: 600;")
+            if studio():
+                pill.setStyleSheet("background: #262a2f; border: 1px solid #3a3f46;"
+                                   "border-radius: 11px; padding: 3px 10px; color: #eceef0; font-weight: 600;")
+
+    def online_settings(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Online mode")
+        lay = QVBoxLayout(dlg)
+        info = QLabel("Optional. Lets an AI model read your window-schedule and floor-plan "
+                      "screenshots, using your own API key. Off = the program stays fully offline.")
+        info.setWordWrap(True)
+        lay.addWidget(info)
+        on = QCheckBox("Use online AI to read screenshots")
+        on.setChecked(bool(SETTINGS.get("online")))
+        lay.addWidget(on)
+        grid = QGridLayout()
+        prov = QComboBox()
+        prov.addItems(list(PROVIDERS.keys()))
+        prov.setCurrentText(SETTINGS.get("provider", "Claude (Anthropic)"))
+        key = QLineEdit(SETTINGS.get("api_key", ""))
+        key.setEchoMode(QLineEdit.EchoMode.Password)
+        key.setPlaceholderText("Paste your API key")
+        model = QLineEdit(SETTINGS.get("model", ""))
+        model.setPlaceholderText(PROVIDERS[prov.currentText()])
+        prov.currentTextChanged.connect(lambda t: model.setPlaceholderText(PROVIDERS.get(t, "")))
+        for i, (lab, w) in enumerate([("Provider", prov), ("API key", key),
+                                      ("Model (optional)", model)]):
+            grid.addWidget(QLabel(lab), i, 0)
+            grid.addWidget(w, i, 1)
+        lay.addLayout(grid)
+        warn = QLabel("When this is on, the screenshot you import is sent over the internet to the "
+                      "provider you pick. Your key is saved only on this computer, as plain text in "
+                      f"{SETTINGS_PATH}. If a call fails, the offline reader is used instead.")
+        warn.setWordWrap(True)
+        warn.setStyleSheet("color: rgba(255,255,255,150); font-size: 12px;")
+        lay.addWidget(warn)
+        status = QLabel("")
+        status.setWordWrap(True)
+        lay.addWidget(status)
+        row = QHBoxLayout()
+        test = QPushButton("Test connection")
+        save = QPushButton("Save")
+        save.setProperty("accent", True)
+        cancel = QPushButton("Cancel")
+
+        def apply_fields():
+            SETTINGS.update({"online": on.isChecked(), "provider": prov.currentText(),
+                             "api_key": key.text().strip(), "model": model.text().strip()})
+
+        def do_test():
+            old = dict(SETTINGS)
+            apply_fields()
+            try:
+                status.setText("Testing...")
+                QApplication.processEvents()
+                reply = ai_request("Reply with the single word OK.", max_tokens=20)
+                status.setText("Connected. The AI replied: " + reply.strip()[:40])
+            except Exception as e:
+                status.setText(f"Could not connect: {e}")
+            finally:
+                SETTINGS.clear()
+                SETTINGS.update(old)
+
+        def do_save():
+            apply_fields()
+            if not save_settings():
+                QMessageBox.warning(self, APP_NAME, "Could not save the settings file.")
+            self.refresh_mode_pill()
+            dlg.accept()
+
+        test.clicked.connect(do_test)
+        save.clicked.connect(do_save)
+        cancel.clicked.connect(dlg.reject)
+        row.addWidget(test)
+        row.addStretch()
+        row.addWidget(cancel)
+        row.addWidget(save)
+        lay.addLayout(row)
+        dlg.resize(560, 360)
+        dlg.exec()
+
+    def show_overlay(self):
+        if not LAST_OVERLAY:
+            QMessageBox.information(self, APP_NAME,
+                                    "Nothing to show yet - import a window schedule screenshot "
+                                    "that has drawings of the windows first.")
+            return
+        import numpy as np
+        from PySide6.QtGui import QPixmap
+        a = np.ascontiguousarray(LAST_OVERLAY[0][:, :, ::-1])
+        h, w, _ = a.shape
+        qi = QImage(a.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Detected openings: green = opens, blue = sliding, red = fixed")
+        lay = QVBoxLayout(dlg)
+        lab = QLabel()
+        lab.setPixmap(QPixmap.fromImage(qi).scaledToWidth(
+            min(w, 1300), Qt.TransformationMode.SmoothTransformation))
+        lay.addWidget(lab)
+        dlg.exec()
+
+    def show_last_text(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Text the reader saw in the last screenshot")
+        lay = QVBoxLayout(dlg)
+        box = QPlainTextEdit()
+        box.setReadOnly(True)
+        box.setPlainText(self.last_ocr_text or "(nothing yet - import a screenshot first)")
+        lay.addWidget(box)
+        dlg.resize(760, 520)
+        dlg.exec()
+
+    def import_schedule_csv(self):
+        """CSV columns: tag,width_mm,height_mm,glazed_pct,openable_pct,type"""
+        path, _ = QFileDialog.getOpenFileName(self, "Schedule CSV", "", "CSV (*.csv)")
+        if not path:
+            return
+        with open(path, newline="", encoding="utf-8-sig") as f:
+            for row in csv.DictReader(f):
+                row = {k.strip().lower(): v for k, v in row.items() if k}
+                self.add_sched_row([
+                    row.get("tag", ""), row.get("width_mm", 900),
+                    row.get("height_mm", 1200), row.get("glazed_pct", 85),
+                    row.get("openable_pct", 50), row.get("type", "Window") or "Window"])
+
+    def import_rooms_csv(self):
+        """CSV columns: room,area_m2,tags,internal (yes/no)"""
+        path, _ = QFileDialog.getOpenFileName(self, "Rooms CSV", "", "CSV (*.csv)")
+        if not path:
+            return
+        with open(path, newline="", encoding="utf-8-sig") as f:
+            for row in csv.DictReader(f):
+                row = {k.strip().lower(): v for k, v in row.items() if k}
+                internal = str(row.get("internal", "")).strip().lower() in ("yes", "y", "true", "1")
+                self.add_room_row([row.get("room", ""), row.get("area_m2", 0),
+                                   row.get("tags", ""), internal,
+                                   bool(WET_ROOM_RE.search(row.get("room", ""))),
+                                   row.get("floor", "")])
+
+    # ------------------------------------------------------------------
+    # SANS 10400-XA energy tab
+    # ------------------------------------------------------------------
+    def _goto_lv(self, step):
+        """Show a step (0 windows, 1 doors, 2 rooms, 3 results) of the Light & Ventilation department."""
+        self.main_tabs.setCurrentIndex(1)
+        self.tabs.setCurrentIndex(step)
+
+    def _build_home(self):
+        page = self.home_page
+        outer = QVBoxLayout(page)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        outer.addWidget(scroll)
+        inner = QWidget()
+        v = QVBoxLayout(inner)
+        v.setSpacing(14)
+        scroll.setWidget(inner)
+
+        def group(title, sub=""):
+            box = IconGroupBox(title)
+            box.setObjectName("xaGroup")
+            vb = QVBoxLayout(box)
+            vb.setContentsMargins(14, 8, 14, 12)
+            vb.setSpacing(8)
+            if sub:
+                lab = QLabel(sub)
+                lab.setWordWrap(True)
+                lab.setObjectName("xaSub")
+                vb.addWidget(lab)
+            v.addWidget(box)
+            return vb
+
+        g1 = group("Step 1   Your project", "Where is it and what is it? The town sets the energy zone. Save your work here too.")
+        self.home_summary = QLabel("")
+        self.home_summary.setWordWrap(True)
+        g1.addWidget(self.home_summary)
+        kr = QHBoxLayout()
+        kr.addWidget(QLabel("Building:"))
+        self.home_kind = QComboBox()
+        self.home_kind.addItems(["One house", "Block of units (flats / townhouses)"])
+        self.home_kind.setToolTip("Switch any time. A house is calculated per floor; a block is calculated per unit.")
+        kr.addWidget(self.home_kind)
+        kr.addWidget(QLabel("Storeys:"))
+        self.home_storeys = QSpinBox()
+        self.home_storeys.setRange(1, len(FLOOR_NAMES))
+        self.home_storeys.setValue(len(self.floors))
+        self.home_storeys.setToolTip("Number of floors. Reports use this count.")
+        kr.addWidget(self.home_storeys)
+        kr.addStretch()
+        g1.addLayout(kr)
+        self.home_kind.currentIndexChanged.connect(self._home_kind_changed)
+        self.home_storeys.valueChanged.connect(self._home_kind_changed)
+        pr = QHBoxLayout()
+        b_edit = QPushButton("Edit project details...")
+        b_edit.clicked.connect(lambda: self.project_wizard(editing=True))
+        b_new = QPushButton("Start a new project...")
+        b_new.clicked.connect(lambda: self.project_wizard())
+        pr.addWidget(b_edit)
+        pr.addWidget(b_new)
+        for name, fn in (("Open project...", self.open_project), ("Save project", self.save_project),
+                         ("Save project as...", self.save_project_as)):
+            b = QPushButton(name)
+            b.clicked.connect(lambda _=False, f=fn: f())
+            pr.addWidget(b)
+        pr.addStretch()
+        g1.addLayout(pr)
+        self.home_proj_lbl = QLabel("")
+        g1.addWidget(self.home_proj_lbl)
+        if getattr(self, "_where_box", None) is not None:
+            v.addWidget(self._where_box)        # Location / energy zone, right under the project
+        if getattr(self, "_details_box", None) is not None:
+            v.addWidget(self._details_box)      # Building details live on the Home page, right under the project
+        gi = group("Your model (optional)", "Have an IFC export from Archicad? Tick the box and import it once. "
+                   "The rooms, windows, doors, floor areas and north then feed Energy (XA) and the rational "
+                   "design report. Light & Ventilation uses your screenshots, or tick \"Use IFC model for windows and doors\" there.")
+        gi.addWidget(self._make_ifc_row())
+        title = QLabel("<span style='font-size:20px; font-weight:700;'>Step 2   Choose what you want to do</span><br>"
+                       "<span>Everything is saved in one project. Switch between the two parts at any time.</span>")
+        title.setWordWrap(True)
+        v.addWidget(title)
+        g0 = group("Building type", "A house is calculated per floor. A block of flats or townhouses is "
+                                    "calculated per unit, each unit with its own light, ventilation, glazing and energy check.")
+        g0.addWidget(self._make_units_chk())
+        self._units_chks[-1].toggled.connect(lambda _on: self._refresh_home_summary())
+
+        cards = QHBoxLayout()
+        cards.setSpacing(16)
+        for text, idx, ico in (
+                ("<b style='font-size:17px'>Light && Ventilation</b><br>SANS 10400-O<br><br>"
+                 "Windows and doors, rooms, natural light, ventilation and the glazing limit.", 1, "lightvent"),
+                ("<b style='font-size:17px'>Energy (XA)</b><br>SANS 10400-XA and SANS 204<br><br>"
+                 "Walls, roof, floors, hot water pipes, windows and the rational design report.", 2, "bolt")):
+            b = QPushButton()
+            b.setMinimumHeight(140)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            lab = QLabel(text.replace("&&", "&"), b)
+            lab.setWordWrap(True)
+            lab.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            icl = QLabel()
+            icl.setPixmap(icon_pixmap(ico, "#ff4056", 56))
+            icl.setFixedSize(64, 64)
+            icl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            icl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            bl = QHBoxLayout(b)
+            bl.setContentsMargins(18, 14, 18, 14)
+            bl.setSpacing(16)
+            bl.addWidget(icl, 0, Qt.AlignmentFlag.AlignVCenter)
+            bl.addWidget(lab, 1)
+            b.clicked.connect(lambda _=False, i=idx: self.main_tabs.setCurrentIndex(i))
+            cards.addWidget(b)
+        v.addLayout(cards)
+
+        g = group("How Light && Ventilation works",
+                  "Work through the four numbered steps inside the Light & Ventilation tab.")
+        g.addWidget(QLabel("1  Windows: import the window schedule (a screenshot or PDF) or type it in.\n"
+                           "2  Doors: the same for the door schedule. Doors with no glass are skipped.\n"
+                           "3  Rooms: import the floor plan or type the rooms, their areas and window tags.\n"
+                           "4  Results: see permissible against actual for light, ventilation and glazing."))
+        g = group("How Energy (XA) works",
+                  "Work down the numbered sections inside the Energy (XA) tab.")
+        g.addWidget(QLabel("1  Pick the province and town (this sets the energy zone) and the building details.\n"
+                           "2 to 5  Walls, roof, floors and hot water pipes: pick a preset or build your own layers.\n"
+                           "6  Windows and glazed doors per storey (uses your rooms and window schedule).\n"
+                           "7  Preview or export the rational design report."))
+
+        g = group("Reports")
+        rows = [
+            ("Light && Ventilation report", self.preview_pdf_report, self.export_pdf_report),
+            ("Energy (XA) report", lambda: self.preview_pdf_report(self._write_xa_pdf, self._run_xa_quiet),
+             self.export_xa_pdf),
+            ("Rational design report", lambda: self.preview_pdf_report(self._write_rd_pdf, self._run_xa_quiet),
+             self.export_rd_pdf)]
+        for name, prev, exp in rows:
+            r = QHBoxLayout()
+            ril = QLabel()
+            ril.setPixmap(icon_pixmap("pdf", "#ff4056", 20))
+            r.addWidget(ril)
+            r.addWidget(QLabel(name.replace("&&", "&")), 1)
+            pb = QPushButton("Preview")
+            pb.clicked.connect(lambda _=False, f=prev: f())
+            eb = QPushButton("Save PDF...")
+            eb.clicked.connect(lambda _=False, f=exp: f())
+            r.addWidget(pb)
+            r.addWidget(eb)
+            g.addLayout(r)
+        rd_b = QPushButton("Report details (project name, owner, architect, competent person)...")
+        rd_b.clicked.connect(self.rd_dialog)
+        g.addWidget(rd_b)
+
+        self._set_project_label()
+        self._refresh_home_summary()
+        v.addStretch()
+
+    ZONE_NAMES = {"1": "Medium heating, medium cooling", "2": "Medium heating, low cooling",
+                  "3": "Low heating, high cooling", "4": "Low heating, low cooling",
+                  "5": "Low heating, medium cooling", "5H": "Like zone 5 but humid (coastal)",
+                  "6": "High heating, low cooling", "7": "High heating, medium cooling"}
+    ZONE_SHORT = {"1": "Med heat / med cool", "2": "Med heat / low cool", "3": "Low heat / high cool",
+                  "4": "Low heat / low cool", "5": "Low heat / med cool", "5H": "Zone 5, humid",
+                  "6": "High heat / low cool", "7": "High heat / med cool"}
+
+    def _build_zone_guide(self, lay):
+        """A friendly, clickable province map (tiles placed roughly where the provinces are), a town search
+        box and a plain-language result card. It drives the same province / town / zone boxes below."""
+        from PySide6.QtWidgets import QCompleter
+        wrap = QWidget()
+        wrap.setObjectName("zoneGuide")
+        wrap.setStyleSheet(
+            "#zoneGuide QPushButton.prov{min-height:30px;padding:2px 6px;border-radius:8px;}"
+            "#zoneGuide QPushButton[prov='true']{background:rgba(255,255,255,0.06);"
+            "border:1px solid rgba(255,255,255,0.14);}"
+            "#zoneGuide QPushButton[prov='true']:hover{background:rgba(255,255,255,0.12);}"
+            "#zoneGuide QPushButton[prov='true']:checked{background:#c8102e;border:1px solid #ff4056;color:white;}"
+            "#zoneGuide QListWidget{background:rgba(255,255,255,0.04);color:#e8e8ec;"
+            "border:1px solid rgba(255,255,255,0.14);border-radius:8px;padding:2px;outline:0;}"
+            "#zoneGuide QListWidget::item{padding:4px 8px;border-radius:5px;}"
+            "#zoneGuide QListWidget::item:hover{background:rgba(255,255,255,0.10);}"
+            "#zoneGuide QListWidget::item:selected{background:#c8102e;color:white;}"
+            "#zoneGuide QLabel#zoneCard{border-radius:10px;padding:10px 14px;"
+            "background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);}")
+        h = QHBoxLayout(wrap)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(18)
+        # left: step 1, the map
+        left = QVBoxLayout()
+        left.addWidget(QLabel("<b>Step 1</b> &nbsp;Click your area on the map"))
+        self.zone_map = ZaZoneMap()
+        self.zone_map.picked.connect(self._zone_map_picked)
+        left.addWidget(self.zone_map, 1)
+        self._zone_btns = {}
+        if "Southern Cape" in XA_REGIONS:
+            b = QPushButton("Southern Cape / Garden Route towns")
+            b.setCheckable(True)
+            b.setProperty("prov", "true")
+            b.setCursor(Qt.PointingHandCursor)
+            b.setToolTip("George, Knysna, Mossel Bay, Oudtshoorn and nearby towns")
+            b.clicked.connect(lambda _=False: self._zone_pick_province("Southern Cape"))
+            left.addWidget(b)
+            self._zone_btns["Southern Cape"] = b
+        h.addLayout(left, 5)
+        # right: step 2 + result
+        right = QVBoxLayout()
+        self.zone_head = QLabel("<b>Step 2</b> &nbsp;Pick the nearest town")
+        right.addWidget(self.zone_head)
+        self.zone_search = QLineEdit()
+        self.zone_search.setPlaceholderText("Type your town here and press Enter (any province)...")
+        self.zone_search.setClearButtonEnabled(True)
+        comp = QCompleter(sorted(XA_TOWNS), self.zone_search)
+        comp.setCaseSensitivity(Qt.CaseInsensitive)
+        comp.setFilterMode(Qt.MatchContains)
+        comp.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        self.zone_search.setCompleter(comp)
+
+        def picked(t):
+            t = (t or "").strip()
+            if t in XA_TOWNS:
+                self._zone_nearby = None
+                self.zone_map.click_ll = None
+                pv = next((k for k, v_ in XA_PROVINCES.items() if t in v_), None)
+                if pv and pv in XA_REGIONS:
+                    self.xa_prov.setCurrentText(pv)
+                self.xa_town.setCurrentText(t)
+                if t in self.zone_map.towns:
+                    la, lo = self.zone_map.towns[t]
+                    self.zone_map.zoom_to(lo, la)
+            elif t:
+                self.zone_card.setText(
+                    f"<b>\u201c{html.escape(t)}\u201d is not in the SANS 10400-XA Annex C list.</b><br>"
+                    "<span style='color:rgba(255,255,255,170)'>Zoom into the map and click the closest dot or place, "
+                    "or pick the nearest listed town from the list. You can also set the energy zone yourself "
+                    "in the boxes below.</span>")
+        comp.activated.connect(picked)
+        self.zone_search.returnPressed.connect(lambda: picked(self.zone_search.text()))
+        right.addWidget(self.zone_search)
+        self.zone_towns = QListWidget()
+        self.zone_towns.setMinimumHeight(230)
+        self.zone_towns.setMaximumHeight(270)
+        self._zone_nearby = None
+        self.zone_towns.itemClicked.connect(self._zone_item_clicked)
+        right.addWidget(self.zone_towns)
+        right.addSpacing(8)
+        right.addWidget(QLabel("<b>Energy zones</b> (SANS 10400-XA:2021)"))
+        leg = QLabel("<br>".join(
+            f"<span style='color:{ZA_ZONE_COLOURS[z]}'>&#9632;</span> <b>{z}</b> &nbsp;{self.ZONE_NAMES[z]}"
+            for z in XA_ZONES))
+        leg.setWordWrap(True)
+        leg.setTextFormat(Qt.RichText)
+        leg.setStyleSheet("color:rgba(255,255,255,190);")
+        right.addWidget(leg)
+        note = QLabel("<span style='color:rgba(255,255,255,140)'>The shading is worked out from the SANS 10400-XA "
+                      "Annex C town table (each spot takes the zone of the nearest listed town). The town you "
+                      "pick is what counts.</span>")
+        note.setWordWrap(True)
+        right.addWidget(note)
+        right.addStretch(1)
+        h.addLayout(right, 3)
+        wrap.setMaximumWidth(1100)
+        lay.addWidget(wrap)
+        self.zone_card = QLabel("")
+        self.zone_card.setObjectName("zoneCard")
+        self.zone_card.setWordWrap(True)
+        self.zone_card.setTextFormat(Qt.RichText)
+        self.zone_card.setMaximumWidth(980)
+        lay.addWidget(self.zone_card)
+        kb = QPushButton("Import the site from Google Earth (KML / KMZ)...")
+        kb.setToolTip("Reads the exact location (and the plot outline) from your KML or KMZ file. It sets the latitude, "
+                      "suggests the nearest town and energy zone and, with an IFC model loaded, works out which way "
+                      "north is on your plan. That decides which way every window faces.")
+        kb.clicked.connect(self.import_kml)
+        lay.addWidget(kb, 0, Qt.AlignLeft)
+        wr = QHBoxLayout()
+        wb1 = QPushButton("Get weather data for this site (online)")
+        wb1.setToolTip("Downloads a typical weather year (hourly) for the exact site from the EU PVGIS service and keeps a "
+                       "copy, so it also works offline afterwards. It is used for the climate and sun figures in the "
+                       "rational design report.")
+        wb1.clicked.connect(self.fetch_weather)
+        wb2 = QPushButton("Use my own weather file (.epw)...")
+        wb2.setToolTip("Pick an EPW weather file, for example the nearest South African station file from "
+                       "climate.onebuilding.org.")
+        wb2.clicked.connect(self.load_epw)
+        wr.addWidget(wb1); wr.addWidget(wb2); wr.addStretch()
+        lay.addLayout(wr)
+        self.wx_lbl = QLabel("No weather file yet: the report uses a clear-sky sun model until you add one.")
+        self.wx_lbl.setWordWrap(True)
+        lay.addWidget(self.wx_lbl)
+
+    PROV_LAT = {"Western Cape": 33.5, "Eastern Cape": 32.5, "Northern Cape": 29.5, "Free State": 28.5,
+                "KwaZulu-Natal": 29.0, "North West": 26.5, "Gauteng": 26.0, "Mpumalanga": 25.5, "Limpopo": 23.5,
+                "Southern Cape": 34.0}
+
+    def _xa_autolat(self):
+        """Fill the latitude from the chosen town (or the middle of its province) unless the user typed one."""
+        if getattr(self, "_lat_manual", False) or not hasattr(self, "xa_lat"):
+            return
+        t = self.xa_town.currentText()
+        lat = None
+        if t in ZA_MAP_DATA["towns"]:
+            lat = -ZA_MAP_DATA["towns"][t][0]
+        else:
+            lat = self.PROV_LAT.get(self.xa_prov.currentText())
+        if lat is not None:
+            self.xa_lat.setText(f"{lat:.1f}")
+
+    def _xa_latitude(self):
+        try:
+            return abs(float(self.xa_lat.text().replace(",", ".")))
+        except ValueError:
+            return self.PROV_LAT.get(self.xa_prov.currentText(), 30.0)
+
+    def _weather_dir(self):
+        d = os.path.join(os.path.expanduser("~"), "MOT_XA_Energy", "weather")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _set_weather(self, w, path):
+        import math as _m
+        self.weather = w
+        self.rd["epw"] = path
+        la, lo = self._site_lonlat()
+        km = 111.0 * (((w["lat"] - la) ** 2 + ((w["lon"] - lo) * _m.cos(_m.radians(la))) ** 2) ** 0.5)
+        msg = (f"Weather data: {w['name'] or 'weather file'} ({w['lat']:.2f}, {w['lon']:.2f}), "
+               f"{km:.0f} km from the site. Mean temperature {float(w['T'].mean()):.1f} \u00b0C.")
+        if km > 100:
+            msg += " This file is far from your site: pick a nearer one if you can."
+        if hasattr(self, "wx_lbl"):
+            self.wx_lbl.setText(msg)
+
+    def fetch_weather(self):
+        la, lo = self._site_lonlat()
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            txt = fetch_pvgis_epw(la, lo)
+            w = parse_epw(txt)
+            w["source"] = "EU PVGIS typical meteorological year 2005-2020 (satellite and reanalysis data for the exact point, not a weather station)"
+            path = os.path.join(self._weather_dir(), f"pvgis_{la:.3f}_{lo:.3f}.epw")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(txt)
+        except Exception as ex:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, APP_NAME, "The weather data could not be downloaded:\n%s\n\nCheck the internet "
+                                "connection, or pick a weather file (.epw) of your own instead." % ex)
+            return
+        QApplication.restoreOverrideCursor()
+        self._set_weather(w, path)
+        QMessageBox.information(self, APP_NAME, "Weather data for the site was downloaded and saved (modelled from satellite "
+                                "and reanalysis data, not measured at a weather station; for a station file use the .epw "
+                                "button):\n%s" % path)
+
+    def load_epw(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Weather file", "", "EPW weather file (*.epw);;All files (*)")
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                w = parse_epw(f.read())
+        except Exception as ex:
+            QMessageBox.warning(self, APP_NAME, "That weather file could not be read:\n%s" % ex)
+            return
+        self._set_weather(w, path)
+
+    def _weather_for_report(self):
+        w = getattr(self, "weather", None)
+        if w is None and self.rd.get("epw") and os.path.exists(self.rd["epw"]):
+            try:
+                with open(self.rd["epw"], "r", encoding="utf-8", errors="replace") as f:
+                    w = parse_epw(f.read())
+                self.weather = w
+            except Exception:
+                w = None
+        return w
+
+    def import_kml(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Site location - KML or KMZ file", "",
+                                              "Google Earth files (*.kml *.kmz);;All files (*)")
+        if not path:
+            return
+        try:
+            marks = read_kml(path)
+        except Exception as ex:
+            QMessageBox.warning(self, APP_NAME, f"That file could not be read as KML / KMZ:\n{ex}")
+            return
+        if not marks:
+            QMessageBox.information(self, APP_NAME, "No place, line or plot outline was found in that file.")
+            return
+        marks.sort(key=lambda m_: {"Polygon": 0, "Point": 1, "Line": 2}[m_["kind"]])
+        pick = marks[0]
+        if len(marks) > 1:
+            labels = [f"{m_['name']}  ({m_['kind'].lower()}, {len(m_['pts'])} point{'s' if len(m_['pts']) != 1 else ''})"
+                      for m_ in marks]
+            lab, ok = QInputDialog.getItem(self, APP_NAME, "Which one is your site? (the plot outline is best)",
+                                           labels, 0, False)
+            if not ok:
+                return
+            pick = marks[labels.index(lab)]
+        pts = pick["pts"]
+        lon = sum(q[0] for q in pts) / len(pts)
+        lat = sum(q[1] for q in pts) / len(pts)
+        # latitude + nearest listed town
+        self._lat_manual = True
+        self._coord_src = "Google Earth KML"
+        self.xa_lat.setText(f"{abs(lat):.4f}")
+        self.rd["lon"] = f"{lon:.5f}"
+        zm = self.zone_map
+        pt = zm._xy(lon, lat)
+        near = zm.nearby(pt)
+        msg = [f"Site: {pick['name']}.  Latitude {abs(lat):.4f}\u00b0 {'S' if lat < 0 else 'N'}, longitude {lon:.4f}\u00b0."]
+        if near:
+            town, km = near[0]
+            zm.click_ll = (lon, lat)
+            zm.near_list = near
+            zm.click_km = max(near[-1][1], 40.0)
+            self._zone_map_picked(zm.town_pv.get(town) or self.xa_prov.currentText(), town)
+            zm.zoom_to(lon, lat, 4.0)
+            msg.append(f"Nearest listed town: {town.rstrip(' *')} ({km:.0f} km), energy zone {XA_TOWNS.get(town, '?')}. "
+                       "Check it in step 2 if your town is closer to another listed one.")
+        msg.append("The latitude is used for the shading depth (SANS 10400-XA table 3).")
+        # north from the outline
+        ifc_path = getattr(self, "ifc_path", "")
+        if pick["kind"] == "Polygon" and ifc_path and os.path.exists(ifc_path):
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                model = ifc_site_outline(ifc_path)
+                site_xy, _la, _lo = kml_to_metres(pts)
+                cands = north_candidates(model, site_xy) if len(model) >= 3 else []
+            except Exception:
+                cands = []
+            finally:
+                QApplication.restoreOverrideCursor()
+            if cands:
+                dlg = KmlNorthDialog(self, site_xy, model, cands,
+                                     (self.ifc_data or {}).get("north") if isinstance(self.ifc_data, dict) else None)
+                if dlg.exec() == QDialog.DialogCode.Accepted and dlg.angle is not None:
+                    self.xa_north.setText("%g" % dlg.angle)
+                    self._north_src = "kml"
+                    msg.append(f"North on the plan set to {dlg.angle:g}\u00b0 from the plot outline. The Rooms table "
+                               "and the orientation check now use it.")
+                else:
+                    msg.append("North was not changed.")
+            else:
+                msg.append("The building outline could not be matched to the plot, so north was not changed.")
+        elif pick["kind"] == "Polygon":
+            msg.append("To work out north from the plot outline, import your IFC model first (Home or Energy XA) "
+                       "and then import this KML file again.")
+        else:
+            msg.append("This file has only a point, so north cannot be worked out from it. Use a KML with the plot "
+                       "outline (a polygon), or set the north angle yourself.")
+        self._xa_refresh()
+        msg.append("Next, press 'Get weather data for this site' to load the climate of this exact location.")
+        QMessageBox.information(self, APP_NAME, "\n\n".join(msg))
+
+    def _zone_pick_province(self, name):
+        self._zone_nearby = None
+        self.zone_map.click_ll = None
+        self.xa_prov.setCurrentText(name)
+
+    def _zone_map_picked(self, pv, town):
+        near = self.zone_map.near_list
+        tp = self.zone_map.town_pv
+        self._zone_nearby = near
+        inpv = next((t for t, _km in near if tp.get(t) == pv), town)
+        self.xa_prov.setCurrentText(pv)
+        self._zone_sync_force = True
+        if inpv:
+            self.xa_town.setCurrentText(inpv)
+        self._zone_guide_sync()
+
+    def _zone_item_clicked(self, it):
+        t = it.data(Qt.UserRole) or it.text()
+        pv = self.zone_map.town_pv.get(t) or next((k for k, v in XA_PROVINCES.items() if t in v), "")
+        if pv and pv != self.xa_prov.currentText():
+            keep = self._zone_nearby
+            self.xa_prov.setCurrentText(pv)
+            self._zone_nearby = keep
+        self.xa_town.setCurrentText(t)
+
+    def _zone_guide_sync(self):
+        if not hasattr(self, "zone_card") or getattr(self, "_zone_busy", False):
+            return
+        self._zone_busy = True
+        try:
+            pv = self.xa_prov.currentText()
+            for n, b in self._zone_btns.items():
+                b.blockSignals(True)
+                b.setChecked(n == pv)
+                b.blockSignals(False)
+            names = XA_REGIONS.get(pv, [])
+            cur = self.xa_town.currentText()
+            self.zone_map.set_state(pv, cur)
+            self.zone_towns.blockSignals(True)
+            self.zone_towns.clear()
+            near = self._zone_nearby if self.zone_map.click_ll else None
+            if near:
+                self.zone_head.setText("<b>Step 2</b> &nbsp;Pick the exact town (closest to your click)")
+                for t, km in near:
+                    it = QListWidgetItem(f"{t}     {km:.0f} km")
+                    it.setData(Qt.UserRole, t)
+                    it.setToolTip(f"Zone {XA_TOWNS.get(t, '?')}")
+                    self.zone_towns.addItem(it)
+                    if t == cur:
+                        self.zone_towns.setCurrentItem(it)
+            else:
+                self.zone_head.setText("<b>Step 2</b> &nbsp;Pick the nearest town")
+                if not names:
+                    self.zone_towns.addItem("Click the map to see the towns near that spot")
+                    self.zone_towns.item(0).setFlags(Qt.NoItemFlags)
+                for t in names:
+                    it = QListWidgetItem(t)
+                    it.setData(Qt.UserRole, t)
+                    self.zone_towns.addItem(it)
+                    if t == cur:
+                        self.zone_towns.setCurrentItem(it)
+            self.zone_towns.blockSignals(False)
+            z = self.xa_zone.currentText()
+            nm = self.ZONE_NAMES.get(z, "")
+            if cur in XA_TOWNS:
+                head = f"<span style='font-size:15pt'><b>Energy zone {z}</b></span> &nbsp;{nm}"
+                body = xa_town_note(cur)
+            else:
+                head = f"<span style='font-size:15pt'><b>Energy zone {z}</b></span> &nbsp;{nm}"
+                body = ("No town picked yet, so this is the zone currently set. Choose the nearest town above. "
+                        "If your town is not listed, pick the closest one, or set the zone yourself below.")
+            self.zone_card.setText(head + "<br><span style='color:rgba(255,255,255,170)'>" + body
+                                   + " The zone decides the minimum insulation (R-values) and glazing limits used in the report.</span>")
+        finally:
+            self._zone_busy = False
+
+    def _build_xa_tab(self):
+        from PySide6.QtWidgets import QMenu
+        self.xa_elements = []
+        self.xa_glass = {}
+        self.rd = dict(RD_DEFAULTS)
+        self._xa_loading = False
+        page = QWidget()
+        outer = QVBoxLayout(page)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        inner = QWidget()
+        v = QVBoxLayout(inner)
+        v.setSpacing(14)
+        outer_v = v
+        scroll.setWidget(inner)
+        outer.addWidget(scroll)
+
+        def heading(txt, sub=""):
+            """Start a new framed group (a box with a title) and make it the layout the next widgets go into."""
+            nonlocal v
+            box = IconGroupBox(txt)
+            box.setObjectName("xaGroup")
+            vb = QVBoxLayout(box)
+            vb.setContentsMargins(14, 8, 14, 12)
+            vb.setSpacing(8)
+            outer_v.addWidget(box)
+            if txt == "Where is the building?":
+                self._where_box = box            # moved onto the Home page under Step 1 (see _build_home)
+            if txt == "Building details":
+                self._details_box = box          # moved onto the Home page under Step 1 (see _build_home)
+            if sub:
+                lab = QLabel(sub)
+                lab.setWordWrap(True)
+                lab.setObjectName("xaSub")
+                vb.addWidget(lab)
+            v = vb
+
+        heading("Where is the building?",
+                "Two quick steps: click the province, then pick the nearest town. The energy zone is set for you.")
+        v.addWidget(self._make_units_chk())
+        self._build_zone_guide(v)
+        v.addWidget(QLabel("Or choose from the lists instead:"))
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Province / region:"))
+        self.xa_prov = QComboBox()
+        self.xa_prov.setMaxVisibleItems(15)
+        self.xa_prov.addItems(["(all provinces)"] + list(XA_REGIONS))
+        self.xa_prov.setMinimumWidth(190)
+        row.addWidget(self.xa_prov)
+        row.addWidget(QLabel("Town:"))
+        self.xa_town = QComboBox()
+        self.xa_town.setMaxVisibleItems(25)
+        self.xa_town.setMinimumWidth(230)
+        row.addWidget(self.xa_town)
+        row.addWidget(QLabel("Energy zone:"))
+        self.xa_zone = QComboBox()
+        self.xa_zone.addItems(XA_ZONES)
+        self.xa_zone.setCurrentText("1")
+        row.addWidget(self.xa_zone)
+        row.addStretch()
+        v.addLayout(row)
+        self.xa_sel = QLabel("")
+        self.xa_sel.setVisible(False)   # the zone card above shows this note
+        v.addWidget(self.xa_sel)
+        self.xa_zone.currentTextChanged.connect(lambda _t: (self._xa_refresh(), self._xa_autofill()))
+
+        def town_changed(t):
+            if t in XA_TOWNS:
+                self.xa_zone.setCurrentText(XA_TOWNS[t])
+                self.xa_sel.setText(xa_town_note(t))
+                self.xa_sel.setWordWrap(True)
+            else:
+                self.xa_sel.setText("Choose a town, or set the energy zone yourself.")
+        self.xa_town.currentTextChanged.connect(town_changed)
+
+        def fill_towns(pv, keep=None):
+            names = sorted(XA_TOWNS) if pv not in XA_REGIONS else XA_REGIONS[pv]
+            cur = keep or self.xa_town.currentText()
+            self.xa_town.blockSignals(True)
+            self.xa_town.clear()
+            self.xa_town.addItems(["(choose)"] + names)
+            self.xa_town.setCurrentText(cur if cur in names else "(choose)")
+            self.xa_town.blockSignals(False)
+            if cur in names:
+                town_changed(cur)
+        self._xa_fill_towns = fill_towns
+        self.xa_prov.currentTextChanged.connect(lambda pv: fill_towns(pv))
+        fill_towns("(all provinces)")
+        self.xa_prov.activated.connect(lambda _i: (setattr(self, '_zone_nearby', None), setattr(self.zone_map, 'click_ll', None), self._zone_guide_sync()))
+        self.xa_prov.currentTextChanged.connect(lambda _p: self._zone_guide_sync())
+        self.xa_town.currentTextChanged.connect(lambda _t: self._zone_guide_sync())
+        self.xa_town.currentTextChanged.connect(lambda _t: self._xa_autolat())
+        self.xa_zone.currentTextChanged.connect(lambda _z: self._zone_guide_sync())
+        self._zone_guide_sync()
+
+        heading("Building details", "Occupancy, use, orientation and floor areas for the report.")
+        g = QGridLayout()
+        self.xa_occ = QComboBox()
+        self.xa_occ.setMaxVisibleItems(32)
+        self.xa_occ.addItems(XA_OCCUPANCY)
+        self.xa_occ.setCurrentText(self.rd["occupancy"])
+        self.xa_hrs = QLineEdit()
+        self.xa_hrs.setPlaceholderText("e.g. 24")
+        self.xa_days = QLineEdit()
+        self.xa_days.setPlaceholderText("e.g. 7")
+        self.xa_north = QLineEdit()
+        self.xa_north.setPlaceholderText("degrees, e.g. 58")
+        self.xa_nett = QLabel("-")
+        self.xa_total = QLineEdit()
+        self.xa_total.setPlaceholderText("m2 (optional)")
+        self.xa_gross = QLineEdit()
+        self.xa_gross.setPlaceholderText("whole building, all floors (m2) - type it in")
+        self.xa_gross.setToolTip("The total area of the whole building, everything included: ground floor, "
+                                 "first floor and any other floor. Type it in yourself. The building's maximum "
+                                 "energy demand and consumption are worked out from it.")
+        self.xa_lat = QLineEdit()
+        self.xa_lat.setPlaceholderText("auto from the town, e.g. 33.9")
+        self.xa_lat.setToolTip("Latitude in degrees SOUTH. It sets how deep the roof overhang / shading must be "
+                               "(SANS 10400-XA table 3). Filled in from the town you chose; type your own to override.")
+        self.xa_lat.textEdited.connect(lambda _t: setattr(self, "_lat_manual", True))
+        self.xa_demand_tot = QLabel("-")
+        self.xa_cons_tot = QLabel("-")
+        self.xa_maxd = QLineEdit()
+        self.xa_maxd.setPlaceholderText("from SANS 10400-XA tables")
+        self.xa_maxc = QLineEdit()
+        self.xa_maxc.setPlaceholderText("from SANS 10400-XA tables")
+        cells = [("Occupancy class", self.xa_occ), ("Design hours per day", self.xa_hrs),
+                 ("Design days per week", self.xa_days), ("Building orientation (north)", self.xa_north),
+                 ("Nett floor area (from rooms)", self.xa_nett), ("Total floor area", self.xa_total),
+                 ("Gross floor area (whole building, all floors)", self.xa_gross), ("Max energy demand (VA/m2)", self.xa_maxd),
+                 ("Max energy consumption (kWh/m2/annum)", self.xa_maxc),
+                 ("Max energy demand of the building", self.xa_demand_tot),
+                 ("Max energy consumption of the building", self.xa_cons_tot),
+                 ("Latitude (degrees south, for shading)", self.xa_lat)]
+        north_box = QWidget(); nb = QHBoxLayout(north_box); nb.setContentsMargins(0, 0, 0, 0)
+        nb.addWidget(self.xa_north, 1)
+        btn_north = QPushButton("North arrow...")
+        btn_north.setToolTip("Rotate a north arrow to match your plan and fill in the degrees")
+        def pick_north():
+            try: a = float(self.xa_north.text().replace(",", ".").replace("deg", "").strip() or 0)
+            except ValueError: a = 0.0
+            dlg = CompassDialog(self, a)
+            if dlg.exec():
+                self.xa_north.setText(("%g" % dlg.value()))
+        btn_north.clicked.connect(pick_north); nb.addWidget(btn_north)
+        cells[3] = (cells[3][0], north_box)
+        for i, (lab, wdg) in enumerate(cells):
+            g.addWidget(QLabel(lab), (i // 3) * 2, i % 3)
+            g.addWidget(wdg, (i // 3) * 2 + 1, i % 3)
+        v.addLayout(g)
+        self._xa_bd_map = {"occupancy": self.xa_occ, "hrs": self.xa_hrs, "days": self.xa_days,
+                           "north": self.xa_north, "lat": self.xa_lat, "total_area": self.xa_total, "gross_area": self.xa_gross,
+                           "max_demand": self.xa_maxd, "max_cons": self.xa_maxc}
+
+        def bd_changed(*_a):
+            for k, wdg in self._xa_bd_map.items():
+                self.rd[k] = (wdg.currentText() if isinstance(wdg, QComboBox) else wdg.text()).strip()
+            self._xa_building_totals()
+            try:
+                self._refresh_facing_labels()
+            except AttributeError:
+                pass
+        self.xa_occ.currentTextChanged.connect(bd_changed)
+        self.xa_occ.currentTextChanged.connect(lambda _t: self._xa_autofill())
+        for wdg in self._xa_bd_map.values():
+            if isinstance(wdg, QLineEdit):
+                wdg.textChanged.connect(bd_changed)
+        self.main_tabs.currentChanged.connect(lambda _i: self._xa_autofill())
+        calc = QPushButton("Do all calcs")
+        calc.clicked.connect(self._run_xa_quiet)
+        v.addWidget(calc)
+
+        self.xa_tables = {}
+        self.xa_req_lbl = {}
+        for key, title, help_, types, prefix, dtype in XA_CATEGORIES:
+            heading(title, help_ + " Pick a preset to start from, then double-click a row to edit the layers.")
+            rl = QLabel("")
+            rl.setWordWrap(True)
+            v.addWidget(rl)
+            self.xa_req_lbl[key] = rl
+            if key == "floors":
+                sr = QHBoxLayout()
+                sr.addWidget(QLabel("Storeys in the building:"))
+                self.xa_storeys = QSpinBox()
+                self.xa_storeys.setRange(1, len(FLOOR_NAMES))
+                self.xa_storeys.setValue(max(1, len(getattr(self, "floors", [1]))))
+                self.xa_storeys.setToolTip("1 = a single-storey building: only the ground floor. "
+                                           "More = a double-storey, three-storey ... building. "
+                                           "Same setting as Storeys on the Home page.")
+                self.xa_storeys.valueChanged.connect(self._xa_storeys_changed)
+                sr.addWidget(self.xa_storeys)
+                self.xa_storeys_note = QLabel("")
+                self.xa_storeys_note.setObjectName("xaSub")
+                sr.addWidget(self.xa_storeys_note, 1)
+                v.addLayout(sr)
+            real_v = v
+            if key == "floors":
+                holder = QWidget(); hl = QVBoxLayout(holder); hl.setContentsMargins(0, 0, 0, 0)
+                v = hl
+            tb = QTableWidget(0, 5)
+            tb.setHorizontalHeaderLabels(["Build-up", "Total R", "Required R", "Result", "Notes"])
+            hh = tb.horizontalHeader()
+            hh.setSectionResizeMode(QHeaderView.Stretch)
+            for c, wdt in ((1, 80), (2, 100), (3, 130)):
+                hh.setSectionResizeMode(c, QHeaderView.Fixed)
+                tb.setColumnWidth(c, wdt)
+            hh.setSectionResizeMode(0, QHeaderView.Interactive)
+            tb.setColumnWidth(0, 330)
+            tb.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+            tb.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+            tb.setMinimumHeight(150)
+            tb.setMaximumHeight(270)
+            tb.setIconSize(QSize(120, 67))
+            tb.verticalHeader().setDefaultSectionSize(74)
+            tb.setItemDelegate(GlassItemDelegate(tb))
+            tb.setItemDelegateForColumn(3, GlassCellDelegate(tb))
+            tb.cellDoubleClicked.connect(lambda r, _c, k=key: self._xa_edit(self._xa_index(k, r)))
+            v.addWidget(tb)
+            add_table_grip(v, tb, min_h=80)
+            self.xa_tables[key] = tb
+            bar = QHBoxLayout()
+            addp = QPushButton("Add from presets  ▾")
+            menu = QMenu(addp)
+            menu.aboutToShow.connect(lambda m=menu, k=key, pf=prefix, ty=types: self._xa_fill_menu(m, k, pf, ty))
+            addp.setMenu(menu)
+            blank = QPushButton("Build your own...")
+            blank.setToolTip("Start an empty build-up and add your own layers one by one.")
+            blank.clicked.connect(lambda _=False, k=key: self._xa_add_blank(k))
+            edit = QPushButton("Edit layers...")
+            edit.clicked.connect(lambda _=False, k=key: self._xa_edit(self._xa_index(k, self._xa_current_row(k))))
+            dup = QPushButton("Duplicate")
+            dup.clicked.connect(lambda _=False, k=key: self._xa_duplicate(k))
+            mine = QPushButton("Save as my build-up")
+            mine.setToolTip("Keep the selected build-up in the 'My build-ups' list, available in every project.")
+            mine.clicked.connect(lambda _=False, k=key: self._xa_save_mine(k))
+            rem = QPushButton("Remove")
+            rem.clicked.connect(lambda _=False, k=key: self._xa_remove(k))
+            for b_ in (addp, blank, edit, dup, mine, rem):
+                bar.addWidget(b_)
+            bar.addStretch()
+            v.addLayout(bar)
+            if key == "floors":
+                v = real_v
+                holder.hide()                    # the simple floor-by-floor list below replaces the generic list
+                v.addWidget(holder)
+                self.xa_floor_tbl = QTableWidget(0, 4)
+                self.xa_floor_tbl.setHorizontalHeaderLabels(["Floor", "Build-up assigned", "Total R", "Result"])
+                fh = self.xa_floor_tbl.horizontalHeader()
+                fh.setSectionResizeMode(QHeaderView.Stretch)
+                fh.setSectionResizeMode(0, QHeaderView.Interactive); self.xa_floor_tbl.setColumnWidth(0, 170)
+                for c_, w_ in ((2, 80), (3, 130)):
+                    fh.setSectionResizeMode(c_, QHeaderView.Fixed); self.xa_floor_tbl.setColumnWidth(c_, w_)
+                self.xa_floor_tbl.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+                self.xa_floor_tbl.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+                self.xa_floor_tbl.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+                self.xa_floor_tbl.setMinimumHeight(150)
+                self.xa_floor_tbl.setIconSize(QSize(120, 67))
+                self.xa_floor_tbl.verticalHeader().setDefaultSectionSize(74)
+                self.xa_floor_tbl.setItemDelegate(GlassItemDelegate(self.xa_floor_tbl))
+                self.xa_floor_tbl.setItemDelegateForColumn(3, GlassCellDelegate(self.xa_floor_tbl))
+                self.xa_floor_tbl.cellDoubleClicked.connect(lambda *_: self._xa_floor_assign())
+                v.addWidget(self.xa_floor_tbl)
+                add_table_grip(v, self.xa_floor_tbl, min_h=80)
+                fbar = QHBoxLayout()
+                b_as = QPushButton("Choose build-up for this floor...")
+                b_as.setProperty("accent", True)
+                b_as.setToolTip("Select a floor in the list, then pick the preset or your own build-up for it.")
+                b_as.clicked.connect(lambda _=False: self._xa_floor_assign())
+                b_ed = QPushButton("Edit layers...")
+                b_ed.clicked.connect(lambda _=False: self._xa_floor_edit())
+                b_cl = QPushButton("Clear this floor")
+                b_cl.clicked.connect(lambda _=False: self._xa_floor_clear())
+                for b_ in (b_as, b_ed, b_cl):
+                    fbar.addWidget(b_)
+                fbar.addStretch()
+                v.addLayout(fbar)
+                self.xa_floor_warn = QLabel("")
+                self.xa_floor_warn.setWordWrap(True)
+                v.addWidget(self.xa_floor_warn)
+
+        self._xa_link_selection()
+        heading("6. Windows and glazed doors (fenestration)",
+                "XA lets you skip the calculation when glazing is within the limit of the net floor area "
+                "of each storey (20% in the 2021 edition, 15% in 2011) and orientation and shading comply. "
+                "Above the limit, the SANS 204 calculation is needed. In per-unit mode each unit is checked separately.")
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Glazing limit % of net floor area:"))
+        self.xa_limit = QDoubleSpinBox()
+        self.xa_limit.setRange(1, 100)
+        self.xa_limit.setDecimals(1)
+        self.xa_limit.setValue(20.0)
+        row.addWidget(self.xa_limit)
+        row.addWidget(QLabel("Zone for the SANS 204:2011 calculation:"))
+        self.xa_zone11 = QComboBox()
+        self.xa_zone11.addItems(["1", "2", "3", "4", "5", "6"])
+        self.xa_zone11.setToolTip("The 2011 edition has 6 climatic zones. Used only for the "
+                                  "conductance / solar heat gain calculation below.")
+        row.addWidget(self.xa_zone11)
+        row.addStretch()
+        v.addLayout(row)
+        self.xa_fen_table = QTableWidget(0, 7)
+        self.xa_fen_table.setHorizontalHeaderLabels(
+            ["Floor", "Net floor area m2", "Fenestration m2", "% of floor", "Screening",
+             "Conductance (actual / max)", "Solar heat gain (actual / max)"])
+        self.xa_fen_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.xa_fen_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.xa_fen_table.setMinimumHeight(120)
+        self.xa_fen_table.setItemDelegate(GlassItemDelegate(self.xa_fen_table))
+        self._xa_delegate2 = GlassCellDelegate(self.xa_fen_table)
+        for c in (4, 5, 6):
+            self.xa_fen_table.setItemDelegateForColumn(c, self._xa_delegate2)
+        v.addWidget(self.xa_fen_table)
+        add_table_grip(v, self.xa_fen_table, min_h=80)
+        self.xa_orient_lbl = QLabel("")
+        self.xa_orient_lbl.setWordWrap(True)
+        self.xa_orient_lbl.setTextFormat(Qt.RichText)
+        v.addWidget(self.xa_orient_lbl)
+        self.xa_orient_table = QTableWidget(0, 8)
+        self.xa_orient_table.setHorizontalHeaderLabels(
+            ["Floor", "Windows face", "Fenestration m2", "% of floor (all glazing)", "Average U (max)",
+             "Average solar gain SHGC (max)", "Shading (5.2.2)", "Result (table 4)"])
+        self.xa_orient_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.xa_orient_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.xa_orient_table.setMinimumHeight(110)
+        self.xa_orient_table.setItemDelegate(GlassItemDelegate(self.xa_orient_table))
+        self._xa_delegate3 = GlassCellDelegate(self.xa_orient_table)
+        self.xa_orient_table.setItemDelegateForColumn(7, self._xa_delegate3)
+        v.addWidget(self.xa_orient_table)
+        add_table_grip(v, self.xa_orient_table, min_h=70)
+        v.addWidget(QLabel("Frame and glass type of each window / door (used only when the calculation is needed). "
+                           "Pick a frame to include it in the window U-value (glass area and frame area weighted); "
+                           "leave it as 'Not specified' to use the glass U-value alone. Values are typical - choose "
+                           "Custom and type your supplier's figures when you have them. "
+                           "E = solar exposure factor, 1.0 = no shading credit."))
+        self.xa_glass_table = QTableWidget(0, 8)
+        self.xa_glass_table.setHorizontalHeaderLabels(["Tag", "Frame type", "Glass type", "Glass U-value",
+                                                       "Solar gain S", "Exposure E", "Window U (glass + frame)",
+                                                       "Overhang / shade projection P (mm)"])
+        self.xa_glass_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.xa_glass_table.setMinimumHeight(120)
+        self.xa_glass_table.setItemDelegate(GlassItemDelegate(self.xa_glass_table))
+        self.xa_glass_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.xa_glass_table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
+        bulk = QHBoxLayout()
+        b_all = QPushButton("Select all")
+        b_all.clicked.connect(lambda _=False: self.xa_glass_table.selectAll())
+        self.xa_bulk_frame = QComboBox(); self.xa_bulk_frame.addItems(list(XA_FRAMES))
+        b_fr = QPushButton("Set frame of selected")
+        b_fr.setToolTip("Select windows/doors in the list below (Ctrl or Shift to pick several, or 'Select all'), "
+                        "choose a frame type, then press this.")
+        b_fr.clicked.connect(lambda _=False: self._xa_bulk_set(1, self.xa_bulk_frame.currentText()))
+        self.xa_bulk_glass = QComboBox(); self.xa_bulk_glass.addItems(list(XA_GLASS))
+        b_gl = QPushButton("Set glass of selected")
+        b_gl.setToolTip("Select windows/doors in the list below, choose a glass type, then press this.")
+        b_gl.clicked.connect(lambda _=False: self._xa_bulk_set(2, self.xa_bulk_glass.currentText()))
+        for w_ in (b_all, self.xa_bulk_frame, b_fr, self.xa_bulk_glass, b_gl):
+            bulk.addWidget(w_)
+        bulk.addStretch()
+        v.addLayout(bulk)
+        self.xa_glass_table.cellChanged.connect(self._xa_glass_edited)
+        self.xa_glass_table.setMouseTracking(True)
+        self.xa_glass_table.viewport().setMouseTracking(True)
+        self.xa_glass_table.viewport().installEventFilter(self._hover)
+        v.addWidget(self.xa_glass_table)
+        add_table_grip(v, self.xa_glass_table, min_h=80)
+
+        heading("7. Air infiltration and leakage (SANS 204 clause 4.4)",
+                "Worked out automatically from your model: what is in the building, what SANS 204 clause 4.4 "
+                "requires for each item, and the specification that goes into the reports.")
+        self._build_air_section(v)
+        heading("8. Lighting energy (how many lights, how long they run)",
+                "The number of lights in each room and the hours a day they run are worked out by rule from what each room is used for. "
+                "Change any value, and add exterior lights, to get the energy the building uses for lighting.")
+        self._build_lt_section(v)
+        heading("9. Hot water and solar (SANS 10400-XA clause 6.1)",
+                "At least half of the annual hot water must come from solar, a heat pump, gas, heat recovery or renewable fuel. "
+                "Choose the system, enter the cylinder and collector, and the check, storage and an indicative PV size are worked out.")
+        self._build_hw_section(v)
+        heading("Run the check and make the Energy XA report",
+                "Runs every check above (fenestration, orientation and shading, air leakage). The PDF carries all of it.")
+        bot = QHBoxLayout()
+        run = QPushButton("Run XA check")
+        run.clicked.connect(self._run_xa)
+        prev = QPushButton("Preview XA report")
+        prev.clicked.connect(lambda: self.preview_pdf_report(self._write_xa_pdf, self._run_xa))
+        exp = QPushButton("Export XA PDF...")
+        exp.clicked.connect(self.export_xa_pdf)
+        for b_ in (run, prev, exp):
+            bot.addWidget(b_)
+        bot.addStretch()
+        v.addLayout(bot)
+        heading("8. Rational design report",
+                "A full multi-page report (cover, method, climate zone, assemblies, fenestration, light and "
+                "ventilation, final comparison, declaration) built from everything entered in this program.")
+        bot2 = QHBoxLayout()
+        rdd = QPushButton("Report details...")
+        rdd.clicked.connect(self.rd_dialog)
+        rdp = QPushButton("Preview rational design report")
+        rdp.clicked.connect(lambda: self.preview_pdf_report(self._write_rd_pdf, self._run_xa_quiet))
+        rde = QPushButton("Export rational design report...")
+        rde.clicked.connect(self.export_rd_pdf)
+        for b_ in (rdd, rdp, rde):
+            bot2.addWidget(b_)
+        bot2.addStretch()
+        v.addLayout(bot2)
+        self.xa_note = QLabel("Typical material values are built in. Use the manufacturer's tested "
+                              "R-values where you have them, and confirm every figure against the "
+                              "published SANS 10400-XA before submitting.")
+        self.xa_note.setWordWrap(True)
+        v.addWidget(self.xa_note)
+        outer_v.addStretch()
+        self.xa_page = page
+        self.main_tabs.addTab(page, "Energy (XA)")
+
+    def _xa_link_selection(self):
+        """Only one list in the Energy tab shows a selection at a time (walls / roof / floors / pipes)."""
+        self._sel_guard = False
+        tabs = list(self.xa_tables.values()) + [self.xa_floor_tbl]
+
+        def make(src):
+            def on_sel():
+                if self._sel_guard or not src.selectedIndexes():
+                    return
+                self._sel_guard = True
+                try:
+                    self._xa_active_tbl = src
+                    for o in tabs:
+                        if o is not src and o.selectedIndexes():
+                            o.clearSelection()
+                finally:
+                    self._sel_guard = False
+            return on_sel
+        for t in tabs:
+            t.itemSelectionChanged.connect(make(t))
+
+    def _xa_current_row(self, key="walls"):
+        rows = sorted({i.row() for i in self.xa_tables[key].selectedIndexes()})
+        return rows[0] if rows else -1
+
+    def _xa_index(self, key, row):
+        """Position in self.xa_elements of the element shown on this row of a section's table."""
+        t = self.xa_tables[key]
+        if row < 0 or row >= t.rowCount():
+            return -1
+        return t.item(row, 0).data(Qt.ItemDataRole.UserRole + 1)
+
+    def _xa_thumb(self, el):
+        """Small section drawing of a build-up for the lists (cached by its layers)."""
+        from PySide6.QtGui import QIcon, QPixmap
+        lay = [(l.get("mat", ""), l.get("t"), l.get("rfix")) for l in el.get("layers", [])]
+        key = (xa_category(el.get("type", "")) == "walls", tuple(lay))
+        c = self.__dict__.setdefault("_thumb_cache", {})
+        if key not in c:
+            img = assembly_detail_image(el.get("layers", []), key[0], 84, 2, labels=False, dark=True)
+            c[key] = QIcon(QPixmap.fromImage(img)) if img is not None else None
+        return c[key]
+
+    def _xa_preset_hover(self, act):
+        d = act.data()
+        if not d:
+            QToolTip.hideText()
+            return
+        kind, ref = d
+        try:
+            if kind == "preset":
+                spec = XA_PRESETS[ref]
+                html_ = assembly_hover_html(ref.split(" - ", 1)[1], spec[0], spec[1], spec[2])
+            else:
+                html_ = assembly_hover_html(ref.get("name", ""), ref.get("type", ""), ref.get("films", True), ref.get("layers", []))
+        except Exception:
+            return
+        m = self.sender()
+        if m is None:
+            return
+        g = m.mapToGlobal(QPoint(m.width() + 6, max(0, m.actionGeometry(act).top() - 10)))
+        QToolTip.showText(g, html_, m)
+
+    def _xa_add_preset(self, name):
+        spec = XA_PRESETS[name]
+        etype, films, layers = spec[0], spec[1], spec[2]
+        el = {"name": name.split(" - ", 1)[1], "type": etype, "films": films,
+              "layers": [make_layer(l) for l in layers]}
+        if len(spec) > 3:
+            el.update(spec[3])
+        self.xa_elements.append(el)
+        self._xa_refresh()
+
+    def _xa_fill_menu(self, menu, key, prefix, types):
+        menu.clear()
+        if not getattr(menu, "_hover_wired", False):
+            menu.hovered.connect(self._xa_preset_hover)
+            menu._hover_wired = True
+        for name in XA_PRESETS:
+            if name.startswith(prefix):
+                a_ = menu.addAction(name[len(prefix):], lambda n=name: self._xa_add_preset(n))
+                a_.setData(("preset", name))
+        mine = [m for m in load_my_presets() if m.get("type") in types]
+        if mine:
+            menu.addSeparator()
+            hdr = menu.addAction("My build-ups")
+            hdr.setEnabled(False)
+            for m in mine:
+                a_ = menu.addAction(m["name"], lambda m=m: self._xa_add_mine(m))
+                a_.setData(("mine", m))
+            sub = menu.addMenu("Delete one of my build-ups")
+            for m in mine:
+                sub.addAction(m["name"], lambda m=m: self._xa_delete_mine(m))
+
+    def _xa_add_mine(self, m):
+        import copy
+        self.xa_elements.append(copy.deepcopy(m))
+        self._xa_refresh()
+
+    def _xa_delete_mine(self, m):
+        items = [x for x in load_my_presets() if not (x["name"] == m["name"] and x["type"] == m["type"])]
+        save_my_presets(items)
+
+    def _xa_duplicate(self, key):
+        import copy
+        i = self._xa_index(key, self._xa_current_row(key))
+        if i < 0:
+            QMessageBox.information(self, APP_NAME, "Select a build-up in this list first.")
+            return
+        el = copy.deepcopy(self.xa_elements[i])
+        el["name"] = el.get("name", "") + " (copy)"
+        self.xa_elements.insert(i + 1, el)
+        self._xa_refresh()
+
+    def _xa_save_mine(self, key):
+        import copy
+        i = self._xa_index(key, self._xa_current_row(key))
+        if i < 0:
+            QMessageBox.information(self, APP_NAME, "Select a build-up in this list first.")
+            return
+        el = copy.deepcopy(self.xa_elements[i])
+        items = [x for x in load_my_presets() if not (x["name"] == el["name"] and x["type"] == el["type"])]
+        items.append(el)
+        if save_my_presets(items):
+            QMessageBox.information(self, APP_NAME, f"Saved '{el['name']}' under My build-ups.\n"
+                                    "It now shows in 'Add from presets' in every project.")
+        else:
+            QMessageBox.warning(self, APP_NAME, "Could not save your build-up.")
+
+    def _xa_add_blank(self, key="walls"):
+        dtype = next(c[5] for c in XA_CATEGORIES if c[0] == key)
+        self.xa_elements.append({"name": "New element", "type": dtype, "films": True, "layers": []})
+        self._xa_refresh()
+        self._xa_edit(len(self.xa_elements) - 1)
+
+    def _xa_remove(self, key="walls"):
+        idx = sorted({self._xa_index(key, i.row()) for i in self.xa_tables[key].selectedIndexes()}, reverse=True)
+        for i in idx:
+            if 0 <= i < len(self.xa_elements):
+                del self.xa_elements[i]
+        self._xa_refresh()
+
+    def _xa_storeys_changed(self, n):
+        if getattr(self, "_home_busy", False) or not hasattr(self, "home_storeys"):
+            return
+        if n != self.home_storeys.value():
+            self.home_storeys.setValue(n)          # same flow as the Home page: updates floors and units
+        self._xa_refresh()
+
+    def _floor_level_choices(self):
+        n = len(self.floors)
+        ch = [self.floors[0] + " (on the ground)"] if self.floors else []
+        ch += list(self.floors)
+        if n > 1:
+            ch += ["All upper floors", "All floors"]
+        else:
+            ch += ["Whole building"]
+        return ch
+
+    def _floor_matches(self, where, floor, idx):
+        w = (where or "").strip().lower()
+        if not w:
+            return False
+        if w in ("all floors", "whole building"):
+            return True
+        if w == "all upper floors":
+            return idx > 0
+        base = floor.lower()
+        return w == base or w == base + " (on the ground)" or w.startswith(base)
+
+    def _floors_overview(self):
+        """One line per storey: what has been entered for it, and what is (not) needed."""
+        floors = list(self.floors)
+        els = [el for el in self.xa_elements if xa_category(el.get("type", "")) == "floors"]
+        rows = []
+        for i, f in enumerate(floors):
+            mine = [el for el in els if self._floor_matches(el.get("where"), f, i)]
+            if mine:
+                txt = "; ".join(f"{html.escape(el.get('name', ''))} ({el.get('type', '').split(' (')[0]})" for el in mine)
+            elif i == 0:
+                txt = "slab on the ground: no XA minimum unless it has underfloor heating"
+            else:
+                txt = "nothing entered: only needed if this floor is suspended over a cold space or has underfloor heating"
+            rows.append(f"<b>{html.escape(f)}</b>: {txt}")
+        unassigned = [el for el in els if not (el.get("where") or "").strip()]
+        if unassigned:
+            rows.append("<span style='color:#E0A030'>Choose the floor for: " +
+                        ", ".join(html.escape(el.get("name", "")) for el in unassigned) + "</span>")
+        return "<br>".join(rows)
+
+    def _floor_exact(self, where, f):
+        w = (where or "").strip().lower()
+        return w in (f.lower(), f.lower() + " (on the ground)")
+
+    def _floor_el_index(self, i):
+        """Index in self.xa_elements of the floor build-up that applies to storey i, or -1."""
+        f = self.floors[i]
+        for k, el in enumerate(self.xa_elements):
+            if xa_category(el.get("type", "")) == "floors" and self._floor_exact(el.get("where"), f):
+                return k
+        for k, el in enumerate(self.xa_elements):
+            if xa_category(el.get("type", "")) == "floors" and self._floor_matches(el.get("where"), f, i):
+                return k
+        return -1
+
+    def _xa_fill_floor_tbl(self):
+        t = getattr(self, "xa_floor_tbl", None)
+        if t is None:
+            return
+        keep = max(t.currentRow(), 0)
+        was_sel = bool(t.selectedIndexes())
+        zone = self.xa_zone.currentText()
+        self._sel_guard = True
+        t.setRowCount(0)
+        for i, f in enumerate(self.floors):
+            k = self._floor_el_index(i)
+            r = t.rowCount(); t.insertRow(r)
+            if k >= 0:
+                res = xa_check_element(self.xa_elements[k], zone)
+                nm_ = xa_no_minimum(res["type"])
+                vals = [f, res["name"], f"{res['total']:.2f}",
+                        "NO MINIMUM" if nm_ else ("COMPLIES" if res["ok"] else "TOO LOW")]
+                state = "pass" if res["ok"] else "fail"
+            else:
+                vals = [f, "None - slab on the ground, no XA minimum" if i == 0 else
+                        "None - not needed unless suspended over a cold space or heated", "", "NOT NEEDED"]
+                state = "pass"
+            for c, val in enumerate(vals):
+                it = QTableWidgetItem(val)
+                it.setData(Qt.ItemDataRole.UserRole + 1, k)
+                if c == 1 and k >= 0:
+                    ic_ = self._xa_thumb(self.xa_elements[k])
+                    if ic_:
+                        it.setIcon(ic_)
+                if c == 3:
+                    it.setData(Qt.ItemDataRole.UserRole, state)
+                t.setItem(r, c, it)
+        # floor build-ups that belong to no storey (no floor chosen, or the floor no longer exists)
+        orphans = [k for k, el in enumerate(self.xa_elements) if xa_category(el.get("type", "")) == "floors"
+                   and not any(self._floor_matches(el.get("where"), f, i) for i, f in enumerate(self.floors))]
+        for k in orphans:
+            res = xa_check_element(self.xa_elements[k], zone)
+            nm_ = xa_no_minimum(res["type"])
+            r = t.rowCount(); t.insertRow(r)
+            for c, val in enumerate(["(no floor chosen)", res["name"], f"{res['total']:.2f}",
+                                     "NO MINIMUM" if nm_ else ("COMPLIES" if res["ok"] else "TOO LOW")]):
+                it = QTableWidgetItem(val)
+                it.setData(Qt.ItemDataRole.UserRole + 1, k)
+                if c == 3:
+                    it.setData(Qt.ItemDataRole.UserRole, "pass" if res["ok"] else "fail")
+                t.setItem(r, c, it)
+        if t.rowCount() and was_sel:
+            t.selectRow(min(keep, t.rowCount() - 1))
+        self._sel_guard = False
+        self.xa_floor_warn.setText(
+            "<span style='color:#E0A030'>Rows marked (no floor chosen) are not on any floor yet and are still counted "
+            "in the report. Select one and press 'Edit layers...' to choose its floor, or 'Clear this floor' to remove it."
+            "</span>" if orphans else "")
+
+    def _xa_floor_clear_floor(self, i):
+        f = self.floors[i]
+        self.xa_elements[:] = [el for el in self.xa_elements
+                               if not (xa_category(el.get("type", "")) == "floors" and self._floor_exact(el.get("where"), f))]
+
+    def _xa_floor_assign(self):
+        import copy
+        t = self.xa_floor_tbl
+        i = self._xa_floor_row()
+        if i < 0:
+            QMessageBox.information(self, APP_NAME, "Select a floor in the list first.")
+            return
+        if i >= len(self.floors):                 # a build-up that has no floor yet: open it so a floor can be chosen
+            self._xa_floor_edit()
+            return
+        f = self.floors[i]
+        zone = self.xa_zone.currentText()
+        d = QDialog(self)
+        d.setWindowTitle(f"Floor build-up - {f}")
+        d.resize(640, 560)
+        lay = QVBoxLayout(d)
+        hd = QLabel(f"<span style='font-size:15px; font-weight:700;'>{html.escape(f)}</span><br>"
+                    "Choose the build-up for this floor, then press OK.")
+        lay.addWidget(hd)
+        lst = QListWidget()
+        none_txt = "None - slab on the ground, no XA minimum" if i == 0 else "None - nothing needed on this floor"
+        lst.addItem(none_txt)
+        entries = [None]
+        for n_ in XA_PRESETS:
+            if n_.startswith("Floor - "):
+                lst.addItem(n_[len("Floor - "):])
+                entries.append(("preset", n_))
+        ftypes = next(c[3] for c in XA_CATEGORIES if c[0] == "floors")
+        mine = [m for m in load_my_presets() if m.get("type") in ftypes]
+        for m_ in mine:
+            lst.addItem("My build-up: " + m_["name"])
+            entries.append(("mine", m_))
+        lay.addWidget(lst, 1)
+        prev = QLabel("")
+        prev.setWordWrap(True)
+        prev.setTextFormat(Qt.TextFormat.RichText)
+        prev.setMinimumHeight(120)
+        prev.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        lay.addWidget(prev)
+        same = QCheckBox("Use the same build-up for all upper floors")
+        same_ok = i > 0 and len(self.floors) > 2
+        same.setVisible(same_ok)
+        lay.addWidget(same)
+
+        def make_el(entry):
+            if entry[0] == "preset":
+                spec = XA_PRESETS[entry[1]]
+                el = {"name": entry[1].split(" - ", 1)[1], "type": spec[0], "films": spec[1],
+                      "layers": [make_layer(l) for l in spec[2]]}
+                if len(spec) > 3:
+                    el.update(spec[3])
+                return el
+            return copy.deepcopy(entry[1])
+
+        def show():
+            r_ = lst.currentRow()
+            if r_ <= 0 or r_ >= len(entries):
+                prev.setText("<i>No floor build-up for this floor.</i>")
+                return
+            el = make_el(entries[r_])
+            res = xa_check_element(el, zone)
+            lay_txt = "<br>".join(f"{float(l['t']):g} mm {html.escape(l['mat'])}" if l.get("t") else html.escape(l["mat"])
+                                  for l in el["layers"])
+            col = "#3FBF6F" if res["ok"] else "#E05A5A"
+            if xa_no_minimum(el["type"]):
+                prev.setText(f"{lay_txt}<br><b>Total R {res['total']:.2f}</b> &nbsp; "
+                             "<b>No SANS 10400-XA minimum for this floor</b> (inside the envelope or on the ground; recorded for the report)")
+            else:
+                prev.setText(f"{lay_txt}<br><b>Total R {res['total']:.2f}</b> &nbsp; (minimum {res['req']:.2f}) &nbsp; "
+                             f"<b style='color:{col}'>{'COMPLIES' if res['ok'] else 'TOO LOW'}</b>")
+        lst.currentRowChanged.connect(lambda *_: show())
+        cur = self._floor_el_index(i)
+        lst.setCurrentRow(0)
+        if cur >= 0:
+            nm = self.xa_elements[cur].get("name", "")
+            for r_, en in enumerate(entries):
+                if en and ((en[0] == "preset" and en[1].split(" - ", 1)[1] == nm) or (en[0] == "mine" and en[1].get("name") == nm)):
+                    lst.setCurrentRow(r_); break
+        show()
+        lst.itemDoubleClicked.connect(lambda *_: d.accept())
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        bb.accepted.connect(d.accept); bb.rejected.connect(d.reject)
+        lay.addWidget(bb)
+        if d.exec() != QDialog.DialogCode.Accepted:
+            return
+        r_ = lst.currentRow()
+        targets = [i]
+        where = f if i > 0 else f + " (on the ground)"
+        if same_ok and same.isChecked():
+            targets = list(range(1, len(self.floors)))
+            where = "All upper floors"
+        for ti in targets:
+            self._xa_floor_clear_floor(ti)
+        if where == "All upper floors":
+            self.xa_elements[:] = [el for el in self.xa_elements if not (
+                xa_category(el.get("type", "")) == "floors" and (el.get("where") or "").lower() == "all upper floors")]
+        if r_ > 0:
+            el = make_el(entries[r_])
+            el["where"] = where
+            self.xa_elements.append(el)
+        self._xa_refresh()
+        nxt = min(i + 1, t.rowCount() - 1)
+        t.selectRow(nxt)                       # ready for the next storey
+
+    def _xa_floor_edit(self):
+        k = self._xa_floor_sel_index()
+        if k < 0:
+            QMessageBox.information(self, APP_NAME, "This floor has no build-up yet. Use 'Choose build-up for this floor...'.")
+            return
+        self._xa_edit(k)
+
+    def _xa_floor_row(self):
+        rows = sorted({i.row() for i in self.xa_floor_tbl.selectedIndexes()})
+        return rows[0] if rows else -1
+
+    def _xa_floor_sel_index(self):
+        t = self.xa_floor_tbl
+        r = self._xa_floor_row()
+        if r < 0 or t.item(r, 0) is None:
+            return -1
+        k = t.item(r, 0).data(Qt.ItemDataRole.UserRole + 1)
+        return k if k is not None else -1
+
+    def _xa_floor_clear(self):
+        t = self.xa_floor_tbl
+        i = self._xa_floor_row()
+        if i < 0:
+            return
+        k = self._xa_floor_sel_index()
+        if k >= 0:
+            del self.xa_elements[k]
+        self._xa_refresh()
+
+    @staticmethod
+    def _num_el(v):
+        try:
+            return float(str(v or "").replace(",", ".").replace("m2", "").strip() or 0)
+        except ValueError:
+            return 0.0
+
+    def _el_tag(self, el):
+        w, a = (el.get("where") or "").strip(), self._num_el(el.get("area"))
+        if not w and a <= 0:
+            return ""
+        return "  [" + ", ".join(x for x in (w, f"{a:g} m2" if a > 0 else "") if x) + "]"
+
+    def _el_where(self, el):
+        w, a = (el.get("where") or "").strip(), self._num_el(el.get("area"))
+        if not w and a <= 0:
+            return ""
+        return "  Used on: " + (w if w else "") + (f" ({a:g} m2)" if a > 0 else "") + "."
+
+    def _xa_refresh(self):
+        if hasattr(self, "lt_tbl"):
+            self._lt_refresh()                      # rooms may have changed: lights per room follow them
+        zone = self.xa_zone.currentText()
+        for key, _t, _h, types, _p, _d in XA_CATEGORIES:
+            t = self.xa_tables[key]
+            t.setRowCount(0)
+            for i, el in enumerate(self.xa_elements):
+                if xa_category(el.get("type", "")) != key:
+                    continue
+                res = xa_check_element(el, zone)
+                r = t.rowCount()
+                t.insertRow(r)
+                nomin = xa_no_minimum(res["type"])
+                for c, val in enumerate([f"{res['name']}  [{res['type'].split(' (')[0]}]", f"{res['total']:.2f}",
+                                         "-" if nomin else f"{res['req']:.2f}",
+                                         "NO MINIMUM" if nomin else ("COMPLIES" if res["ok"] else "TOO LOW"),
+                                         res["notes"] + (f"  Applies to: {el['units']}." if el.get("units") else "")
+                                         + self._el_where(el)]):
+                    it = QTableWidgetItem(val)
+                    if c == 0:
+                        it.setData(Qt.ItemDataRole.UserRole + 1, i)
+                        ic_ = self._xa_thumb(el)
+                        if ic_:
+                            it.setIcon(ic_)
+                    if c == 3:
+                        it.setData(Qt.ItemDataRole.UserRole, "pass" if res["ok"] else "fail")
+                    t.setItem(r, c, it)
+            import html as _hh
+            reqs = "   |   ".join(f"{_hh.escape(ty)}: minimum R {xa_required_r(zone, ty):g}" for ty in types)
+            extra = ""
+            if key == "floors":
+                n_ = len(self.floors)
+                if hasattr(self, "xa_storeys"):
+                    self.xa_storeys.blockSignals(True)
+                    self.xa_storeys.setValue(n_)
+                    self.xa_storeys.blockSignals(False)
+                    self.xa_storeys_note.setText("Single storey - only the ground floor." if n_ == 1
+                                                 else f"{n_} storeys - ground floor and {n_ - 1} upper floor"
+                                                      + ("" if n_ == 2 else "s") + ".")
+                self._xa_fill_floor_tbl()
+            if key == "roof":
+                els_ = [el for el in self.xa_elements if xa_category(el.get("type", "")) == "roof"]
+                if len(els_) > 1:
+                    ar = [(self._num_el(el.get("area")), xa_check_element(el, zone)["total"]) for el in els_]
+                    tot = sum(a for a, _r in ar)
+                    extra = f"<br><i>{len(els_)} roof types are checked separately; each must reach its minimum R.</i>"
+                    if tot > 0 and all(a > 0 for a, _r in ar):
+                        extra += f"<i> Total roof area {tot:.1f} m2.</i>"
+            self.xa_req_lbl[key].setText(f"<i>Energy zone {zone} - {reqs}</i>" + extra)
+
+    def _xa_edit(self, r):
+        if r < 0 or r >= len(self.xa_elements):
+            QMessageBox.information(self, APP_NAME, "Select an element in the list first.")
+            return
+        el = self.xa_elements[r]
+        d = QDialog(self)
+        d.setWindowTitle("Build-up: " + el.get("name", ""))
+        d.resize(1120, 560)
+        lay = QVBoxLayout(d)
+        top = QHBoxLayout()
+        name = QLineEdit(el.get("name", ""))
+        typ = QComboBox()
+        cat_types = next(c[3] for c in XA_CATEGORIES if c[0] == xa_category(el.get("type", "")))
+        typ.addItems(cat_types)
+        typ.setCurrentText(el.get("type", cat_types[0]))
+        units_edit = QLineEdit(el.get("units", ""))
+        units_edit.setPlaceholderText("all units")
+        units_edit.setToolTip("Only for buildings with several units: the units this build-up applies to, "
+                              "separated by commas. Leave blank for all units.")
+        films = QCheckBox("Add surface films (inside + outside air layers)")
+        films.setChecked(bool(el.get("films", True)))
+        where_edit = QComboBox()
+        where_edit.setEditable(True)
+        if xa_category(el.get("type", "")) == "floors":
+            where_edit.addItems([""] + self._floor_level_choices())
+            where_edit.lineEdit().setPlaceholderText("which floor is this on?")
+        elif xa_category(el.get("type", "")) == "roof":
+            where_edit.addItems(["", "Main roof", "Flat roof", "Concrete roof", "Garage roof", "Patio roof"])
+            where_edit.lineEdit().setPlaceholderText("e.g. main roof / flat concrete roof")
+        else:
+            where_edit.lineEdit().setPlaceholderText("e.g. north wall / garage wall")
+        where_edit.setCurrentText(el.get("where", ""))
+        area_edit = QLineEdit(str(el.get("area", "") or ""))
+        area_edit.setPlaceholderText("m2")
+        area_edit.setMaximumWidth(80)
+        top.addWidget(QLabel("Name:")); top.addWidget(name)
+        top.addWidget(QLabel("Type:")); top.addWidget(typ)
+        top.addWidget(films)
+        if UNIT_MODE[0]:
+            top.addWidget(QLabel("Applies to units:"))
+            top.addWidget(units_edit)
+        lay.addLayout(top)
+        top2 = QHBoxLayout()
+        top2.addWidget(QLabel("Used on:" if xa_category(el.get("type", "")) != "floors" else "On floor:"))
+        top2.addWidget(where_edit, 1)
+        top2.addWidget(QLabel("Area (m2):")); top2.addWidget(area_edit)
+        lay.addLayout(top2)
+        tbl = QTableWidget(0, 5)
+        tbl.setHorizontalHeaderLabels(["Material", "Thickness mm", "Conductivity W/mK", "Fixed R (m2K/W)", "R"])
+        tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        mid = QHBoxLayout()
+        mid.addWidget(tbl, 1)
+        side = QVBoxLayout()
+        prev_t = QLabel("What it looks like")
+        prev_t.setStyleSheet("font-weight:bold;")
+        prev = QLabel("")
+        prev.setAlignment(Qt.AlignCenter)
+        prev.setMinimumSize(230, 220)
+        prev_k = QLabel("")
+        prev_k.setWordWrap(True)
+        prev_k.setStyleSheet("font-size:11px;")
+        side.addWidget(prev_t); side.addWidget(prev); side.addWidget(prev_k); side.addStretch()
+        mid.addLayout(side)
+        lay.addLayout(mid, 1)
+        info = QLabel("")
+        info.setWordWrap(True)
+        lay.addWidget(info)
+        loading = [False]
+
+        def row_data(i):
+            def num(c):
+                it = tbl.item(i, c)
+                try:
+                    return float(it.text().replace(",", ".")) if it and it.text().strip() else 0.0
+                except ValueError:
+                    return 0.0
+            return {"mat": tbl.cellWidget(i, 0).currentText(), "t": num(1),
+                    "lam": num(2) or None, "rfix": num(3) or None}
+
+        def draw_prev(*_a):
+            from PySide6.QtGui import QPixmap
+            ls_ = []
+            for i in range(tbl.rowCount()):
+                if tbl.cellWidget(i, 0) is None:
+                    continue
+                ls_.append(row_data(i))
+            img = assembly_detail_image(ls_, xa_category(typ.currentText()) == "walls", 190, 2, 220.0, tbl.currentRow(), dark=True)
+            if img is None:
+                prev.setPixmap(QPixmap()); prev.setText("Add a layer to see the build-up.")
+                prev_k.setText("")
+                return
+            pm_ = QPixmap.fromImage(img); pm_.setDevicePixelRatio(2.0)
+            prev.setPixmap(pm_)
+            seen = []
+            for l_ in ls_:
+                k_ = _det_kind(l_["mat"])
+                if k_ not in seen:
+                    seen.append(k_)
+            prev_k.setText("Outside to inside. The layer picked in the list has a red outline.<br>" + "<br>".join(
+                '<span style="background:%s">&nbsp;&nbsp;&nbsp;&nbsp;</span>&nbsp;%s' % (DET_DARK[k_][0] or "#3A3D42", DET_STYLE[k_][2]) for k_ in seen))
+
+        def recalc(*_a):
+            if loading[0]:
+                return
+            loading[0] = True
+            layers = []
+            for i in range(tbl.rowCount()):
+                l = row_data(i)
+                layers.append(l)
+                rr = layer_r(l)
+                it = tbl.item(i, 4)
+                if it:
+                    it.setText(f"{rr:.3f}")
+            tmp = {"type": typ.currentText(), "films": films.isChecked(), "layers": layers,
+                   "name": name.text()}
+            res = xa_check_element(tmp, self.xa_zone.currentText())
+            draw_prev()
+            info.setText(f"Total R {res['total']:.2f}   |   required for zone {self.xa_zone.currentText()}: "
+                         f"{res['req']:.2f}   |   {'COMPLIES' if res['ok'] else 'TOO LOW'}   {res['notes']}")
+            loading[0] = False
+
+        def add_row(l=None):
+            l = l or make_layer({"mat": list(XA_MATERIALS)[0], "t": 100})
+            i = tbl.rowCount()
+            tbl.insertRow(i)
+            box = QComboBox()
+            box.addItems(list(XA_MATERIALS))
+            box.setCurrentText(l["mat"] if l["mat"] in XA_MATERIALS else list(XA_MATERIALS)[0])
+            tbl.setCellWidget(i, 0, box)
+
+            def on_mat(_t, i=i, box=box):
+                lam, rfix, _ = XA_MATERIALS[box.currentText()]
+                loading[0] = True
+                tbl.item(i, 2).setText(f"{lam}" if lam else "")
+                tbl.item(i, 3).setText(f"{rfix}" if rfix else "")
+                loading[0] = False
+                recalc()
+            box.currentTextChanged.connect(on_mat)
+            for c, val in ((1, l.get("t", 0)), (2, l.get("lam") or ""), (3, l.get("rfix") or ""), (4, "")):
+                it = QTableWidgetItem(f"{val}")
+                if c == 4:
+                    it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                tbl.setItem(i, c, it)
+
+        loading[0] = True
+        for l in el.get("layers", []):
+            add_row(l)
+        loading[0] = False
+        tbl.itemChanged.connect(recalc)
+        tbl.currentCellChanged.connect(lambda *_a: draw_prev())
+        typ.currentTextChanged.connect(recalc)
+        films.toggled.connect(recalc)
+        bar = QHBoxLayout()
+        a = QPushButton("Add layer")
+        a.clicked.connect(lambda: (add_row(), recalc()))
+        def move(delta):
+            r = tbl.currentRow()
+            n = tbl.rowCount()
+            if r < 0 or not (0 <= r + delta < n):
+                return
+            rows = [row_data(i) for i in range(n)]
+            rows[r], rows[r + delta] = rows[r + delta], rows[r]
+            loading[0] = True
+            tbl.setRowCount(0)
+            for l in rows:
+                add_row(l)
+            loading[0] = False
+            tbl.setCurrentCell(r + delta, 1)
+            recalc()
+        up = QPushButton("Move up")
+        up.clicked.connect(lambda: move(-1))
+        down = QPushButton("Move down")
+        down.clicked.connect(lambda: move(1))
+        dl = QPushButton("Remove layer")
+        dl.clicked.connect(lambda: (tbl.removeRow(tbl.currentRow()) if tbl.currentRow() >= 0 else None, recalc()))
+        ok = QPushButton("OK")
+        cancel = QPushButton("Cancel")
+        for b_ in (a, up, down, dl):
+            bar.addWidget(b_)
+        bar.addStretch()
+        bar.addWidget(ok); bar.addWidget(cancel)
+        lay.addLayout(bar)
+        ok.clicked.connect(d.accept)
+        cancel.clicked.connect(d.reject)
+        recalc()
+        if d.exec() == QDialog.DialogCode.Accepted:
+            el["name"] = name.text().strip() or "Element"
+            el["type"] = typ.currentText()
+            el["films"] = films.isChecked()
+            el["units"] = units_edit.text().strip()
+            el["where"] = where_edit.currentText().strip()
+            el["area"] = area_edit.text().strip()
+            el["layers"] = [row_data(i) for i in range(tbl.rowCount())]
+            self._xa_refresh()
+
+    MAIN_ROOM_RE = re.compile(r"bed|lounge|living|dining|family|tv|study|main", re.I)
+
+    def orientation_summary(self):
+        """Plain-language summary used on screen and in both reports."""
+        o = getattr(self, "xa_orient", None)
+        if not o:
+            return None
+        zone = self.xa_zone.currentText()
+        bld = o["building"]
+        north = o["north"]
+        main = {}
+        for rm in self.xa_rooms():
+            if not self.MAIN_ROOM_RE.search(rm.name) or excluded_reason(rm.name):
+                continue
+            base, over = parse_facing(rm.facing)
+            sec = compass_sector(over.get("", "") or base, north) if base else ""
+            if sec:
+                main.setdefault(sec, []).append(rm.name)
+        if bld:
+            if zone == "5H":
+                advice = ("Zone 5H: the building should be oriented to use the prevailing winds for natural cooling "
+                          "(clause 5.1 note 3).")
+            elif bld in ("N", "NE", "NW"):
+                advice = f"Faces {bld}: good for winter sun, which is what clause 5.1 note 2 recommends (NE, N or NW)."
+            else:
+                advice = (f"Faces {bld}. Clause 5.1 note 2 recommends NE, N or NW to gain winter sun. "
+                          "W and E glazing needs the shading and the lower solar gain values in table 4.")
+        else:
+            advice = "Choose which side of the plan each room's windows face to work out the orientation."
+        return {"building": bld, "advice": advice, "main": main, "north": north, "lat": o["lat"], "mult": o["mult"]}
+
+    def _fill_orient_table(self):
+        o = getattr(self, "xa_orient", None)
+        t = self.xa_orient_table
+        t.setRowCount(0)
+        if not o:
+            return
+        for rw in o["rows"]:
+            r = t.rowCount()
+            t.insertRow(r)
+            mu = "any" if rw["max_u"] is None else f"{rw['max_u']:.2f}"
+            ms = "any" if rw["max_s"] is None else f"{rw['max_s']:.2f}"
+            shade = "-" if rw["shaded"] is None else ("shaded" if rw["shaded"] else "not shaded")
+            if rw["ok"]:
+                res = "COMPLIES" + (" (within 20%)" if rw["max_u"] is None and rw["max_s"] is None else "")
+            else:
+                bad = [x for x, ok in (("U-value", rw["ok_u"]), ("solar gain", rw["ok_s"])) if not ok]
+                res = "FAILS: " + " and ".join(bad)
+            vals = [rw["floor"], rw["group"], f"{rw['area']:.2f}", f"{rw['pct_total']:.1f}%",
+                    f"{rw['avg_u']:.2f} ({mu})", f"{rw['avg_s']:.2f} ({ms})", shade, res]
+            for c, val in enumerate(vals):
+                it = QTableWidgetItem(val)
+                if c == 7:
+                    it.setData(Qt.ItemDataRole.UserRole, "pass" if rw["ok"] else "fail")
+                t.setItem(r, c, it)
+        sm = self.orientation_summary()
+        secs = " \u00b7 ".join(f"{k} {v:.1f} m\u00b2" for k, v in o["by_sector"].items() if v > 0) or "none yet"
+        txt = (f"<b>Orientation (SANS 10400-XA clause 5):</b> north is {o['north']:g}\u00b0 on the plan sheet. "
+               f"Glazing by facade: {secs}.<br>")
+        if sm and sm["building"]:
+            txt += f"<b>Building orientation: {sm['building']}</b> (the facade with the most glazing). {sm['advice']}"
+        elif sm:
+            txt += sm["advice"]
+        if sm and sm["main"]:
+            txt += "<br>Main rooms face: " + "; ".join(f"{k}: {', '.join(v[:4])}" for k, v in sm["main"].items())
+        txt += (f"<br>Latitude {o['lat']:.1f}\u00b0 S, so shading must project at least {o['mult']:.2f} \u00d7 H "
+                "(H = from the underside of the projection to the bottom of the glass, table 3).")
+        for n in o["notes"]:
+            txt += f"<br><span style='color:#ffb454'>{n}</span>"
+        self.xa_orient_lbl.setText(txt)
+
+    def _orient_report_parts(self, cell, okc, badc):
+        """(intro text, table head, table rows, widths, notes) for the orientation section of both reports."""
+        import html as _h
+        o = getattr(self, "xa_orient", None)
+        if not o:
+            return None
+        sm = self.orientation_summary() or {}
+        secs = ", ".join(f"{k} {v:.1f} m2" for k, v in o["by_sector"].items() if v > 0) or "none entered"
+        intro = (f"Angle of north to the plan sheet: {o['north']:g} degrees. Glazing by facade: {secs}. ")
+        if sm.get("building"):
+            intro += (f"Building orientation (clause 5.1, the facade with the "
+                      f"{'largest ventilation openings, energy zone 5H' if self.xa_zone.currentText() == '5H' else 'largest glazing'}): "
+                      f"{sm['building']}. {sm['advice']} ")
+        if sm.get("main"):
+            intro += "Main rooms face: " + "; ".join(f"{k}: {', '.join(v[:4])}" for k, v in sm["main"].items()) + ". "
+        intro += (f"Latitude {o['lat']:.1f} degrees south: shading projection P must be at least {o['mult']:.2f} x "
+                  "H, the vertical distance from the underside of the projection to the bottom of the glass (table 3). Glazing facing W, NW, N, NE and E is checked for U-value and solar heat "
+                  "gain, glazing facing SW, S and SE for U-value only, per storey (clauses 5.3.4 and 5.3.5, table 4).")
+        rows = []
+        for rw in o["rows"]:
+            mu = "any" if rw["max_u"] is None else f"{rw['max_u']:.2f}"
+            ms = "any" if rw["max_s"] is None else f"{rw['max_s']:.2f}"
+            shade = "-" if rw["shaded"] is None else ("shaded" if rw["shaded"] else "not shaded")
+            if rw["ok"]:
+                res = "complies" + (" (within 20%)" if rw["max_u"] is None and rw["max_s"] is None else "")
+            else:
+                res = "FAILS: " + " and ".join(x for x, ok in (("U-value", rw["ok_u"]), ("solar gain", rw["ok_s"])) if not ok)
+            rows.append([cell(rw["floor"], bold=True), cell(rw["group"]), cell(f"{rw['area']:.2f}", "right"),
+                         cell(f"{rw['pct_total']:.1f}%", "right"), cell(f"{rw['avg_u']:.2f} / {mu}", "right",
+                                                                       None if rw["ok_u"] else badc),
+                         cell(f"{rw['avg_s']:.2f} / {ms}", "right", None if rw["ok_s"] else badc),
+                         cell(shade, "center"), cell(res, "center", okc if rw["ok"] else badc, True)])
+        head = ["Storey", "Windows face", "Fenestration m2", "% of floor", "U actual / max", "SHGC actual / max",
+                "Shading 5.2.2", "Result"]
+        return intro, head, rows, [11, 17, 11, 9, 13, 13, 11, 15], o["notes"]
+
+    # ------------------------------------------------------------------ Lighting energy (rules, rooms, exterior lights)
+    def _lt_init(self):
+        if not hasattr(self, "_lt_rules"):
+            self._lt_rules = [list(r) for r in LT_DEFAULT_RULES]
+            self._lt_over = {}          # {room key: {"n": lights, "w": watts, "h": hours}} typed by the designer
+            self._lt_ext = []           # [{"name","n","w","h"}]
+            self._lt_sig = None
+
+    @staticmethod
+    def _lt_key(r):
+        return f"{r.name}|{r.floor}|{r.unit}"
+
+    def _lt_rule(self, name):
+        self._lt_init()
+        for rule in self._lt_rules:
+            try:
+                if re.search(rule[1], name or "", re.I):
+                    return rule
+            except re.error:
+                continue
+        return self._lt_rules[-1]
+
+    def _lt_calc(self, r):
+        """Lights, watts each, hours a day and kWh a year for one room: the room's rule, unless the designer typed other values."""
+        import math
+        rule = self._lt_rule(r.name)
+        ov = self._lt_over.get(self._lt_key(r), {})
+        n = ov.get("n")
+        if n is None:
+            n = max(1, int(math.ceil(r.area_m2 / rule[4]))) if r.area_m2 > 0 else 1
+        w = ov.get("w", rule[3])
+        h = ov.get("h", rule[2])
+        d = ov.get("d", 7.0)
+        return {"n": int(n), "w": float(w), "h": float(h), "d": float(d), "kwh": n * w * h * d * 52.0 / 1000.0, "rule": rule[0], "manual": bool(ov)}
+
+    def lt_rows(self):
+        self._lt_init()
+        out = []
+        for r in self.xa_rooms():
+            c = self._lt_calc(r)
+            c.update({"key": self._lt_key(r), "name": r.name, "area": r.area_m2, "grp": " / ".join(x for x in (unit_label(r.unit), r.floor) if x)})
+            out.append(c)
+        return out
+
+    def lt_ext_kwh(self):
+        self._lt_init()
+        return sum(e["n"] * e["w"] * e["h"] * e.get("d", 7.0) * 52.0 / 1000.0 for e in self._lt_ext)
+
+    def lt_totals(self):
+        rows = self.lt_rows()
+        inn = sum(r["kwh"] for r in rows)
+        ext = self.lt_ext_kwh()
+        nfa = sum(r.area_m2 for r in self.xa_rooms() if not excluded_reason(r.name))
+        load_w = sum(r["n"] * r["w"] for r in rows) + sum(e["n"] * e["w"] for e in self._lt_ext)
+        led = self.lt_lamp.currentIndex() in (0, 1)
+        return {"nfa": nfa, "allow_w": LT_LPD * nfa, "load_w": load_w, "led": led, "kwh_m2": self.lt_kwh_m2.value(),
+                "lights": sum(r["n"] for r in rows), "ext_lights": sum(e["n"] for e in self._lt_ext),
+                "load_kw": load_w / 1000.0,
+                "inside_kwh": inn, "ext_kwh": ext, "total_kwh": inn + ext, "day_kwh": (inn + ext) / 365.0}
+
+    def _build_lt_section(self, v):
+        from PySide6.QtWidgets import QTableWidget, QHeaderView, QAbstractItemView
+        self._lt_init()
+        self._lt_loading = False
+        row = QHBoxLayout()
+        self.lt_rules_btn = QPushButton("Lighting rules...")
+        self.lt_rules_btn.setToolTip("How many lights, how many watts and how many hours a day for each kind of room")
+        self.lt_reset_btn = QPushButton("Reset all rooms to the rules")
+        row.addWidget(self.lt_rules_btn)
+        row.addWidget(self.lt_reset_btn)
+        row.addWidget(QLabel("Lamp type:"))
+        self.lt_lamp = QComboBox(); self.lt_lamp.addItems(["LED", "CFL (compact fluorescent)", "Other lamp types"])
+        self.lt_lamp.setToolTip("SANS 10400-XA 6.2.2: LED and CFL lighting in H3 and H4 buildings is deemed to comply with the lighting power limit")
+        row.addWidget(self.lt_lamp)
+        row.addWidget(QLabel("Annual limit (kWh per m\u00b2, 0 = not shown):"))
+        self.lt_kwh_m2 = QDoubleSpinBox(); self.lt_kwh_m2.setRange(0, 100); self.lt_kwh_m2.setDecimals(1); self.lt_kwh_m2.setValue(4.0)
+        self.lt_kwh_m2.setToolTip("Used by some council lighting sheets. SANS 10400-XA:2021 itself has no lighting-only annual limit: set 0 to leave this line out.")
+        row.addWidget(self.lt_kwh_m2)
+        row.addStretch()
+        v.addLayout(row)
+        self.lt_tbl = QTableWidget(0, 9)
+        self.lt_tbl.setHorizontalHeaderLabels(["Room", "Unit / floor", "Area (m\u00b2)", "Lights", "Watts each", "Hours a day", "Days a week", "kWh a year", "Worked out by"])
+        self.lt_tbl.setSelectionMode(QAbstractItemView.NoSelection)
+        self.lt_tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.lt_tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.lt_tbl.verticalHeader().setDefaultSectionSize(40)
+        self.lt_tbl.verticalHeader().setVisible(False)
+        self.lt_tbl.setMinimumHeight(260)
+        v.addWidget(self.lt_tbl)
+        v.addWidget(QLabel("Exterior lights (not inside any room): add each kind of light, how many, how strong and how long it runs each day."))
+        row2 = QHBoxLayout()
+        self.lt_ext_pick = QComboBox()
+        self.lt_ext_pick.addItems([p_[0] for p_ in LT_EXT_PRESETS] + ["Other exterior light (type a name)"])
+        self.lt_ext_add = QPushButton("Add exterior light")
+        row2.addWidget(self.lt_ext_pick)
+        row2.addWidget(self.lt_ext_add)
+        row2.addStretch()
+        v.addLayout(row2)
+        self.lt_ext_tbl = QTableWidget(0, 7)
+        self.lt_ext_tbl.setHorizontalHeaderLabels(["Exterior light", "Number", "Watts each", "Hours a day", "Days a week", "kWh a year", "Remove"])
+        self.lt_ext_tbl.setSelectionMode(QAbstractItemView.NoSelection)
+        self.lt_ext_tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.lt_ext_tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.lt_ext_tbl.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
+        self.lt_ext_tbl.verticalHeader().setDefaultSectionSize(40)
+        self.lt_ext_tbl.verticalHeader().setVisible(False)
+        self.lt_ext_tbl.setMaximumHeight(46 + 40 * 6)
+        v.addWidget(self.lt_ext_tbl)
+        self.lt_lbl = QLabel("")
+        self.lt_lbl.setWordWrap(True)
+        self.lt_lbl.setTextFormat(Qt.RichText)
+        v.addWidget(self.lt_lbl)
+        v.addWidget(QLabel("The number of lights in each room is worked out from its floor area by rule, and the hours a day from what the room is used for "
+                           "(for example 2 hours in a bathroom, 4 in a bedroom). Change any number in the table if the electrical drawing shows something "
+                           "different. The result feeds the solar panel (PV) sizing below. The watts per light are an assumed LED value, not a standard figure."))
+        self.lt_rules_btn.clicked.connect(self._lt_rules_dialog)
+        self.lt_reset_btn.clicked.connect(self._lt_reset)
+        self.lt_ext_add.clicked.connect(self._lt_add_ext)
+        self.lt_lamp.currentIndexChanged.connect(lambda *_a: self._lt_refresh())
+        self.lt_kwh_m2.valueChanged.connect(lambda *_a: self._lt_refresh())
+        self._lt_refresh()
+
+    def _lt_reset(self):
+        self._lt_over = {}
+        self._lt_sig = None
+        self._lt_refresh()
+
+    def _lt_add_ext(self):
+        from PySide6.QtWidgets import QInputDialog
+        i = self.lt_ext_pick.currentIndex()
+        if i < len(LT_EXT_PRESETS):
+            name, w_, h_ = LT_EXT_PRESETS[i]
+        else:
+            name, ok = QInputDialog.getText(self, APP_NAME, "Name of the exterior light:")
+            if not ok or not name.strip():
+                return
+            w_, h_ = 10.0, 6.0
+        self._lt_ext.append({"name": name, "n": 1, "w": w_, "h": h_, "d": 7.0})
+        self._lt_refresh()
+
+    def _lt_rules_dialog(self):
+        from PySide6.QtWidgets import QTableWidget, QTableWidgetItem, QDialog, QVBoxLayout, QDialogButtonBox, QHeaderView
+        d = QDialog(self)
+        d.setWindowTitle("Lighting rules")
+        d.resize(900, 460)
+        lay = QVBoxLayout(d)
+        lay.addWidget(QLabel("Each room takes the first rule whose words appear in its name. Hours a day and watts per light are for one light; "
+                             "m\u00b2 per light sets how many lights a room gets (floor area divided by this, rounded up, at least one)."))
+        t = QTableWidget(len(self._lt_rules), 5)
+        t.setHorizontalHeaderLabels(["Kind of room", "Words in the room name (a | b | c)", "Hours a day", "Watts per light", "m\u00b2 per light"])
+        t.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        for i, r_ in enumerate(self._lt_rules):
+            for j, v_ in enumerate(r_):
+                it = QTableWidgetItem(str(v_))
+                t.setItem(i, j, it)
+        lay.addWidget(t)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel | QDialogButtonBox.RestoreDefaults)
+        lay.addWidget(bb)
+        bb.accepted.connect(d.accept)
+        bb.rejected.connect(d.reject)
+
+        def restore():
+            for i, r_ in enumerate(LT_DEFAULT_RULES):
+                for j, v_ in enumerate(r_):
+                    t.item(i, j).setText(str(v_))
+        bb.button(QDialogButtonBox.RestoreDefaults).clicked.connect(restore)
+        if d.exec() == QDialog.Accepted:
+            new = []
+            for i in range(t.rowCount()):
+                try:
+                    new.append([t.item(i, 0).text(), t.item(i, 1).text(), float(t.item(i, 2).text()), float(t.item(i, 3).text()), max(0.5, float(t.item(i, 4).text()))])
+                except ValueError:
+                    new.append(list(self._lt_rules[i]))
+            self._lt_rules = new
+            self._lt_sig = None
+            self._lt_refresh()
+
+    def _lt_refresh(self):
+        from PySide6.QtWidgets import QTableWidgetItem, QPushButton
+        if not hasattr(self, "lt_tbl") or getattr(self, "_lt_loading", False):
+            return
+        self._lt_loading = True
+        rows = self.lt_rows()
+        sig = (tuple(r["key"] for r in rows), tuple(tuple(r_) for r_ in self._lt_rules))
+        if sig != self._lt_sig:
+            self.lt_tbl.setRowCount(0)
+            for r in rows:
+                i = self.lt_tbl.rowCount()
+                self.lt_tbl.insertRow(i)
+                for c_, txt in ((0, r["name"]), (1, r["grp"]), (2, f"{r['area']:.1f}")):
+                    it = QTableWidgetItem(txt); it.setFlags(Qt.ItemIsEnabled); self.lt_tbl.setItem(i, c_, it)
+                n = QSpinBox(); n.setRange(0, 200); n.setValue(r["n"])
+                w_ = QDoubleSpinBox(); w_.setRange(0, 1000); w_.setDecimals(1); w_.setValue(r["w"])
+                h_ = QDoubleSpinBox(); h_.setRange(0, 24); h_.setDecimals(1); h_.setSingleStep(0.5); h_.setValue(r["h"])
+                dd = QDoubleSpinBox(); dd.setRange(0, 7); dd.setDecimals(0); dd.setValue(r["d"])
+                for c_, wd in ((3, n), (4, w_), (5, h_), (6, dd)):
+                    wd.setMinimumHeight(30)
+                    wd.setStyleSheet("padding:2px 8px; min-height:26px;")
+                    self.lt_tbl.setCellWidget(i, c_, wd)
+                for c_ in (7, 8):
+                    it = QTableWidgetItem(""); it.setFlags(Qt.ItemIsEnabled); self.lt_tbl.setItem(i, c_, it)
+                for wd in (n, w_, h_, dd):
+                    (wd.valueChanged).connect(lambda *_a, k=r["key"], row=i: self._lt_edited(k, row))
+            self._lt_sig = sig
+        for i, r in enumerate(rows):
+            self.lt_tbl.item(i, 7).setText(f"{r['kwh']:,.1f}")
+            self.lt_tbl.item(i, 8).setText("typed by you" if r["manual"] else r["rule"])
+        # exterior table
+        self.lt_ext_tbl.setRowCount(0)
+        for i, e in enumerate(self._lt_ext):
+            self.lt_ext_tbl.insertRow(i)
+            it = QTableWidgetItem(e["name"]); it.setFlags(Qt.ItemIsEnabled); self.lt_ext_tbl.setItem(i, 0, it)
+            n = QSpinBox(); n.setRange(0, 500); n.setValue(e["n"])
+            w_ = QDoubleSpinBox(); w_.setRange(0, 2000); w_.setDecimals(1); w_.setValue(e["w"])
+            h_ = QDoubleSpinBox(); h_.setRange(0, 24); h_.setDecimals(1); h_.setSingleStep(0.5); h_.setValue(e["h"])
+            dd = QDoubleSpinBox(); dd.setRange(0, 7); dd.setDecimals(0); dd.setValue(e.get("d", 7.0))
+            for c_, wd in ((1, n), (2, w_), (3, h_), (4, dd)):
+                wd.setMinimumHeight(30)
+                wd.setStyleSheet("padding:2px 8px; min-height:26px;")
+                self.lt_ext_tbl.setCellWidget(i, c_, wd)
+            it = QTableWidgetItem(f"{e['n'] * e['w'] * e['h'] * e.get('d', 7.0) * 52.0 / 1000.0:,.1f}"); it.setFlags(Qt.ItemIsEnabled); self.lt_ext_tbl.setItem(i, 5, it)
+            rb = QPushButton("Remove"); rb.setMinimumHeight(30)
+            rb.clicked.connect(lambda _c=False, k=i: self._lt_remove_ext(k))
+            self.lt_ext_tbl.setCellWidget(i, 6, rb)
+            for wd, f_ in ((n, "n"), (w_, "w"), (h_, "h"), (dd, "d")):
+                wd.valueChanged.connect(lambda val, k=i, f=f_: self._lt_ext_edited(k, f, val))
+        self.lt_ext_tbl.setMinimumHeight(46 + 40 * max(1, len(self._lt_ext)))
+        self._lt_loading = False
+        t = self.lt_totals()
+        ok_ = t["load_w"] <= t["allow_w"] or t["led"]
+        self.lt_lbl.setText(f"<b>Lighting and power:</b> connected load {t['load_w']:.0f} W against {t['allow_w']:.0f} W allowed "
+                            f"(4 W/m\u00b2 x {t['nfa']:.1f} m\u00b2): <span style='color:{'#6fd08c' if ok_ else '#ff6b6b'}'><b>{'COMPLIANT' if ok_ else 'NOT COMPLIANT'}</b></span>"
+                            + ("" if t["load_w"] <= t["allow_w"] else " (LED / CFL lamps are deemed to comply, clause 6.2.2)" if t["led"] else "") + "<br>"
+                            f"{t['lights']} lights inside + {t['ext_lights']} exterior; connected load {t['load_kw']:.2f} kW; "
+                            f"{t['inside_kwh']:,.0f} kWh a year inside + {t['ext_kwh']:,.0f} kWh a year exterior = <b>{t['total_kwh']:,.0f} kWh a year "
+                            f"({t['day_kwh']:.1f} kWh a day)</b>.")
+        if hasattr(self, "hw_lbl"):
+            self._hw_refresh()
+
+    def _lt_edited(self, key, row):
+        if self._lt_loading:
+            return
+        d = self._lt_over.setdefault(key, {})
+        d["n"] = int(self.lt_tbl.cellWidget(row, 3).value())
+        d["w"] = float(self.lt_tbl.cellWidget(row, 4).value())
+        d["h"] = float(self.lt_tbl.cellWidget(row, 5).value())
+        d["d"] = float(self.lt_tbl.cellWidget(row, 6).value())
+        self._lt_refresh()
+
+    def _lt_ext_edited(self, i, f, val):
+        if self._lt_loading or i >= len(self._lt_ext):
+            return
+        self._lt_ext[i][f] = int(val) if f == "n" else float(val)
+        self._lt_refresh()
+
+    def _lt_remove_ext(self, i):
+        if 0 <= i < len(self._lt_ext):
+            del self._lt_ext[i]
+        self._lt_refresh()
+
+    def lt_state(self):
+        self._lt_init()
+        return {"rules": self._lt_rules, "over": self._lt_over, "ext": self._lt_ext,
+                "lamp": self.lt_lamp.currentIndex() if hasattr(self, "lt_lamp") else 0, "kwh_m2": self.lt_kwh_m2.value() if hasattr(self, "lt_kwh_m2") else 4.0}
+
+    def lt_set_state(self, d):
+        self._lt_init()
+        if isinstance(d, dict):
+            if d.get("rules"):
+                self._lt_rules = [list(r) for r in d["rules"]]
+            self._lt_over = dict(d.get("over") or {})
+            self._lt_ext = [dict(e) for e in (d.get("ext") or [])]
+            if hasattr(self, "lt_lamp"):
+                self.lt_lamp.blockSignals(True); self.lt_lamp.setCurrentIndex(max(0, min(2, int(d.get("lamp", 0))))); self.lt_lamp.blockSignals(False)
+                self.lt_kwh_m2.blockSignals(True); self.lt_kwh_m2.setValue(float(d.get("kwh_m2", 4.0))); self.lt_kwh_m2.blockSignals(False)
+        self._lt_sig = None
+        self._lt_refresh()
+
+    def _lt_report_parts(self, cell, okc="#1B7F3B", badc="#C4161C"):
+        """The 'Lighting and power' sheet: (intro, head, rows, widths, summary head, summary rows, summary widths)."""
+        self._lt_init()
+        rows_ = self.lt_rows()
+        if not rows_ and not self._lt_ext:
+            return None
+        t = self.lt_totals()
+        rows = []
+
+        def line(mark, n, w, h, d, kwh):
+            rows.append([cell(mark, bold=True), cell(f"{w:g}", "center"), cell(f"{n}", "center"), cell(f"{n * w:g}", "center"),
+                         cell(f"{h:g}", "center"), cell(f"{d:g}", "center"), cell(f"{kwh:,.3f}", "center")])
+        multi = len({r["grp"] for r in rows_}) > 1
+        for r in rows_:
+            line((r["grp"].split(" / ")[0] + " - " if multi and r["grp"] else "") + r["name"], r["n"], r["w"], r["h"], r["d"], r["kwh"])
+        for e in self._lt_ext:
+            line(e["name"] + " (exterior)", e["n"], e["w"], e["h"], e.get("d", 7.0), e["n"] * e["w"] * e["h"] * e.get("d", 7.0) * 52.0 / 1000.0)
+        intro = ("Lighting and power. The number of lights in each room is worked out from its floor area and the hours in use from what the room is "
+                 "used for. The lamp power is an assumed value unless changed. Total annual kWh = number of lamps x lamp power x hours in use per day x "
+                 "days in the week x 52 weeks / 1000. Exterior lights are included, as clause 6.2.1 counts all lighting served by the building's supply.")
+        ok_w = t["load_w"] <= t["allow_w"]
+        lamp = ["LED", "CFL", "other"][self.lt_lamp.currentIndex()]
+        if ok_w:
+            st_w = cell("Compliant", "center", okc, True)
+        elif t["led"]:
+            st_w = cell(f"Compliant: {lamp} lamps are deemed to comply (clause 6.2.2)", "center", okc, True)
+        else:
+            st_w = cell("NOT compliant", "center", badc, True)
+        srows = [
+            [cell("Allowable - Max. Energy Demand:", bold=True), cell(f"{t['allow_w']:.1f} W (4 W/m2 x {t['nfa']:.1f} m2, table 12)"), cell("", "center")],
+        ]
+        if t["kwh_m2"] > 0:
+            allow_k = t["kwh_m2"] * t["nfa"]
+            srows.append([cell("Allowable - Max. Energy Consumption per Annum:", bold=True),
+                          cell(f"{allow_k:.1f} kWh ({t['kwh_m2']:g} kWh/m2: council lighting sheet value, not a SANS 10400-XA limit)"), cell("", "center")])
+        srows.append([cell("Total lamp energy demand (W):", bold=True), cell(f"{t['load_w']:.0f} W"), st_w])
+        k_ok = t["kwh_m2"] <= 0 or t["total_kwh"] <= t["kwh_m2"] * t["nfa"]
+        srows.append([cell("Total annual energy consumption - Lights (kWh):", bold=True), cell(f"{t['total_kwh']:,.3f} kWh"),
+                      cell("-" if t["kwh_m2"] <= 0 else ("Compliant" if k_ok else "NOT compliant"), "center", (okc if k_ok else badc) if t["kwh_m2"] > 0 else None, t["kwh_m2"] > 0)])
+        grp = {}
+        for r in self.xa_rooms():
+            g = unit_label(r.unit) or "No unit"
+            c_ = self._lt_calc(r)
+            a_ = grp.setdefault(g, [0.0, 0.0])
+            if not excluded_reason(r.name):
+                a_[0] += r.area_m2
+            a_[1] += c_["n"] * c_["w"]
+        grp = {g_: v_ for g_, v_ in grp.items() if v_[0] > 0}          # common areas with no floor area (passages, stoeps) are not a unit
+        if len(grp) > 1:
+            srows.append([cell("Check for each unit (inside lights only; exterior lights are counted above):", bold=True, bg="#E6E6E6"),
+                          cell("", bg="#E6E6E6"), cell("", bg="#E6E6E6")])
+            for g, (nfa_g, w_g) in grp.items():
+                allow_g = LT_LPD * nfa_g
+                ok_g = w_g <= allow_g
+                srows.append([cell(f"{g} ({nfa_g:.1f} m2)", bold=True), cell(f"{w_g:.0f} W of {allow_g:.1f} W allowed"),
+                              cell("Compliant" if ok_g else ("Compliant (deemed, clause 6.2.2)" if t["led"] else "NOT compliant"), "center",
+                                   okc if (ok_g or t["led"]) else badc, True)])
+        return (intro, ["Mark", "Lamp power rating (W)", "No. of lamps", "Total watt", "Hours in use per day", "Days in week", "Total annual kWh"], rows,
+                [28, 13, 11, 11, 13, 11, 13], ["Check", "Value", "Result"], srows, [38, 44, 18])
+
+    HW_MODES = ["One system for the whole house / building", "One system per unit (flats, townhouses)", "One system per floor (e.g. a double-storey house)"]
+
+    def _build_hw_section(self, v):
+        from PySide6.QtWidgets import QTableWidget, QHeaderView, QAbstractItemView
+        self._hw_loading = False
+        self._hw_store = {}          # {mode index: {group key: {"sys","cyl","col","ppl"}}}
+        self._hw_hidden = {}         # {mode index: [group keys the user removed]}
+        self._hw_custom = {}         # {mode index: [rows added by hand]}
+        self._hw_sel = None
+        self._hw_keys = None
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Hot water is supplied by:"))
+        self.hw_mode = QComboBox()
+        self.hw_mode.addItems(self.HW_MODES)
+        row.addWidget(self.hw_mode)
+        self.hw_copy = QPushButton("Copy first row to all rows")
+        row.addWidget(self.hw_copy)
+        self.hw_add = QPushButton("Add / bring back row...")
+        row.addWidget(self.hw_add)
+        self.hw_del = QPushButton("Delete selected row")
+        row.addWidget(self.hw_del)
+        self.hw_restore = QPushButton("Bring back all removed")
+        row.addWidget(self.hw_restore)
+        self.hw_fix = QPushButton("Make it comply...")
+        self.hw_fix.setToolTip("Fills in a hot water system, cylinder size and solar collector area that meet clause 6.1")
+        row.addWidget(self.hw_fix)
+        row.addStretch()
+        v.addLayout(row)
+        row2 = QHBoxLayout()
+        self.hw_sh_on = QCheckBox("Solar collectors are shared over the whole building")
+        row2.addWidget(self.hw_sh_on)
+        row2.addWidget(QLabel("Total collector area (m\u00b2):"))
+        self.hw_sh_m2 = QDoubleSpinBox(); self.hw_sh_m2.setRange(0, 2000); self.hw_sh_m2.setDecimals(1)
+        row2.addWidget(self.hw_sh_m2)
+        row2.addWidget(QLabel("Other electrical power per unit (kWh a day):"))
+        self.hw_pwr = QDoubleSpinBox(); self.hw_pwr.setRange(0, 200); self.hw_pwr.setDecimals(1); self.hw_pwr.setSingleStep(0.5)
+        self.hw_pwr.setToolTip("Appliances and plugs, added to lighting when the PV panels are sized. 0 = lighting only.")
+        row2.addWidget(self.hw_pwr)
+        row2.addWidget(QLabel("PV panel size:"))
+        self.hw_pv_w = QComboBox(); self.hw_pv_w.addItems(["550 W", "575 W", "600 W"])
+        row2.addWidget(self.hw_pv_w)
+        row2.addStretch()
+        v.addLayout(row2)
+        self.hw_tbl = QTableWidget(0, 9)
+        self.hw_tbl.setHorizontalHeaderLabels(["Unit / floor", "People (0 = work out)", "Hot water system", "Cylinder / geyser (litres)", "Solar collector (m\u00b2)", "Solar pre-heat tank (litres)", "Category 1 (80 m\u00b2 or less)", "Kwikot product", "Remove"])
+        hh = self.hw_tbl.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.Stretch)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(6, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(7, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(8, QHeaderView.ResizeToContents)
+        self.hw_tbl.setSelectionMode(QAbstractItemView.NoSelection)
+        self._hw_tblfilter = _HwRowFilter(self)
+        self.hw_tbl.installEventFilter(self._hw_tblfilter)
+        self.hw_tbl.cellClicked.connect(lambda r_, c_: self._hw_select(self.hw_tbl.item(r_, 0).text()) if self.hw_tbl.item(r_, 0) else None)
+        self.hw_tbl.verticalHeader().setDefaultSectionSize(44)
+        self.hw_tbl.verticalHeader().setVisible(False)
+        self.hw_tbl.horizontalHeader().setMinimumHeight(36)
+        v.addWidget(self.hw_tbl)
+        self.hw_lbl = QLabel("")
+        self.hw_lbl.setWordWrap(True)
+        self.hw_lbl.setTextFormat(Qt.RichText)
+        v.addWidget(self.hw_lbl)
+        v.addWidget(QLabel("SANS 10400-XA:2021 clause 6.1: at least 50 % of the annual hot water must come from solar, a heat pump, gas, heat "
+                           "recovery or renewable fuel (electric resistance may only supplement). Storage per person and the solar "
+                           "storage factor follow table 10. Choose one system for the whole building, one per unit, or one per floor. "
+                           "The solar and PV figures are estimates from the site's sun data and are not a design: confirm them with the supplier."))
+        self.hw_mode.currentIndexChanged.connect(lambda *_a: self._hw_mode_changed())
+        self.hw_copy.clicked.connect(self._hw_copy_first)
+        self.hw_restore.clicked.connect(self._hw_restore_rows)
+        self.hw_add.clicked.connect(self._hw_add_dialog)
+        self.hw_fix.clicked.connect(self._hw_fix_dialog)
+        self.hw_del.clicked.connect(self._hw_delete_selected)
+        self.hw_pv_w.currentIndexChanged.connect(lambda *_a: self._hw_edited())
+        self.hw_pwr.valueChanged.connect(lambda *_a: self._hw_edited())
+        self.hw_sh_on.toggled.connect(lambda *_a: self._hw_edited())
+        self.hw_sh_m2.valueChanged.connect(lambda *_a: self._hw_edited())
+        self._hw_refresh()
+
+    def _hw_group_key(self, r):
+        i = self.hw_mode.currentIndex() if hasattr(self, "hw_mode") else 0
+        if i == 1:
+            return unit_label(r.unit) or "No unit"
+        if i == 2:
+            return r.floor or "Ground Floor"
+        return "Whole building"
+
+    def _hw_groups(self):
+        """[(key, rooms)] in plan order for the chosen mode."""
+        out = {}
+        for r in self.xa_rooms():
+            out.setdefault(self._hw_group_key(r), []).append(r)
+        self._hw_common_rooms = out.pop("No unit", []) if self.hw_mode.currentIndex() == 1 else []     # passages, stoeps: no people, not a unit
+        for k in self._hw_custom.get(self.hw_mode.currentIndex(), []):
+            out.setdefault(k, [])
+        for k in self._hw_hidden.get(self.hw_mode.currentIndex(), []):
+            out.pop(k, None)
+        if not out and not self._hw_hidden.get(self.hw_mode.currentIndex()):
+            out["Whole building"] = []
+        return list(out.items())
+
+    def _hw_people(self, rooms, whole):
+        beds = sum(1 for r in rooms if re.search(r"bed", r.name, re.I) and not re.search(r"bath", r.name, re.I))
+        if whole:
+            try:
+                return max(1, int(float(str(self.rd.get("population", "")).split()[0])))
+            except (ValueError, IndexError):
+                pass
+        return max(1, 2 * beds)
+
+    def _hw_cur(self):
+        return self._hw_store.setdefault(self.hw_mode.currentIndex(), {})
+
+    def _hw_collect(self):
+        """Read the table into the store."""
+        cur = self._hw_cur()
+        for i in range(self.hw_tbl.rowCount()):
+            key = self.hw_tbl.item(i, 0).text()
+            cur[key] = {"ppl": self.hw_tbl.cellWidget(i, 1).value(), "sys": self.hw_tbl.cellWidget(i, 2).currentText(),
+                        "cyl": self.hw_tbl.cellWidget(i, 3).value(), "col": self.hw_tbl.cellWidget(i, 4).value(),
+                        "pre": self.hw_tbl.cellWidget(i, 5).value(), "cat": self.hw_tbl.cellWidget(i, 6).currentIndex(),
+                        "model": self.hw_tbl.cellWidget(i, 7).currentIndex()}
+
+    def _hw_rebuild(self, keys):
+        from PySide6.QtWidgets import QTableWidgetItem
+        self._hw_loading = True
+        cur = self._hw_cur()
+        self.hw_tbl.setRowCount(0)
+        for key in keys:
+            i = self.hw_tbl.rowCount()
+            self.hw_tbl.insertRow(i)
+            it = QTableWidgetItem(key)
+            it.setFlags(Qt.ItemIsEnabled)
+            self.hw_tbl.setItem(i, 0, it)
+            d = cur.get(key, {})
+            ppl = QDoubleSpinBox(); ppl.setRange(0, 500); ppl.setDecimals(1); ppl.setSingleStep(0.5); ppl.setValue(d.get("ppl", 0))
+            sysb = QComboBox(); sysb.addItems(HW_SYSTEMS)
+            if d.get("sys") in HW_SYSTEMS:
+                sysb.setCurrentText(d["sys"])
+            cyl = _HwSizeBox("not entered / recommended"); cyl.setValue(d.get("cyl", 0))
+            col = QDoubleSpinBox(); col.setRange(0, 200); col.setDecimals(1); col.setValue(d.get("col", 0))
+            pre = _HwSizeBox("none"); pre.setValue(d.get("pre", 0))
+            pre.setToolTip("A separate tank that the solar collectors pre-heat. Its volume counts towards the storage the solar system needs.")
+            cat = QComboBox(); cat.addItems(["Automatic", "Yes", "No"]); cat.setCurrentIndex(int(d.get("cat", 0)))
+            cat.setToolTip("SANS 10400-XA table 10: a Category 1 dwelling (80 m\u00b2 or less, class H3/H4, as defined in clause 3.2) uses 64 L per person a day "
+                           "and 45 L per person storage instead of 115 L and 50 L. Automatic = floor area of this row is 80 m\u00b2 or less.")
+            mod = QComboBox(); mod.addItems(HW_MODELS); mod.setCurrentIndex(int(d.get("model", 0)))
+            mod.setToolTip("Which Kwikot range to pick geysers from. Automatic uses Superline for electric, gas and heat pump rows and KwikSol Direct for solar rows.")
+            cs_, ps_ = self._hw_size_lists(sysb.currentText(), mod.currentIndex())
+            cyl.set_sizes(cs_); cyl.setValue(d.get("cyl", 0)); pre.set_sizes(ps_); pre.setValue(d.get("pre", 0))
+            for c_, w_ in ((1, ppl), (2, sysb), (3, cyl), (4, col), (5, pre), (6, cat), (7, mod)):
+                w_.setMinimumHeight(30)
+                w_.setStyleSheet("padding:2px 8px; min-height:26px;")
+                self.hw_tbl.setCellWidget(i, c_, w_)
+            for w_ in (ppl, sysb, cyl, col, pre, cat, mod):
+                w_.installEventFilter(_HwRowFilter(self, key))
+                if hasattr(w_, "lineEdit") and w_.lineEdit() is not None:
+                    w_.lineEdit().installEventFilter(_HwRowFilter(self, key))
+            rb = QPushButton("Remove")
+            rb.setToolTip("Take this unit / floor out of the hot water check")
+            rb.setMinimumHeight(30)
+            rb.clicked.connect(lambda _c=False, k_=key: self._hw_remove(k_))
+            self.hw_tbl.setCellWidget(i, 8, rb)
+            self.hw_tbl.setRowHeight(i, 44)
+            ppl.valueChanged.connect(lambda *_a: self._hw_edited())
+            cyl.valueChanged.connect(lambda *_a: self._hw_edited())
+            col.valueChanged.connect(lambda *_a: self._hw_edited())
+            pre.valueChanged.connect(lambda *_a: self._hw_edited())
+            cat.currentIndexChanged.connect(lambda *_a: self._hw_edited())
+            mod.currentIndexChanged.connect(lambda *_a: self._hw_edited())
+            sysb.currentIndexChanged.connect(lambda *_a: self._hw_edited())
+        self._hw_loading = False
+        self.hw_tbl.setMinimumHeight(40 + 44 * max(1, min(len(keys), 8)) + 6)
+        self.hw_tbl.setMaximumHeight(40 + 44 * max(1, min(len(keys), 8)) + 6)
+        self._hw_keys = list(keys)
+        if self._hw_sel not in keys:
+            self._hw_sel = None
+        self._hw_loading = False
+        self._hw_paint()
+
+    HW_FIXES = ["Heat pump on every row", "Solar water heater with electric backup (collectors sized for 60 % solar)",
+                "Gas heater on every row", "Heat recovery or renewable fuel on every row",
+                "CHEAPEST: smallest standard solar cylinder, collectors only just over 50 % (one tank)"]
+    HW_STD_CYL = [100, 150, 200, 250, 300, 360, 400, 500]
+
+    def _hw_fix_dialog(self):
+        from PySide6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getItem(self, APP_NAME, "Fill in the table with:\n(rows that already comply are left alone; "
+                                        "the cylinder is raised to the table 10 size where it is too small)", self.HW_FIXES, 4, False)
+        if ok:
+            self._hw_autofix(self.HW_FIXES.index(name))
+
+    def _hw_autofix(self, kind):
+        """Make every row comply with clause 6.1: kind 0 heat pump, 1 solar (60 % of the hot water, geyser kept + pre-heat tank), 2 gas,
+        3 heat recovery / renewable fuel, 4 cheapest: one smallest-standard solar cylinder and collectors just above 50 %."""
+        import math
+        self._hw_collect()
+        c = self.hw_calc()
+        names = {0: HW_SYSTEMS[1], 1: HW_SYSTEMS[2], 2: HW_SYSTEMS[3], 3: HW_SYSTEMS[4], 4: HW_SYSTEMS[2]}
+        cur = self._hw_cur()
+        ghi = c["ghi"]
+        need_total = 0.0
+        for o in c["groups"]:
+            d = cur.setdefault(o["key"], {})
+            if o["sys_ok"] and kind != 4:
+                continue                                   # already complies
+            if kind == 4 and o["sys_ok"] and o["store_ok"] and not (o["system"].startswith("Solar") and (o["share"] or 0) > 66):
+                continue
+            d["sys"] = names[kind]
+            pkgs, elec = hw_catalog(names[kind], d.get("model", 0))
+            top = max(pkgs)
+            if o.get("units"):                                  # a building of units: every unit gets its own real geyser, sized by its people
+                d["cyl"], d["pre"] = 0.0, 0.0
+                tot_col = 0.0
+                if kind in (1, 4):
+                    for u in o["units"]:
+                        a50 = hw_pv_calc(u["persons"], names[1], 0, 0, ghi, 0.0, lit_pp=u["lit"])["area50"]
+                        if kind == 4:
+                            pk = next((k for k in sorted(pkgs) if k >= u["base_req"] * 1.5 - 1e-9), top)
+                            c0, n0, m2, pm, kw = pkgs[pk]
+                            tot_col += max(n0, int(math.ceil(a50 * 1.05 / m2))) * m2
+                        else:
+                            tot_col += math.ceil(a50 * 1.2 / 2.0) * 2.0
+                d["col"] = tot_col
+                need_total += tot_col
+                continue
+            pp = ANNEX_B["store_cat1"] if o["cat1"] else ANNEX_B["store_l"]
+            lit = ANNEX_B["hotw_cat1"] if o["cat1"] else ANNEX_B["hotw_l"]
+            req = o["persons"] * pp * (1.5 if kind in (1, 4) else 1.0)
+            area50 = hw_pv_calc(o["persons"], names[1], 0, 0, ghi, 0.0, lit_pp=lit)["area50"] if kind in (1, 4) else 0.0
+
+            def elec_size(v):                                   # smallest real Kwikot electric geyser that holds v litres
+                return float(next((x for x in elec if x >= v - 1e-9), math.ceil(v / 10.0) * 10))
+            if kind == 4:
+                pkg = next((k for k in sorted(pkgs) if k >= req - 1e-9), None)
+                if pkg is not None:                             # one KwikSol system, extra panels added if the package is too small
+                    code, n0, m2, pm, kw = pkgs[pkg]
+                    n = max(n0, int(math.ceil(area50 * 1.05 / m2)))
+                    d["cyl"], d["pre"], d["col"] = float(pkg), 0.0, n * m2
+                else:                                           # bigger than the largest KwikSol cylinder: 300 L + a pre-heat geyser
+                    code, n0, m2, pm, kw = pkgs[top]
+                    d["cyl"], d["pre"] = float(top), elec_size(req - top)
+                    d["col"] = max(n0, int(math.ceil(area50 * 1.05 / m2))) * m2
+                need_total += d["col"]
+            elif kind == 1:
+                d["cyl"] = d.get("cyl") or elec_size(o["persons"] * pp)                  # the geyser keeps the normal size
+                d["pre"] = elec_size(req - d["cyl"]) if req - d["cyl"] > 1e-9 else 0.0  # a pre-heat geyser makes up the solar storage
+                d["col"] = math.ceil(area50 * 1.2 / 2.0) * 2.0                           # 60 % solar, whole 2.0 m2 panels
+                need_total += d["col"]
+            else:
+                d["pre"], d["col"] = 0.0, 0.0
+                if not d.get("cyl") or d.get("cyl", 0) < req:
+                    d["cyl"] = elec_size(req)
+        if kind in (1, 4) and self.hw_mode.currentIndex() != 0 and self.hw_sh_on.isChecked():
+            self.hw_sh_m2.blockSignals(True)
+            self.hw_sh_m2.setValue(max(self.hw_sh_m2.value(), need_total))
+            self.hw_sh_m2.blockSignals(False)
+        self._hw_keys = None
+        self._hw_refresh()
+
+    def _hw_panel_w(self):
+        return float(self.hw_pv_w.currentText().split()[0]) if hasattr(self, "hw_pv_w") else 550.0
+
+    def _hw_select(self, key):
+        if self._hw_sel != key:
+            self._hw_sel = key
+            self._hw_paint()
+
+    def _hw_paint(self):
+        """Highlight the selected row (red name cell and red outlines) and lock the collector boxes when the array is shared."""
+        shared = self.hw_sh_on.isChecked() and self.hw_mode.currentIndex() != 0
+        for i in range(self.hw_tbl.rowCount()):
+            it = self.hw_tbl.item(i, 0)
+            sel = it is not None and it.text() == self._hw_sel
+            if it is not None:
+                it.setBackground(QColor("#c4161c") if sel else QColor(0, 0, 0, 0))
+                it.setForeground(QColor("#ffffff") if sel else QColor("#e6e6e6"))
+                f = it.font(); f.setBold(sel); it.setFont(f)
+            for c_ in (1, 2, 3, 4, 5, 6, 7):
+                w_ = self.hw_tbl.cellWidget(i, c_)
+                if w_ is not None:
+                    w_.setStyleSheet("padding:2px 8px; min-height:26px;" + (" border:2px solid #c4161c;" if sel else ""))
+            cw = self.hw_tbl.cellWidget(i, 4)
+            if cw is not None:
+                cw.setEnabled(not shared)
+        self.hw_del.setEnabled(self._hw_sel is not None)
+        self.hw_del.setText(f"Delete selected row ({self._hw_sel})" if self._hw_sel else "Delete selected row")
+        on = self.hw_mode.currentIndex() != 0
+        self.hw_sh_on.setVisible(on); self.hw_sh_m2.setVisible(on)
+        self.hw_add.setVisible(True)
+
+    def _hw_remove(self, key):
+        self._hw_collect()
+        m_ = self.hw_mode.currentIndex()
+        if key in self._hw_custom.get(m_, []):
+            self._hw_custom[m_].remove(key)
+        else:
+            self._hw_hidden.setdefault(m_, [])
+            if key not in self._hw_hidden[m_]:
+                self._hw_hidden[m_].append(key)
+        if self._hw_sel == key:
+            self._hw_sel = None
+        self._hw_keys = None
+        self._hw_refresh()
+
+    def _hw_delete_selected(self):
+        if self._hw_sel:
+            self._hw_remove(self._hw_sel)
+
+    def _hw_add_key(self, name):
+        name = (name or "").strip()
+        if not name:
+            return
+        self._hw_collect()
+        m_ = self.hw_mode.currentIndex()
+        if name in self._hw_hidden.get(m_, []):
+            self._hw_hidden[m_].remove(name)
+        elif name not in [k for k, _ in self._hw_groups()]:
+            self._hw_custom.setdefault(m_, []).append(name)
+        self._hw_sel = name
+        self._hw_keys = None
+        self._hw_refresh()
+
+    def _hw_add_dialog(self):
+        from PySide6.QtWidgets import QInputDialog
+        m_ = self.hw_mode.currentIndex()
+        opts = list(self._hw_hidden.get(m_, []))
+        label = {0: "Row name:", 1: "Pick a removed unit, or type a new unit name (e.g. Unit 5):", 2: "Pick a removed floor, or type a new floor name:"}[m_]
+        name, ok = QInputDialog.getItem(self, APP_NAME, label, opts or ["New row"], 0, True)
+        if ok:
+            self._hw_add_key(name)
+
+    def _hw_restore_rows(self):
+        self._hw_hidden[self.hw_mode.currentIndex()] = []
+        self._hw_keys = None
+        self._hw_refresh()
+
+    def _hw_mode_changed(self):
+        if getattr(self, "_hw_loading", False):
+            return
+        self._hw_keys = None
+        self._hw_refresh()
+
+    def _hw_size_lists(self, sysname, model):
+        """(cylinder sizes, pre-heat tank sizes) offered for a system and Kwikot product range."""
+        pkgs, elec = hw_catalog(sysname, model)
+        cyl = sorted(pkgs) if _hw_is_solar(sysname) else list(elec)
+        return cyl, list(elec)
+
+    def _hw_sync_lists(self):
+        self._hw_loading = True
+        for i in range(self.hw_tbl.rowCount()):
+            cs_, ps_ = self._hw_size_lists(self.hw_tbl.cellWidget(i, 2).currentText(), self.hw_tbl.cellWidget(i, 7).currentIndex())
+            self.hw_tbl.cellWidget(i, 3).set_sizes(cs_)
+            self.hw_tbl.cellWidget(i, 5).set_sizes(ps_)
+        self._hw_loading = False
+
+    def _hw_edited(self):
+        if getattr(self, "_hw_loading", False):
+            return
+        self._hw_sync_lists()
+        self._hw_collect()
+        self._hw_refresh(rebuild=False)
+
+    def _hw_copy_first(self):
+        if self.hw_tbl.rowCount() < 2:
+            return
+        self._hw_loading = True
+        s_, c_, k_ = (self.hw_tbl.cellWidget(0, 2).currentText(), self.hw_tbl.cellWidget(0, 3).value(), self.hw_tbl.cellWidget(0, 4).value())
+        for i in range(1, self.hw_tbl.rowCount()):
+            self.hw_tbl.cellWidget(i, 2).setCurrentText(s_)
+            self.hw_tbl.cellWidget(i, 3).setValue(c_)
+            self.hw_tbl.cellWidget(i, 4).setValue(k_)
+        self._hw_loading = False
+        self._hw_edited()
+
+    def hw_state(self):
+        if not hasattr(self, "hw_mode"):
+            return {}
+        if getattr(self, "_hw_keys", None) is not None:
+            self._hw_collect()
+        return {"mode": self.hw_mode.currentIndex(), "store": {str(k): v for k, v in self._hw_store.items()},
+                "hidden": {str(k): list(v) for k, v in self._hw_hidden.items()},
+                "custom": {str(k): list(v) for k, v in self._hw_custom.items()},
+                "shared": {"on": self.hw_sh_on.isChecked(), "m2": self.hw_sh_m2.value()}, "pvw": self.hw_pv_w.currentIndex(), "pwr": self.hw_pwr.value()}
+
+    def hw_set_state(self, d):
+        if not isinstance(d, dict) or not hasattr(self, "hw_mode"):
+            return
+        if "store" not in d:                       # older projects: one system for the whole building
+            d = {"mode": 0, "store": {"0": {"Whole building": {"sys": d.get("sys", HW_SYSTEMS[0]), "cyl": d.get("cyl", 0), "col": d.get("col", 0), "ppl": 0}}}}
+        self._hw_store = {int(k): dict(v) for k, v in d["store"].items()}
+        self._hw_hidden = {int(k): list(v) for k, v in (d.get("hidden") or {}).items()}
+        self._hw_custom = {int(k): list(v) for k, v in (d.get("custom") or {}).items()}
+        self.hw_pv_w.blockSignals(True); self.hw_pv_w.setCurrentIndex(max(0, min(2, int(d.get("pvw", 0))))); self.hw_pv_w.blockSignals(False)
+        self.hw_pwr.blockSignals(True); self.hw_pwr.setValue(float(d.get("pwr") or 0.0)); self.hw_pwr.blockSignals(False)
+        sh = d.get("shared") or {}
+        self.hw_sh_on.blockSignals(True); self.hw_sh_m2.blockSignals(True)
+        self.hw_sh_on.setChecked(bool(sh.get("on"))); self.hw_sh_m2.setValue(float(sh.get("m2") or 0.0))
+        self.hw_sh_on.blockSignals(False); self.hw_sh_m2.blockSignals(False)
+        self._hw_loading = True
+        self.hw_mode.setCurrentIndex(max(0, min(2, int(d.get("mode", 0)))))
+        self._hw_loading = False
+        self._hw_keys = None
+        self._hw_refresh()
+
+    def _hw_ghi_year(self):
+        """Horizontal sun energy a year (kWh/m2): the weather file when one is loaded, otherwise a clear-sky estimate x 0.75."""
+        w = self._weather_for_report()
+        if w is not None:
+            try:
+                return float(w["GHI"][:8760].sum()) / 1000.0
+            except Exception:
+                pass
+        import math
+        lat, lon = self._site_lonlat()
+        tot = 0.0
+        for m_, doy in enumerate(_MID_DOY):
+            for hr in range(0, 48):
+                alt, _az = solar_pos(lat, lon, doy, hr / 2.0 + 0.25)
+                dni, dhi = clear_sky(alt, doy)
+                if dni > 0:
+                    tot += (dni * math.sin(math.radians(alt)) + dhi) * 0.5 * _MDAYS[m_] / 1000.0
+        return tot * 0.75
+
+    def _hw_extra_kwh(self, key=""):
+        """Other electricity (appliances, plugs) for one unit or house, kWh a year; the common 'No unit' row gets none."""
+        return 0.0 if key == "No unit" else self.hw_pwr.value() * 365.0
+
+    def _hw_light_kwh(self, rooms):
+        """Lighting electricity (kWh a year) of these rooms, from the Lighting energy table (rules and anything the designer typed)."""
+        self._lt_init()
+        return sum(self._lt_calc(r)["kwh"] for r in rooms)
+
+    def _hw_units(self, rooms):
+        """{unit name: rooms} for a building made of several units (rooms without a unit name are common areas and are left out)."""
+        out = {}
+        for r in rooms:
+            if (r.unit or "").strip():
+                out.setdefault(unit_label(r.unit), []).append(r)
+        return out
+
+    def _hw_whole_units(self, units, d, ghi, ppl_total):
+        """The 'whole building' row of a building with several units: every unit gets its own geyser sized for its own people, so the
+        result lists how many geysers of which size the building needs. Collectors are shared over the units by number of people."""
+        import math
+        names_ = list(units)
+        beds = {n: sum(1 for r in units[n] if re.search(r"bed", r.name, re.I) and not re.search(r"bath", r.name, re.I)) for n in names_}
+        sumb = sum(beds.values())
+        typed = d.get("ppl") or 0
+        ppl_u = {}
+        for n in names_:
+            if typed:
+                ppl_u[n] = typed * (beds[n] / sumb if sumb else 1.0 / len(names_))
+            else:
+                ppl_u[n] = max(1.0, 2.0 * beds[n])
+        sysn = d.get("sys", HW_SYSTEMS[0])
+        solar = _hw_is_solar(str(sysn))
+        sp = sum(ppl_u.values()) or 1.0
+        col_tot = d.get("col", 0.0) if solar else 0.0
+        pre_in = d.get("pre", 0.0) if solar else 0.0
+        cyl_in = d.get("cyl", 0.0)
+        pw = self._hw_panel_w()
+        entries, subs = [], []
+        for n in names_:
+            rooms_u = units[n]
+            nfa = sum(r.area_m2 for r in rooms_u if not excluded_reason(r.name))
+            cat1 = {1: True, 2: False}.get(int(d.get("cat", 0)), 0 < nfa <= 80.0)
+            pp = ANNEX_B["store_cat1"] if cat1 else ANNEX_B["store_l"]
+            lit = ANNEX_B["hotw_cat1"] if cat1 else ANNEX_B["hotw_l"]
+            p_u = ppl_u[n]
+            req = p_u * pp * (1.5 if solar else 1.0)
+            pkgs_, elec_ = hw_catalog(sysn, d.get("model", 0))
+            if solar:
+                rec = next((k for k in sorted(pkgs_) if k >= req - 1e-9), max(pkgs_))
+            else:
+                rec = next((k for k in elec_ if k >= req - 1e-9), int(math.ceil(req / 10.0) * 10))
+            cyl_u = cyl_in or float(rec)
+            col_u = col_tot * p_u / sp
+            sub = hw_pv_calc(p_u, sysn, (cyl_u + pre_in), col_u, ghi, self._hw_light_kwh(rooms_u) + self._hw_extra_kwh(), lit_pp=lit, store_pp=pp,
+                             cop=ANNEX_B["cop"], panel_w=pw)
+            prod = hw_product({"system": sysn, "cyl": cyl_u, "main_cyl": cyl_u, "pre": pre_in, "coll": col_u, "model": d.get("model", 0)})
+            entries.append({"name": n, "persons": p_u, "cat1": cat1, "nfa": nfa, "req": req, "rec": rec, "cyl": cyl_u, "coll": col_u,
+                            "store_ok": sub["store_ok"], "product": prod, "sys": sysn, "model": d.get("model", 0),
+                            "pv_hw": sub["elec_hw_panels"], "pv_all": sub["panels"], "elec_hw": sub["elec_hw"], "spec": sub["spec_yield"], "elec_tot": sub["elec_tot"], "pp": pp, "lit": lit, "base_req": p_u * pp})
+            subs.append(sub)
+        o = dict(subs[0])
+        for k in ("persons", "litres", "e_th", "elec_hw", "light_kwh", "elec_tot", "kwp", "roof_m2", "elec_hw_panels", "full_panels", "coll",
+                  "area50", "area70", "elec_day", "gas_kwh"):
+            if any(k in x for x in subs):
+                o[k] = sum(x.get(k, 0.0) for x in subs)
+        o["panels"] = int(math.ceil(o["kwp"] * 1000.0 / pw)) if o["kwp"] > 0 else 0
+        o["roof_m2"] = o["panels"] * 2.6
+        if o.get("share") is not None and o["e_th"] > 0:
+            o["share"] = sum((x.get("share") or 0.0) * x["e_th"] for x in subs) / o["e_th"]
+        o["store_req"] = max(e["req"] for e in entries)
+        oks = [x["store_ok"] for x in subs]
+        o["store_ok"] = None if any(v is None for v in oks) else all(oks)
+        o["cat1"] = all(e["cat1"] for e in entries)
+        o["nfa"] = sum(e["nfa"] for e in entries)
+        o["cyl"] = cyl_in
+        o["units"] = entries
+        cnt = {}
+        for e in entries:
+            cnt[e["product"]] = cnt.get(e["product"], 0) + 1
+        o["units_text"] = f"building of {len(entries)} units needs " + "; ".join(f"{c} x {t}" for t, c in cnt.items())
+        return o
+
+    def hw_calc(self):
+        """{"mode", "groups": [result per unit / floor / building with "key"], "all_ok", totals}."""
+        import math
+        groups = self._hw_groups()
+        keys = [k for k, _ in groups]
+        if self._hw_keys != keys:
+            self._hw_rebuild(keys)
+        self._hw_collect()
+        cur = self._hw_cur()
+        ghi = self._hw_ghi_year()
+        whole = self.hw_mode.currentIndex() == 0
+        res = []
+        shared = self.hw_sh_on.isChecked() and not whole
+        sh_total = self.hw_sh_m2.value() if shared else 0.0
+        ppls = {k: float(cur.get(k, {}).get("ppl") or self._hw_people(r_, whole)) for k, r_ in groups}
+        sol_p = sum(ppls[k] for k, _ in groups if _hw_is_solar(str(cur.get(k, {}).get("sys", ""))))
+        for key, rooms in groups:
+            d = cur.get(key, {})
+            ppl = ppls[key]
+            col_ = (sh_total * ppl / sol_p if sol_p else 0.0) if shared else d.get("col", 0.0)
+            pre_ = d.get("pre", 0.0) if _hw_is_solar(str(d.get("sys", ""))) else 0.0
+            nfa_ = sum(r_.area_m2 for r_ in rooms if not excluded_reason(r_.name))
+            cat1 = {1: True, 2: False}.get(int(d.get("cat", 0)), 0 < nfa_ <= 80.0)
+            units = self._hw_units(rooms) if whole else []
+            if len(units) >= 2:
+                o = self._hw_whole_units(units, d, ghi, ppl)
+            else:
+                o = hw_pv_calc(float(ppl), d.get("sys", HW_SYSTEMS[0]), (d.get("cyl", 0.0) + pre_) if (d.get("cyl", 0.0) or pre_) else 0.0, col_, ghi, self._hw_light_kwh(rooms) + self._hw_extra_kwh(key),
+                               lit_pp=ANNEX_B["hotw_cat1"] if cat1 else ANNEX_B["hotw_l"], store_pp=ANNEX_B["store_cat1"] if cat1 else ANNEX_B["store_l"],
+                               cop=ANNEX_B["cop"], panel_w=self._hw_panel_w())
+                o["cat1"], o["nfa"] = cat1, nfa_
+            o["key"] = key
+            o["main_cyl"], o["pre"] = d.get("cyl", 0.0), pre_
+            o["model"] = int(d.get("model", 0))
+            o["shared_m2"] = sh_total if (shared and _hw_is_solar(str(d.get("sys", "")))) else 0.0
+            res.append(o)
+        chosen = [o for o in res if o["sys_ok"] is not None]
+        if not res:
+            return {"mode": self.hw_mode.currentIndex(), "groups": [], "ghi": ghi, "all_ok": None, "n_chosen": 0, "persons": 0, "kwp": 0.0,
+                    "panels": 0, "roof_m2": 0.0, "elec_tot": 0.0, "e_th": 0.0}
+        ext = self.lt_ext_kwh() + (self._hw_light_kwh(getattr(self, "_hw_common_rooms", [])) if getattr(self, "_hw_common_rooms", None) else 0.0)
+        spec_ = res[0]["spec_yield"]
+        kwp_all = sum(o["kwp"] for o in res) + (ext / spec_ if spec_ > 0 else 0.0)
+        return {"mode": self.hw_mode.currentIndex(), "groups": res, "ghi": ghi, "ext_kwh": ext,
+                "all_ok": (all(o["sys_ok"] for o in chosen) and len(chosen) == len(res)) if chosen else None,
+                "n_chosen": len(chosen), "persons": sum(o["persons"] for o in res), "kwp": kwp_all,
+                "panels": int(math.ceil(kwp_all * 1000.0 / self._hw_panel_w())) if kwp_all > 0 else 0,
+                "roof_m2": 2.6 * (int(math.ceil(kwp_all * 1000.0 / self._hw_panel_w())) if kwp_all > 0 else 0),
+                "elec_tot": sum(o["elec_tot"] for o in res) + ext, "e_th": sum(o["e_th"] for o in res)}
+
+    def _hw_refresh(self, rebuild=True):
+        if not hasattr(self, "hw_lbl") or getattr(self, "_hw_loading", False):
+            return
+        try:
+            c = self.hw_calc()
+        except Exception as ex:
+            self.hw_lbl.setText(f"<span style='color:#ffb454'>Could not work this out yet: {ex}</span>")
+            return
+        self._hw_paint()
+        ok_c, bad_c = "#6fd08c", "#ff6b6b"
+        lines = []
+        for o in c["groups"]:
+            if o["sys_ok"] is None:
+                st = "<span style='color:#ffb454'>choose a system</span>"
+            else:
+                st = (f"<span style='color:#ffb454'><b>NEEDS RATIONAL DESIGN</b></span>" if o.get("rd") else
+                      f"<span style='color:{ok_c if o['sys_ok'] else bad_c}'><b>{'COMPLIES' if o['sys_ok'] else 'DOES NOT COMPLY'}</b></span>")
+            if o.get("units"):
+                cyl = (f"<span style='color:{ok_c if o['store_ok'] else bad_c}'>geysers sized for each unit (largest need {o['store_req']:.0f} L): "
+                       f"{'OK' if o['store_ok'] else 'too small'}</span>")
+            elif o["store_ok"] is None:
+                cyl = f"cylinder: at least {o['store_req']:.0f} L"
+            else:
+                what_ = f"geyser {o['main_cyl']:.0f} L + pre-heat tank {o['pre']:.0f} L" if o.get("pre") else f"cylinder {o['cyl']:.0f} L"
+                cyl = f"<span style='color:{ok_c if o['store_ok'] else bad_c}'>{what_} of {o['store_req']:.0f} L needed: {'OK' if o['store_ok'] else 'too small'}</span>"
+            extra = f", solar about {o['share']:.0f} % (50 % needs {o['area50']:.1f} m\u00b2)" if _hw_is_solar(o["system"]) and o.get("area50") else ""
+            lines.append(f"<b>{html.escape(o['key'])}</b> ({o['persons']:g} people, {o['litres'] / 365:.0f} L/day): {st}; {cyl}{extra}<br>"
+                         f"&nbsp;&nbsp;Product: {html.escape(hw_product(o))}.<br>"
+                         + "".join(f"&nbsp;&nbsp;&nbsp;&nbsp;{html.escape(u['name'])}: {round(u['persons'], 1):g} people, {u['req']:.0f} L needed, {html.escape(u['product'])}<br>"
+                                   for u in o.get("units", [])) +
+                         f"&nbsp;&nbsp;Electricity for hot water: {o['elec_hw']:,.0f} kWh a year ({o['elec_day']:.1f} kWh a day). "
+                         f"PV to cover it: {o['elec_hw_panels']} panels of {o['panel_w']:.0f} W"
+                         f" (to heat all the water by PV alone: {o['full_panels']} panels).")
+        _r, _t = self._hw_panel_rows(c)
+        lines.append(f"<b>Panels for the building:</b> {_t['coll']} hot-water panels ({_t['coll_m2']:.1f} m\u00b2) + {_t['pv_all']} electricity (PV) panels of "
+                     f"{_t['pw']:.0f} W ({_t['pv_hw']} for the hot water element, {_t['pv_lp']} for lighting and power) = <b>{_t['grand']} panels in all</b>.")
+        lines.append(f"Whole job: {c['persons']:g} people, {c['e_th']:,.0f} kWh a year for hot water. Indicative PV for hot water and lighting "
+                     f"({c['elec_tot']:,.0f} kWh a year): about {c['kwp']:.1f} kWp, {c['panels']} panels of {self._hw_panel_w():.0f} W, roughly {c['roof_m2']:.0f} m\u00b2 of roof.")
+        self.hw_lbl.setText("<br>".join(lines))
+
+    def _hw_panel_rows(self, c):
+        """[(name, collector panels, m2 per panel, PV for hot water, PV for lighting and power, PV in all)] and the building totals.
+        The building PV totals are worked out from the building's total electricity, so they can be lower than the sum of the rows."""
+        import math
+        rows = []
+        pw = self._hw_panel_w()
+        spec = c["groups"][0]["spec_yield"] if c["groups"] else 0.0
+        per = spec * pw / 1000.0                                 # kWh a year from one panel
+
+        def npan(k):
+            return int(math.ceil(k / per - 1e-9)) if per > 0 and k > 0 else 0
+        for o in c["groups"]:
+            if o.get("units"):
+                for u in o["units"]:
+                    n, m2 = hw_coll_panels(u["sys"], u["model"], u["cyl"], u["coll"])
+                    rows.append((u["name"], n, m2, npan(u["elec_hw"]), max(0, npan(u["elec_tot"]) - npan(u["elec_hw"])), npan(u["elec_tot"])))
+            else:
+                n, m2 = hw_coll_panels(o["system"], o.get("model", 0), o.get("main_cyl", 0), o["coll"])
+                rows.append((o["key"], n, m2, npan(o["elec_hw"]), max(0, npan(o["elec_tot"]) - npan(o["elec_hw"])), npan(o["elec_tot"])))
+        ext = c.get("ext_kwh", 0.0)
+        if ext > 0:
+            rows.append(("Exterior and common-area lights", 0, 0.0, 0, npan(ext), npan(ext)))
+        e_hw = sum(o["elec_hw"] for o in c["groups"])
+        e_all = sum(o["elec_tot"] for o in c["groups"]) + ext
+        tot = {"coll": sum(r[1] for r in rows), "coll_m2": sum(r[1] * r[2] for r in rows), "pv_hw": npan(e_hw), "pv_lp": max(0, npan(e_all) - npan(e_hw)),
+               "pv_all": npan(e_all), "pw": pw}
+        tot["grand"] = tot["coll"] + tot["pv_all"]
+        return rows, tot
+
+    def _hw_panels_parts(self, cell):
+        """Plain-language panel summary for the council: (intro, head1, rows1, widths1, head2, rows2, widths2)."""
+        try:
+            c = self.hw_calc()
+        except Exception:
+            return None
+        if not c["groups"]:
+            return None
+        rows_, tot = self._hw_panel_rows(c)
+        pw = tot["pw"]
+        rows = []
+        for name, n, m2, pvh, pvl, pva in rows_:
+            rows.append([cell(name, bold=True),
+                         cell(f"{n} panels ({n * m2:.1f} m2)" if n else "none", "center"),
+                         cell(f"{pva} panels" if pva else "none", "center")])
+        rows.append([cell("WHOLE BUILDING", bold=True, bg="#E6E6E6"),
+                     cell(f"{tot['coll']} panels ({tot['coll_m2']:.1f} m2)" if tot["coll"] else "none", "center", bold=True, bg="#E6E6E6"),
+                     cell(f"{tot['pv_all']} panels" if tot["pv_all"] else "none", "center", bold=True, bg="#E6E6E6")])
+        extra = self.hw_pwr.value()
+        intro = ("The building uses two different kinds of solar panel. Hot-water panels heat the water, and they are what SANS 10400-XA clause 6.1 "
+                 f"asks for. Electricity panels (PV, {pw:.0f} W each) make electricity for the hot water element and the lighting"
+                 + (f" and other power ({extra:g} kWh a day per unit)" if extra else "")
+                 + ". They are not required by XA.")
+        head1 = ["Unit", "Hot-water panels (heat the water)", f"Electricity panels (PV, {pw:.0f} W each)"]
+        pv_lp = max(0, tot["pv_all"] - tot["pv_hw"])
+        rows2 = [
+            [cell("Hot-water panels", bold=True), cell(f"{tot['coll']}", "center", bold=True),
+             cell("Heat the water. Needed to meet SANS 10400-XA clause 6.1.")],
+            [cell("Electricity panels for hot water", bold=True), cell(f"{tot['pv_hw']}", "center", bold=True),
+             cell("Power the electric element that tops up the hot water.")],
+            [cell("Electricity panels for lighting and power", bold=True), cell(f"{pv_lp}", "center", bold=True),
+             cell("Power the lights" + (" and appliances." if extra else ". No other power was added to this estimate."))],
+            [cell("TOTAL PANELS FOR THE BUILDING", bold=True, bg="#E6E6E6"), cell(f"{tot['coll'] + tot['pv_all']}", "center", bold=True, bg="#E6E6E6"),
+             cell(f"{tot['coll']} hot-water panels + {tot['pv_all']} electricity panels", bold=True, bg="#E6E6E6")]]
+        head2 = ["What the panels are for", "Panels", "What they do"]
+        return intro, head1, rows, [26, 34, 40], head2, rows2, [38, 12, 50]
+
+    def _hw_report_parts(self, cell, okc, badc):
+        try:
+            c = self.hw_calc()
+        except Exception:
+            return None
+        gs = c["groups"]
+        if not gs:
+            return None
+        what = {0: "the whole building", 1: "each unit", 2: "each floor"}[c["mode"]]
+        rows = []
+        for o in gs:
+            if o["sys_ok"] is None:
+                short, stt = "System not chosen yet.", cell("-", "center")
+            else:
+                stt = (cell("RATIONAL DESIGN NEEDED", "center", "#B26A00", True) if o.get("rd") else
+                       cell("COMPLIES" if o["sys_ok"] else "DOES NOT COMPLY", "center", okc if o["sys_ok"] else badc, True))
+                if o.get("rd"):
+                    short = "needs a rational design."
+                elif _hw_is_solar(o["system"]):
+                    short = f"solar covers about {o['share']:.0f} % (at least 50 % needed)."
+                elif o["system"].startswith("Electric"):
+                    short = "electric resistance alone does not comply."
+                else:
+                    short = "permitted technology (XA 6.1)."
+            if o.get("units"):
+                sto = (f"Own geyser per unit, largest need {o['store_req']:.0f} L: {'OK' if o['store_ok'] else 'TOO SMALL'}. "
+                       + " ".join(f"{u['name']}: {round(u['persons'], 1):g} people, {u['req']:.0f} L, {u['product']}." for u in o["units"]))
+            elif o["store_ok"] is None:
+                sto = f"Cylinder: at least {o['store_req']:.0f} L needed."
+            else:
+                have = f"Geyser {o['main_cyl']:.0f} L + pre-heat tank {o['pre']:.0f} L" if o.get("pre") else f"Cylinder {o['cyl']:.0f} L"
+                sto = f"{have} ({o['store_req']:.0f} L needed): {'OK' if o['store_ok'] else 'TOO SMALL'}."
+            sol = (f" Collector {o['coll']:.1f} m2" + (f" (share of {o['shared_m2']:.1f} m2 shared)" if o.get("shared_m2") else "")
+                   + f", 50 % needs {o['area50']:.1f} m2.") if _hw_is_solar(o["system"]) and o.get("area50") else ""
+            prod = (f" {hw_product(o)}." if (o["sys_ok"] is not None and not o.get("units") and o["store_ok"] is not None) else "")
+            rows.append([cell(o["key"], bold=True), cell(f"{o['persons']:g}", "center"),
+                         cell(f"{o['system']}: {short} {sto}{sol}{prod}" if o["sys_ok"] is not None else short), stt])
+        rows.append([cell("Solar PV (not an XA requirement)", bold=True), cell(f"{c['persons']:g}", "center"),
+                     cell(f"For hot water and lighting ({c['elec_tot']:,.0f} kWh a year): about {c['kwp']:.1f} kWp, {c['panels']} panels of {self._hw_panel_w():.0f} W, "
+                          f"roughly {c['roof_m2']:.0f} m2 of roof."), cell("estimate", "center")])
+        intro = ("SANS 10400-XA:2021 clause 6.1: at least 50 % of the annual hot water must come from something other than electric resistance "
+                 f"(solar, heat pump, gas, heat recovery or renewable fuel). Hot water is supplied by {what}; each line is checked on its own. "
+                 "Storage follows table 10 (115 L per person a day and 50 L storage; Category 1 dwellings of 80 m2 or less 64 L and 45 L). Sun figures come from "
+                 + ("the loaded weather file" if self._weather_for_report() is not None else "a clear-sky estimate for the site")
+                 + f" ({c['ghi']:.0f} kWh/m2 a year). Sizes are estimates, not a design. Products are Kwikot Superline geysers and KwikSol solar systems; "
+                 "the supplier must confirm the current range.")
+        return intro, ["Unit / floor", "People", "System, storage and result", "Status"], rows, [18, 8, 56, 18]
+
+    def _build_air_section(self, v):
+        self._air_loading = False
+        self.air_fire = QCheckBox("My building has an open (solid-fuel) fireplace or chimney")
+        self.air_fire.setToolTip("Ticked automatically when the IFC model has a fireplace, braai or chimney. "
+                                 "It cannot be told from the plan alone, so untick or tick it if it is wrong.")
+        self.air_fire.toggled.connect(lambda _=False: self._air_refresh(user=True))
+        v.addWidget(self.air_fire)
+        self.air_box = QVBoxLayout()
+        self.air_box.setSpacing(4)
+        v.addLayout(self.air_box)
+        self.air_sum = QLabel("")
+        self.air_sum.setWordWrap(True)
+        self.air_sum.setTextFormat(Qt.RichText)
+        v.addWidget(self.air_sum)
+        v.addWidget(QLabel("Filled in from your window and door schedule, rooms, assemblies and IFC model each time the "
+                           "check runs. Limits and wording checked against SANS 204:2011 clause 4.4. Confirm them against your copy of the "
+                           "edition you submit under. The supplier's test report (SANS 613) is the proof for the glazing."))
+        self._air_fire_user = False
+        self._air_refresh()
+        self._hw_refresh()
+
+    def air_state(self):
+        return {"fire": self.air_fire.isChecked() if hasattr(self, "air_fire") else False,
+                "user": bool(getattr(self, "_air_fire_user", False))}
+
+    def air_set_state(self, d):
+        if not isinstance(d, dict) or not hasattr(self, "air_fire"):
+            return
+        self._air_fire_user = bool(d.get("user"))
+        self.air_fire.blockSignals(True)
+        self.air_fire.setChecked(bool(d.get("fire")))
+        self.air_fire.blockSignals(False)
+
+    def air_rows(self):
+        """Every SANS 204 clause 4.4 item worked out from the model.
+        [(group, found in the model, requirement, specification text, 'ok' | 'na')]"""
+        sch = self.xa_schedule() or {}
+        ifc_on = self._ifc_active()
+        air = (getattr(self, "ifc_data", None) or {}).get("air") or {}
+        win = {t: o for t, o in sch.items() if o.kind == "Window"}
+        dor = {t: o for t, o in sch.items() if o.kind == "Door"}
+        open_w = sorted(t for t, o in win.items() if o.openable_pct > 0)
+        fixed_w = sorted(t for t, o in win.items() if o.openable_pct <= 0)
+        glz_d = sorted(t for t, o in dor.items() if o.glazed_pct > 0 or o.glazed_area_m2 > 0)
+        solid_ext = []
+        ext_info = {}
+        if ifc_on:
+            exmap = {}
+            if any(it.get("kind") == "Door" and "external" not in it for it in self.ifc_data["items"]):
+                pth = getattr(self, "ifc_path", "")      # project saved before this check existed: look again
+                if pth and os.path.exists(pth):
+                    try:
+                        if getattr(self, "_door_ext_key", None) != pth:
+                            self._door_ext = ifc_door_external(pth)
+                            self._door_ext_key = pth
+                        exmap = self._door_ext
+                    except Exception:
+                        exmap = {}
+            rooms_of = {}
+            for r_ in self.ifc_data["rooms"]:
+                for t_, n_ in (r_.get("tags") or {}).items():
+                    rooms_of.setdefault(t_.upper(), {}).setdefault(r_["name"], 0)
+                    rooms_of[t_.upper()][r_["name"]] += n_
+            for it in self.ifc_data["items"]:
+                if it.get("kind") != "Door":
+                    continue
+                tg = it["tag"].upper()
+                ex = it.get("external", exmap.get(tg))
+                if ex and not (it.get("glazed") or 0):
+                    solid_ext.append(tg)
+                if ex:
+                    rn = ", ".join(list(rooms_of.get(tg, {}))[:3])
+                    ext_info[tg] = f"{tg} x{it.get('qty', 1):g}" + (f" ({rn})" if rn else "")
+        if not ifc_on:                               # drawing schedule only: entrance-type doors by their tag / description
+            for t_, o_ in dor.items():
+                if AIR_DOOR_NAME_RE.search(f"{t_} {getattr(o_, 'style', '')}") and t_ not in solid_ext:
+                    solid_ext.append(t_)
+                    ext_info[t_] = f"{t_} x{getattr(o_, 'sched_qty', 1):g}"
+        ext_doors = sorted(set(glz_d) | set(solid_ext))
+        sky = list(air.get("sky") or [])
+        if not self._air_fire_user and hasattr(self, "air_fire"):
+            fire_auto = bool(air.get("fire"))
+            if self.air_fire.isChecked() != fire_auto:
+                self.air_fire.blockSignals(True); self.air_fire.setChecked(fire_auto); self.air_fire.blockSignals(False)
+        fire = hasattr(self, "air_fire") and self.air_fire.isChecked()
+        # rooms with no window of their own: they need an extract fan
+        fans = []
+        try:
+            for rm in self.xa_rooms():
+                if (not (rm.tags or "").strip() and rm.area_m2 > 0 and rm.name not in fans
+                        and re.search(r"bath|toilet|\bwc\b|shower|en-?suite|laundry|powder|cloak", rm.name, re.I)):
+                    fans.append(rm.name)
+        except Exception:
+            pass
+        z11 = self.xa_zone11.currentText()
+        hab = z11 in ("1", "2", "4", "6")
+        zn = ("" if hab else f" Required for habitable rooms in SANS 204:2011 zones 1, 2, 4 and 6 (this building: zone {z11}); "
+                             "it is specified here anyway and is compulsory for any air-conditioned space.")
+        lst = lambda L, n=8: ", ".join(L[:n]) + (f" and {len(L) - n} more" if len(L) > n else "")
+        rows = []
+        G = "Glazing and roof lights"
+        rows.append((G + " - openable glazing", lst(open_w) if open_w else "None found",
+                     "Max. air leakage 2.0 L/s.m2 at 75 Pa, SANS 613 (SANS 204 4.4.3.1.1)",
+                     ("Windows " + lst(open_w) + ": the supplier's test report must show not more than 2.0 L/s.m2 at 75 Pa.")
+                     if open_w else "-", "ok" if open_w else "na"))
+        rows.append((G + " - non-openable glazing", lst(fixed_w) if fixed_w else "None found",
+                     "Max. air leakage 0.31 L/s.m2 at 75 Pa, SANS 613 (SANS 204 4.4.3.1.2)",
+                     ("Fixed windows " + lst(fixed_w) + ": the supplier's test report must show not more than 0.31 L/s.m2 at 75 Pa.")
+                     if fixed_w else "-", "ok" if fixed_w else "na"))
+        rows.append((G + " - glazed doors", lst(glz_d) if glz_d else "None found",
+                     "Max. air leakage 5.0 L/s.m2 at 75 Pa for glazed double action swing doors and revolving doors (SANS 204 4.4.3.1.3)",
+                     ("Glazed doors " + lst(glz_d) + ": hinged and sliding doors are held to the openable glazing limit of "
+                      "2.0 L/s.m2; any double action swing or revolving door to 5.0 L/s.m2 (supplier's test report).")
+                     if glz_d else "-", "ok" if glz_d else "na"))
+        rows.append(("Roof lights and skylights", lst(sky) if sky else "None found in the model",
+                     "Sealed, or capable of being sealed; openable ones need a compressible seal (SANS 204 4.4.3.3)",
+                     ("Roof lights " + lst(sky) + ": sealed, openable ones with a compressible seal.") if sky else "-",
+                     "ok" if sky else "na"))
+        rows.append(("Chimneys and flues",
+                     ("Open solid-fuel fireplace" + (" (" + lst(air.get("fire") or [], 3) + ")" if air.get("fire") else ""))
+                     if fire else "None found",
+                     "Open solid-fuel appliance: the chimney or flue needs a damper or flap that closes it (SANS 204 4.4.3.2)",
+                     "Every open fireplace flue is fitted with a damper or flap." if fire else "-",
+                     "ok" if fire else "na"))
+        rows.append(("External doors",
+                     ", ".join(ext_info.get(t, t) for t in ext_doors) if ext_doors else "None found" + ("" if ifc_on else " (import the IFC model to find solid doors)"),
+                     "A seal on each edge of an external door to a conditioned space or habitable room (zones 1, 2, 4, 6); swing doors need a draught device on the bottom edge (SANS 204 4.4.3.4)",
+                     ("External doors " + lst(ext_doors) + ": seal on each edge and a draught protection device on the bottom edge of each leaf." + zn) if ext_doors else "-",
+                     "ok" if ext_doors else "na"))
+        rows.append(("Exhaust fans", lst(fans) if fans else "No bathroom or toilet without a window",
+                     "Sealing device such as a self-closing damper or filter on a fan serving a conditioned space or habitable room, zones 1, 2, 4, 6 (SANS 204 4.4.3.5)",
+                     ("Bathrooms and toilets without a window (" + lst(fans) + "): the extract fan must have a self-closing "
+                      "damper or a filter." + zn) if fans else "-", "ok" if fans else "na"))
+        els = [(e.get("name", "")[:34] + ("..." if len(e.get("name", "")) > 34 else "")) for e in
+               getattr(self, "xa_elements", []) if e.get("name")]
+        rows.append(("Roofs, walls and floors", (lst(els, 4) if els else "Roof, walls and floors of the building"),
+                     "Roofs, external walls and floors constructed to minimise air leakage (SANS 204 4.4.1 and 4.4.3.6); zones 1, 2, 4, 6: ceiling voids and attics too (4.4.2)",
+                     "Roof, wall and floor construction is detailed to minimise air leakage (sealed joints, junctions "
+                     "and service openings; wall plate and roof junctions sealed)." + zn, "ok"))
+        return rows
+
+    def _air_refresh(self, user=False):
+        if not hasattr(self, "air_box"):
+            return
+        if user:
+            self._air_fire_user = True
+        rows = self.air_rows()
+        while self.air_box.count():
+            it = self.air_box.takeAt(0)
+            w_ = it.widget()
+            if w_ is not None:
+                w_.hide()
+                w_.setParent(None)
+                w_.deleteLater()
+        n_ok = 0
+        for g, found, rq, spec, k in rows:
+            n_ok += k == "ok"
+            lb = QLabel(f"<b>{g}</b><br><span style='color:rgba(255,255,255,150)'>Found: {found}</span><br>"
+                        f"<span style='color:rgba(255,255,255,150)'>Required: {rq}</span><br>"
+                        + (f"<span style='color:#3fbf6b'>Specified: {spec}</span>" if k == "ok"
+                           else "<span style='color:rgba(255,255,255,110)'>Not applicable to this building.</span>"))
+            lb.setWordWrap(True)
+            lb.setTextFormat(Qt.RichText)
+            lb.setStyleSheet("padding:4px 8px; border-left:3px solid " +
+                             ("#3fbf6b" if k == "ok" else "rgba(255,255,255,40)") + ";")
+            self.air_box.addWidget(lb)
+        self.air_sum.setText(f"<b>{n_ok} of {len(rows)} air leakage items apply to this building. Each one is written "
+                             "into the reports automatically.</b> The only proof still needed from you is the supplier's "
+                             "SANS 613 test report for the glazing.")
+
+    def _shade_report_parts(self, cell, okc, badc):
+        """Overhang measured from the IFC model for each window type, tested against SANS 10400-XA table 3. None without an IFC."""
+        shd = (getattr(self, "ifc_data", None) or {}).get("shading") or {}
+        if not shd:
+            return None
+        mult = xa_shade_multiplier(self._xa_latitude())
+        north = self._north_deg()
+        sch = self.xa_schedule() or {}
+        rows = []
+        for tag in sorted(shd):
+            o = sch.get(tag)
+            if o is None or not o.counts or (o.kind == "Door" and o.glazed_m2 <= 0):
+                continue
+            v = shd[tag]
+            comp = (v["face"] - north) % 360.0
+            sec = FACE_SECTORS[int((comp + 22.5) // 45) % 8]
+            need = mult * v["H_mm"]
+            rel = sec in ("W", "NW", "N", "NE", "E")
+            if v["P_mm"] <= 0:
+                res, ok = "no projection", False
+            elif v["P_mm"] + 1e-9 >= need:
+                res, ok = "shaded", True
+            else:
+                res, ok = "not shaded", False
+            if not rel:
+                res, ok = "not needed (" + sec + ")", None
+            rows.append([cell(tag, bold=True), cell(sec, "center"), cell(f"{v['n']}", "center"), cell(f"{v['P_mm']}", "center"),
+                         cell(f"{v['H_mm']}", "center"), cell(f"{need:.0f}" if v["P_mm"] > 0 else "-", "center"),
+                         cell(res, "center", okc if ok else (badc if ok is False and rel else None), True)])
+        if not rows:
+            return None
+        head = ["Tag", "Faces", "Windows", "Projection P (mm)", "H (mm)", f"P needed ({mult:.2f} x H)", "Shading (5.2.2)"]
+        intro = ("The overhang above every window was measured from the IFC model (roofs, slabs, beams and soffits). P is how far "
+                 "the projection sticks out from the glass. H is the vertical distance from the underside of the projection down to "
+                 "the bottom of the glass. The worst window of each type is shown. Glazing facing W, NW, N, NE and E counts as "
+                 f"shaded when P is at least {mult:.2f} x H (latitude {self._xa_latitude():.1f} degrees south, table 3).")
+        return intro, head, rows, [10, 9, 10, 17, 12, 22, 20]
+
+    def _air_report_parts(self, cell, okc, badc):
+        rows = self.air_rows()
+        head = ["Component", "Found in the model", "Requirement", "Specification", "Applies"]
+        out = []
+        for g, found, rq, spec, k in rows:
+            out.append([cell(g, bold=True), cell(found), cell(rq), cell(spec),
+                        cell("Specified" if k == "ok" else "No", "center", okc if k == "ok" else None, True)])
+        intro = ("Air infiltration and leakage, SANS 204 clause 4.4 (4.4.1 to 4.4.3), worked out from the window and door "
+                 "schedule, the rooms and the assemblies: glazing air leakage is limited at a 75 Pa pressure difference, "
+                 "tested to SANS 613. Chimneys, external doors, exhaust fans and the construction of roofs, walls and "
+                 "floors must limit air leakage as listed.")
+        return intro, head, out, [14, 16, 22, 36, 12]
+
+    def _site_lonlat(self):
+        try:
+            lon = float(str(self.rd.get("lon", "")).replace(",", "."))
+        except ValueError:
+            lon = None
+        if lon is None:
+            t = self.xa_town.currentText()
+            tw = (ZA_MAP_DATA.get("towns") or {}).get(t) or (ZA_MAP_DATA.get("towns") or {}).get(t.rstrip(" *"))
+            lon = float(tw[1]) if tw else 25.0
+        return -self._xa_latitude(), lon
+
+    def sim_figures(self, results):
+        """Annex B loads, sun angles, solar on each facade and the hot water figures for the report (indicative)."""
+        lat, lon = self._site_lonlat()
+        north = self._north_deg()
+        rooms = self.xa_rooms()
+        beds = sum(1 for r in rooms if re.search(r"bed", r.name, re.I) and not re.search(r"bath", r.name, re.I))
+        try:
+            persons = int(float(str(self.rd.get("population", "")).split()[0]))
+        except (ValueError, IndexError):
+            persons = 2 * beds
+        nfa = sum(r["area"] for r in results) or sum(r.area_m2 for r in rooms)
+        A = ANNEX_B
+        day = [sum(f * h for f, h in zip((c[i] for c in ANNEX_B_LIGHT), ANNEX_B_HRS)) for i in range(3)]
+        light_kwh = A["light_w_m2"] * nfa * (5 * day[0] + day[1] + day[2]) * 52.14 / 1000.0
+        litres = persons * A["hotw_l"] * 365.0
+        hot_kwh = litres * 4.186 * (60.0 - 15.0) / 3600.0
+        wxw = self._weather_for_report()
+        wx = None
+        if wxw is not None:
+            try:
+                wx = weather_stats(wxw, north)
+            except Exception:
+                wx = None
+        fs = wx["fs"] if wx else facade_solar(lat, lon, north)
+        sun = []
+        for nm, doy in (("21 Dec (summer solstice)", 355), ("21 Mar / 23 Sep (equinox)", 80), ("21 Jun (winter solstice)", 172)):
+            alt, az = solar_pos(lat, lon, doy, 12.0)
+            sun.append((nm, alt, az))
+        gl = {}
+        o = getattr(self, "xa_orient", None) or {}
+        rows = o.get("rows") or []
+        tot_a = sum(r["area"] for r in rows) or 1.0
+        shgc = sum(r["area"] * r["avg_s"] for r in rows) / tot_a if rows else 0.77
+        for k, a in (o.get("by_sector") or {}).items():
+            if a > 0 and k in fs:
+                gl[k] = (a, shgc, a * shgc * sum(fs[k]))
+        return {"lat": lat, "lon": lon, "north": north, "beds": beds, "persons": persons, "nfa": nfa,
+                "wx": wx, "wxw": wxw, "light_kwh": light_kwh, "litres": litres, "hot_kwh": hot_kwh, "fs": fs, "sun": sun, "gl": gl,
+                "shgc": shgc}
+
+    def sim_images(self, F):
+        """{name: QImage}: four 3D views of the IFC model lit by the sun, and the sun path chart."""
+        imgs = {}
+        path = getattr(self, "ifc_path", "")
+        if path and os.path.exists(path):
+            try:
+                key = (path, os.path.getmtime(path))
+                if getattr(self, "_mesh_key", None) != key:
+                    self._meshes = ifc_meshes(path)
+                    self._mesh_key = key
+                M = self._meshes
+                if M:
+                    aw, hw = solar_pos(F["lat"], F["lon"], 172, 12.0)
+                    ad, hd = solar_pos(F["lat"], F["lon"], 355, 15.0)
+                    a1 = render_views(M, F["north"], hw, aw, views=(45, 225),
+                                      title_sun="21 Jun 12:00 (winter noon)")
+                    a2 = render_views(M, F["north"], hd, ad, views=(45, 225), title_sun="21 Dec 15:00 (summer)")
+                    for i, im in enumerate(a1 + a2, 1):
+                        imgs[f"geo{i}"] = im
+            except Exception:
+                pass
+        imgs["sunpath"] = sun_path_image(F["lat"], F["lon"])
+        if F.get("wxw") is not None:
+            imgs["wxchart"] = weather_chart(F["wxw"])
+        return imgs
+
+    def sim_sections(self, F, imgs, h1, h2, para, table, cell, ref, e):
+        A = ANNEX_B
+        def sched(bands, vals):
+            return table(["Times", "Weekdays", "Saturday", "Sunday/Holiday"],
+                         [[cell(b), cell(f"{v[0]:.2f}", "center"), cell(f"{v[1]:.2f}", "center"),
+                           cell(f"{v[2]:.2f}", "center")] for b, v in zip(bands, vals)], [34, 22, 22, 22])
+        mc = [h1("6. MODELLING CONDITIONS (SANS 10400-XA ANNEX B)"),
+              para("The following modelling conditions are used in accordance with SANS 10400-XA:2021 Annex B."),
+              h2("6.1 Population data"),
+              para(f"Simulation population density: 2 persons per bedroom, therefore {F['persons']} persons "
+                   f"({F['beds']} bedroom{'s' if F['beds'] != 1 else ''}). As per SANS 10400 A21.2."),
+              sched(ANNEX_B_BANDS, ANNEX_B_POP),
+              para(f"Sensible heat gains from population: {A['sensible_w']:.0f} W per person "
+                   "(SANS 10400-XA Annex B section B.2.a). Hot meals in a restaurant, cafe or dining room: "
+                   f"{A['meal_w']:.0f} W per person (Annex B section B.2.b), following the habitation occupancy schedule."),
+              h2("6.2 Comfort data"),
+              table(["Item", "Value"], [
+                  [cell("Minimum internal design temperature", bold=True), cell(f"{A['tmin']:.0f} °C (Annex B section B.1.c)")],
+                  [cell("Maximum internal design temperature", bold=True), cell(f"{A['tmax']:.0f} °C (Annex B section B.1.c)")],
+                  [cell("Comfort design duration", bold=True), cell(f"{A['share']:.0f}% of occupied hours (Annex B section B.1)")]],
+                    [45, 55]),
+              h2("6.3 Internal loading values"),
+              para(f"Lighting energy demand: {A['light_w_m2']:.2f} W/m² (SANS 10400-XA section 6.2.1 and table 12). Lighting schedule:"),
+              sched(ANNEX_B_BANDS, ANNEX_B_LIGHT),
+              para(f"Hot water heating: heat pump, COP {A['cop']:.1f}. Average annual usage {A['hotw_l']:.1f} litres per capita per day; "
+                   f"hot water storage {A['store_l']:.1f} litres per capita. Hot water schedule:"),
+              sched(ANNEX_B_HOTW_BANDS, ANNEX_B_HOTW),
+              ref("SANS 10400-XA:2021 Annex B; hot water loading in accordance with SANS 10252-1.")]
+        # ---- geometry, sun, solar, water ----
+        n = F["north"]
+        sm = [h1("7. BUILDING GEOMETRY, SUN AND WATER (INDICATIVE)"),
+              para("This section is worked out from the IFC model and the site location. It is an indicative "
+                   "estimate for design decisions. It is not a certified thermal simulation: the heating and cooling "
+                   "demand and the annual energy consumption of a rational design must be modelled in thermal software "
+                   "certified by Agrement South Africa.", "8.5pt", "#8a5a00"),
+              h2("7.1 Orientation"),
+              table(["Item", "Value"], [
+                  [cell("Angle of north (with relation to the vertical axis of the plans)", bold=True),
+                   cell(f"{n:g}°, measured clockwise")],
+                  [cell("Site latitude / longitude", bold=True), cell(f"{F['lat']:.4f}° / {F['lon']:.4f}°")]], [55, 45])]
+        if "geo1" in imgs:
+            sm.append(h2("7.2 Building geometry (from the IFC model, lit by the sun)"))
+            tdr = ''.join(f'<td width="50%" style="padding:2px; text-align:center;"><img src="geo{i}" width="280"></td>'
+                          for i in (1, 2))
+            tdr2 = ''.join(f'<td width="50%" style="padding:2px; text-align:center;"><img src="geo{i}" width="280"></td>'
+                           for i in (3, 4))
+            sm.append(f'<table width="100%" border="0" cellspacing="0"><tr>{tdr}</tr><tr>{tdr2}</tr></table>')
+            sm.append(para("Views 1 and 2: winter noon (21 June). Views 3 and 4: summer afternoon (21 December, 15:00). "
+                           "The black arrow shows true north and the orange arrow the direction of the sun; shadows are cast by the model. "
+                           f"Site {abs(F['lat']):.3f}\u00b0 {'S' if F['lat'] < 0 else 'N'}, {F['lon']:.3f}\u00b0 E, north {F['north']:.1f}\u00b0, clock time SAST (UTC+2).", "8pt", "#555555"))
+        sm.append(h2("7.3 Sun angles at the site"))
+        sm.append(f'<p style="text-align:center;"><img src="sunpath" width="400"></p>')
+        sm.append(table(["Day (12:00 local clock time)", "Sun altitude", "Sun azimuth (from north)"],
+                        [[cell(nm), cell(f"{al:.1f}°", "center"), cell(f"{az:.0f}°", "center")]
+                         for nm, al, az in F["sun"]], [50, 25, 25]))
+        order = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+        wx = F.get("wx")
+        mn = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        if wx:
+            sm.append(h2("7.3a Climate conditions (weather data of the site)"))
+            sm.append(para(f"Weather file: {e(wx['name'] or 'typical year')} ({wx['lat']:.2f}\u00b0, {wx['lon']:.2f}\u00b0), "
+                           f"hourly typical year. Mean dry-bulb temperature {wx['t_year']:.1f} \u00b0C; global horizontal "
+                           f"radiation {wx['ghi_year']:.0f} kWh/m\u00b2 per year. Hours below 19 \u00b0C and above 25 \u00b0C "
+                           "(the Annex B comfort band) are shown as degree-hours.", "8.5pt"))
+            sm.append('<p style="text-align:center;"><img src="wxchart" width="520"></p>')
+            sm.append(table(["Month", "Mean \u00b0C", "Lowest \u00b0C", "Highest \u00b0C", "Radiation kWh/m\u00b2",
+                             "Below 19 \u00b0C (kKh)", "Above 25 \u00b0C (kKh)"],
+                            [[cell(mn[i], bold=True), cell(f"{wx['tmean'][i]:.1f}", "center"),
+                              cell(f"{wx['tmin'][i]:.1f}", "center"), cell(f"{wx['tmax'][i]:.1f}", "center"),
+                              cell(f"{wx['ghi'][i]:.0f}", "center"), cell(f"{wx['hdh'][i]:.2f}", "center"),
+                              cell(f"{wx['cdh'][i]:.2f}", "center")] for i in range(12)], [13, 13, 13, 13, 16, 16, 16]))
+        sm.append(h2("7.4 Solar energy on each facade (" + ("from the weather file" if wx else "clear-sky maximum") + ", kWh/m\u00b2 per month)"))
+        sm.append(table(["Facade"] + mn + ["Year"],
+                        [[cell(k, bold=True)] + [cell(f"{v:.0f}", "center") for v in F["fs"][k]] +
+                         [cell(f"{sum(F['fs'][k]):.0f}", "center", bold=True)] for k in order],
+                        [7] + [6.6] * 12 + [8]))
+        sm.append(para(("Worked out hour by hour from the direct and diffuse radiation in the weather file and the sun position."
+                        if wx else "Clear-sky values from the sun position at the site (upper limit; real weather gives less). "
+                        "Load a weather file for real values.") +
+                       " Compass directions are measured from true north, using the angle of north above.", "8pt", "#555555"))
+        if F["gl"]:
+            sm.append(h2("7.5 Solar heat gain through the glazing (" + ("weather file" if wx else "clear-sky maximum") + ")"))
+            sm.append(table(["Facade", "Glazing m²", "SHGC used", "Heat gain kWh/year"],
+                            [[cell(k, bold=True), cell(f"{a:.1f}", "center"), cell(f"{sg:.2f}", "center"),
+                              cell(f"{g:.0f}", "center")] for k, (a, sg, g) in F["gl"].items()],
+                            [25, 25, 25, 25]))
+        sm.append(h2("7.6 Hot water, water use and lighting"))
+        sm.append(table(["Item", "Value"], [
+            [cell("Persons (2 per bedroom)", bold=True), cell(f"{F['persons']}")],
+            [cell("Hot water use per year", bold=True),
+             cell(f"{F['litres']:,.0f} litres ({F['litres'] / 1000.0:,.1f} kL) at {A['hotw_l']:.0f} l/capita/day")],
+            [cell("Energy to heat the hot water (15 to 60 °C)", bold=True), cell(f"{F['hot_kwh']:,.0f} kWh/year")],
+            [cell(f"Electricity for hot water (heat pump COP {A['cop']:.1f})", bold=True), cell(f"{F['hot_kwh'] / A['cop']:,.0f} kWh/year")],
+            [cell(f"Lighting electricity ({A['light_w_m2']:.0f} W/m² on {F['nfa']:.1f} m², Annex B schedule)", bold=True),
+             cell(f"{F['light_kwh']:,.0f} kWh/year")],
+            [cell("Hot water + lighting per m² of nett floor area", bold=True),
+             cell(f"{(F['hot_kwh'] / A['cop'] + F['light_kwh']) / max(F['nfa'], 1):.1f} kWh/m²/annum")]], [58, 42]))
+        sm.append(para("The hot water and lighting figures are two parts of the annual consumption compared with SANS "
+                       "10400-XA table 1. Heating, cooling and the appliance loads still need the certified simulation.",
+                       "8pt", "#555555"))
+        return mc, sm
+
+    def _xa_bulk_set(self, col, text):
+        """Set the frame (col 1) or glass (col 2) of every selected row of the window table at once."""
+        gt = self.xa_glass_table
+        rows = sorted({i.row() for i in gt.selectedIndexes()})
+        if not rows:
+            QMessageBox.information(self, APP_NAME, "Select the windows / doors first (click a row, Ctrl or Shift to "
+                                    "pick several, or press 'Select all'), then choose the type and press the button.")
+            return
+        for r in rows:
+            box = gt.cellWidget(r, col)
+            if box is not None:
+                if text == "Custom frame U-value" and col == 1:
+                    pass
+                box.setCurrentText(text)
+        self.statusBar().showMessage(f"{'Frame' if col == 1 else 'Glass'} set to '{text}' for {len(rows)} window(s)/door(s).")
+
+    def _xa_glass_edited(self, r, c):
+        """Typed U / S / E values: keep them and recompute the window U (glass + frame)."""
+        if c in (3, 4, 5):
+            fn = getattr(self, "_xa_glass_refresh", {}).get(r)
+            if fn:
+                fn()
+        elif c == 7:
+            gt = self.xa_glass_table
+            t = gt.item(r, 0).text() if gt.item(r, 0) else ""
+            try:
+                v = float(gt.item(r, 7).text().replace(",", ".")) if gt.item(r, 7) and gt.item(r, 7).text().strip() else 0.0
+            except ValueError:
+                v = 0.0
+            if t in self.xa_glass:
+                if abs(v - float(self.xa_glass[t].get("P") or 0.0)) > 1e-9:
+                    self.xa_glass[t]["P_src"] = "manual"          # a typed value replaces the measured one
+                    self.xa_glass[t]["H"] = 0.0                   # and H goes back to the window height
+                self.xa_glass[t]["P"] = v
+
+    def _run_xa(self):
+        self._xa_refresh()
+        zone11 = self.xa_zone11.currentText()
+        rooms = [rm for rm in self.xa_rooms() if not excluded_reason(rm.name)]
+        sched = self.xa_schedule()
+        # glass table follows the schedule tags
+        gt = self.xa_glass_table
+        tags = [t for t, o in sched.items() if o.counts and (o.kind != "Door" or o.glazed_m2 > 0)]
+        for t in list(self.xa_glass):
+            if t not in tags:
+                self.xa_glass.pop(t)
+        gt.blockSignals(True)
+        gt.setRowCount(0)
+        self._xa_glass_refresh = {}
+        for t in tags:
+            g = self.xa_glass.setdefault(t, {"type": list(XA_GLASS)[0], "U": 5.6, "S": 0.77, "E": 1.0})
+            g.setdefault("frame", list(XA_FRAMES)[0]); g.setdefault("UF", 5.9)
+            shd_ = ((getattr(self, "ifc_data", None) or {}).get("shading") or {}).get(t)
+            if shd_ and g.get("P_src") != "manual":          # the overhang measured from the IFC geometry
+                g["P"] = float(shd_["P_mm"]); g["H"] = float(shd_["H_mm"]); g["P_src"] = "ifc"
+            op_ = sched[t]
+            r = gt.rowCount()
+            gt.insertRow(r)
+            gt.setItem(r, 0, QTableWidgetItem(t))
+            gt.item(r, 0).setFlags(gt.item(r, 0).flags() & ~Qt.ItemFlag.ItemIsEditable)
+            fbox = QComboBox()
+            fbox.addItems(list(XA_FRAMES))
+            fbox.setCurrentText(g["frame"] if g["frame"] in XA_FRAMES else list(XA_FRAMES)[0])
+            gt.setCellWidget(r, 1, fbox)
+            box = QComboBox()
+            box.addItems(list(XA_GLASS))
+            box.setCurrentText(g["type"] if g["type"] in XA_GLASS else "Custom")
+            gt.setCellWidget(r, 2, box)
+            for c, k in ((3, "U"), (4, "S"), (5, "E")):
+                gt.setItem(r, c, QTableWidgetItem(f"{g[k]}"))
+            wi = QTableWidgetItem("")
+            wi.setFlags(wi.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            gt.setItem(r, 6, wi)
+            pi = QTableWidgetItem(f"{g['P']:g}" if g.get("P") else "")
+            pi.setToolTip("How far the roof, veranda, balcony or fixed hood sticks out above this window, in mm "
+                          "(measured from the wall, extending the same distance each side of the glass). "
+                          "Leave empty if there is no shading. It only matters for windows facing "
+                          "W, NW, N, NE or E (SANS 10400-XA 5.2).")
+            if g.get("P_src") == "ifc" and shd_:
+                pi.setToolTip(f"Measured from the IFC model (worst of {shd_['n']} window(s)): projection P = {shd_['P_mm']} mm, "
+                              f"gap above the glass G = {shd_['G_mm']} mm, glass {shd_['glass_mm']} mm, so H = {shd_['H_mm']} mm. "
+                              "Type a value to replace it.")
+            gt.setItem(r, 7, pi)
+
+            def frame_u(r=r, t=t):
+                name = gt.cellWidget(r, 1).currentText()
+                u = XA_FRAMES.get(name)
+                if name == "Custom frame U-value":
+                    u = self.xa_glass[t].get("UF", 5.9)
+                return u
+
+            def refresh(r=r, t=t, op_=op_):
+                """Window U = glass and frame U weighted by their areas (when a frame is chosen)."""
+                def num(c, d):
+                    try: return float(gt.item(r, c).text().replace(",", "."))
+                    except (ValueError, AttributeError): return d
+                ug = num(3, 5.6)
+                uf = frame_u()
+                if uf is None:
+                    txt = f"{ug:g}"
+                else:
+                    a_ = max(op_.area_m2, 1e-6)
+                    ag = min(op_.glazed_m2, a_)
+                    txt = f"{(ug * ag + uf * (a_ - ag)) / a_:.2f}"
+                gt.blockSignals(True); gt.item(r, 6).setText(txt); gt.blockSignals(False)
+                self.xa_glass[t].update({"U": ug, "S": num(4, 0.77), "E": num(5, 1.0),
+                                         "type": gt.cellWidget(r, 2).currentText(),
+                                         "frame": gt.cellWidget(r, 1).currentText(), "UW": float(txt)})
+
+            def on_type(txt, r=r, t=t, refresh=refresh):
+                u, sg = XA_GLASS[txt]
+                if txt != "Custom":
+                    gt.blockSignals(True)
+                    gt.item(r, 3).setText(f"{u}")
+                    gt.item(r, 4).setText(f"{sg}")
+                    gt.blockSignals(False)
+                refresh()
+
+            def on_frame(txt, r=r, t=t, refresh=refresh):
+                if txt == "Custom frame U-value":
+                    val, ok = QInputDialog.getDouble(self, APP_NAME, "Frame U-value (W/m2K):",
+                                                     float(self.xa_glass[t].get("UF", 5.9)), 0.1, 10.0, 2)
+                    if ok:
+                        self.xa_glass[t]["UF"] = val
+                refresh()
+            box.currentTextChanged.connect(on_type)
+            fbox.currentTextChanged.connect(on_frame)
+            self._xa_glass_refresh[r] = refresh
+            refresh()
+        gt.blockSignals(False)
+
+        def gval(t):
+            for r in range(gt.rowCount()):
+                if gt.item(r, 0).text() == t:
+                    def num(c, d):
+                        try:
+                            return float(gt.item(r, c).text().replace(",", "."))
+                        except (ValueError, AttributeError):
+                            return d
+                    try:
+                        uw = float(gt.item(r, 6).text())      # window U, frame included when one is chosen
+                    except (ValueError, AttributeError):
+                        uw = num(3, 5.6)
+                    return uw, num(4, 0.77), num(5, 1.0)
+            return 5.6, 0.77, 1.0
+
+        limit = self.xa_limit.value()
+        ft = self.xa_fen_table
+        ft.setRowCount(0)
+        self.xa_fen_results = []
+        north = self._north_deg()
+        lat = self._xa_latitude()
+        mult = xa_shade_multiplier(lat)
+        orient_groups = {}
+        for fl in dict.fromkeys(room_group(rm.floor, rm.unit) for rm in rooms):
+            rs = [rm for rm in rooms if room_group(rm.floor, rm.unit) == fl]
+            nfa = sum(rm.area_m2 for rm in rs)
+            ops, fen = [], 0.0
+            og = orient_groups.setdefault(fl, {"nfa": nfa, "wins": []})
+            for rm in rs:
+                base_side, over_side = parse_facing(rm.facing)
+                for tag, qty in parse_tags(rm.tags).items():
+                    o = sched.get(tag)
+                    if o is None or not o.counts or (o.kind == "Door" and o.glazed_m2 <= 0):
+                        continue
+                    area = o.area_m2 * qty
+                    fen += area
+                    u, sg, e = gval(tag)
+                    ops.append((area, u, sg, e))
+                    try:
+                        pmm = float(self.xa_glass.get(tag, {}).get("P") or 0.0)
+                    except (TypeError, ValueError):
+                        pmm = 0.0
+                    try:
+                        hmm = float(self.xa_glass.get(tag, {}).get("H") or 0.0)
+                    except (TypeError, ValueError):
+                        hmm = 0.0
+                    hmm = hmm or o.height_mm                  # H = underside of the projection to the bottom of the glass
+                    shaded = pmm > 0 and pmm + 1e-9 >= hmm * mult
+                    for code, q_ in facing_parts(base_side, over_side, tag, qty):
+                        og["wins"].append({"vent": o.openable_m2 * q_, "area": o.area_m2 * q_, "u": u, "s": sg,
+                                           "sector": compass_sector(code, north) if code else "",
+                                           "shaded": shaded, "tag": tag, "room": rm.name})
+            pct = fen / nfa * 100 if nfa else 0.0
+            within = pct <= limit + 1e-9
+            calc = fenestration_storey(nfa, ops, zone11)
+            self.xa_fen_results.append({"floor": fl, "nfa": nfa, "fen": fen, "pct": pct, "limit": limit,
+                                        "within": within, "calc": calc})
+            r = ft.rowCount()
+            ft.insertRow(r)
+            vals = [fl, f"{nfa:.2f}", f"{fen:.2f}", f"{pct:.1f}%",
+                    f"WITHIN {limit:g}%" if within else "CALCULATION NEEDED",
+                    f"{calc['agg_u']:.2f} / {calc['max_u']:.2f}", f"{calc['agg_s']:.2f} / {calc['max_s']:.2f}"]
+            for c, val in enumerate(vals):
+                it = QTableWidgetItem(val)
+                if c == 4:
+                    it.setData(Qt.ItemDataRole.UserRole, "pass" if within else "fail")
+                if c == 5:
+                    it.setData(Qt.ItemDataRole.UserRole, "pass" if calc["agg_u"] <= calc["max_u"] + 1e-9 else "fail")
+                if c == 6:
+                    it.setData(Qt.ItemDataRole.UserRole, "pass" if calc["agg_s"] <= calc["max_s"] + 1e-9 else "fail")
+                ft.setItem(r, c, it)
+        rows_o, by_sector, notes_o = xa_orientation_check(orient_groups, north, lat)
+        bld = building_orientation(by_sector)
+        zone = self.xa_zone.currentText()
+        if zone == "5H":        # clause 5.1: in zone 5H orientation is the facade with the largest ventilation openings
+            vs = {}
+            for g_ in orient_groups.values():
+                for w_ in g_["wins"]:
+                    if w_["sector"]:
+                        vs[w_["sector"]] = vs.get(w_["sector"], 0.0) + w_.get("vent", 0.0)
+            bld = building_orientation(vs)
+        self.xa_orient = {"rows": rows_o, "by_sector": by_sector, "notes": notes_o, "building": bld,
+                          "north": north, "lat": lat, "mult": mult}
+        self._fill_orient_table()
+        self._air_refresh()
+        self._xa_autofill()
+        self.main_tabs.setCurrentWidget(self.xa_page)
+
+    # ---- XA report (one A4 portrait page) ----
+    def pdf_default_path(self, kind):
+        """File name like 'Block A - Erf 14243 - Light and Ventilation Report.pdf', in the folder
+        of the saved project (or the last folder a PDF was saved to)."""
+        import re as _re
+        rd = self.rd
+        proj = (rd.get("project") or "").strip()
+        site = (rd.get("details") or "").strip()
+        parts = [x for x in (proj, site) if x]
+        # do not repeat the site when the project name already contains it
+        if len(parts) == 2 and parts[1].lower() in parts[0].lower():
+            parts = parts[:1]
+        parts.append(kind)
+        name = " - ".join(parts)
+        name = _re.sub(r'[\\/:*?"<>|\r\n\t]+', " ", name)
+        name = _re.sub(r"\s+", " ", name).strip(" .")[:120] + ".pdf"
+        folder = getattr(self, "_last_pdf_dir", "") or (
+            os.path.dirname(self.current_file) if getattr(self, "current_file", None) else "")
+        return os.path.join(folder, name) if folder else name
+
+    def _remember_pdf_dir(self, path):
+        try:
+            self._last_pdf_dir = os.path.dirname(os.path.abspath(path))
+        except Exception:
+            pass
+
+    def _sim_export_to(self, base):
+        """Write base.gbxml, base.idf and base.epw from the IFC model, the build-ups, glass and lighting entered. Returns a summary dict."""
+        import shutil
+        ifc_path = getattr(self, "ifc_path", "") or ""
+        geo = sim_read_geometry(ifc_path, self._north_deg(), EXTERNAL_RE)
+        rooms = self.xa_rooms()
+        ifc_rooms = (self.ifc_data or {}).get("rooms") or []
+        meta, used = {}, set()
+        for i, sp in enumerate(geo["spaces"]):
+            nm_ = sp["name"].lower()
+            cands = [j for j, r in enumerate(ifc_rooms) if j not in used and str(r.get("name", "")).strip().lower() in nm_
+                     and (r.get("floor") or "Ground Floor") == sp["storey"]]
+            if not cands:
+                cands = [j for j, r in enumerate(ifc_rooms) if j not in used and str(r.get("name", "")).strip().lower() in nm_]
+            if not cands:
+                continue
+            j = min(cands, key=lambda j_: (0 if (ifc_rooms[j_].get("unit") and str(ifc_rooms[j_]["unit"]).lower() in nm_) else 1,
+                                           -len(str(ifc_rooms[j_].get("name", ""))), abs(float(ifc_rooms[j_].get("area", 0.0)) - sp["area"])))
+            used.add(j)
+            m = {"unit_label": unit_label(ifc_rooms[j].get("unit", ""))}
+            try:
+                c = self._lt_calc(rooms[j])
+                m["lights_w"], m["lights_h"] = float(c["n"] * c["w"]), float(c["h"])
+            except Exception:
+                pass
+            meta[i] = m
+        model = sim_build_model(geo, meta)
+        cons = sim_constructions(self.xa_elements, self.xa_zone.currentText())
+        items = {str(it.get("tag", "")).upper(): it for it in ((self.ifc_data or {}).get("items") or [])}
+        glass = {}
+        for tag, g in (self.xa_glass or {}).items():
+            gl = float((items.get(str(tag).upper()) or {}).get("glazed", 100.0) or 100.0) / 100.0
+            ug, sg, uf = float(g.get("U", 5.6)), float(g.get("S", 0.77)), float(g.get("UF", 5.9))
+            gl = min(1.0, max(0.3, gl))
+            glass[str(tag)] = (ug * gl + uf * (1.0 - gl), sg * gl)
+        vals = list(glass.values())
+        if vals:
+            glass["*"] = (sum(v[0] for v in vals) / len(vals), sum(v[1] for v in vals) / len(vals))
+        w = self._weather_for_report()
+        est = False
+        if w is None:
+            lat, lon = self._site_lonlat()
+            w = st_weather_fallback(lat, lon); est = True
+        loc = {"lat": float(w["lat"]), "lon": float(w["lon"]), "tz": float(w.get("tz", 2.0)), "elev": float(w.get("elev", 0.0)), "name": w.get("name", "Site")}
+        epw_src = self.rd.get("epw") or ""
+        epw_path = base + ".epw"
+        if epw_src and os.path.exists(epw_src) and not est:
+            shutil.copyfile(epw_src, epw_path)
+        else:
+            write_epw(w, epw_path)
+        import numpy as _np
+        tground = float(_np.mean(w["T"][:8760]))
+        sim_write_idf(model, {k: dict(v) for k, v in cons.items()}, glass, loc, base + ".idf", os.path.basename(epw_path), tground=tground)
+        sim_write_gbxml(model, {k: dict(v) for k, v in cons.items()}, glass, loc, base + ".gbxml", loc["name"])
+        return {"zones": len(model["zones"]), "surfaces": len(model["surfaces"]), "openings": model["n_ops"], "unplaced": model["unplaced"],
+                "skipped": geo["skipped"], "cons": {k: v["src"] for k, v in cons.items()}, "est_weather": est, "weather": loc["name"],
+                "lit": sum(1 for z in model["zones"] if z["lights_w"] > 0), "stor": geo["storeys"]}
+
+    def export_simulation(self):
+        if not self._ifc_active() or not os.path.exists(getattr(self, "ifc_path", "") or ""):
+            QMessageBox.information(self, APP_NAME, "Import the Archicad IFC first. The simulation model is built from the shapes of its rooms, windows and doors.")
+            return
+        dflt = os.path.splitext(self.pdf_default_path("Simulation model"))[0]
+        path, _ = QFileDialog.getSaveFileName(self, "Simulation export (gbXML, IDF and weather file are saved side by side)", dflt, "gbXML (*.gbxml)")
+        if not path:
+            return
+        base = os.path.splitext(path)[0]
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            r = self._sim_export_to(base)
+        except Exception as ex:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, APP_NAME, f"The simulation files could not be made:\n{ex}")
+            return
+        QApplication.restoreOverrideCursor()
+        txt = (f"Saved next to each other:\n{base}.gbxml  (open this in DesignBuilder: File > Import gbXML)\n{base}.idf  (EnergyPlus 24.1 input)\n{base}.epw  (weather)\n\n"
+               f"{r['zones']} rooms, {r['surfaces']} surfaces, {r['openings']} windows and doors placed on the walls "
+               f"({r['unplaced']} could not be matched to an exterior wall and were left out).\n"
+               f"Weather: {r['weather']}" + (" (estimated, no weather file loaded)" if r["est_weather"] else "") + ".\n"
+               f"Build-ups: " + "; ".join(f"{k.replace('_', ' ')}: {v}" for k, v in r["cons"].items()) + ".\n\n"
+               "Check in DesignBuilder before relying on the result: rooms are boxes taken from the IFC room shapes (sloped ceilings are flat), "
+               "walls shared by two rooms are interior, windows use the glass and frame values from the Energy XA tab, air leakage is assumed at 0.5 air changes "
+               "an hour, and the IDF has a 19-25 C heating and cooling band with ideal loads. "
+               "A certified simulation still needs the competent person to check and sign it.")
+        if r["skipped"]:
+            txt += "\n\nLeft out (no usable shape): " + ", ".join(r["skipped"][:12])
+        QMessageBox.information(self, APP_NAME, txt)
+
+    def export_xa_pdf(self):
+        self._run_xa()
+        path, _ = QFileDialog.getSaveFileName(self, "Export XA report", self.pdf_default_path("SANS 10400-XA Energy Report"),
+                                              "PDF (*.pdf)")
+        if not path:
+            return
+        if not path.lower().endswith(".pdf"):
+            path += ".pdf"
+        self._remember_pdf_dir(path)
+        self._write_xa_pdf(path)
+        QMessageBox.information(self, APP_NAME, f"PDF saved:\n{path}")
+
+    def _write_xa_pdf(self, path):
+        import datetime, html as _h
+        from PySide6.QtGui import QPdfWriter, QPageSize, QPageLayout, QTextDocument, QFont
+        from PySide6.QtCore import QMarginsF, QSizeF, QUrl
+        e = lambda x: _h.escape(str(x))
+        RED, GREY, DARK = "#C8102E", "#F4F4F4", "#DCDCDC"
+        zone = self.xa_zone.currentText()
+
+        def cell(txt, align="left", color=None, bold=False, bg=None):
+            st = f"padding:3px; text-align:{align}; vertical-align:middle;" + (f"color:{color};" if color else "") + \
+                 ("font-weight:bold;" if bold else "")
+            return f'<td{" bgcolor=" + chr(34) + bg + chr(34) if bg else ""} style="{st}">{e(txt)}</td>'
+
+        def table(head, rows, widths):
+            h = "".join(f'<th bgcolor="{DARK}" width="{widths[i]}%" style="padding:4px;">{e(x)}</th>'
+                        for i, x in enumerate(head))
+            out = [f'<table width="100%" cellspacing="0" cellpadding="0" border="0.6" '
+                   f'style="border-color:#bbbbbb; font-size:8.5pt;"><tr>{h}</tr>']
+            for i, r in enumerate(rows):
+                out.append("<tr>" + "".join(r) + "</tr>")
+            out.append("</table>")
+            return "".join(out)
+        today = datetime.date.today().strftime("%d %B %Y")
+        town = self.xa_town.currentText()
+        body = [f"""
+<table width="100%" cellspacing="0" cellpadding="8" border="0"><tr>
+<td bgcolor="{DARK}" width="9%"><img src="logo" height="46"></td>
+<td bgcolor="{DARK}" style="color:#111111;"><span style="font-size:17pt; font-weight:bold;">
+Energy Efficiency Report (SANS 10400-XA)</span><br>
+<span style="font-size:9pt; color:#444444;">Energy zone {e(zone)}{(' - ' + e(town)) if town in XA_TOWNS else ''}
+ &nbsp;|&nbsp; {today}</span></td></tr></table>
+<table width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td bgcolor="{RED}" height="3"></td></tr></table>
+{self._project_info_html()}"""]
+        rows = []
+        for el in self.xa_elements:
+            r = xa_check_element(el, zone)
+            rows.append([cell(r["name"] + (f" ({el['where']})" if el.get("where") else ""), bold=True), cell(r["type"]), cell(f"{r['total']:.2f}", "right"),
+                         cell(f"None (ref. {xa_reference_r(zone, r['type'])[0]:.2f})" if xa_reference_r(zone, r["type"])[0]
+                              else (f"{r['req']:.2f}" if not xa_no_minimum(r["type"]) else "None"), "right"),
+                         (cell("NO MINIMUM", "center", "#555555", True, bg="#EDEDED") if xa_no_minimum(r["type"]) else
+                          cell("COMPLIES" if r["ok"] else "TOO LOW", "center", "#1B7F3B" if r["ok"] else RED, True,
+                               bg="#E7F5EB" if r["ok"] else "#FCE8EB")),
+                         cell(r["notes"], color="#555555")])
+        body.append(f'<p style="font-size:12pt; font-weight:bold; color:{RED}; margin-left:10px; margin-top:10px;">Walls, roof, floors and pipes - total R-value (m2K/W)</p>')
+        body.append(table(["Element", "Type", "Total R", "Required R", "Result", "Notes"], rows, [24, 20, 8, 9, 11, 28])
+                    if rows else "<p style='font-size:9pt;'>No elements entered.</p>")
+        frows = []
+        for f in getattr(self, "xa_fen_results", []):
+            c = f["calc"]
+            frows.append([cell(f["floor"], bold=True), cell(f"{f['nfa']:.2f}", "right"),
+                          cell(f"{f['fen']:.2f}", "right"), cell(f"{f['pct']:.1f}%", "right"),
+                          cell(f"WITHIN {f['limit']:g}%" if f["within"] else "CALCULATION NEEDED", "center",
+                               "#1B7F3B" if f["within"] else RED, True, bg="#E7F5EB" if f["within"] else "#FCE8EB"),
+                          cell(f"{c['agg_u']:.2f} / {c['max_u']:.2f}", "right", None if c["agg_u"] <= c["max_u"] else RED),
+                          cell(f"{c['agg_s']:.2f} / {c['max_s']:.2f}", "right", None if c["agg_s"] <= c["max_s"] else RED)])
+        body.append(f'<p style="font-size:12pt; font-weight:bold; color:{RED}; margin-left:10px; margin-top:12px;">Fenestration (windows and glazed doors) per storey</p>')
+        body.append(table(["Floor", "Net floor area m2", "Fenestration m2", "% of floor", "Screening",
+                           "Conductance actual / max", "Solar gain actual / max"], frows, [16, 13, 13, 9, 17, 16, 16])
+                    if frows else "<p style='font-size:9pt;'>Run the check first.</p>")
+        op_ = self._orient_report_parts(cell, "#1B7F3B", RED)
+        if op_:
+            body.append(f'<p style="font-size:12pt; font-weight:bold; color:{RED}; margin-left:10px; margin-top:12px;">Orientation and shading (SANS 10400-XA clause 5)</p>')
+            body.append(f'<p style="font-size:8.5pt; color:#222222; margin-left:10px;">{e(op_[0])}</p>')
+            if op_[2]:
+                body.append(table(op_[1], op_[2], op_[3]))
+            for n_ in op_[4]:
+                body.append(f'<p style="font-size:8pt; color:#8a5a00; margin-left:10px;">{e(n_)}</p>')
+        sp_ = self._shade_report_parts(cell, "#1B7F3B", RED)
+        if sp_:
+            body.append(f'<p style="font-size:12pt; font-weight:bold; color:{RED}; margin-left:10px; margin-top:12px;">Shading measured from the IFC model (SANS 10400-XA 5.2)</p>')
+            body.append(f'<p style="font-size:8.5pt; color:#222222; margin-left:10px;">{e(sp_[0])}</p>')
+            body.append(table(sp_[1], sp_[2], sp_[3]))
+        ap_ = self._air_report_parts(cell, "#1B7F3B", RED)
+        if ap_:
+            body.append(f'<p style="font-size:12pt; font-weight:bold; color:{RED}; margin-left:10px; margin-top:12px;">Air infiltration and leakage (SANS 204 clause 4.4)</p>')
+            body.append(f'<p style="font-size:8.5pt; color:#222222; margin-left:10px;">{e(ap_[0])}</p>')
+            body.append(table(ap_[1], ap_[2], ap_[3]))
+        lp_ = self._lt_report_parts(cell, "#1B7F3B", RED)
+        if lp_:
+            body.append(f'<p style="font-size:12pt; font-weight:bold; color:{RED}; margin-left:10px; margin-top:12px;">Lighting and power</p>')
+            body.append(f'<p style="font-size:8.5pt; color:#222222; margin-left:10px;">{e(lp_[0])}</p>')
+            body.append(table(lp_[1], lp_[2], lp_[3]))
+            body.append('<p style="font-size:9pt; font-weight:bold; color:#222222; margin-left:10px; margin-top:10px;">Lighting compliance check:</p>')
+            body.append(table(lp_[4], lp_[5], lp_[6]))
+        hp_ = self._hw_report_parts(cell, "#1B7F3B", RED)
+        if hp_:
+            body.append(f'<p style="font-size:12pt; font-weight:bold; color:{RED}; margin-left:10px; margin-top:12px;">Hot water and solar (SANS 10400-XA clause 6.1)</p>')
+            body.append(f'<p style="font-size:8.5pt; color:#222222; margin-left:10px;">{e(hp_[0])}</p>')
+            body.append(table(hp_[1], hp_[2], hp_[3]))
+            pp_ = self._hw_panels_parts(cell)
+            if pp_:
+                body.append(f'<p style="font-size:12pt; font-weight:bold; color:{RED}; margin-left:10px; margin-top:12px;">Solar panels needed for the building</p>')
+                body.append(f'<p style="font-size:8.5pt; color:#222222; margin-left:10px;">{e(pp_[0])}</p>')
+                body.append(table(pp_[1], pp_[2], pp_[3]))
+                body.append('<p style="font-size:9pt; font-weight:bold; color:#222222; margin-left:10px; margin-top:10px;">Total panels and what they are for</p>')
+                body.append(table(pp_[4], pp_[5], pp_[6]))
+        body.append('<p style="font-size:7.5pt; color:#777777; margin-top:14px;">Screening: fenestration within the limit '
+                    'of the net floor area, with compliant orientation and shading, satisfies XA. Conductance and solar '
+                    'gain use the SANS 204:2011 deemed-to-satisfy method and the glass values entered. Typical material '
+                    'values are used where no manufacturer value was entered. This report supports, and does not '
+                    f'replace, the competent person\'s declaration. Generated by {e(APP_NAME)}.</p>')
+        # ---- breakdown of every wall / roof / floor build-up (material, thickness, conductivity, R) ----
+        def h_section(txt):
+            return (f'<p style="font-size:13pt; font-weight:bold; color:{RED}; margin-left:10px; margin-top:6px;">'
+                    f'{e(txt)}</p>')
+
+        frags = [h_section("Building element assemblies"),
+                 '<p style="font-size:8.5pt; color:#444444; margin-left:10px;">Each build-up is listed from the outside '
+                 'to the inside with its thickness, conductivity and thermal resistance (R = thickness / conductivity). '
+                 'Surface films are added where applicable. Total R is the sum of all layers.</p>',
+                 f'<p style="font-size:7.5pt; color:#666666; margin-left:10px;">{e(LAYER_NOTE)}</p>',
+                 assembly_key_html(self.xa_elements)]
+        order = [("walls", "Walls"), ("roof", "Roofs and ceilings"), ("floors", "Floors"), ("pipes", "Hot water pipes")]
+        for ci, (ckey, cname) in enumerate(order, start=1):
+            els = [el for el in self.xa_elements if xa_category(el.get("type", "")) == ckey]
+            for ni, el in enumerate(els, start=1):
+                c = xa_check_element(el, zone)
+                f_out, f_in = element_film_rows(el)
+                rws = []
+                if f_out:
+                    rws.append([cell(f_out[0]), cell("0.000", "center"), cell("Standard film", "center"), cell(f"{f_out[1]:.3f}", "center")])
+                for l in el.get("layers", []):
+                    t_txt, lam_txt, r_ = layer_cells(l)
+                    rws.append([cell(l.get("mat", "")), cell(t_txt, "center"), cell(lam_txt, "center"),
+                                cell(f"{r_:.3f}", "center")])
+                if f_in:
+                    rws.append([cell(f_in[0]), cell("0.000", "center"), cell("Standard film", "center"), cell(f"{f_in[1]:.3f}", "center")])
+                rws.append([cell("Total R value =", "right", bold=True), cell(""), cell(""),
+                            cell(f"{c['total']:.3f}", "center", bold=True, bg="#E7F5EB")])
+                nomin = xa_no_minimum(el.get("type", ""))
+                if nomin:
+                    ref_r, ref_t = xa_reference_r(zone, el.get("type", ""))
+                    if ref_r:
+                        rws.append([cell("Reference R value, for information (zone %s) =" % zone, "right"), cell(""), cell(""),
+                                    cell(f"{ref_r:.3f}", "center", bold=True, bg="#EDEDED")])
+                    rws.append([cell("Result", "right"), cell(""), cell(""),
+                                cell("NO MINIMUM", "center", "#555555", True, bg="#EDEDED")])
+                if not nomin:
+                    rws.append([cell("SANS 10400-XA minimum R value (zone %s) =" % zone, "right"), cell(""), cell(""),
+                                cell(f"{c['req']:.3f}", "center", bold=True, bg="#EDEDED")])
+                    rws.append([cell("Result", "right"), cell(""), cell(""),
+                                cell("COMPLIES" if c["ok"] else "TOO LOW", "center", "#1B7F3B" if c["ok"] else RED, True,
+                                     bg="#E7F5EB" if c["ok"] else "#FCE8EB")])
+                n_lay_ = (1 if f_out else 0) + len(el.get("layers", [])) + (1 if f_in else 0)
+                rws_d = assembly_rows(el, rws, n_lay_, len(rws) - n_lay_) if n_lay_ else None
+                where = self._el_tag(el)
+                frags.append(
+                    f'<p style="font-size:11pt; font-weight:bold; color:#111111; margin-left:10px; margin-top:10px;">'
+                    f'{ci}.{ni}&nbsp;&nbsp;{e(element_title(el).upper())}'
+                    f'<span style="font-weight:normal; color:#555555;">&nbsp;&nbsp;-&nbsp;&nbsp;{e(el.get("name", ""))}{e(where)}</span></p>'
+                    + (table(["Detail", "Material", "Thickness (m)", "Conductivity (W/m.K)", "R value (m2.K/W)"], rws_d, [22, 32, 14, 17, 15]) if rws_d
+                       else table(["Material", "Thickness (m)", "Conductivity (W/m.K)", "R value (m2.K/W)"], rws, [52, 14, 18, 16]))
+                    + f'<table width="100%" cellspacing="0" cellpadding="6" border="0.6" style="border-color:#bbbbbb; '
+                      f'font-size:8.5pt; margin-top:4px;"><tr><td bgcolor="{GREY}"><b>FULL DESCRIPTION</b><br>'
+                      f'{e(element_description(el))}'
+                      + (f'<br><i>{e(xa_reference_r(zone, el.get("type", ""))[1])}</i>' if nomin and xa_reference_r(zone, el.get("type", ""))[0] else "")
+                      + '</td></tr></table>')
+        if len(frags) == 4:
+            frags.append("<p style='font-size:9pt; margin-left:10px;'>No walls, roofs, floors or pipes entered.</p>")
+
+        logo = logo_pixmap().toImage().convertToFormat(QImage.Format.Format_ARGB32)
+        for yy in range(logo.height()):
+            for xx in range(logo.width()):
+                c = logo.pixelColor(xx, yy)
+                if c.alpha() and c.red() > 200 and c.green() > 200 and c.blue() > 200:
+                    logo.setPixelColor(xx, yy, QColor(17, 17, 17, c.alpha()))
+        w = QPdfWriter(path)
+        w.setPageLayout(QPageLayout(QPageSize(QPageSize.A4), QPageLayout.Orientation.Portrait,
+                                    QMarginsF(10, 10, 10, 10), QPageLayout.Unit.Millimeter))
+        w.setResolution(96)
+        w.setTitle("SANS 10400-XA energy report")
+        pw, ph = float(w.width()), float(w.height())
+        foot = 30.0
+        avail = ph - foot
+
+        def mkdoc(html_):
+            d_ = QTextDocument()
+            d_.addResource(QTextDocument.ImageResource, QUrl("logo"), logo)
+            d_.setDefaultFont(QFont("Arial", 9))
+            d_.setHtml('<html><body style="font-family:Arial; color:#111111;">' + html_ + "</body></html>")
+            d_.setPageSize(QSizeF(pw, 1e7))
+            return d_
+        pages = _pack_pages(mkdoc, ["".join(body)] + list(frags), avail)
+        painter = QPainter(w)
+        total = len(pages)
+        company = self.rd.get("company", "") or APP_NAME
+        for i, (html_, y0, y1) in enumerate(pages):
+            if i:
+                w.newPage()
+            doc = mkdoc(html_)
+            doc.setPageSize(QSizeF(pw, 1e7))
+            painter.save()
+            painter.translate(0, -y0)
+            if y1 is not None:
+                painter.setClipRect(QRectF(-5, y0, pw + 10, y1 - y0 + 1))
+            _draw_doc_rounded(painter, doc)
+            painter.restore()
+            painter.save()
+            painter.setPen(QColor("#9A9A9A"))
+            painter.setFont(QFont("Arial", 7))
+            painter.drawLine(0, int(ph - 24), int(pw), int(ph - 24))
+            painter.drawText(QRectF(0, ph - 22, pw * 0.8, 16), int(Qt.AlignmentFlag.AlignLeft),
+                             f"{company}  |  {self.rd.get('project') or 'Energy efficiency report'}  |  SANS 10400-XA")
+            painter.drawText(QRectF(0, ph - 22, pw, 16), int(Qt.AlignmentFlag.AlignRight), f"Page {i + 1} of {total}")
+            painter.restore()
+        painter.end()
+
+
+    # ---- Rational design report (multi-page A4 portrait) ----
+    def _rd_to_widgets(self):
+        saved = dict(self.rd)
+        self._rd_to_widgets_inner(saved)
+        self.rd = saved
+
+    def _rd_to_widgets_inner(self, saved):
+        try:
+            self._sync_ifc_rows()
+            self._lv_busy = True
+            self.lv_ifc_chk.setChecked(bool(self.rd.get("lv_ifc")))
+            self.lv_ifc_rooms_chk.setChecked(bool(self.rd.get("lv_ifc_rooms")))
+            self._lv_busy = False
+        except Exception:
+            self._lv_busy = False
+        for k, wdg in self._xa_bd_map.items():
+            val = saved.get(k, "")
+            if isinstance(wdg, QComboBox):
+                wdg.setCurrentText(val or RD_DEFAULTS["occupancy"])
+            else:
+                wdg.setText(val)
+
+    def _bld_pdf_text(self):
+        dem, con = self._bld_totals(self.rd)
+        if not dem and not con:
+            return "-"
+        return (f"{dem:,.0f} VA ({dem / 1000:.2f} kVA) / {con:,.0f} kWh/annum".replace(",", " ")
+                if dem and con else (f"{dem:,.0f} VA".replace(",", " ") if dem else f"{con:,.0f} kWh/annum".replace(",", " ")))
+
+    @staticmethod
+    def _bld_totals(rd):
+        """(max demand VA, max consumption kWh/annum) for the whole building = per-m2 figure x gross floor area."""
+        def f(k):
+            try: return float(str(rd.get(k, "")).replace(",", ".").replace(" ", "").strip())
+            except ValueError: return 0.0
+        g, d, c = f("gross_area"), f("max_demand"), f("max_cons")
+        return (g * d if g > 0 and d > 0 else None), (g * c if g > 0 and c > 0 else None)
+
+    def _xa_building_totals(self):
+        if not hasattr(self, "xa_demand_tot"):
+            return
+        dem, con = self._bld_totals(self.rd)
+        self.xa_demand_tot.setText(f"{dem:,.0f} VA  ({dem / 1000:.2f} kVA)".replace(",", " ") if dem else
+                                   "enter the gross floor area")
+        self.xa_cons_tot.setText(f"{con:,.0f} kWh/annum".replace(",", " ") if con else "enter the gross floor area")
+
+    def _xa_autofill(self):
+        """Fill in the building details that can be worked out: the floor areas from the rooms, the
+        maximum demand and consumption from the SANS 10400-XA tables, and typical hours of use.
+        Anything the user typed is left alone."""
+        if not hasattr(self, "_auto_vals"):
+            self._auto_vals = {}
+        if not all(hasattr(self, a) for a in ("_xa_bd_map", "xa_occ", "xa_zone", "xa_nett", "room_table")):
+            return
+        try:
+            rooms = self.xa_rooms()
+        except Exception:
+            rooms = []
+        inside = [rm for rm in rooms if not EXTERNAL_RE.search(rm.name or "")]
+        hab = [rm for rm in inside if not excluded_reason(rm.name)]
+        self.xa_nett.setText(f"{sum(rm.area_m2 for rm in hab):.2f} m2" if hab else "-")
+        code = self.xa_occ.currentText().split(" - ")[0].strip()
+        zone = self.xa_zone.currentText()
+        vals = {}
+        if inside:
+            vals["total_area"] = f"{sum(rm.area_m2 for rm in inside):.2f}"
+        if code in XA_MAX_CONS and zone in XA_ZONE_COLS:
+            i = XA_ZONE_COLS.index(zone)
+            vals["max_demand"] = f"{XA_MAX_DEMAND[code][i]:g}"
+            vals["max_cons"] = f"{XA_MAX_CONS[code][i]:g}"
+        if code in XA_TYPICAL_USE:
+            vals["hrs"], vals["days"] = (f"{XA_TYPICAL_USE[code][0]:g}", f"{XA_TYPICAL_USE[code][1]:g}")
+        for k, newv in vals.items():
+            wdg = self._xa_bd_map[k]
+            cur = wdg.text().strip()
+            if not cur or cur == self._auto_vals.get(k):
+                if cur != newv:
+                    wdg.setText(newv)
+                self._auto_vals[k] = newv
+        # a value that no longer applies (e.g. occupancy without table data) is cleared if it was automatic
+        for k in ("max_demand", "max_cons", "hrs", "days", "total_area"):
+            if k not in vals and k in self._auto_vals and self._xa_bd_map[k].text().strip() == self._auto_vals[k]:
+                self._xa_bd_map[k].setText("")
+                self._auto_vals.pop(k, None)
+        for k, tip in (("max_demand", "SANS 10400-XA:2021 Table 2 for the occupancy class and energy zone. "
+                        "Filled in automatically; check it against your copy of the standard. "
+                        "A3 uses 'general' and G1 uses 'large multi-storey' rows. Type over it to change."),
+                       ("max_cons", "SANS 10400-XA:2021 Table 1 for the occupancy class and energy zone. "
+                        "Filled in automatically; check it against your copy of the standard."),
+                       ("hrs", "A typical starting value for this occupancy. Type over it to change."),
+                       ("days", "A typical starting value for this occupancy. Type over it to change."),
+                       ("total_area", "All internal floor area from your rooms (stoeps and patios left out). "
+                        "Type over it if your drawing gives another figure.")):
+            self._xa_bd_map[k].setToolTip(tip)
+        for k in ("max_demand", "max_cons", "gross_area"):
+            self.rd[k] = self._xa_bd_map[k].text().strip()
+        self._xa_building_totals()
+
+    def _run_xa_quiet(self):
+        """Refresh every calculation the report needs without jumping between tabs."""
+        keep_main, keep = self.main_tabs.currentIndex(), self.tabs.currentIndex()
+        self.run_check()
+        self._run_xa()
+        self.main_tabs.setCurrentIndex(keep_main)
+        self.tabs.setCurrentIndex(keep)
+
+    def rd_dialog(self):
+        d = QDialog(self)
+        d.setWindowTitle("Rational design report - details")
+        d.resize(560, 640)
+        lay = QVBoxLayout(d)
+        form_scroll = QScrollArea()
+        form_scroll.setWidgetResizable(True)
+        host = QWidget()
+        v = QVBoxLayout(host)
+        form_scroll.setWidget(host)
+        lay.addWidget(form_scroll)
+        edits = {}
+        route_box = QComboBox()
+        route_box.addItems(RD_ROUTES)
+        route_box.setCurrentText(self.rd.get("route", RD_ROUTES[0]))
+        v.addWidget(QLabel("<b>Compliance route</b>"))
+        v.addWidget(route_box)
+        group = None
+        for key, label, grp in RD_FIELDS:
+            if grp != group:
+                group = grp
+                v.addWidget(QLabel(f"<br><b>{grp}</b>"))
+                if grp == "Simulation results":
+                    n = QLabel("Only needed for the rational design route. This program does not run an hourly "
+                               "energy simulation: enter the figures from your certified simulation software.")
+                    n.setWordWrap(True)
+                    v.addWidget(n)
+            v.addWidget(QLabel(label))
+            le = QLineEdit(self.rd.get(key, ""))
+            edits[key] = le
+            v.addWidget(le)
+        v.addWidget(QLabel("Extra notes for the report (optional)"))
+        notes = QPlainTextEdit(self.rd.get("notes", ""))
+        notes.setFixedHeight(80)
+        v.addWidget(notes)
+        v.addStretch()
+        bar = QHBoxLayout()
+        ok, cancel = QPushButton("Save"), QPushButton("Cancel")
+        bar.addStretch()
+        bar.addWidget(ok)
+        bar.addWidget(cancel)
+        lay.addLayout(bar)
+        ok.clicked.connect(d.accept)
+        cancel.clicked.connect(d.reject)
+        if d.exec() == QDialog.DialogCode.Accepted:
+            for k, le in edits.items():
+                self.rd[k] = le.text().strip()
+            self.rd["route"] = route_box.currentText()
+            self.rd["notes"] = notes.toPlainText().strip()
+
+    # ---------- Archicad-ready output: PNG pages and a one-page compliance summary ----------
+    def _dark_logo(self):
+        logo = logo_pixmap().toImage().convertToFormat(QImage.Format.Format_ARGB32)
+        for yy in range(logo.height()):
+            for xx in range(logo.width()):
+                c = logo.pixelColor(xx, yy)
+                if c.alpha() and c.red() > 200 and c.green() > 200 and c.blue() > 200:
+                    logo.setPixelColor(xx, yy, QColor(17, 17, 17, c.alpha()))
+        return logo
+
+    def _summary_rows(self):
+        """[(area, what was checked, result text, ok True / False / None)] for the compliance summary block."""
+        zone = self.xa_zone.currentText()
+        rows = []
+        results = getattr(self, "results", []) or []
+        if results:
+            n_ok = sum(1 for r in results if r["light_ok"] and r["vent_ok"])
+            rows.append(("SANS 10400-O", "Natural light and ventilation, rooms that pass both",
+                         f"{n_ok} of {len(results)} rooms", n_ok == len(results)))
+            try:
+                tot = house_totals(results)
+                gl_ok = all(r_[3] for g in tot for r_ in g["rows"] if r_[4] == "max")
+                rows.append(("SANS 10400-O", "Glazing limit (max % of floor area)", "within the limit" if gl_ok else "rational design needed", gl_ok))
+            except Exception:
+                pass
+        checks = [xa_check_element(el, zone) for el in self.xa_elements]
+        if checks:
+            ok = sum(1 for c in checks if c["ok"])
+            rows.append(("SANS 10400-XA", f"Roof, wall and floor R-values (energy zone {zone})", f"{ok} of {len(checks)} comply", ok == len(checks)))
+        fens = getattr(self, "xa_fen_results", []) or []
+        if fens:
+            ok = sum(1 for f in fens if f["within"] or f["calc"]["ok"])
+            rows.append(("SANS 10400-XA", "Fenestration per storey", f"{ok} of {len(fens)} storeys", ok == len(fens)))
+        orows = (getattr(self, "xa_orient", None) or {}).get("rows", [])
+        if orows:
+            ok = sum(1 for r_ in orows if r_["ok"])
+            rows.append(("SANS 10400-XA", "Orientation and glazing performance (table 4)", f"{ok} of {len(orows)} groups comply", ok == len(orows)))
+        try:
+            c_ = self.hw_calc()
+            if c_["all_ok"] is not None:
+                names = sorted({o["system"].split(" (")[0].split(" with")[0] for o in c_["groups"] if o["sys_ok"] is not None})
+                rows.append(("SANS 10400-XA", "Hot water supply (clause 6.1)", ", ".join(names), bool(c_["all_ok"])))
+        except Exception:
+            pass
+        try:
+            ar = self.air_rows()
+            spec = sum(1 for r_ in ar if r_[4] == "ok")
+            rows.append(("SANS 204 cl. 4.4", "Air leakage items specified (doors, glazing, fans, roof, walls)",
+                         f"{spec} item(s) to specify", None))
+        except Exception:
+            pass
+        return rows
+
+    def _summary_html(self):
+        import datetime, html as _h
+        e = lambda x: _h.escape(str(x))
+        rd = {**RD_DEFAULTS, **getattr(self, "rd", {})}
+        town = self.xa_town.currentText()
+        town = town if town in XA_TOWNS else ""
+        rows = self._summary_rows()
+        body = []
+        for area, what, res_, ok in rows:
+            colr, bg, txt = ("#1B7F3B", "#E7F5EB", "OK") if ok else (("#C8102E", "#FCE8EB", "ATTENTION") if ok is False else ("#555555", "#EEEEEE", "NOTE"))
+            body.append(f'<tr><td style="padding:5px; font-weight:bold;">{e(area)}</td><td style="padding:5px;">{e(what)}</td>'
+                        f'<td style="padding:5px;">{e(res_)}</td><td bgcolor="{bg}" align="center" style="padding:5px; color:{colr}; font-weight:bold;">{txt}</td></tr>')
+        if not body:
+            body.append('<tr><td colspan="4" style="padding:8px;">Nothing has been checked yet. Run the checks first.</td></tr>')
+        n_bad = sum(1 for r_ in rows if r_[3] is False)
+        overall = ("All checks shown are within the limits." if rows and not n_bad else
+                   (f"{n_bad} item(s) need attention." if rows else ""))
+        lat = self._xa_latitude()
+        north_txt = f"{self._north_deg():g}"
+        return (f'<html><body style="font-family:Arial; color:#111111;">'
+                f'<table width="100%" cellspacing="0" cellpadding="8" border="0"><tr><td bgcolor="#DCDCDC" width="8%"><img src="logo" height="44"></td>'
+                f'<td bgcolor="#DCDCDC"><span style="font-size:16pt; font-weight:bold;">Compliance summary</span><br>'
+                f'<span style="font-size:9pt; color:#444444;">{e(rd.get("project") or "Project")}  |  {e(town) + "  |  " if town else ""}energy zone {e(self.xa_zone.currentText())}  |  '
+                f'latitude {lat:.1f}\u00b0 S  |  north {north_txt}\u00b0  |  {datetime.date.today().strftime("%d %B %Y")}</span></td></tr></table>'
+                f'<table width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td bgcolor="#C8102E" height="3"></td></tr></table><br>'
+                f'<table width="100%" cellspacing="0" cellpadding="0" border="0.6" style="border-color:#c8c8c8; font-size:10pt;">'
+                f'<tr><th bgcolor="#DCDCDC" align="left" style="padding:5px; font-size:9pt;">Standard</th><th bgcolor="#DCDCDC" align="left" style="padding:5px; font-size:9pt;">Checked</th>'
+                f'<th bgcolor="#DCDCDC" align="left" style="padding:5px; font-size:9pt;">Result</th><th bgcolor="#DCDCDC" style="padding:5px; font-size:9pt;">Status</th></tr>'
+                f'{"".join(body)}</table>'
+                f'<p style="font-size:10pt; font-weight:bold;">{e(overall)}</p>'
+                f'<p style="font-size:9pt; color:#666666;">{e(rd.get("company") or APP_NAME)}  |  SANS Compliance Suite. Supports, and does not replace, the competent person\'s rational design.</p>'
+                f'</body></html>')
+
+    def _render_html_image(self, html, width=900, scale=3.0):
+        from PySide6.QtGui import QTextDocument, QFont
+        from PySide6.QtCore import QUrl, QSizeF
+        d = QTextDocument()
+        d.addResource(QTextDocument.ImageResource, QUrl("logo"), self._dark_logo())
+        d.setDefaultFont(QFont("Arial", 9))
+        d.setHtml(html)
+        d.setPageSize(QSizeF(width, 1e7))
+        h = int(d.size().height()) + 6
+        img = QImage(int(width * scale), int(h * scale), QImage.Format.Format_RGB32)
+        img.fill(QColor(255, 255, 255))
+        p = QPainter(img)
+        p.scale(scale, scale)
+        _draw_doc_rounded(p, d)
+        p.end()
+        return img, d, h
+
+    def export_summary_block(self):
+        """One compact sheet (PNG or PDF) to place on an Archicad layout."""
+        try:
+            self.run_check()
+        except Exception:
+            pass
+        self._run_xa_quiet()
+        path, filt = QFileDialog.getSaveFileName(self, "Export compliance summary", self.pdf_default_path("Compliance Summary"),
+                                                 "PNG image (*.png);;PDF (*.pdf)")
+        if not path:
+            return
+        from PySide6.QtCore import QSizeF
+        html = self._summary_html()
+        img, d, h = self._render_html_image(html)
+        if path.lower().endswith(".pdf") or (not path.lower().endswith(".png") and "PDF" in filt):
+            if not path.lower().endswith(".pdf"):
+                path += ".pdf"
+            from PySide6.QtGui import QPdfWriter, QPageSize, QPageLayout
+            from PySide6.QtCore import QMarginsF
+            w = QPdfWriter(path)
+            w.setResolution(96)
+            w.setPageLayout(QPageLayout(QPageSize(QSizeF(900 / 96 * 25.4, h / 96 * 25.4), QPageSize.Unit.Millimeter),
+                                        QPageLayout.Orientation.Portrait, QMarginsF(0, 0, 0, 0)))
+            p = QPainter(w)
+            _draw_doc_rounded(p, d)
+            p.end()
+        else:
+            if not path.lower().endswith(".png"):
+                path += ".png"
+            img.save(path)
+        self._remember_pdf_dir(path)
+        QMessageBox.information(self, APP_NAME, f"Saved:\n{path}\n\nIn ArchiCAD: place it as a Figure or drag it onto the layout.")
+
+    def export_pages_png(self, kind):
+        """Every page of a report as a sharp PNG (200 dpi) for placing in Archicad."""
+        if fitz is None:
+            QMessageBox.warning(self, APP_NAME, "This needs PyMuPDF (pip install pymupdf).")
+            return
+        spec = {"lv": ("Light and Ventilation", self.run_check, self._write_report_pdf),
+                "xa": ("Energy XA", self._run_xa, self._write_xa_pdf),
+                "rd": ("Rational Design", self._run_xa_quiet, self._write_rd_pdf)}[kind]
+        spec[1]()
+        folder = QFileDialog.getExistingDirectory(self, "Folder for the page images",
+                                                  os.path.dirname(self.pdf_default_path(spec[0])))
+        if not folder:
+            return
+        tmp = os.path.join(tempfile.gettempdir(), f"mot_pages_{kind}.pdf")
+        spec[2](tmp)
+        doc = fitz.open(tmp)
+        base = re.sub(r"[^A-Za-z0-9]+", "_", (self.rd.get("project") or "Project")).strip("_") or "Project"
+        files = []
+        for i, pg in enumerate(doc, 1):
+            f = os.path.join(folder, f"{base}_{spec[0].replace(' ', '')}_page{i:02d}.png")
+            pg.get_pixmap(matrix=fitz.Matrix(200 / 72.0, 200 / 72.0), alpha=False).save(f)
+            files.append(f)
+        doc.close()
+        self._remember_pdf_dir(files[0])
+        QMessageBox.information(self, APP_NAME, f"{len(files)} page image(s) saved in:\n{folder}")
+
+    # ---------- IFC health check ----------
+    def show_ifc_health(self, issues=None, after_import=False):
+        data = getattr(self, "ifc_data", None)
+        if issues is None:
+            if not data or not getattr(self, "ifc_path", ""):
+                QMessageBox.information(self, APP_NAME, "Import an IFC model first.")
+                return
+            try:
+                issues = ifc_health_check(self.ifc_path, {"rooms": data.get("rooms"), "items": data.get("items"), "north": data.get("north"),
+                                                          "latlon": data.get("latlon"), **(getattr(self, "_ifc_counts", {}) or {})})
+            except Exception as ex:
+                QMessageBox.warning(self, APP_NAME, f"The check could not run: {ex}")
+                return
+        import html as _h
+        from PySide6.QtWidgets import QTextBrowser
+        col = {"error": "#C8102E", "warn": "#B7791F", "ok": "#1B7F3B"}
+        lab = {"error": "ERROR", "warn": "CHECK", "ok": "OK"}
+        parts = []
+        for lv, t, d, f in issues:
+            parts.append(f'<p><b style="color:{col[lv]};">{lab[lv]}</b> &nbsp;<b>{_h.escape(t)}</b>'
+                         + (f'<br>{_h.escape(d)}' if d else "") + (f'<br><i>Fix: {_h.escape(f)}</i>' if f else "") + "</p>")
+        dlg = QDialog(self)
+        dlg.setWindowTitle("IFC health check")
+        dlg.resize(680, 520)
+        lay = QVBoxLayout(dlg)
+        tb = QTextBrowser()
+        tb.setHtml("".join(parts))
+        lay.addWidget(tb)
+        bt = QPushButton("Close")
+        bt.clicked.connect(dlg.accept)
+        lay.addWidget(bt)
+        dlg.exec()
+
+    def export_rd_pdf(self):
+        self._run_xa_quiet()
+        path, _ = QFileDialog.getSaveFileName(self, "Export rational design report",
+                                              self.pdf_default_path("Rational Design Report"), "PDF (*.pdf)")
+        if not path:
+            return
+        if not path.lower().endswith(".pdf"):
+            path += ".pdf"
+        self._remember_pdf_dir(path)
+        self._write_rd_pdf(path)
+        QMessageBox.information(self, APP_NAME, f"PDF saved:\n{path}")
+
+    def _write_rd_pdf(self, path):
+        import datetime, html as _h
+        from PySide6.QtGui import QPdfWriter, QPageSize, QPageLayout, QTextDocument, QFont
+        from PySide6.QtCore import QMarginsF, QSizeF, QUrl, QRectF
+        e = lambda x: _h.escape(str(x))
+        rd = {**RD_DEFAULTS, **getattr(self, "rd", {})}
+        RED, DARK, GREY, MID = "#C8102E", "#DCDCDC", "#F4F4F4", "#9A9A9A"
+        REFBG, ACTBG = "#F6E3DC", "#E0EDDF"
+        OKC, BADC = "#1B7F3B", RED
+        zone = self.xa_zone.currentText()
+        town = self.xa_town.currentText()
+        town = town if town in XA_TOWNS else ""
+        zone11 = self.xa_zone11.currentText()
+        route_c = rd["route"] == RD_ROUTES[1]
+        date = rd["date"] or datetime.date.today().strftime("%d %B %Y")
+        results = getattr(self, "results", [])
+        fens = getattr(self, "xa_fen_results", [])
+        checks = [xa_check_element(el, zone) for el in self.xa_elements]
+
+        def cell(txt, align="left", color=None, bold=False, bg=None, size=None):
+            st = f"padding:3px; text-align:{align}; vertical-align:middle;" + (f"color:{color};" if color else "") + \
+                 ("font-weight:bold;" if bold else "") + (f"font-size:{size};" if size else "")
+            b = f' bgcolor="{bg}"' if bg else ""
+            return f'<td{b} style="{st}">{e(txt)}</td>'
+
+        def table(head, rows, widths, hbg=DARK):
+            h = "".join(f'<th bgcolor="{hbg}" width="{widths[i]}%" style="padding:4px; font-size:8pt;">{e(x)}</th>'
+                        for i, x in enumerate(head))
+            out = [f'<table width="100%" cellspacing="0" cellpadding="0" border="0.6" '
+                   f'style="border-color:#c8c8c8; font-size:8.5pt;"><tr>{h}</tr>']
+            for r in rows:
+                out.append("<tr>" + "".join(r) + "</tr>")
+            return "".join(out) + "</table>"
+
+        def h1(t):
+            return (f'<p style="font-size:7pt; margin:0;">&nbsp;</p><table width="100%" cellspacing="0" cellpadding="6" border="0"><tr>'
+                    f'<td bgcolor="{DARK}" style="font-size:15pt; font-weight:bold; color:#333333;">{e(t)}</td>'
+                    f'</tr></table><p style="font-size:3pt;">&nbsp;</p>')
+
+        def h2(t):
+            return f'<p style="font-size:11.5pt; font-weight:bold; color:#333333; margin-top:8px;">{e(t)}</p>'
+
+        def para(t, size="9pt", color="#222222"):
+            return f'<p style="font-size:{size}; color:{color}; margin-top:5px; margin-bottom:6px;">{t}</p>'
+
+        def ref(t):
+            return para(f'<b style="color:{RED};">REFERENCE:</b> {e(t)}', "8pt", "#555555")
+
+        def boxed(inner, bg=GREY):
+            return (f'<table width="100%" cellspacing="0" cellpadding="8" border="0.8" style="border-color:#b5b5b5;">'
+                    f'<tr><td bgcolor="{bg}" style="font-size:9pt;">{inner}</td></tr></table>'
+                    f'<p style="font-size:5pt; margin:0;">&nbsp;</p>')
+
+        def verdict(ok):
+            return cell("COMPLIES" if ok else "DOES NOT COMPLY", "center", OKC if ok else BADC, True,
+                        bg="#E7F5EB" if ok else "#FCE8EB")
+
+        blocks_per_section = []   # list of (list of html fragments)
+
+        # ---------- cover ----------
+        logo = logo_pixmap().toImage().convertToFormat(QImage.Format.Format_ARGB32)
+        for yy in range(logo.height()):
+            for xx in range(logo.width()):
+                c = logo.pixelColor(xx, yy)
+                if c.alpha() and c.red() > 200 and c.green() > 200 and c.blue() > 200:
+                    logo.setPixelColor(xx, yy, QColor(17, 17, 17, c.alpha()))
+        cover = [f'<p style="font-size:60pt;">&nbsp;</p>'
+                 f'<p align="center"><img src="logo" height="90"></p>'
+                 f'<p align="center" style="font-size:11pt; color:#444444;">{e(rd["company"])}</p>'
+                 f'<p style="font-size:34pt;">&nbsp;</p>'
+                 f'<table width="100%" cellspacing="0" cellpadding="14" border="0"><tr>'
+                 f'<td bgcolor="{DARK}" style="color:#222222;"><span style="font-size:26pt; font-weight:bold;">'
+                 f'RATIONAL DESIGN<br>ASSESSMENT REPORT</span><br>'
+                 f'<span style="font-size:9pt; color:#555555;">SANS 10400-XA energy usage and building envelope '
+                 f'&nbsp;|&nbsp; Rev {e(rd["rev"])} &nbsp;|&nbsp; {e(date)}</span></td></tr></table>'
+                 f'<table width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td bgcolor="{RED}" height="4"></td></tr></table>'
+                 f'<p style="font-size:14pt;">&nbsp;</p>'
+                 f'<p style="font-size:9pt; color:#666666;">PROJECT</p>'
+                 f'<p style="font-size:16pt; font-weight:bold; color:#222222; margin-top:0px;">{e(rd["project"] or "-")}</p>'
+                 f'<p style="font-size:9pt; color:#666666;">SITE</p>'
+                 f'<p style="font-size:13pt; font-weight:bold; color:#222222; margin-top:0px;">{e(rd["details"] or "-")}</p>'
+                 f'<p style="font-size:14pt;">&nbsp;</p>'
+                 f'<table width="100%" cellspacing="0" cellpadding="3" border="0"><tr>'
+                 f'<td width="50%" style="font-size:8.5pt; color:#666666;">PROPERTY OWNER<br>'
+                 f'<span style="font-size:12pt; font-weight:bold; color:#222222;">{e(rd["owner"] or "-")}</span></td>'
+                 f'<td width="50%" style="font-size:8.5pt; color:#666666;">ARCHITECTURE FIRM<br>'
+                 f'<span style="font-size:12pt; font-weight:bold; color:#222222;">{e(rd["architect"] or "-")}</span></td>'
+                 f'</tr></table>'
+                 f'<p style="font-size:30pt;">&nbsp;</p>'
+                 f'<p style="font-size:9pt; color:#666666;">THIS REPORT WAS COMPILED BY</p>'
+                 f'<p style="font-size:12pt; font-weight:bold; color:#222222; margin-top:0px;">'
+                 f'{e(rd["prepared_by"] or rd["company"])}'
+                 f'{(" &nbsp;(Reg. " + e(rd["reg_no"]) + ")") if rd["reg_no"] else ""}</p>']
+        if rd["contact"]:
+            cover.append(f'<p style="font-size:8pt; color:#777777;">{e(rd["contact"])}</p>')
+
+        # ---------- section 1: compliance method ----------
+        s1 = [h1("1. SANS 10400-XA COMPLIANCE METHOD"), h2("1.1 Compliance method")]
+        if route_c:
+            s1.append(para(
+                f'The building{(" at " + e(rd["details"])) if rd["details"] else ""} has been assessed by '
+                'rational design (SANS 10400-XA, 4.2.1 c): a competent person certifies that the theoretical '
+                'annual energy consumption and demand of the building is less than or equal to that of a '
+                'reference building which complies with the requirements of 4.2.1 b).'))
+        else:
+            s1.append(para(
+                f'The building{(" at " + e(rd["details"])) if rd["details"] else ""} has been assessed against the '
+                'deemed-to-satisfy requirements of SANS 10400-XA (4.2.1 b): external walls, roof assembly, '
+                'floors and hot water pipes against the minimum total R-values for the energy zone, and '
+                'fenestration against the limit or calculation of SANS 204.'))
+        s1.append(boxed(
+            '<b>4.2 ENERGY USAGE AND BUILDING ENVELOPE</b><br>'
+            'The functional regulations in part XA of the National Building Regulations are deemed to be satisfied where '
+            'a) a competent person certifies that the building has a theoretical annual energy consumption and demand '
+            'within the values in tables 2 and 3; or b) orientation and shading, external walls (4.4.3), fenestration '
+            '(4.4.4), roof assembly (4.4.5), in-slab heating (4.4.2), services and hot water (4.1) comply; or '
+            'c) a competent person certifies that the building has a theoretical annual energy consumption and demand '
+            'less than or equal to a reference building that complies with 4.2.1 b).'))
+        s1.append(ref("SANS 10400-XA, clause 4.2 (paraphrased - confirm the wording against the published edition)."))
+        s1.append(h2("1.2 Method used in this report"))
+        s1.append(para(
+            ("The reference building is the actual building built to the minimum XA requirements. Its demand and "
+             "consumption, and those of the actual building, come from the certified simulation software named in "
+             "section 6. The envelope assemblies and fenestration are listed in sections 3 to 5."
+             if route_c else
+             "Every wall, roof, floor and pipe build-up is converted to a total R-value (layer thickness divided by "
+             "conductivity, plus surface films) and compared with the minimum for the energy zone. Fenestration is "
+             "compared with the glazing limit per storey and, where the limit is exceeded, with the SANS 204 "
+             "aggregate conductance and solar heat gain method.")))
+
+        # ---------- section 2: site ----------
+        s2 = [h1("2. CLIMATE ZONE AND OCCUPANCY"),
+              para("SANS 10400-XA sets the minimum requirements for walls, roofs and floors by energy zone. "
+                   "SANS 204:2011 uses six climatic zones for the fenestration calculation."),
+              table(["Item", "Value"], [
+                  [cell("Town", bold=True), cell(town or "-")],
+                  [cell("SANS 10400-XA energy zone", bold=True), cell(zone)],
+                  [cell("SANS 204:2011 zone (fenestration)", bold=True), cell(zone11)],
+                  [cell("Occupancy class", bold=True), cell(rd["occupancy"] or "-")],
+                  [cell("Population", bold=True), cell(rd["population"] or "-")],
+                  [cell("Design hours per day / days per week", bold=True),
+                   cell(f"{rd['hrs'] or '-'} h / {rd['days'] or '-'} days")],
+                  [cell("Angle of north to plan", bold=True), cell((rd["north"] + " degrees") if rd["north"] else "-")],
+                  [cell("Nett floor area (from rooms)", bold=True), cell(f"{sum(r['area'] for r in results):.2f} m2")],
+                  [cell("Total / gross floor area", bold=True),
+                   cell(f"{rd['total_area'] or '-'} / {rd['gross_area'] or '-'} m2")],
+                  [cell("Max energy demand / consumption (design assumption)", bold=True),
+                   cell(f"{rd['max_demand'] or '-'} VA/m2 / {rd['max_cons'] or '-'} kWh/m2/annum")],
+                  [cell("Max energy demand / consumption of the building (per m2 x gross floor area)", bold=True),
+                   cell(self._bld_pdf_text())],
+              ], [38, 62]),
+              ref("SANS 10400-XA:2021 energy zones; SANS 204:2011 Annex A and Table 5.")]
+
+        # ---------- section 3: assembly requirements ----------
+        s3_head = [h1("3. ENVELOPE ASSEMBLIES"),
+                   para("The reference value is the SANS 10400-XA minimum total R-value for the energy zone and "
+                        "element type; the actual value is calculated from the build-up entered. Layers are "
+                        "listed from outside to inside as entered. Conductivity values are typical values "
+                        "unless the manufacturer's were entered.")]
+        sumrows = [[cell(c["name"], bold=True), cell(c["type"]),
+                    cell((f"None (ref. {xa_reference_r(zone, c['type'])[0]:.3f})" if xa_reference_r(zone, c["type"])[0]
+                          else ("None" if xa_no_minimum(c["type"]) else f"{c['req']:.3f}")), "right", bg=REFBG),
+                    cell(f"{c['total']:.3f}", "right", bg=ACTBG),
+                    (cell("NO MINIMUM", "center", "#555555", True, bg="#EDEDED") if xa_no_minimum(c["type"])
+                     else verdict(c["ok"]))] for c in checks] or [[cell("No elements entered.")] + [cell("")] * 4]
+        s3_head.append(table(["Element", "Type", "Reference R (min)", "Actual R", "Result"], sumrows,
+                             [30, 28, 14, 14, 14]))
+        s3_head.append(para(LAYER_NOTE, "7.5pt", "#666666"))
+        s3_head.append(assembly_key_html(self.xa_elements))
+        s3 = [s3_head]
+        for el, c in zip(self.xa_elements, checks):
+            kind = XA_FILM_KIND.get(el.get("type", ""))
+            rows = []
+            f_out, f_in = element_film_rows(el)
+            if f_out:
+                rows.append([cell(f_out[0]), cell("0.000", "right"), cell("Standard film", "right"),
+                             cell(f"{f_out[1]:.3f}", "right")])
+            desc = []
+            for l in el.get("layers", []):
+                t_txt, lam_txt, r_ = layer_cells(l)
+                rows.append([cell(l.get("mat", "")), cell(t_txt, "right"), cell(lam_txt, "right"),
+                             cell(f"{r_:.3f}", "right")])
+                desc.append((f"{float(l['t']):g}mm " if l.get("t") else "") + l.get("mat", ""))
+            if f_in:
+                rows.append([cell(f_in[0]), cell("0.000", "right"), cell("Standard film", "right"),
+                             cell(f"{f_in[1]:.3f}", "right")])
+            rows.append([cell("TOTAL R VALUE", "right", bold=True), cell(""), cell(""),
+                         cell(f"{c['total']:.3f}", "right", bold=True, bg=ACTBG)])
+            if not xa_no_minimum(el.get("type", "")):
+                rows.append([cell("SANS 10400-XA MINIMUM REQUIRED R VALUE", "right", bold=True), cell(""), cell(""),
+                             cell(f"{c['req']:.3f}", "right", bold=True, bg=REFBG)])
+            elif xa_reference_r(zone, el.get("type", ""))[0]:
+                rows.append([cell("REFERENCE R VALUE (information only, no minimum applies)", "right", bold=True), cell(""), cell(""),
+                             cell(f"{xa_reference_r(zone, el.get('type', ''))[0]:.3f}", "right", bold=True, bg=REFBG)])
+            n_lay_ = (1 if f_out else 0) + len(el.get("layers", [])) + (1 if f_in else 0)
+            rows_d = assembly_rows(el, rows, n_lay_, len(rows) - n_lay_) if n_lay_ else None
+            fd = ("Build-up: " + ", then ".join(desc) + ".") if desc else "No layers entered."
+            s3.append([h2(f"{el.get('name', 'Element')}  -  {el.get('type', '')}"
+                          + (f"  ({roof_kind(el)})" if el.get("type", "").startswith("Roof") else "")
+                          + self._el_tag(el)
+                          + (f"  (applies to: {', '.join(unit_label(u_) for u_ in re.split(r'[,;]', el['units']) if u_.strip())})" if el.get("units") else "")),
+                       (table(["Detail", "Material", "Thickness (m)", "Conductivity (W/m.K)", "R value (m2.K/W)"], rows_d, [22, 32, 14, 17, 15], hbg=ACTBG) if rows_d
+                        else table(["Material", "Thickness (m)", "Conductivity (W/m.K)", "R value (m2.K/W)"], rows,
+                                   [52, 14, 20, 14], hbg=ACTBG)),
+                       para(f"<b>Result:</b> <span style='color:{OKC if c['ok'] else BADC};'>"
+                            f"{'complies' if c['ok'] else 'does not comply'}</span>. {e(c['notes'])}", "8.5pt"),
+                       boxed(e(fd), GREY), '<p style="font-size:4pt;">&nbsp;</p>'])
+
+        # ---------- section 4: fenestration ----------
+        limit = self.xa_limit.value()
+        frows = []
+        for f in fens:
+            c = f["calc"]
+            frows.append([cell(f["floor"], bold=True), cell(f"{f['nfa']:.2f}", "right"),
+                          cell(f"{f['fen']:.2f}", "right"), cell(f"{f['pct']:.1f}%", "right"),
+                          cell(f"within {f['limit']:g}%" if f["within"] else "calculation needed", "center",
+                               OKC if f["within"] else BADC, True),
+                          cell(f"{c['agg_u']:.2f} / {c['max_u']:.2f}", "right", None if c["agg_u"] <= c["max_u"] + 1e-9 else BADC),
+                          cell(f"{c['agg_s']:.2f} / {c['max_s']:.2f}", "right", None if c["agg_s"] <= c["max_s"] + 1e-9 else BADC)])
+        s4 = [h1("4. FENESTRATION"),
+              para(f"Windows and glazed doors {'per unit' if UNIT_MODE[0] else 'per storey'} against {limit:g}% of the net floor area. Where the limit is "
+                   "exceeded the SANS 204:2011 aggregate conductance and solar heat gain are checked against "
+                   "the net floor area multiplied by the zone constants (CU, CSHGC)."),
+              table(["Unit" if UNIT_MODE[0] else "Storey", "Net floor area m2", "Fenestration m2", "% of floor", "Screening",
+                     "Conductance actual / max", "Solar gain actual / max"],
+                    frows or [[cell("Run the check - no rooms entered.")] + [cell("")] * 6],
+                    [15, 13, 13, 9, 17, 17, 16], hbg=ACTBG)]
+        cu, cs = XA_FEN_2011.get(zone11, (1.4, 0.11))
+        s4.append(para(f"SANS 204:2011 zone {e(zone11)}: CU = {cu}, CSHGC = {cs}."))
+        grows = []
+        for tag, g in self.xa_glass.items():
+            fr_ = g.get("frame", "")
+            fr_ = "-" if fr_.startswith("Not specified") else fr_
+            grows.append([cell(tag, bold=True), cell(e(fr_)), cell(e(g.get("type", ""))),
+                          cell(f"{g.get('U', '')}", "right"), cell(f"{g.get('S', '')}", "right"),
+                          cell(f"{g.get('E', '')}", "right"), cell(f"{g.get('UW', g.get('U', ''))}", "right")])
+        if grows:
+            s4.append(h2("Frame and glass specified per window / door"))
+            s4.append(table(["Tag", "Frame", "Glass type", "Glass U", "Solar gain S", "Exposure E", "Window U"], grows,
+                            [8, 24, 32, 8, 10, 9, 9], hbg=ACTBG))
+        op_ = self._orient_report_parts(cell, OKC, BADC)
+        if op_:
+            s4.append(h2("Orientation and shading (SANS 10400-XA:2021 clause 5)"))
+            s4.append(para(e(op_[0])))
+            if op_[2]:
+                s4.append(table(op_[1], op_[2], op_[3], hbg=ACTBG))
+            for n_ in op_[4]:
+                s4.append(para(e(n_), "8pt", "#8a5a00"))
+        sp_ = self._shade_report_parts(cell, OKC, BADC)
+        if sp_:
+            s4.append(h2("Shading measured from the IFC model (SANS 10400-XA 5.2)"))
+            s4.append(para(e(sp_[0])))
+            s4.append(table(sp_[1], sp_[2], sp_[3], hbg=ACTBG))
+        ap_ = self._air_report_parts(cell, OKC, BADC)
+        if ap_:
+            s4.append(h2("Air infiltration and leakage (SANS 204 clause 4.4)"))
+            s4.append(para(e(ap_[0])))
+            s4.append(table(ap_[1], ap_[2], ap_[3], hbg=ACTBG))
+        lp_ = self._lt_report_parts(cell, OKC, BADC)
+        if lp_:
+            s4.append(h2("Lighting and power"))
+            s4.append(para(e(lp_[0])))
+            s4.append(table(lp_[1], lp_[2], lp_[3], hbg=ACTBG))
+            s4.append(para("<b>Lighting compliance check:</b>"))
+            s4.append(table(lp_[4], lp_[5], lp_[6], hbg=ACTBG))
+        hp_ = self._hw_report_parts(cell, OKC, BADC)
+        if hp_:
+            s4.append(h2("Hot water and solar (SANS 10400-XA clause 6.1)"))
+            s4.append(para(e(hp_[0])))
+            s4.append(table(hp_[1], hp_[2], hp_[3], hbg=ACTBG))
+            pp_ = self._hw_panels_parts(cell)
+            if pp_:
+                s4.append(h2("Solar panels needed for the building"))
+                s4.append(para(e(pp_[0])))
+                s4.append(table(pp_[1], pp_[2], pp_[3], hbg=ACTBG))
+                s4.append(para("<b>Total panels and what they are for</b>"))
+                s4.append(table(pp_[4], pp_[5], pp_[6], hbg=ACTBG))
+        s4.append(ref("SANS 10400-XA 4.4.4, 5.1, 5.2, 5.3.4, 5.3.5 and tables 3 and 4; SANS 204:2011 Table 5. Shading "
+                      "projections, the facing of each room and the glazing values are the designer's inputs and must be "
+                      "confirmed by the competent person."))
+
+        # ---------- per unit summary (several units in the building) ----------
+        if UNIT_MODE[0] and results:
+            def applies(el, unit):
+                lst = [u.strip().lower() for u in str(el.get("units", "")).replace(";", ",").split(",") if u.strip()]
+                return not lst or unit.strip().lower() in lst
+            urows = []
+            for g in dict.fromkeys(r["group"] for r in results):
+                rs = [r for r in results if r["group"] == g]
+                nfa = sum(r["area"] for r in rs)
+                f = next((x for x in fens if x["floor"] == g), None)
+                need = [r for r in rs if not r["circulation"] and not r["no_area"]]
+                light_ok = all(r["light_ok"] for r in need)
+                vent_ok = all(r["vent_ok"] for r in need)
+                els = [(el, c) for el, c in zip(self.xa_elements, checks) if applies(el, g)]
+                env_ok_u = all(c["ok"] for _e, c in els) if els else False
+                urows.append([cell(g, bold=True), cell(f"{nfa:.2f}", "right"),
+                              cell(f"{f['pct']:.1f}%" if f else "-", "right"),
+                              cell(("within limit" if f["within"] else ("calc OK" if f["calc"]["ok"] else "FAIL")) if f else "-",
+                                   "center", OKC if f and (f["within"] or f["calc"]["ok"]) else BADC, True),
+                              cell("OK" if light_ok else "FAIL", "center", OKC if light_ok else BADC, True),
+                              cell("OK" if vent_ok else "FAIL", "center", OKC if vent_ok else BADC, True),
+                              cell(f"{sum(1 for _e, c in els if c['ok'])} of {len(els)}", "center",
+                                   OKC if env_ok_u else BADC, True)])
+            s4.append(h2("Summary per unit"))
+            s4.append(table(["Unit", "Net floor area m2", "Fenestration %", "Fenestration", "Natural light",
+                             "Ventilation", "Envelope elements complying"], urows, [18, 14, 14, 16, 12, 13, 13],
+                            hbg=ACTBG))
+
+        # ---------- section 5: light and ventilation ----------
+        s5 = [h1("5. NATURAL LIGHT AND VENTILATION (SANS 10400-O)"),
+              para("Permissible (limit or requirement) versus actual, for the entire block and " + ("per unit." if UNIT_MODE[0] else "per storey."))]
+        if results:
+            hrows = []
+            for g in house_totals(results):
+                row = [cell(g["scope"], bold=True), cell(f"{g['area']:.2f}", "right")]
+                for item, perm, act, ok, kind in g["rows"]:
+                    row.append(cell(f"{act:.2f} vs {'max' if kind == 'max' else 'min'} {perm:.2f}  "
+                                    f"{'OK' if ok else 'FAIL'}", "center", OKC if ok else BADC, True))
+                hrows.append(row)
+            s5.append(table(["Scope", "Net floor area m2", "Glazing m2 vs limit", "Light m2 vs required",
+                             "Ventilation m2 vs required"], hrows, [20, 14, 22, 22, 22], hbg=ACTBG))
+            rrows = [[cell(r["room"], bold=True),
+                      cell(f"{r['group']} ({r['floor']})" if UNIT_MODE[0] else r["floor"]),
+                      cell(f"{r['area']:.2f}", "right"),
+                      cell(f"{r['glazed']:.2f} / {r['light_req']:.2f}", "right"),
+                      cell(f"{r['openable']:.2f} / {r['vent_req']:.2f}", "right")] for r in results]
+            s5.append(h2("Rooms"))
+            s5.append(table(["Room", "Unit (floor)" if UNIT_MODE[0] else "Floor", "Area m2",
+                             "Glazed / required light", "Openable / required vent."],
+                            rrows, [28, 20, 12, 20, 20]))
+        else:
+            s5.append(para("No rooms entered."))
+
+        # ---------- section 6: final comparison ----------
+        def fnum(x):
+            try:
+                return float(str(x).replace(",", "."))
+            except ValueError:
+                return None
+        _F = self.sim_figures(results)
+        _imgs = self.sim_images(_F)
+        s_mc, s_sm = self.sim_sections(_F, _imgs, h1, h2, para, table, cell, ref, e)
+        s6 = [h1("8. FINAL COMPARISON")]
+        rdm, adm, rcs, acs = (fnum(rd[k]) for k in ("ref_demand", "act_demand", "ref_cons", "act_cons"))
+
+        def bar(label, pct, ok, text):
+            w = max(2, min(100, int(round(pct))))
+            col = "#8FCB9B" if ok else "#E59AA3"
+            rest = 100 - w
+            if w < 35:      # a short bar cannot hold the text: keep the text beside the bar, never wrapped inside it
+                return (f'<p style="font-size:8.5pt; margin-bottom:5px; margin-top:8px;">{e(label)}</p>'
+                        f'<table width="100%" cellspacing="0" cellpadding="0" border="0"><tr>'
+                        f'<td width="{w}%" bgcolor="{col}" style="font-size:8pt; padding:3px;">&nbsp;</td>'
+                        f'<td width="{rest}%" style="font-size:8pt; padding:3px 3px 3px 8px;">{e(text)}</td></tr></table>')
+            return (f'<p style="font-size:8.5pt; margin-bottom:5px; margin-top:8px;">{e(label)}</p>'
+                    f'<table width="100%" cellspacing="0" cellpadding="0" border="0"><tr>'
+                    f'<td width="{w}%" bgcolor="{col}" style="font-size:8pt; padding:3px;">{e(text)}</td>'
+                    + (f'<td width="{rest}%"></td>' if rest else "") + '</tr></table>')
+        if route_c and None not in (rdm, adm, rcs, acs) and rdm > 0 and rcs > 0:
+            pd_, pc_ = adm / rdm * 100, acs / rcs * 100
+            okd, okc = pd_ <= 100 + 1e-9, pc_ <= 100 + 1e-9
+            s6.append(para(f"Simulation by {e(rd['sim_software'] or '(software not stated)')}"
+                           f"{(' - ' + e(rd['sim_cert'])) if rd['sim_cert'] else ''}. Figures were entered from the "
+                           "simulation output; this program has not verified them."))
+            s6.append(table(["", "Reference building", "Actual building", "% of reference", "Result"], [
+                [cell("Avg peak energy demand", bold=True), cell(f"{rdm:.2f} VA/m2", "right", bg=REFBG),
+                 cell(f"{adm:.2f} VA/m2", "right", bg=ACTBG), cell(f"{pd_:.1f}%", "right"), verdict(okd)],
+                [cell("Total energy consumption", bold=True), cell(f"{rcs:.2f} kWh/m2/annum", "right", bg=REFBG),
+                 cell(f"{acs:.2f} kWh/m2/annum", "right", bg=ACTBG), cell(f"{pc_:.1f}%", "right"), verdict(okc)],
+            ], [28, 22, 22, 14, 14]))
+            s6.append(bar("Demand: actual as % of reference", pd_, okd, f"{pd_:.1f}%"))
+            s6.append(bar("Consumption: actual as % of reference", pc_, okc, f"{pc_:.1f}%"))
+            overall_energy = okd and okc
+        else:
+            overall_energy = None
+            if route_c:
+                s6.append(para("<b>Simulation figures have not been entered.</b> Add the reference and actual "
+                               "demand and consumption under Report details to complete this section."))
+        s6.append(h2("Envelope: actual R-value as % of the required minimum"))
+        if checks:
+            for c in checks:
+                pct = c["total"] / c["req"] * 100 if c["req"] else 0
+                if not c["req"]:        # no XA minimum for this element: a plain line, no bar
+                    s6.append(para(f"{e(c['name'])} ({e(c['type'])}): R {c['total']:.2f} m2.K/W. "
+                                   "No SANS 10400-XA minimum applies to this element.", "8.5pt"))
+                    continue
+                s6.append(bar(f"{c['name']} ({c['type']})", min(pct, 100), c["ok"],
+                              f"{c['total']:.2f} of {c['req']:.2f}  ({pct:.0f}%)"))
+        else:
+            s6.append(para("No elements entered."))
+        env_ok = all(c["ok"] for c in checks) if checks else False
+        fen_ok = all(f["within"] or f["calc"]["ok"] for f in fens) if fens else False
+        orows = (getattr(self, "xa_orient", None) or {}).get("rows", [])
+        orient_ok = all(r_["ok"] for r_ in orows)
+        fen_ok = fen_ok and orient_ok
+        lv = [g for g in house_totals(results)] if results else []
+        lv_ok = all(r[3] for g in lv for r in g["rows"]) if lv else False
+        if route_c:
+            overall = overall_energy
+        else:
+            overall = env_ok and fen_ok
+        sumtxt = []
+        sumtxt.append(f"Envelope elements: {sum(c['ok'] for c in checks)} of {len(checks)} comply.")
+        sumtxt.append(f"Fenestration: {sum(1 for f in fens if f['within'] or f['calc']['ok'])} of {len(fens)} "
+                      "storeys satisfy the limit or the calculation.")
+        if orows:
+            sumtxt.append(f"Orientation and glazing performance (table 4): {sum(1 for r_ in orows if r_['ok'])} of "
+                          f"{len(orows)} storey / facing groups comply.")
+        sumtxt.append("Natural light, ventilation and glazing limit (SANS 10400-O): "
+                      + ("all within limits." if lv_ok else "one or more items need attention."))
+        if overall is None:
+            verdict_txt = "Energy simulation results are required to conclude on the rational design route."
+        elif overall:
+            verdict_txt = ("The figures entered indicate that the building complies with the requirements of "
+                           "SANS 10400-XA.")
+        else:
+            verdict_txt = ("The figures entered indicate that the building DOES NOT yet comply with "
+                           "SANS 10400-XA. See the items marked in red.")
+        s6.append(h2("Compliance summary"))
+        s6.append(boxed("<br>".join(e(t) for t in sumtxt) + f"<br><br><b>{e(verdict_txt)}</b>"
+                        + (f"<br><br>{e(rd['notes'])}" if rd["notes"] else "")))
+
+        # ---------- section 7: declaration ----------
+        s7 = [h1("9. COMPETENT PERSON DECLARATION"),
+              para("This report supports, and does not replace, the declaration of a competent person as required "
+                   "by SANS 10400-XA. Built-in typical material values, the 2021 energy-zone minimums and the "
+                   "SANS 204:2011 fenestration constants must be confirmed against the published standards "
+                   "before submission to the local authority."),
+              table(["", ""], [
+                  [cell("Name", bold=True), cell(rd["prepared_by"] or " ")],
+                  [cell("Registration number", bold=True), cell(rd["reg_no"] or " ")],
+                  [cell("Signature", bold=True), '<td style="padding:3px;"><br><br><br>&nbsp;</td>'],
+                  [cell("Date", bold=True), cell(" ")],
+              ], [30, 70]),
+              para(f"Generated by {e(APP_NAME)}.", "7.5pt", "#777777")]
+
+        # ---------- layout: pack blocks into A4 pages ----------
+        w = QPdfWriter(path)
+        w.setPageLayout(QPageLayout(QPageSize(QPageSize.A4), QPageLayout.Orientation.Portrait,
+                                    QMarginsF(12, 12, 12, 12), QPageLayout.Unit.Millimeter))
+        w.setResolution(96)
+        w.setTitle("Rational design report")
+        pw, ph = float(w.width()), float(w.height())
+        top, bottom = 4.0, 30.0            # room for the running footer
+        avail = ph - top - bottom
+
+        def mkdoc(html):
+            d = QTextDocument()
+            d.addResource(QTextDocument.ImageResource, QUrl("logo"), logo)
+            for _k, _im in _imgs.items():
+                d.addResource(QTextDocument.ImageResource, QUrl(_k), _im)
+            d.setDefaultFont(QFont("Arial", 9))
+            d.setHtml('<html><body style="font-family:Arial; color:#111111;">' + html + "</body></html>")
+            d.setPageSize(QSizeF(pw, 1e7))
+            return d
+
+        def height(html):
+            return mkdoc(html).size().height()
+        pages = [("cover", "".join(cover), 0, None)]
+        frags_all = []
+        for sec in (s1, s2, s3, s4, s5, s_mc, s_sm, s6, s7):
+            for it in sec:
+                frags_all.append(("<!--u-->" if isinstance(it, list) else "") + "".join(it if isinstance(it, list) else [it]))
+
+        def _is_head(fr):
+            if fr.startswith('<p style="font-size:7pt; margin:0;">&nbsp;</p>'):
+                fr = fr[len('<p style="font-size:7pt; margin:0;">&nbsp;</p>'):]
+            return (fr.startswith('<table width="100%" cellspacing="0" cellpadding="6" border="0"><tr><td bgcolor')
+                    or fr.startswith('<p style="font-size:11.5pt'))
+        import re as _re2
+        glued = []                                 # keep-with-next: picture + caption, a paragraph ending in a colon + what it introduces
+        for fr in frags_all:
+            if glued and not _is_head(fr) and not _is_head(glued[-1]):
+                prev = glued[-1]
+                cap = (fr.lstrip().startswith("<p") and "<table" not in fr and len(_re2.sub(r"<[^>]+>", "", fr)) < 420)
+                lead = _re2.sub(r"<[^>]+>", "", prev).rstrip().endswith(":") and "<img" not in prev and len(prev) < 1500
+                intro_img = "<img" in fr and "<table" not in prev and "<img" not in prev and len(_re2.sub(r"<[^>]+>", "", prev)) < 700
+                if ("<img" in prev and cap) or lead or intro_img:
+                    glued[-1] = prev + fr
+                    continue
+            glued.append(fr)
+        groups, curg = [], []                      # a heading plus everything under it up to the next heading
+        for fr in glued:
+            if _is_head(fr) and any(not _is_head(x) for x in curg):
+                groups.append(curg)
+                curg = []
+            curg.append(fr)
+        if curg:
+            groups.append(curg)
+        cur, used = [], 0.0
+
+        def _flush():
+            nonlocal cur, used
+            if cur:
+                pages.append(("body", "".join(cur), 0, None))
+            cur, used = [], 0.0
+
+        def _put(html):
+            nonlocal used
+            h_ = height(html)
+            if h_ > avail:                         # taller than a page: cut between rows, never shrink
+                _flush()
+                for y0_, y1_ in _slices(mkdoc(html), avail):
+                    pages.append(("body", html, y0_, y1_))
+                return
+            if cur and used + h_ > avail:
+                _flush()
+            cur.append(html)
+            used += h_
+        for g in groups:
+            gh = height("".join(g))
+            if used + gh <= avail:
+                cur.append("".join(g)); used += gh
+                continue
+            if gh <= avail and (avail - used) < 0.16 * avail:
+                _flush()                           # little room left and the group fits on a page: start it fresh
+                cur.append("".join(g)); used = gh
+                continue
+            hold = ""                              # long group, or a lot of page still empty: flow block by block
+            for fr in g:
+                if _is_head(fr):
+                    hold += fr
+                    continue
+                _put(hold + fr)
+                hold = ""
+            if hold:
+                _put(hold)
+        _flush()
+
+        painter = QPainter(w)
+        total = len(pages)
+        for i, (kind, html_, y0, y1) in enumerate(pages):
+            if i:
+                w.newPage()
+            d = mkdoc(html_)
+            sc = 1.0
+            if kind == "cover":
+                sc = min(1.0, (ph - 10) / max(d.size().height(), 1))
+            painter.save()
+            painter.translate(0, top - y0 * sc)
+            painter.scale(sc, sc)
+            if y1 is not None:
+                painter.setClipRect(QRectF(-5, y0, pw + 10, y1 - y0 + 1))
+            _draw_doc_rounded(painter, d)
+            painter.restore()
+            if kind != "cover":
+                painter.save()
+                painter.setPen(QColor(MID))
+                painter.setFont(QFont("Arial", 7))
+                painter.drawLine(0, int(ph - 24), int(pw), int(ph - 24))
+                painter.drawText(QRectF(0, ph - 22, pw * 0.8, 16), int(Qt.AlignmentFlag.AlignLeft),
+                                 f"{rd['company']}  |  {rd['project'] or 'Rational design report'}  |  Rev {rd['rev']}")
+                painter.drawText(QRectF(0, ph - 22, pw, 16), int(Qt.AlignmentFlag.AlignRight),
+                                 f"Page {i + 1} of {total}")
+                painter.restore()
+        painter.end()
+
+
+    def _project_info_html(self):
+        """A compact 'Project information' block for the top of the PDF reports."""
+        import html as _h
+        e = lambda x: _h.escape(str(x))
+        rd = self.rd
+        town = self.xa_town.currentText()
+        zone = self.xa_zone.currentText()
+        if town in XA_TOWNS:
+            place = f"{town}, {self.xa_prov.currentText()}  (energy zone {zone}{', zone from nearest town' if town in XA_NEAREST else ''})"
+            place = place.replace(" *,", ",")
+        else:
+            place = f"Energy zone {zone}" if zone else ""
+        kind = self.building_kind()
+        pairs = [("Project", rd.get("project", "")), ("Owner / client", rd.get("owner", "")),
+                 ("Site", rd.get("details", "")), ("Location", place),
+                 ("Building", kind), ("Occupancy class", rd.get("occupancy", "")),
+                 ("Architect", rd.get("architect", "")), ("Prepared by", rd.get("company", "")),
+                 ("Competent person", rd.get("prepared_by", "")), ("Registration no.", rd.get("reg_no", ""))]
+        pairs = [(k, v) for k, v in pairs if str(v).strip()]
+        if not pairs:
+            return ""
+        note = ""
+        if town in XA_NEAREST:
+            note = (f'<tr><td colspan="4" style="padding:2px 4px; color:#777777;">{e(xa_town_note(town))}</td></tr>')
+        rows = []
+        for i in range(0, len(pairs), 2):
+            a = pairs[i]
+            b = pairs[i + 1] if i + 1 < len(pairs) else ("", "")
+            rows.append(f'<tr><td width="14%" style="padding:2px 4px; color:#555555;">{e(a[0])}</td>'
+                        f'<td width="36%" style="padding:2px 4px; font-weight:bold;">{e(a[1])}</td>'
+                        f'<td width="14%" style="padding:2px 4px; color:#555555;">{e(b[0])}</td>'
+                        f'<td width="36%" style="padding:2px 4px; font-weight:bold;">{e(b[1])}</td></tr>')
+        return ('<table width="100%" cellspacing="0" cellpadding="0" border="0" '
+                'style="font-size:8.5pt; margin-top:6px;">' + "".join(rows) + note + "</table><p style=\"font-size:3pt;\">&nbsp;</p>")
+
+    def export_pdf_report(self):
+        """Save the report as a PDF (place it in ArchiCAD as a PDF drawing/figure)."""
+        self.run_check()
+        path, _ = QFileDialog.getSaveFileName(self, "Export PDF report", self.pdf_default_path("Light and Ventilation Report"),
+                                              "PDF (*.pdf)")
+        if not path:
+            return
+        if not path.lower().endswith(".pdf"):
+            path += ".pdf"
+        self._remember_pdf_dir(path)
+        self._write_report_pdf(path)
+        QMessageBox.information(self, APP_NAME,
+                                f"PDF saved:\n{path}\n\nIn ArchiCAD: File > Content > Place External Content "
+                                "(or drag the PDF onto a layout) to place it on a sheet.")
+
+    def preview_pdf_report(self, writer=None, prepare=None):
+        """Show a report inside the program so it can be checked without saving files.
+        Zoom: 50-400 %, Fit width, Fit page, + / - buttons, Ctrl + mouse wheel."""
+        from PySide6.QtGui import QPixmap
+        kind_name = ("SANS 10400-XA Energy Report" if writer == self._write_xa_pdf else
+                     "Rational Design Report" if writer == self._write_rd_pdf else
+                     "Light and Ventilation Report")
+        d = QDialog(self)
+        d.setWindowTitle("PDF report preview")
+        d.resize(1250, 860)
+        lay = QVBoxLayout(d)
+        bar = QHBoxLayout()
+        refresh = QPushButton("Refresh preview")
+        save = QPushButton("Save PDF...")
+        close = QPushButton("Close")
+        for b_ in (refresh, save, close):
+            bar.addWidget(b_)
+        bar.addSpacing(24)
+        bar.addWidget(QLabel("Zoom:"))
+        zout = QPushButton("\u2212")
+        zin = QPushButton("+")
+        for z_ in (zout, zin):
+            z_.setFixedWidth(40)
+        zbox = QComboBox()
+        zbox.setEditable(True)
+        zbox.addItems(["Fit width", "Fit page", "50%", "75%", "100%", "125%", "150%", "200%", "300%", "400%"])
+        zbox.setCurrentText("100%")
+        zbox.setFixedWidth(120)
+        zbox.setToolTip("Pick a zoom, or type one (for example 175). Ctrl + mouse wheel also zooms.")
+        bar.addWidget(zout)
+        bar.addWidget(zbox)
+        bar.addWidget(zin)
+        bar.addStretch()
+        lay.addLayout(bar)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        host = QWidget()
+        pages = QVBoxLayout(host)
+        scroll.setWidget(host)
+        lay.addWidget(scroll)
+        tmp = os.path.join(tempfile.gettempdir(), "mot_report_preview.pdf")
+        state = {"zoom": 100.0}
+
+        def scale_for(pg):
+            txt = zbox.currentText().strip()
+            vw = max(200, scroll.viewport().width() - 24)
+            vh = max(200, scroll.viewport().height() - 16)
+            if txt == "Fit width":
+                return vw / pg.rect.width
+            if txt == "Fit page":
+                return min(vw / pg.rect.width, vh / pg.rect.height)
+            try:
+                z = max(20.0, min(600.0, float(txt.replace("%", "").strip())))
+            except ValueError:
+                z = state["zoom"]
+            state["zoom"] = z
+            return z / 100.0 * 96.0 / 72.0          # 100 % = 96 dpi, the size on screen
+
+        def draw():
+            """Redraw the pages already written to the PDF at the chosen zoom."""
+            vs, hs = scroll.verticalScrollBar(), scroll.horizontalScrollBar()
+            fy = vs.value() / max(1, vs.maximum()); fx = hs.value() / max(1, hs.maximum())
+            while pages.count():
+                it = pages.takeAt(0)
+                if it.widget():
+                    it.widget().deleteLater()
+            if fitz is None:
+                pages.addWidget(QLabel("Preview needs PyMuPDF. Use 'Save PDF...' instead."))
+                return
+            doc = fitz.open(tmp)
+            for pg in doc:
+                sc = scale_for(pg)
+                pix = pg.get_pixmap(matrix=fitz.Matrix(sc, sc), alpha=False)
+                img = QImage(pix.samples, pix.width, pix.height, pix.stride,
+                             QImage.Format.Format_RGB888).copy()
+                lab = QLabel()
+                lab.setPixmap(QPixmap.fromImage(img))
+                lab.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+                pages.addWidget(lab)
+            doc.close()
+            QTimer.singleShot(0, lambda: (vs.setValue(int(fy * vs.maximum())), hs.setValue(int(fx * hs.maximum()))))
+
+        def render():
+            (prepare or self.run_check)()
+            (writer or self._write_report_pdf)(tmp)
+            draw()
+            self._goto_lv(3)
+
+        def step(sign):
+            steps = [50, 75, 100, 125, 150, 200, 300, 400]
+            cur = state["zoom"]
+            if sign > 0:
+                nxt = next((v for v in steps if v > cur + 0.5), steps[-1])
+            else:
+                nxt = next((v for v in reversed(steps) if v < cur - 0.5), steps[0])
+            zbox.setCurrentText("%d%%" % nxt)
+            apply_zoom()
+
+        def apply_zoom():
+            t_ = zbox.currentText().strip()
+            if t_ and not t_.startswith("Fit") and not t_.endswith("%"):
+                zbox.setCurrentText(t_ + "%")
+            if os.path.exists(tmp):
+                draw()
+
+        class _Wheel(QObject):
+            def eventFilter(h, obj, ev):
+                if ev.type() == QEvent.Type.Wheel and (ev.modifiers() & Qt.KeyboardModifier.ControlModifier):
+                    step(1 if ev.angleDelta().y() > 0 else -1)
+                    return True
+                return False
+        wheel = _Wheel(d)
+        scroll.viewport().installEventFilter(wheel)
+        zin.clicked.connect(lambda: step(1))
+        zout.clicked.connect(lambda: step(-1))
+        zbox.activated.connect(lambda _i: apply_zoom())
+        zbox.lineEdit().editingFinished.connect(apply_zoom)
+
+        def save_it():
+            path, _ = QFileDialog.getSaveFileName(d, "Save PDF report", self.pdf_default_path(kind_name),
+                                                  "PDF (*.pdf)")
+            if path:
+                if not path.lower().endswith(".pdf"):
+                    path += ".pdf"
+                self._remember_pdf_dir(path)
+                import shutil
+                shutil.copyfile(tmp, path)
+                QMessageBox.information(d, APP_NAME, f"PDF saved:\n{path}")
+        refresh.clicked.connect(render)
+        save.clicked.connect(save_it)
+        close.clicked.connect(d.accept)
+        render()
+        d.exec()
+
+    def _write_report_pdf(self, path):
+        """A clean white A4 landscape PDF: results per floor, the window/door schedules and
+        which windows sit in which room."""
+        import datetime, html as _h
+        from PySide6.QtGui import QPdfWriter, QPageSize, QPageLayout, QTextDocument, QFont
+        from PySide6.QtCore import QMarginsF, QSizeF, QUrl
+        sched = self.read_schedule()
+        e = lambda x: _h.escape(str(x))
+        RED, DARK, GREY = "#C8102E", "#DCDCDC", "#F4F4F4"   # light grey bands save ink
+        th = f'bgcolor="{DARK}" style="color:#111111; font-weight:bold; padding:4px;"'
+
+        def cell(txt, align="left", color=None, bold=False, bg=None):
+            st = f"padding:3px; text-align:{align}; vertical-align:middle;"
+            if color:
+                st += f"color:{color};"
+            if bold:
+                st += "font-weight:bold;"
+            b = f' bgcolor="{bg}"' if bg else ""
+            return f'<td{b} style="{st}">{e(txt)}</td>'
+
+        def table(head, rows, widths=None):
+            h = "".join(f'<th {th}' + (f' width="{widths[i]}%"' if widths else "") + f'>{e(x)}</th>'
+                        for i, x in enumerate(head))
+            out = [f'<table width="100%" cellspacing="0" cellpadding="0" border="0.6" '
+                   f'style="border-color:#bbbbbb; font-size:8.5pt;"><tr>{h}</tr>']
+            for i, r in enumerate(rows):
+                bg = GREY if i % 2 else "#ffffff"
+                out.append("<tr>" + "".join(
+                    c if c.startswith("<td") else cell(c, bg=bg) for c in r) + "</tr>")
+            out.append("</table>")
+            return "".join(out)
+
+        def verdict(ok, art=False):
+            if ok:
+                return cell("PASS" + (" (art. light)" if art else ""), "center", "#1B7F3B", True, bg="#E7F5EB")
+            return cell("FAIL", "center", RED, True, bg="#FCE8EB")
+
+        n_ok = sum(1 for r in self.results if r["light_ok"] and r["vent_ok"])
+        today = datetime.date.today().strftime("%d %B %Y")
+        body = [f"""
+<table width="100%" cellspacing="0" cellpadding="8" border="0"><tr>
+<td bgcolor="{DARK}" width="9%"><img src="logo" height="46"></td>
+<td bgcolor="{DARK}" style="color:#111111;"><span style="font-size:17pt; font-weight:bold;">
+Light &amp; Ventilation Report</span><br>
+<span style="font-size:9pt; color:#444444;">SANS 10400-O natural light and ventilation &nbsp;|&nbsp;
+{e(self.rule_box.currentText())} &nbsp;|&nbsp; Ventilation {VENT_PERCENT:g}% &nbsp;|&nbsp; {today}</span></td>
+<td bgcolor="{DARK}" align="right" style="color:#111111;"><span style="font-size:20pt; font-weight:bold;
+color:{'#1B7F3B' if n_ok == len(self.results) else RED};">{n_ok} / {len(self.results)}</span><br>
+<span style="font-size:8pt;">rooms pass both checks</span></td></tr></table>
+<table width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td bgcolor="{RED}" height="3"></td></tr></table>
+{self._project_info_html()}
+<p style="font-size:8pt; color:#555555;">Natural light = glazed area / floor area (minimum {RULES[self.rule_box.currentText()]:g}%,
+at least {MIN_LIGHT_M2:g} m&sup2;). Ventilation = openable area / floor area (minimum {VENT_PERCENT:g}%).
+Passages and circulation spaces need neither.
+Glazing limit: glazing may not exceed {GLAZE_LIMIT[0]:g}% of the net floor area, otherwise a rational design is needed.</p>
+<p style="font-size:9pt; font-weight:bold;">{e(glazing_summary(self.results))}</p>"""]
+        hrows = []
+        for g in house_totals(self.results):
+            row = [cell(g["scope"], bold=True), cell(f"{g['area']:.2f}", "right")]
+            for item, perm, act, ok, kind in g["rows"]:
+                row.append(cell(f"{act:.2f} of {'max' if kind == 'max' else 'min'} {perm:.2f}  "
+                                + (("OK" if ok else "RATIONAL DESIGN") if kind == "max"
+                                   else ("PASS" if ok else "FAIL")),
+                                "center", "#1B7F3B" if ok else RED, True, bg="#E7F5EB" if ok else "#FCE8EB"))
+            hrows.append(row)
+        body.append(f'<p style="font-size:12pt; font-weight:bold; color:{RED}; margin-left:10px;">Building totals - actual vs permissible (m2)</p>')
+        body.append(table(["Block / unit" if UNIT_MODE[0] else "Whole building / floor", "Net floor area", f"Glazing (max {GLAZE_LIMIT[0]:g}%)",
+                           "Natural light (min)", "Ventilation (min)"], hrows))
+        for fl in dict.fromkeys(r["group"] for r in self.results):
+            rs = [r for r in self.results if r["group"] == fl]
+            rows = []
+            for r in rs:
+                rows.append([
+                    cell(r["room"], bold=True), cell(f"{r['area']:.2f}", "right"),
+                    cell(f"{r['glazed']:.2f}", "right"),
+                    cell(f"{r['light_pct']:.1f}%", "right"), cell(f"{r['light_req']:.2f}", "right"),
+                    verdict(r["light_ok"], r.get("art_used")),
+                    cell(f"{r['openable']:.2f}", "right"),
+                    cell(f"{r['vent_pct']:.1f}%", "right"), cell(f"{r['vent_req']:.2f}", "right"),
+                    verdict(r["vent_ok"]),
+                    cell(f"{r['glaze_pct']:.1f}%", "right", None if r["glaze_ok"] else RED, not r["glaze_ok"]),
+                    cell(" + ".join(r.get("detail", [])), color="#555555")])
+            body.append(f'<p style="font-size:12pt; font-weight:bold; color:{RED}; margin-left:10px; margin-top:10px;">{e(fl)}</p>')
+            body.append(table(["Room", "Area m2", "Glazed m2", "Light %", "Min m2", "Light",
+                               "Open m2", "Vent %", "Min m2", "Ventil.", "Glazing %",
+                               "Glazed from"], rows, [16, 6, 7, 6, 5, 11, 6, 6, 5, 7, 7, 18]))
+        # schedules
+        def sched_rows(kind_door):
+            rows = []
+            for tag, o in sched.items():
+                if (o.kind == "Door") != kind_door or not o.counts:
+                    continue
+                rows.append([cell(tag, bold=True), cell(f"{o.width_mm:.0f} x {o.height_mm:.0f}"),
+                             cell(f"{o.glazed_m2:.2f}", "right"), cell(f"{o.openable_m2:.2f}", "right"),
+                             cell(o.style), cell(f"{o.sched_qty:g}", "center")])
+            return rows
+        for title, isdoor in (("Window schedule", False), ("Glazed door schedule", True)):
+            rows = sched_rows(isdoor)
+            if rows:
+                body.append(f'<p style="font-size:12pt; font-weight:bold; color:{RED}; margin-left:10px; margin-top:12px;">{title}</p>')
+                body.append(table(["Tag", "Size mm", "Glazed m2 (each)", "Openable m2 (each)",
+                                   "Opening style", "Qty"], rows))
+        body.append(f'<p style="font-size:7.5pt; color:#777777; margin-top:14px;">Generated by '
+                    f'{e(APP_NAME)}. Glazed areas are taken from the drawing schedule where available. '
+                    f'This report supports, and does not replace, the competent person\'s rational design.</p>')
+
+        logo = logo_pixmap().toImage().convertToFormat(QImage.Format.Format_ARGB32)
+        for yy in range(logo.height()):                 # white parts of the logo -> dark, to show on grey
+            for xx in range(logo.width()):
+                c = logo.pixelColor(xx, yy)
+                if c.alpha() and c.red() > 200 and c.green() > 200 and c.blue() > 200:
+                    logo.setPixelColor(xx, yy, QColor(17, 17, 17, c.alpha()))
+        w = QPdfWriter(path)
+        w.setPageLayout(QPageLayout(QPageSize(QPageSize.A4), QPageLayout.Orientation.Portrait,
+                                    QMarginsF(10, 10, 10, 10), QPageLayout.Unit.Millimeter))
+        w.setResolution(96)
+        w.setTitle("Light & Ventilation Report")
+        pw, ph = float(w.width()), float(w.height())
+        avail = ph - 30.0
+
+        def mkdoc(html_):
+            d_ = QTextDocument()
+            d_.addResource(QTextDocument.ImageResource, QUrl("logo"), logo)
+            d_.setDefaultFont(QFont("Arial", 9))
+            d_.setHtml("<html><body style=\"font-family:Arial; color:#111111;\">" + html_ + "</body></html>")
+            d_.setPageSize(QSizeF(pw, 1e7))
+            return d_
+        pages = _pack_pages(mkdoc, list(body), avail)      # real size, no shrinking; long tables run on to the next page
+        painter = QPainter(w)
+        company = self.rd.get("company", "") or APP_NAME
+        for i, (html_, y0, y1) in enumerate(pages):
+            if i:
+                w.newPage()
+            painter.save()
+            painter.translate(0, -y0)
+            if y1 is not None:
+                painter.setClipRect(QRectF(-5, y0, pw + 10, y1 - y0 + 1))
+            _draw_doc_rounded(painter, mkdoc(html_))
+            painter.restore()
+            painter.save()
+            painter.setPen(QColor("#9A9A9A"))
+            painter.setFont(QFont("Arial", 7))
+            painter.drawLine(0, int(ph - 24), int(pw), int(ph - 24))
+            painter.drawText(QRectF(0, ph - 22, pw * 0.8, 16), int(Qt.AlignmentFlag.AlignLeft),
+                             f"{company}  |  Light & Ventilation Report  |  SANS 10400-O")
+            painter.drawText(QRectF(0, ph - 22, pw, 16), int(Qt.AlignmentFlag.AlignRight), f"Page {i + 1} of {len(pages)}")
+            painter.restore()
+        painter.end()
+
+    def export_report(self):
+        if not self.results:
+            self.run_check()
+        path, _ = QFileDialog.getSaveFileName(self, "Export report", "", "CSV (*.csv)")
+        if not path:
+            return
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["Floor", "Room", "Area m2", "Glazed m2", "Light %", "Light req m2", "Light",
+                        "Openable m2", "Vent %", "Vent req m2", "Ventilation",
+                        "Glazing %", "Glazing max m2", "Glazing limit"])
+            for r in self.results:
+                w.writerow([r["floor"], r["room"], f"{r['area']:.2f}", f"{r['glazed']:.2f}",
+                            f"{r['light_pct']:.1f}", f"{r['light_req']:.2f}",
+                            "PASS" if r["light_ok"] else "FAIL",
+                            f"{r['openable']:.2f}", f"{r['vent_pct']:.1f}",
+                            f"{r['vent_req']:.2f}",
+                            "PASS" if r["vent_ok"] else "FAIL",
+                            f"{r['glaze_pct']:.1f}", f"{r['glaze_max']:.2f}",
+                            "WITHIN LIMIT" if r["glaze_ok"] else "RATIONAL DESIGN"])
+
+
+# --------------------------------------------------------------------------
+# "Liquid glass" look: soft colour backdrop, frosted translucent panels
+# --------------------------------------------------------------------------
+from PySide6.QtWidgets import QFrame, QStyledItemDelegate
+from PySide6.QtGui import QPainter, QLinearGradient, QRadialGradient, QPen, QBrush, QPainterPath
+from PySide6.QtCore import QRectF, QPointF
+
+LOGO_B64 = "iVBORw0KGgoAAAANSUhEUgAAAaQAAAFWCAYAAAAmFuknAAAlh0lEQVR42u2debikdXmm7/er6oU+1TRLa1RQBJdoFEF2BGVxiwOiuEGCmRhEo0EQnEwEFVciZhzZxBWMjhoVV1A0BgWCgtDdAiaZbF5ONhOjQRHsPg3dXVXv/PF9RX8egT59Tp1T231fFxdgi43fqaqnnt/7/J6XzHx9Zu4OkJmRmQ1EREQWm8z8fmb+a2aelJlR/WdFZhY+HRERWUxBWpdbuTEzf7P2aw2FSUREFkuQbs3MbmZurgnTlZl54AxhCp+WiIgstCBlZnZqf2RmbsnMD2fmXrX/blNhEhGRxRCkHu3aX9+Vme/MzAd7lCciIostSFkd49WF6T8y88zM3MmjPBERWUxBuj9h+ufMPD8zH+dRnoiILKYg3Z8wTWfmBb07TL24uE9UREQWWpDqwrSl9ve3Z+abMnOVbklERBZTkO5PmP4xMw92viQiInNhPkdsATSBBNrAY4FrM/PczFwdEZ2ISKuIRERkoR3STOr//A8z87WZuYMdeSIistiCdF/Bh7/NzJPqoQeDDyIiQp+P7LifY7xGdYzXAX4D+GRmfjsznxUR3YjoerFWREQWWpBmClO3EqbDgb/IzC9m5n7VfKlr8EFERBZakOr/+41KlLrA8cCaqiPvUbXgg1FxEREFaVFoVL9XhzKZ9wrg1qoj70ER0TaRJyKiIC0m9fnSjsDZlTCdnpnLI6JjIk9EREFaLOrBhzawO3ARsC4zfysishImE3kiIgrSoglTs+aYngh8KjO/ZSJPRERBYoCOqZfIeyplIu9Lmbm/iTwREQVpEP8u9UTe84GbMvNDmblnvYpIYRIRUZBY5ETeEuCVwG125ImIKEiDFKbefGkV8Ebge72OPBN5IiIKEgNM5O0GXAiszcwTTeSJiChIw5DI+3Rm/mVmPsNEnoiIgjTIRF4XOAL4RtWRV0/kWUUkIjIiJERCoxhhIe0FH5KyI+/mKpG3V72KSGESERlqMSoCMqAz6sdbjco19TryXgnckplvz8xdTeSJiAy1GDWjPO0imTp1XOYt9UTeTsA5lFHx0+zIExEZPldUOaN20np80roGikvGKQAwczngw4GLsSNPRGToXFFAN5k6HVgLcTTkyB/ZzUaYeh1512fm003kiYgMzBVF5Yoel7S+AcVFQAuywwiHGubSkfc04JuZ+fnM3NeOPBGRRUvQ1WdFpwFrIJ4B2a7MQwNGL/bNPDvyEnhhdbH2g1Uiz621IiILI0aNKkHXTlY+BVprobgY2LFyRc3KPDApgsR9JPKWAL9PuRzwHVUiz621IiJ9vFcU0ElYmkz9MeQNEAdUQnSvKxrli7EL0ZH3pkqYXpOZy0zkiYj0515RsvJQaN0ExRuqX+3UzAEKEvfZkfcI4L2UR3knmMgTEZn7rChhh2TqXMjrIfarZkVxX65IQbr/jrwnAZ+pEnl25ImIbPesqHU4tG6A4o3l52t2q89Zxq3LbjETed+oEnlPtiNPRGSbs6Il5ayIma5o1jqjIG07kXdzZr4/Mx9pR56IyK+4ok6VoFtTzYqK7XFFChLblchbCryaMvjwNjvyRERXRLMUotbqZOWlwI0QT65c0Zy1RUGafSJvZ+DN2JEnIrqidrLyOGAtcApkztUVKUj0pSNvTWa+xESeiEzWrGjVTsnUpcCVwJ5VlDv6oSd+gM5dmJ4EXJ6Z12bm0SbyRGT8Z0U7PBc6t0JxSuWIutuKcitIi7u19ijgGhN5IjKGZaiVK1q5azL1QWh+uXJF7dqiVBQkhm5r7Qspj/E+YCJPRMZkRUQnaT0Pcg0Uv19zRU0W6ENV6GtH3qsoE3lvzcydTeSJyGguzlv1yKR1JcQVwKOqWVHfXZGCtDiJvLdQJvJOtSNPREZkVlQtzlt5MnTXQRy3ELMiBYmBBB/2AC6h3Fpb78gz+CAiw+aKOsmyvZKVXwI+Arl6MVyRgrT4VUR7U3bkXZuZR81YDujPQESGYJ146xRorgGe/0ArIhQkRr6KqJ7IuzYzP5uZ+7i1VkQGnKBrJ8v3SFZeAXEpxOptrYhQkMYvkfdiylUXvY68jok8EVnkWVGnnBU1bwOeNyhXpCAxVB15t1UdebuYyBORxZkVrdg/aX0d+Aiw8yBdkYI0XIm8nSg78m7NzFdn5lITeSKyELMiIJPW2VDcCPHsYXBFChJDubV2D+D9lJdrX2xHnoj0yRVFOStasQ9M3QDxTmDZsLgiBWm4t9buC3w2M6+zI09E+uCKImmdBcUaKJ5S1f4MjStSkEajI+9Iyo68mYk8O/JEZLau6MkwdR3EeTVX1BwmV6QgMXKJvDWZ+d7MfIQdeSKyjcV5XaCRtN5QzoqKpw2zK1KQGLlE3jLgNZSJvLeYyBOR+1+ct2LfyhX9MbBDbXFejMK3cRmdRN4uwFspE3l/YCJPRFe0dUXEriuT1vlQ3ATF4TVXNDKf8woSI9uR9z7Ko7wXmsgTmfTFeVPPhE03QZwJLB/2WZGCNJ4defsCn8/Mb2bmkTMSec6XRMZ7VtRJaCWtCyGuhnjCsN0rUpCYyI68pwPXzUjkpYk8kXGeFU0dDSvXQry2/KXsDtu9IgXJRN7azLzERJ7I2LqiqaR1ARTXAI+vZkUxDp/nChJj2ZF3KmUi75zM3MlEnsg4uaLWGogzSkeUC7ZOXEGSfify3l4Jkx15IiOdoFvxkKT1MYhvVrOi9mIuzlOQhD4l8h5J2ZG3NjNf5NZakZFL0J0AxW0Qv1v96li5IgVpMhN5+wCfy8xrMvMIlwOKjIQr+iQUnwEeMk6zIgUJE3nVH0cDf5mZn87MvV0OKDKUruhEKNZCnFSLcjeZgA8rmcxE3onAuloiT2ESGew68U6yw8OS1p9B8Wng4cO4IkJBEhawI+9U4HuZ+WYTeSKDXCc+dQI01kH8djUnGtkLrgqSzCeRtzPwNsqOvN/PzKaJPJHFWifeelzlij4DPKyWoItJPMYRTORRbq3dE/ggv9qRZyJPpM+L8wK6ydRrgZsrVzQxsyIFSWaztbaXyNuPsiPvmqojz0SeSP9cUbtyRVdDcSGwatJmRQqSzDWRd11mfiYzn2hHnkhfXNFpwDqIZ456GaqCJINI5J1QJfIuyszd7cgTmcs68ZW/nrT+AoqLgZauSEES5pzIWw6cTpnIOyczdzaRJzIrV5TJ1Gsg10A8a1TWiStIMgqJvF0pO/JuzcxXZeaSWiLP15MoRJXQVLOixyetr0PxXrbOipq6IgVJ6HtH3geAmzPz+CqRZ/BBrP0pV0QsTabeUSXonu2sSEGSxenI2w/4YmZenZmHGnyQSZ0Vba39WXkItL4DxZuAHZ0VKUiy+Im8ZwLfzsxLM/Oh9eCDj0omYHFeN2F56YryWxD7OytSkGSwibwGcAplIu/0zFxu44NMxuK81mHQuqFyRUtqKyJ0RQqSMJjgA5SND7sBF1XCdGKt8aEw+CBjtk58STUrun6GK/J1riDJENCsBR+eCHw6M/8yM4+OiK7BBxkfV7TykHKdePGm8guZrkhBEkYg+HAEcI2NDzIermjlrknr3ZA3QDy5ckV+nipIMiLBh202PvioZERc0XMh10H8Yfn6Ht914gqSMEGND7dl5hszc8eI6AAoTDK894pW7ZRMfRj4MrDnJKwTV5BkUhof2sBq4NxKmF6emYXBBxnOdeIrjoXOLVC8onJEuiIFSRivVRe94MNewGXAdzLzmBnBB1+fMsB14jvukkx9ABpfKV+n9y7O83WpIMmYBx8OBq7KzK9k5sHuYJIBlqF2kpXHQXcNFK/SFSlIMrmND8dWbulPM/MxJvJkcRfnLd+jmhVdCTy6qv3RFSlIMsGNDwXwe5SN4u/MzAeZyJMFnBVVi/NW/h4sWTdjVuTrTUESbHzoAC3g7EqYTsvMZVYRSf9nRcv2TFZ+AfhTyAc5K1KQRB4okbc7cDHlHaaXWEUk/ZsVtV4OzbXAC2orIpwVKUgibCuRtzdweWZeZxWRzHNW9Ihk5RchLoNY7YoIBUlkrom8IymriC7PzL0NPsh2uKJqVtS8DTjexXkKkki/qoheAqytqoh2qwcfFCapuaLY6oqmqlkRu+iKFCQRFrCK6OxeFZGJPOm5ovKvp84sZ0XFC1ycpyCJLHTw4UHAO4FbqiqihsEHXVEy9SSY+jYU5wO/VrkiV0QoSCIsRvDh0WytIjrWKqJJdkWt10OsheIwXZGCJDLI4MNBwFeqKqIDrSKaJFe0Yl+Yug7iXcAyXZGCJDJMVUQ3ZeZlmfloE3ljuzivCxRJ6ywoboTiCF2RgiQyjFVEDeDllPMlq4jGcnHein0qV3QesMJ14gqSCEMcfOgAO1JWEd2WmadbRTQOi/NolbOi4mYonlpzRX62KUgiDPN8qZfI2w24iPIO04trVUQGH0Zqcd7UM6B1UzUrWu6sSEESGeVE3pOAz2bmNZl5pMGHkZgV9VzRBRDfgHiisyIFSWRcEnld4Gjgusz8jFVEwz4rmjoKptZAnFH+krMiBUlk/IIPCZxA2Sh+UWbubvBhqGZFK5LWeyCuheI3KlcUfoYpSCKMcRXRMsoqolsz86zMbEVEB0BhGtis6EhorYF4Xelo03XiCpLIxFURnVcJ08sys7CKaLFd0a4rk9b/hrimNitycZ6CJMKkBh8eA3yUsoroGKuIFs0VvQQ23QTxP8qfia5IQRIx+NCrIjoYuCozr8rMg0zkLZQrmvq1pPUJKC4HnlBFuZ0VKUgich9VRMdUbunSzNzLRF6/XVGsg3hpJURdo9wKkohsu4roFMr50rmZudpE3nxc0YqHJq1PVq7o4bXFeX4+TRYdf+AibHfwgUqYVgFvpKwiOi0zl1tFNOsVETVXVKyDOKmaE3nBdSJfEnQgGgqSyPwTebsDF1NWEb3EKqJZLc57cM0V7VZL0HnsOWGuqPyZRwO6a32ziNC3RN7ewOVVFdHTDD786uK8gEymXgpxa+WKerMiE3ST54rapRBxN+TrYfowBUlkYaqIrs/MT2XmEyc5+FC5oqJ0RSt/PWn9BRSfqFyRs6LJdkVN6F4P3acEG/6XMyQRFrSK6LeY4CqimivqJlOvgVwH8SzLUJ0VQd5euaKjgo3fuzdtmZm3Ak+uvtkpUCL9/SbY+9D9KXA+cElErO9VEfVqicbNFVGGFjJZ+VjIiyGeXX4e/dIzkYl7LwTQ/RIsOTO481+z/A+i2virAImwOMGH1cA7ge9m5u9mZoxjFdEvz4pafwC5thIjXdHEu6L4CXByMP2CSox6acuu95BEGEjw4bHAx4AbM/M541JFlJXQlLOi1uOS1tcg3gescnGeCTrgC7DloGD9R+tpS7wYKzIUVUSHAl/LzK+MchXRjMV5S8tZEWsgnlMJka5osmdFP4PO7wXrXxTc82/VrKgb1fmtgiTCUFURHQvclJmXZeajaom8oRemKj1XLc5beTC0boDivcCOtQSdrmiyaNfuFX0JOk8ONn4soVG9XjpWB/Vf/dPHIH1M5BXAy4FbMvMdmblLXZiGeVaUsCyZehvktyAOdFY0sVRfsKIJ+VPg5eWs6J4f9hx0fVakINHXo5feMjcR+lxF9CbKKqJTM3PZsFURVd90q7aFlYdWrujNwFLXiU+0KyogCsiPQvugYP2f1lxR23LVhXFGAP8B/NeMDxKRfiXyOsAjgEsYoiqi+qwIaCRTb4f8NsQBNVfk58nEuiL+CTrHBBtODjb9c684dzauSEGa+8MHuIHy3tZHa/X4XbbzwYs8QPChJ0xPoqwiujYzjxxU8KG2IqI3K1oDxTnlv6uuSFfU/RA09g82fi2hOZtZ0X2+zjJDQdp+lkfEjyLiZOAw4Jv3cUNfpJ9VREcB11VVRL+xWFVEv7wigiXVrOgGiP10Rboi4AfA84LpVwV33Vm9Vtoxhy/n1SVxm4jn8gOpLjMujYibI+KZwAnA39VSRR7jCQtURfTdzDw/Mx+2kFVEMxbnPQNa365mRQ3vFemKoPtBKA4O1n+5NleckyvKzKI3K1WQ5vL1NaIL9G7ZR0R8FjgA+CPgdudLQv/nS70vOjsAZ1IGH87KzJW9+qF+CNMvu6KdVyVTH4LiGxAH19aJm6CbXFf0/4Bjg+lXB7+4ozYryrm6ouoY+sXApxWkeQpT7xtqRNwdEe8G9gPeX32bcL4kC1VF9GDgPMqttS+rfcuccxVR9S23ckUrjoEtt0DxynJOlK4TZ2LbFnqu6FJoHBCs/2ofXFGjer3umpkfAD4LPEFB6o8w9aK5zYj494g4leomvvMlWeAqokdTBmxuyMzfrFURFXMRo2TVzsnU+6FxFfCo2uI8PysmMsQVDcjvA88Npl9ZmxXN1xV1MvM4YA3wqur1vNEX2dzj3zNFKSOiXVP/70bEMcDxwF/Vjl3aCpMsUBXRn2fmlZl5QHWsvD3t3JFMPQE6a6B4deWIXJw3uYvzivLP3bfD9D7B+qv66IpWZ+alwJXllx42V6/nQkGam4V9ILeU9aOTiLgCOBg4A/jP2jDY+ZKwAFVExwHfycyvZuZvznK2VNX/5x4Qj4HcrCuaWFdULc7LWyEOD6bfEnBPH13R84G1wCm112zTe0iLM1/qVj+MTRFxEeV86QJgk/MlWeAqov8G7FZzU7N51W5m6906mUxX1IHuubDh4GD9mupeUb9c0UeALwF7bk3s/bIGKUiLO1/6cUS8DjgI+KLzJWFhgg+9Y7wtczgG9DNhcl3RLRBPC6bPobx71rtXNF9X9ALgFuDk+3JFCtLii1J9vtSMiL+OiBcCxwDfdb4kCzRf8p6QzMYVbYHuO2DD4cH672QlFn1wRQ/OzI8CX6Csw9pmQEZBGoww9eZLX6McRp8K/Mj5koiweIvzmpDrKlf05mpWVPTJFb0IWAe8bFuuSEEarvlSOyLeT9mPdz7Ol0RkwRfn8YtqVnR4sP7mWoKuO09X9JDM/Djwudm6IgVpOOdL/xUR/4NyvnSF8yURWZh14vl14JBg+pyAzX1M0L2EMkH3O9Xvt93XBhSk4ZovNar50vGUm0RvsR9PRPowK2oAd0L3NcGG5wQb/r4Ps6JeO8hDM/OTwOXAw6vPqsZc9EVBYs5rKBZCmOr3l75KOV96DeUOpvpaAhGR7ZkVXQ1xcDD9vqqvcLsW580Qo2atg+63KGdFJ1WfjfPaFqwgDYkg3c98aUtEvI/y/tLF97GWQETkgWZFG6B7WrDh2cH671dLFnMes6KiOtF5WGb+GfApyvtuvVlRzPcynTAS86XXAkcAX50xX1KYROS+ZkVXQxwQTF+SUPTRFZ1EeV3lt2uuqNmv290yOvOlb0XEscBzgBtr57QGH0R0RT1XdBd0z6hc0T9Wrqg7R1dU1FzR7pn5GeCTwENrrSDRz7oRGQ1h6lSrq4uI+DrwVOC/A//gxVoRJn1xXs8VfYoyQXdRH1xRozZC+B3KWdEJtS/AjYXov5IROsbrzZeqv/8EsD/wOuDfZ1ysVZhExt8V9Rbn/Qi6JwYbTgo2/EMV5Z6PK+rdK3pEZn4O+DjwkFqCLhaqkFFGU5h6iwE3RsQFlBdrzwXuNCouwqTMiorSFXUPCKYvr8pQi5jje7+aFXUrMfpdyntFL1pIV6QgjWfw4acRcQ5lIu9DtY21RsVFxnNW9MOtrmjjf9bKUOc7K9ojMz8PfAz4tYV2RQrSeBe3/nNEvIpyB9MXjIqLMI6zok9CHli5ojkvzpvhirqZeTLlrOiFi+WKFKT5bYptM/zFrY2IuDUiXgQ8HbjWqLgIo3z3sVPNin5cuaLfCaZ/Ms/an7oremRmfhH4CPCgxXRFCtICrDAfsuLWeuPDtRHxdODFwPeMioswarOiYmuCLvddAFd0CuW9ouMH4YoUJCarUTwzIyI+T3mM9wfAv8wIPihMIsPnirrVrOj/Que55axo+ifVvaJ+uKJHZeaVwKXAroNyRQrS5CbyNkfEBygTeecAPzWRJ8IQzoqiOmLPC2DqkGDjVTVX1O6DK3oFsAY4btCuSEGa7EReIyLujIhzgX2Bi4C7TeSJDIUrynJW1P17yKODDa8LfjI9n1nRW0pXFBHRvifzMZ3Mq4APD4srUpBsfOgJ039ExBnAgZQliSbyRBjUrCiqGp68EFoHBtPXVfeK5jwrui6z+bbSFWU789VLYE0BxwyTK1KQFKaZwvS3EXESZR3R103kiQxiVpR/C/msYMOZNVfUno8rOiqi/aY77tj79k7n6ga8v4Cdh80VKUhyXzuYGhFxQ0Q8B3gu5fmyiTwRFnJxHkVpgPJ82HBoMP2Nvrmit741/nzjxv95ysqVa1YXxTOH1RXVafq6GK/Y91wTeb0ETvX3V2Xm1yjLW88GHsvWO1hD+c1KhNGKcjeqWdHfQZ4eTF9Tfbg05hFaKICMiPbr77hjn5NbrQsfu2TJkb/8ew43OqS5vZjGPipe/fXHKMtb/wj4seWtIn1bJ353OSuaPiiYvqYfrigqV/ShDRvOesWOO95UiVGnO+SuSIck20zk1ernNwDvzsyPA2dQ3mPacZS+dYkMmSv6FuQZwcbb+umK/mrTpr1XFcV7H9FsHhG133OUXIcOSWZb3vqTiDi7ckwfqYmRUXGR2bmieyDPgukjg423zdcV1e4V5V3t9usev3Tpd/Yoxag9Sq5IQZL5lLf+ICJOAQ4FrjQqLrLNFRFN6N4I3UOCDX9SqVQx1wRd1u4V/c2mTfv8tN2+fsdG4z1LoFX9ns1iROe8CpLMtbx1XUQ8H3g28K0ZUfH0iYkrIqIBbIJ8QzB9eLDxr6ran4w5fnmru6J25ut+fenSG3dtNJ5W2xY90kfoCpLMt7z16og4AjgR+Bs78kRX1FsRwY3QfUqw4byEmOc68XtdUWY+MTOvacB7lsBUzxWNQ/pVQZJ+lbdeDhwEnA78UGGSCXZFGyHPhvVHBhtvnY8rqh2V965m/CHlHcGjR+FekYIkgyxvvSci3ktZ3vo24A7LW2XCXNEV0D0s2PAuoDNfV1Q7Kn8ScA3wbmDFMLctKEgsetWHPHB5688i4q2VMF0CbDKRJ+PtivJnkKcE648PNn4vqys1850VVUd1fwTcBBzFmMyKFCQvxi52R14zIv4tIk6jPMq73ESejK8rah8UbPhItSKiLwm6zNwXuA74k5orao5zU4qCJIuRyPvriDgROBL4puWtMh73iuJ24OTSFW36p9qKiLnOihrVrCgy8yzgO8DTxt0VKUgyqETe9RHxTMpVyd+tlbe2DT4II7E47957RVfClgOD9R9NKCpX1JnnrKiTmftRXqM4D9hhElyRgiSDTuRdARwCvAL4Qe0NpzDJEDujaELeUc6Kpp8f3POvVYKuO98EXWY2M/ONwI3AYZPkihQkGYZEXiciLqOsInoD8F8zyltFGK4gU34Z2vvPnBX1IUG3P3A9cC6wfNJckYIkw5TI+0VEnEeZyHsPsKH2rVBhkmEQowLyX4INzws2/Uvlijp9cEVLMvMcylnRUybVFSlIMoyJvB9FxB9Wjun/VB8EJvJkWLi7D20LjZorOpByVvR2YOkkuyIFSYa1vLUREd+PiJdRnqN/1USeDMtnZR/aFjqZuTQz3wLcQDlHnXhXpCDRl3tIbk1d2HXqN0fEscAx1ZGG69Rl5Jjhig4Bvg28VVekILnCfDSj4l+LiMOAlwJ/V6tLMZEnwy5GRc0VvY0yuHCQrkhBkhGOild//2fAAcCZwI9M5MmQi1FUr99DK4f/5soVdXVFCpKMxzr1uyPiQmBf4J3AXbWOPJGhOqbLzBdSHtHtX3NFfuYqSDJm69Rvj4g3Vo7p4x6lCsPVqNxzP4+rvjBt0hUpSDLeibwlEfED4Jzah4CiJAsUsSvm8tra5KxIQZIJECagk5kFsJNPRBbBIc1FkEJXpCDJBAUfDDXIYtBpFEmoLQoSxr5FZLCzo3ZzSYcI7Y6C5II+ERnsd9AtS5e2q/WvapKCJCIykL6ghGTTsqVtwo9LBUlEZGCUhmjTsqUdZ0gKkogIgz6y26wgKUgyeTfcfQrCEIYa7l62vOv0aOFp+ghkGHq/gOjVBIkMG9OtlqtPdEgyQfX83cx8aWZe2GtK9unIcNzyCH6+86qeIOmTFCQZR1dUiVEnM1dn5oeBTwCP9o0vQ/MBWd06/Nnq1TokPLJj9HsW5X5cUYey/uf5wPnAntWz3egTkmH73v7z1TunV+J1SHgxdqxd0WXAlyoxuqe2rlyEIeqo4o6dd4FUkXRIMq6u6ALgkTXH6WtRhnOG1Ghy16pVkB6O6JBknFzRrpl5aeWKHkm5tExXJEMuSA02rliuQ9Ihia5IZAiwNkhBkpG+V1T0ZkXAu4CXV7/c9nUno8bSLZsNfipIMuKu6HmVK9pTVyQj22WXSdHuqEcKkuiKRAb+4qbRNdCgIMmouqLzgb2qiHz4OpNRzzWEgqQg4T2kUXZFHcCyVBkLRWp0Os6QFCRXmI9o2wKKkYzTO77wDpKCJEPvinYF/sRZkYy7IhUdl5crSOK9IpFhCDV0dEgKkgyrK3oXcIquSCaFcoYkCpJ4r0iEwd5DarbbhhoUJPFekcjgQw3Ndls9UpBEVyQyBLHvtkd2CpKxb12RyBC85Zsdj+wUJLwYqysSGTxLtmxWjxQk8V6RyOBZtmmLD0FBkgG3Lfj6ECFZsnmz/khBEu8ViTDQ1DdZHdmJgiS2LYgMii5QAEs3t3VICpKYoBMZPEs365AUJDFBJzIEOENSkMR9RSIMfogES7eYslOQGNpj5XFwRYqRyGxTdpt0SAoSXozVFYkwBDOkLeGCTgVJ3OIqMnhB0iEpSOK9IpFhYElbQVKQZC6zogvxXpFIfz8ot3gPaTEofASj64p6YpSZu2bmpcAVlRi1q5+tP1+RPnxALm23w+mRDkm8VyQy4G0zwZLNmxukiqQguQ/JtgWRAbPDPZuacxAkj/kUpAVnw5C4ovOBvXRFIgtHN4mCYOk99yyh26XYvi+kUz5BBWmhXFEOiSs6DxN0IizeDClYunlLk8zt/RDQISlIC3I8F4N4cTkrEmFINsZuKZwhKUjDIkbeKxKZ6E+DrolVBWnA0RoTdCLi/QkFSVekKxIRBUlXpCsSEVGQJtgVmaATEQVJIRq4KzquckXeKxIRBcnjuaFwRe4rEhEFSVc0FG0LipGIKEi6IhN0IiIK0ni7oiIiuiboRCYOq4PwvtfM/rkYpDOKiG5m7lLbV7Sn+4pEJoJ7fAQ6pIEez9WdUfmn3B/4nK5IhMkpCc9cAjxVpzTZDimHQYx6zzYiEjioEqPNuiIRxn6Tc3VEv6J679s8NEs2QaNwVrTgTFfOyASdyOTQYevuNGvCZ/PAut2icFbEYgw2/YYkgqEGuX8aRZFNZ0UiIsLg50dZeDwnIiLD4CibCpGIiAyaX4zYDGlUxciBpggT2Zfpe387+HGnUzQVIhYjbSMikydIXR/D7NlpBEINhhZERCaAHSO6TV2RiIgw+Iz8UDokXZGICBN3xjlUKTtdkYjIhPLzzKEINYy7EBlqEJk8uhhq2C5u73ajUIyMfYuI7/1B85ABpuw8nhMREQadsjO0ICIiDDJlpysSEZGBp+wm2RV5jizie18YfMpukl1RmrITYZJTdr732b6UXVMhEhERhiBlVyhGIiLCGKbsJmFW5LmwiAj9T9kVuiIRERmHlJ1ChNVBIuI+pPlyxzxTdl5wZdZpG0VbxI2x8gDc3m7PaYV5Kkbih42I9JOHNpvbFWrweE7E94AIg07Z6YhERGTBaMyi7VtXNH8KH4GI7315YNqzaGpQiObPnT5LkckgIjIzgzJd+wtnjmxX7LswHbLgg++fKEgik+WMIiKBn/ooZs/youg0nRVp20Wqt7/vfd/7A2MZdIraN3nFSIxvTzSx2Wcgg1bwJR4pifFtnwPEIQq1DFqQHuabU0QgH+4zEM84RcQjO5n4F6CCJCIeYcpQGCQFSTCoICIe2Yn4LV9EFCQREVGQREREFCQREVGQRIRFnKPdgUEPUZBEZAjo+ghEQRIREVGQRGSOdsqjPVGQRGTwbNxhhdVBoiCJyOC5a+edNhLeKxYFSUQGzC92XLG5zOd5cicKkogMhCMA2LJsedvmJVGQRIQhSDWoRqIgicgguR6A1sbpJaTHdaIgiciA2enOO5eX8yONkihIIjJAVmyYXm6eQRQkERk4Sze3mz4FUZBEZPAfBmn1nShIIoLbdkUUJBERUZBEREQUJBERUZBEREQUJBERUZBEREQUJBERUZBEREQUJBERUZBEREQUJBERUZBEsE9NRBQkYdQXaYuIgiQyBM7oIZlZgKviRBQkkcEK0m5AMyK6menxnYiCJDIw2j4CEQVJxFCDiChIIhUdDDaIKEgiIiIKkoiIKEgiIiIKkoiIiIIkIiIKkoiIiIIkIiIKkoiIiIIkIiIKkoiIiIIkuD9JRBQkkQVlirKQNS1mFVGQRBhgK/heOiURBUlkGHCzrIiCJCIioiAJ7kMSEQVJBI/gRERBEhERBUlERGShaPoI8AhqPJ5x+qx/5XmIjJwgdas/vFjINhsBunN8ozukn/0zyjncRwqg4ev3Xhq157K9P4NO9YfPcuszSYjOHL8Y9D43fJ6z+HxsAivw6G42LK3+vGQOH5g+X2Z9fLyc7U/lban+3PAx3vtMGtv/RShXQNHwOf6KuAO5ag7/7PLqde37f5ajoyawBlg1JA4pF/mWf9ZqZ2b+2n29yZvAv8/y37X36z8EXlY99FzA/z854hU6Wb35fxQRXYCIuN/nFXHvN9argb11+L/yLKP3Wq09q218Q41PQ/49dLt+iM58lvnzOXyOXQZ8Dtjoa3NWz+zW/w+v6lM8mBzjpQAAAABJRU5ErkJggg=="
+_logo_pm = None
+
+
+def logo_pixmap():
+    """The MCP logo mark (white + red, transparent background)."""
+    global _logo_pm
+    if _logo_pm is None:
+        import base64
+        from PySide6.QtGui import QPixmap
+        _logo_pm = QPixmap()
+        _logo_pm.loadFromData(base64.b64decode(LOGO_B64), "PNG")
+    return _logo_pm
+
+
+def app_icon():
+    """Window/taskbar icon: the logo on a dark rounded tile."""
+    from PySide6.QtGui import QIcon, QPixmap
+    S = 256
+    pm = QPixmap(S, S)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    p.setBrush(QColor(20, 20, 24))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.drawRoundedRect(0, 0, S, S, 56, 56)
+    lg = logo_pixmap().scaled(int(S * 0.68), int(S * 0.68), Qt.AspectRatioMode.KeepAspectRatio,
+                              Qt.TransformationMode.SmoothTransformation)
+    p.drawPixmap((S - lg.width()) // 2, (S - lg.height()) // 2, lg)
+    p.end()
+    return QIcon(pm)
+
+
+GLASS_QSS = """
+* { font-family: 'Segoe UI Variable Display', 'Segoe UI Variable Text', 'Segoe UI', 'SF Pro Display',
+    'Helvetica Neue', Arial; font-size: 13px; color: #f7f8fc; outline: 0; }
+QMainWindow, QWidget#glassInner, QTabWidget, QStackedWidget { background: transparent; }
+QDialog, QMessageBox, QProgressDialog { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
+    stop:0 #1c1417, stop:1 #101013); }
+QLabel { background: transparent; }
+QGroupBox#xaGroup { background: rgba(255,255,255,16); border: 1px solid rgba(255,255,255,70);
+    border-left: 4px solid #C8102E; border-radius: 14px; margin-top: 16px; padding-top: 14px; }
+QGroupBox#xaGroup::title { subcontrol-origin: margin; subcontrol-position: top left; left: 16px;
+    padding: 2px 14px; background: rgba(200,16,46,200); border-radius: 10px; font-weight: 700;
+    font-size: 14px; color: white; }
+QLabel#xaSub { color: rgba(255,255,255,175); }
+
+QTabWidget::pane { border: none; background: transparent; top: 8px; }
+QTabBar { background: transparent; }
+QTabBar::tab { background: rgba(255,255,255,18); border: 1px solid rgba(255,255,255,46);
+    border-radius: 16px; padding: 8px 22px; margin: 0 8px 4px 0; color: rgba(255,255,255,190);
+    font-weight: 500; }
+QTabBar::tab:hover { background: rgba(255,255,255,40); color: white; }
+QTabBar::tab:selected { background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+    stop:0 rgba(255,255,255,175), stop:0.5 rgba(255,255,255,85), stop:1 rgba(255,255,255,60));
+    border: 1px solid rgba(255,255,255,200); color: white; font-weight: 700; }
+
+QPushButton { background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+    stop:0 rgba(255,255,255,135), stop:0.48 rgba(255,255,255,52), stop:0.52 rgba(255,255,255,34),
+    stop:1 rgba(255,255,255,46));
+    border: 1px solid rgba(255,255,255,125); border-radius: 16px; padding: 8px 18px; font-weight: 500; }
+QPushButton:hover { background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+    stop:0 rgba(255,255,255,175), stop:0.48 rgba(255,255,255,80), stop:0.52 rgba(255,255,255,58),
+    stop:1 rgba(255,255,255,74)); border: 1px solid rgba(255,255,255,170); }
+QPushButton:pressed { background: rgba(255,255,255,26); border: 1px solid rgba(255,255,255,90); }
+QPushButton[accent="true"] { background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+    stop:0 rgba(255,120,130,255), stop:0.48 rgba(255,32,50,255), stop:0.52 rgba(235,8,28,255),
+    stop:1 rgba(190,0,16,255));
+    border: 1px solid rgba(255,190,195,230); font-weight: 700; padding: 11px 24px; font-size: 14px; }
+QPushButton[accent="true"]:hover { background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+    stop:0 rgba(255,150,158,255), stop:0.48 rgba(255,58,74,255), stop:0.52 rgba(250,24,44,255),
+    stop:1 rgba(210,0,20,255)); }
+QPushButton[flag="true"] { background: rgba(255,190,80,80); border: 1px solid rgba(255,205,120,200); }
+
+QTableWidget { background: rgba(255,255,255,12); alternate-background-color: rgba(255,255,255,8);
+    gridline-color: transparent; border: 1px solid rgba(255,255,255,60);
+    border-radius: 16px; selection-background-color: transparent;
+    selection-color: white; }
+QTableWidget::item { padding: 6px 10px; border-bottom: 1px solid rgba(255,255,255,20); }
+QTableWidget::item:selected { background: transparent; color: white; }
+QHeaderView { background: transparent; }
+QHeaderView::section { background: rgba(255,255,255,30); color: rgba(255,255,255,235); border: none;
+    border-bottom: 1px solid rgba(255,255,255,70); padding: 11px 8px; font-weight: 700; font-size: 12px; }
+QHeaderView::section:vertical { border-bottom: 1px solid rgba(255,255,255,20); padding: 6px;
+    font-weight: 500; color: rgba(255,255,255,150); }
+QTableCornerButton::section { background: rgba(255,255,255,30); border: none; }
+
+QLineEdit, QPlainTextEdit, QTextEdit, QDoubleSpinBox, QSpinBox { background: rgba(0,0,0,70);
+    border: 1px solid rgba(255,255,255,70); border-radius: 11px; padding: 5px 10px;
+    selection-background-color: rgba(255,50,64,170); }
+QLineEdit:focus, QPlainTextEdit:focus, QDoubleSpinBox:focus, QSpinBox:focus {
+    border: 1px solid rgba(255,90,102,235); background: rgba(0,0,0,95); }
+QTableWidget QLineEdit { border-radius: 6px; background: rgba(28,28,34,245); }
+QComboBox { background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+    stop:0 rgba(255,255,255,70), stop:1 rgba(255,255,255,26));
+    border: 1px solid rgba(255,255,255,100); border-radius: 12px; padding: 5px 14px; }
+QComboBox:hover { background: rgba(255,255,255,70); }
+QComboBox::drop-down { border: none; width: 24px; }
+QComboBox QAbstractItemView { background: #1d1d24; border: 1px solid rgba(255,255,255,90);
+    border-radius: 10px; padding: 4px; selection-background-color: rgba(255,50,64,190); }
+
+QCheckBox { background: transparent; spacing: 9px; }
+QCheckBox::indicator { width: 20px; height: 20px; border-radius: 7px;
+    border: 1px solid rgba(255,255,255,150); background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+    stop:0 rgba(255,255,255,70), stop:1 rgba(255,255,255,22)); }
+QCheckBox::indicator:checked { background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+    stop:0 rgba(255,110,120,255), stop:0.5 rgba(255,24,42,255), stop:1 rgba(200,0,18,255));
+    border: 1px solid rgba(255,200,205,230); image: url(@TICK@); }
+
+QMenuBar { background: rgba(10,10,13,235); color: white; padding: 3px 8px; }
+QMenuBar::item { background: transparent; padding: 6px 14px; border-radius: 9px; }
+QMenuBar::item:selected { background: rgba(255,255,255,45); }
+QMenu { background: #1b1b22; border: 1px solid rgba(255,255,255,80); border-radius: 14px; padding: 8px; }
+QMenu::item { padding: 8px 26px; border-radius: 9px; }
+QMenu::item:selected { background: rgba(255,50,64,170); }
+QMenu::separator { height: 1px; background: rgba(255,255,255,40); margin: 6px 10px; }
+
+QStatusBar { background: rgba(10,10,13,235); color: #ff9aa0; }
+QToolTip { background: #1d1d24; color: white; border: 1px solid rgba(255,255,255,100);
+    border-radius: 9px; padding: 7px 9px; }
+QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; border: none; }
+QSpinBox { min-width: 70px; }
+QTableWidget QPushButton:focus { border: 1px solid rgba(255,255,255,235); }
+QTableWidget QPushButton { padding: 2px 12px; border-radius: 12px; text-align: left; font-weight: 500; }
+QTableWidget QComboBox { padding: 2px 12px; border-radius: 12px; min-height: 22px; }
+QTableWidget QCheckBox { margin-left: 14px; }
+QScrollBar:vertical { background: transparent; width: 12px; margin: 3px; }
+QScrollBar::handle:vertical { background: rgba(255,255,255,100); border-radius: 5px; min-height: 34px; }
+QScrollBar::handle:vertical:hover { background: rgba(255,255,255,160); }
+QScrollBar:horizontal { background: transparent; height: 12px; margin: 3px; }
+QScrollBar::handle:horizontal { background: rgba(255,255,255,100); border-radius: 5px; min-width: 34px; }
+QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
+QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
+"""
+
+
+STUDIO_QSS = """
+* { font-family: 'Segoe UI Variable Text', 'Segoe UI', 'Inter', 'SF Pro Text', Arial; font-size: 13px;
+    color: #eceef0; outline: 0; }
+QMainWindow, QWidget#glassInner, QTabWidget, QStackedWidget { background: transparent; }
+QDialog, QMessageBox, QProgressDialog { background: #16171a; }
+QLabel { background: transparent; }
+QGroupBox#xaGroup { background: #1f2125; border: 1px solid #34383e; border-radius: 12px;
+    margin-top: 16px; padding-top: 14px; }
+QGroupBox#xaGroup::title { subcontrol-origin: margin; subcontrol-position: top left; left: 14px;
+    padding: 2px 12px; background: #d8132b; border-radius: 8px; font-weight: 700; font-size: 13px; color: white; }
+QLabel#xaSub { color: #9aa0a8; }
+
+QTabWidget::pane { border: none; background: transparent; top: 6px; }
+QTabBar { background: transparent; }
+QTabBar::tab { background: transparent; border: 1px solid transparent; border-radius: 9px;
+    padding: 8px 20px; margin: 0 6px 4px 0; color: #9aa0a8; font-weight: 500; }
+QTabBar::tab:hover { background: #262a2f; color: #eceef0; }
+QTabBar::tab:selected { background: #262a2f; border: 1px solid #3a3f46; color: #ffffff; font-weight: 700;
+    border-bottom: 2px solid #d8132b; }
+
+QPushButton { background: #262a2f; border: 1px solid #3a3f46; border-radius: 9px; padding: 7px 16px;
+    font-weight: 500; }
+QPushButton:hover { background: #30353b; border: 1px solid #4a5058; }
+QPushButton:pressed { background: #1b1e22; }
+QPushButton:disabled { color: #6b7179; background: #1f2125; }
+QPushButton[accent="true"] { background: #d8132b; border: 1px solid #d8132b; color: #ffffff;
+    font-weight: 700; padding: 10px 22px; font-size: 14px; }
+QPushButton[accent="true"]:hover { background: #ee1d36; border: 1px solid #ee1d36; }
+QPushButton[flag="true"] { background: #4a3a1c; border: 1px solid #c8932f; color: #ffd98a; }
+
+QTableWidget { background: #1b1d21; alternate-background-color: #1f2125; gridline-color: transparent;
+    border: 1px solid #34383e; border-radius: 12px; selection-background-color: transparent;
+    selection-color: white; }
+QTableWidget::item { padding: 6px 10px; border-bottom: 1px solid #2a2e34; }
+QTableWidget::item:selected { background: transparent; color: white; }
+QHeaderView { background: transparent; }
+QHeaderView::section { background: #1f2125; color: #9aa0a8; border: none; border-bottom: 1px solid #34383e;
+    padding: 11px 8px; font-weight: 600; font-size: 12px; }
+QHeaderView::section:vertical { border-bottom: 1px solid #2a2e34; padding: 6px; font-weight: 500; color: #6b7179; }
+QTableCornerButton::section { background: #1f2125; border: none; }
+
+QLineEdit, QPlainTextEdit, QTextEdit, QDoubleSpinBox, QSpinBox { background: #121316; border: 1px solid #34383e;
+    border-radius: 8px; padding: 5px 10px; selection-background-color: #d8132b; }
+QLineEdit:focus, QPlainTextEdit:focus, QDoubleSpinBox:focus, QSpinBox:focus { border: 1px solid #d8132b; }
+QTableWidget QLineEdit { border-radius: 5px; background: #121316; }
+QComboBox { background: #262a2f; border: 1px solid #3a3f46; border-radius: 9px; padding: 5px 14px; }
+QComboBox:hover { background: #30353b; }
+QComboBox::drop-down { border: none; width: 24px; }
+QComboBox QAbstractItemView { background: #1f2125; border: 1px solid #3a3f46; border-radius: 8px; padding: 4px;
+    selection-background-color: #d8132b; }
+
+QCheckBox { background: transparent; spacing: 9px; }
+QCheckBox::indicator { width: 19px; height: 19px; border-radius: 6px; border: 1px solid #4a5058; background: #1b1d21; }
+QCheckBox::indicator:hover { border: 1px solid #8a9099; }
+QCheckBox::indicator:checked { background: #d8132b; border: 1px solid #d8132b; image: url(@TICK@); }
+
+QMenuBar { background: #121316; color: #eceef0; padding: 3px 8px; border-bottom: 1px solid #2a2e34; }
+QMenuBar::item { background: transparent; padding: 6px 14px; border-radius: 7px; }
+QMenuBar::item:selected { background: #262a2f; }
+QMenu { background: #1f2125; border: 1px solid #3a3f46; border-radius: 10px; padding: 6px; }
+QMenu::item { padding: 8px 26px; border-radius: 7px; }
+QMenu::item:selected { background: #d8132b; }
+QMenu::separator { height: 1px; background: #34383e; margin: 6px 10px; }
+
+QStatusBar { background: #121316; color: #ff8f9c; border-top: 1px solid #2a2e34; }
+QToolTip { background: #1f2125; color: #eceef0; border: 1px solid #4a5058; border-radius: 7px; padding: 6px 8px; }
+QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; border: none; }
+QSpinBox { min-width: 70px; }
+QTableWidget QPushButton:focus { border: 1px solid #d8132b; }
+QTableWidget QPushButton { padding: 2px 12px; border-radius: 8px; text-align: left; font-weight: 500; }
+QTableWidget QComboBox { padding: 2px 12px; border-radius: 8px; min-height: 22px; }
+QTableWidget QCheckBox { margin-left: 14px; }
+QScrollBar:vertical { background: transparent; width: 12px; margin: 3px; }
+QScrollBar::handle:vertical { background: #3a3f46; border-radius: 5px; min-height: 34px; }
+QScrollBar::handle:vertical:hover { background: #565c64; }
+QScrollBar:horizontal { background: transparent; height: 12px; margin: 3px; }
+QScrollBar::handle:horizontal { background: #3a3f46; border-radius: 5px; min-width: 34px; }
+QScrollBar::handle:horizontal:hover { background: #565c64; }
+QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
+QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
+"""
+
+
+def _tick_png():
+    """Write a small white check mark image for ticked boxes; returns its path."""
+    from PySide6.QtGui import QPixmap
+    path = os.path.join(tempfile.gettempdir(), "mcp_lv_tick.png")
+    pm = QPixmap(40, 40)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor(255, 255, 255), 5)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    p.drawPolyline([QPointF(10, 21), QPointF(17, 28), QPointF(30, 12)])
+    p.end()
+    pm.save(path, "PNG")
+    return path.replace("\\", "/")
+
+
+class GlassBackground(QWidget):
+    """Deep colourful backdrop that the glass panels sit on."""
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        if studio():
+            p.fillRect(self.rect(), QColor("#16171a"))
+            return
+        g = QLinearGradient(0, 0, w, h)
+        g.setColorAt(0.0, QColor(10, 10, 13))
+        g.setColorAt(0.55, QColor(24, 14, 17))
+        g.setColorAt(1.0, QColor(8, 8, 10))
+        p.fillRect(self.rect(), g)
+        for cx, cy, r, col in [(0.90, 0.05, 0.60, QColor(255, 0, 16, 120)),
+                               (0.05, 0.95, 0.55, QColor(170, 0, 14, 100)),
+                               (0.50, 0.55, 0.45, QColor(255, 255, 255, 14)),
+                               (0.08, 0.10, 0.35, QColor(255, 60, 70, 40))]:
+            rg = QRadialGradient(QPointF(cx * w, cy * h), r * max(w, h))
+            c0 = QColor(col)
+            c1 = QColor(col); c1.setAlpha(0)
+            rg.setColorAt(0, c0)
+            rg.setColorAt(1, c1)
+            p.fillRect(self.rect(), rg)
+        lg = logo_pixmap()
+        if not lg.isNull():   # faint logo watermark in the middle of the window
+            th = int(h * 0.62)
+            sc = lg.scaledToHeight(th, Qt.TransformationMode.SmoothTransformation)
+            p.setOpacity(0.045)
+            p.drawPixmap((w - sc.width()) // 2, (h - sc.height()) // 2, sc)
+            p.setOpacity(1.0)
+
+
+class GlassCard(QFrame):
+    """Frosted translucent panel with a soft shadow, light rim and top gloss."""
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if studio():
+            r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+            path = QPainterPath()
+            path.addRoundedRect(r, 14, 14)
+            p.fillPath(path, QColor("#1f2125"))
+            p.setPen(QPen(QColor("#34383e"), 1.2))
+            p.drawPath(path)
+            return
+        r = QRectF(self.rect()).adjusted(3, 3, -3, -3)
+        for i in range(6):   # soft drop shadow
+            sh = QPainterPath()
+            sh.addRoundedRect(r.adjusted(-i, -i + 3, i, i + 3), 26 + i, 26 + i)
+            p.fillPath(sh, QColor(0, 0, 0, 16))
+        path = QPainterPath()
+        path.addRoundedRect(r, 26, 26)
+        fill = QLinearGradient(0, 0, 0, r.height())
+        fill.setColorAt(0, QColor(255, 255, 255, 52))
+        fill.setColorAt(0.5, QColor(255, 255, 255, 24))
+        fill.setColorAt(1, QColor(255, 255, 255, 16))
+        p.fillPath(path, fill)
+        gloss = QPainterPath()
+        gloss.addRoundedRect(QRectF(r.left() + 3, r.top() + 3, r.width() - 6, 46), 23, 23)
+        gg = QLinearGradient(0, r.top(), 0, r.top() + 50)
+        gg.setColorAt(0, QColor(255, 255, 255, 40))
+        gg.setColorAt(1, QColor(255, 255, 255, 0))
+        p.fillPath(gloss, gg)
+        edge = QLinearGradient(0, 0, r.width(), r.height())
+        edge.setColorAt(0, QColor(255, 255, 255, 210))
+        edge.setColorAt(0.45, QColor(255, 255, 255, 45))
+        edge.setColorAt(1, QColor(255, 255, 255, 130))
+        p.setPen(QPen(QBrush(edge), 1.5))
+        p.drawPath(path)
+
+
+def apply_glass_theme(app, win):
+    app.setStyle("Fusion")
+    app.setStyleSheet((STUDIO_QSS if studio() else GLASS_QSS).replace("@TICK@", _tick_png()))
+    app.setWindowIcon(app_icon())
+    win.setWindowIcon(app_icon())
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("MCP.LightVentilation")
+    except Exception:
+        pass
+    old = win.takeCentralWidget()
+    old.setObjectName("glassInner")
+    bg = GlassBackground()
+    lay = QVBoxLayout(bg)
+    lay.setContentsMargins(26, 18, 26, 22)
+    lay.setSpacing(14)
+    head = QHBoxLayout()
+    pill = QLabel("Offline")
+    win.mode_pill = pill
+    pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    pill.setFixedWidth(96)
+    pill.setStyleSheet("background: rgba(255,255,255,26); border: 1px solid rgba(255,255,255,90);"
+                       "border-radius: 11px; padding: 3px 10px; color: #ffffff; font-weight: 600;")
+    if studio():
+        pill.setStyleSheet("background: #262a2f; border: 1px solid #3a3f46;"
+                           "border-radius: 11px; padding: 3px 10px; color: #eceef0; font-weight: 600;")
+    spacer = QLabel("")
+    spacer.setFixedWidth(96)
+    mid = QVBoxLayout()
+    mid.setSpacing(4)
+    mark = QLabel()
+    mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    mark.setPixmap(logo_pixmap().scaledToHeight(64, Qt.TransformationMode.SmoothTransformation))
+    title = QLabel("<span style='font-size:19px;font-weight:700;letter-spacing:2px'>"
+                   "MCP ARCHITECTURE &amp; INTERIORS</span><br>"
+                   "<span style='font-size:12px;color:rgba(255,255,255,175);letter-spacing:1px'>"
+                   "SANS Compliance Suite &middot; Light, Ventilation &amp; Energy</span>")
+    title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    mid.addWidget(mark)
+    mid.addWidget(title)
+    head.addWidget(spacer, 0, Qt.AlignmentFlag.AlignTop)
+    head.addLayout(mid, 1)
+    head.addWidget(pill, 0, Qt.AlignmentFlag.AlignTop)
+    lay.addLayout(head)
+    win.refresh_mode_pill()
+    card = GlassCard()
+    cl = QVBoxLayout(card)
+    cl.setContentsMargins(20, 18, 20, 16)
+    cl.addWidget(old)
+    lay.addWidget(card, 1)
+    win.setCentralWidget(bg)
+    for t in (win.sched_table, win.door_table, win.room_table, win.result_table, win.assign_table):
+        t.verticalHeader().setDefaultSectionSize(42)
+        t.setShowGrid(False)
+    win._glass_rows = True
+    win._item_delegate = GlassItemDelegate(win)
+    for t in (win.sched_table, win.door_table, win.room_table, win.assign_table):
+        t.setItemDelegate(win._item_delegate)
+    win.result_table.setItemDelegate(win._item_delegate)
+    for c in (2, 3, 4, 5):     # cells that hold buttons / boxes: no highlight behind them
+        win.room_table.setItemDelegateForColumn(c, win._hidden_text)
+    for c in (5, 6):
+        win.sched_table.setItemDelegateForColumn(c, win._hidden_text)
+        win.door_table.setItemDelegateForColumn(c, win._hidden_text)
+    win.result_table.setItemDelegateForColumn(5, win._glass_delegate)
+    win.result_table.setItemDelegateForColumn(8, win._glass_delegate)
+    win.result_table.setItemDelegateForColumn(10, win._glass_delegate)
+    for b in old.findChildren(QPushButton):
+        if b.text().startswith("Run compliance"):
+            b.setProperty("accent", True)
+            b.style().unpolish(b)
+            b.style().polish(b)
+    try:  # Windows 10/11: dark title bar to match
+        import ctypes
+        hwnd = int(win.winId())
+        val = ctypes.c_int(1)
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(val), 4)
+    except Exception:
+        pass
+
+
+def main():
+    if len(sys.argv) == 3 and sys.argv[1] == "--selftest":
+        # Developer check: python mot_light_vent.py --selftest picture.png
+        app = QApplication(sys.argv)
+        lines, _w, _h = ocr_lines(QImage(sys.argv[2]))
+        print(f"OCR OK: {len(lines)} text lines")
+        for ln in lines:
+            print(ln[4])
+        return
+    app = QApplication(sys.argv)
+    win = MainWindow()
+    apply_glass_theme(app, win)
+    app._icon_filter = _IconFilter(app)
+    app.installEventFilter(app._icon_filter)
+    apply_icons(win)
+    win.resize(1280, 780)
+    av = sys.argv[1:]
+    restoring = "--restore" in av or "--after-update" in av
+    if "--ready" in av:
+        win.setWindowOpacity(0.0)            # a reload: stay invisible until the window is fully built and in place
+    if "--after-update" in av:                  # started by the installer after an in-program update: put the work back
+        _rp = os.path.join(tempfile.gettempdir(), "mot_lv_restore.json")
+        if os.path.exists(_rp):
+            win.restore_from(_rp)
+        else:
+            restoring = False
+    elif restoring:
+        win.restore_from(av[av.index("--restore") + 1])
+    if "--geom" in av:
+        try:
+            x, y, w, h, mx = [int(v) for v in av[av.index("--geom") + 1].split(",")]
+            win.setGeometry(x, y, w, h)
+            if mx:
+                win.showMaximized()
+        except Exception:
+            pass
+    win.show()
+    if "--ready" in av:
+        try:
+            flagp = av[av.index("--ready") + 1]
+
+            def _reveal():
+                try:
+                    app.processEvents()
+                    win.raise_()
+                    win.activateWindow()
+                finally:
+                    win.setWindowOpacity(1.0)
+                QTimer.singleShot(120, lambda: open(flagp, "w").close())   # only now does the old window close
+            QTimer.singleShot(250, _reveal)
+        except Exception:
+            win.setWindowOpacity(1.0)
+    win.start_autosave()
+    if not restoring:
+        QTimer.singleShot(250, lambda: win.check_recovery() or win.start_on_launch())   # step 1: create the project
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()
