@@ -12305,6 +12305,10 @@ class MainWindow(QMainWindow):
             w = dn.Win(embedded=True)
             w.setWindowFlags(Qt.WindowType.Widget)
             w.setStyleSheet(dn.QSS)
+            def _xa_info():
+                z = self.xa_zone.currentText()
+                return {"zone": z, "roof": XA_ROOF_R.get(z), "heavy": XA_HEAVY_WALL_R.get(z), "light": XA_LIGHT_WALL_R.get(z)}
+            w.xa_provider = _xa_info
             self._det_lay.addWidget(w)
             self._det_win = w
         except Exception as ex:

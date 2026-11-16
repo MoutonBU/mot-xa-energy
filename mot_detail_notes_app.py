@@ -168,6 +168,7 @@ class View(QGraphicsView):
     box_selected = Signal(list, bool)
     note_opened = Signal(int)
     delete_req = Signal()
+    note_moved = Signal(int, float, float)   # note id, new top-left x, y (drawing units)
 
     def __init__(self):
         super().__init__()
@@ -195,6 +196,7 @@ class View(QGraphicsView):
         self._band = None
         self._band0 = None
         self._shift = False
+        self._dragn = None                   # (note id, press point in the scene) while a note is being dragged
 
     def set_tool(self, on):
         self.tool = on
@@ -348,6 +350,11 @@ class View(QGraphicsView):
             self._last = e.position()
             self._moved = False
             self._shift = bool(e.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+            sp = self.mapToScene(e.position().toPoint())
+            hit = self.note_at(sp)
+            bx = self.boxes.get(hit) if hit is not None else None
+            if bx and bx[0] <= sp.x() <= bx[2] and bx[1] <= sp.y() <= bx[3] and not self._shift:
+                self._dragn = (hit, sp)          # pressing on a note's text: a drag moves that note
             return
         if e.button() == Qt.MouseButton.RightButton and self.tool:
             x, y, _ = self._pt(e)
@@ -373,6 +380,14 @@ class View(QGraphicsView):
                     self._band = QRubberBand(QRubberBand.Shape.Rectangle, self.viewport())
                 else:
                     self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+            if self._moved and self._dragn is not None:
+                nid, p0 = self._dragn
+                p1 = self.mapToScene(e.position().toPoint())
+                it = self._ov.get(nid)
+                if it:
+                    it[0].setPos(p1.x() - p0.x(), p1.y() - p0.y())
+                    self.viewport().setCursor(Qt.CursorShape.SizeAllCursor)
+                return
             if self._moved:
                 if self._band is not None:
                     from PySide6.QtCore import QRect
@@ -401,6 +416,17 @@ class View(QGraphicsView):
             return
         if e.button() == Qt.MouseButton.LeftButton and self._press is not None:
             add = bool(e.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier))
+            if self._dragn is not None and self._moved:
+                nid, p0 = self._dragn
+                p1 = self.mapToScene(e.position().toPoint())
+                x0, y0, x1, y1 = self.boxes[nid]
+                self._dragn = None
+                self.note_moved.emit(nid, x0 + p1.x() - p0.x(), y1 + p1.y() - p0.y())
+                self._press = None
+                self._moved = False
+                self.viewport().setCursor(Qt.CursorShape.CrossCursor if self.tool else Qt.CursorShape.ArrowCursor)
+                return
+            self._dragn = None
             if self._band is not None:
                 a = self.mapToScene(self._band0)
                 b = self.mapToScene(e.position().toPoint())
@@ -428,6 +454,7 @@ class View(QGraphicsView):
 
     def mouseDoubleClickEvent(self, e):
         self._press = None
+        self._dragn = None
         if e.button() == Qt.MouseButton.LeftButton:
             hit = self.note_at(self.mapToScene(e.position().toPoint()))
             if hit is not None:
@@ -1084,6 +1111,10 @@ class Win(QMainWindow):
         self.btn_tpl_stop.setVisible(False)
         self.btn_tpl_stop.clicked.connect(self.stop_template)
         tbm.addWidget(self.btn_tpl_stop)
+        self.btn_arrange = QPushButton("Auto-arrange notes")
+        self.btn_arrange.setToolTip("Drag any note on the drawing to move it. This puts them all back in a neat column.")
+        self.btn_arrange.clicked.connect(self.auto_arrange)
+        tbm.addWidget(self.btn_arrange)
         self.btn_fit = QPushButton("Fit")
         self.btn_fit.setToolTip("Show the whole detail (key F)")
         self.btn_fit.clicked.connect(lambda: self.view.fit())
@@ -1106,7 +1137,10 @@ class Win(QMainWindow):
         self.view.box_selected.connect(self.on_box_select)
         self.view.note_opened.connect(lambda iid: self.row_spec(self._row_of(iid)))
         self.view.delete_req.connect(self.remove_note)
+        self.view.note_moved.connect(self.on_note_moved)
+        self.note_pos = {}
         self.note_boxes, self.note_targets = {}, {}
+        self.xa_provider = None              # set by the suite: returns {'zone','roof','heavy','light'}
         self._syncing = False
         self.view.setScene(QGraphicsScene())
         split.addWidget(self.view)
@@ -1142,12 +1176,16 @@ class Win(QMainWindow):
         self.btn_approve = QPushButton("Mark selected as checked")
         self.btn_approve.setToolTip("You have checked these notes against SANS 10400 / the NHBRC manual: they get a green tick")
         self.btn_approve.clicked.connect(self.approve_selected)
+        self.btn_batch = QPushButton("Batch: whole folder...")
+        self.btn_batch.setToolTip("Write standard notes for every detail in a folder, and a notes schedule for each. Details you already worked on keep your notes.")
+        self.btn_batch.clicked.connect(lambda: self.batch_folder())
         self.btn_sched = QPushButton("Notes schedule (PDF)...")
         self.btn_sched.clicked.connect(self.export_schedule)
         br.addWidget(self.btn_choose)
         br.addWidget(self.btn_remove)
         br.addWidget(self.btn_approve)
         br.addWidget(self.btn_sched)
+        br.addWidget(self.btn_batch)
         br.addStretch()
         self.btn_gen.setVisible(False)
         br.addWidget(self.btn_apply)
@@ -1308,6 +1346,7 @@ class Win(QMainWindow):
             except Exception:
                 pass
             self.specs = {}
+            self.note_pos = {k: tuple(v) for k, v in (read_json(self.edits_path()).get("note_pos", {}) or {}).items()}
             self.table.setRowCount(0)
             for hid, sp in (read_json(self.edits_path()).get("specs", {}) or {}).items():
                 try:
@@ -1497,9 +1536,9 @@ class Win(QMainWindow):
 
     def snap(self):
         st = {"rows": self._rows_state(), "specs": copy.deepcopy(self.specs), "user": copy.deepcopy(self.user),
-              "overrides": copy.deepcopy(self.overrides), "uid": self.uid,
+              "overrides": copy.deepcopy(self.overrides), "uid": self.uid, "pos": dict(self.note_pos),
               "items": [(i, i.get("point")) for i in self.items]}
-        st["sig"] = json.dumps([st["rows"], st["specs"], st["user"], st["overrides"]], sort_keys=True, default=str)
+        st["sig"] = json.dumps([st["rows"], st["specs"], st["user"], st["overrides"], st["pos"]], sort_keys=True, default=str)
         return st
 
     def commit(self):
@@ -1542,6 +1581,7 @@ class Win(QMainWindow):
             self.specs = copy.deepcopy(st["specs"])
             self.user = copy.deepcopy(st["user"])
             self.overrides = copy.deepcopy(st["overrides"])
+            self.note_pos = dict(st["pos"])
             self.uid = max(self.uid, st["uid"])
             self.items = []
             for i, pt in st["items"]:
@@ -1584,6 +1624,28 @@ class Win(QMainWindow):
                 return sp["cat"]
             return cat.guess_category(it["layer"], it["pattern"])
         return ""
+
+    def xa_fill(self, note, it):
+        """When the suite knows the climate zone, put the real XA minimum R-value into insulation notes."""
+        if not self.xa_provider or "R-value per SANS 10400-XA" not in note:
+            return note
+        try:
+            d = self.xa_provider()
+            txt = f"{it['layer']} {it['pattern']} {note}".lower() if it else note.lower()
+            if re.search(r"ceiling|roof|rafter|truss|purlin", txt) or (self.roof_dir and not re.search(r"wall|cavity|brick|floor|slab", txt)):
+                r, what = d["roof"], "roof / ceiling"
+            elif re.search(r"light|frame|timber|steel", txt) and re.search(r"wall", txt):
+                r, what = d["light"], "light-weight wall"
+            elif re.search(r"wall|cavity|brick", txt):
+                r, what = d["heavy"], "masonry wall"
+            else:
+                return note
+            if not r:
+                return note
+            return note.replace("min. R-value per SANS 10400-XA",
+                                f"min. total R-value {r:g} m\u00b2K/W for the {what} (SANS 10400-XA, climate zone {d['zone']})")
+        except Exception:
+            return note
 
     def refresh_refs(self):
         appr = approved_set()
@@ -1666,7 +1728,7 @@ class Win(QMainWindow):
         html = "<br>".join(f"<span style='color:{col[k]}'>{'&#9888;' if k == 'warn' else '&bull;'} {m}</span>" for k, m in msgs)
         self.lbl_checks.setText(html or "<span style='color:#43a047'>&#10004; No problems found.</span>")
 
-    def export_schedule(self):
+    def export_schedule(self, path=None):
         if not self.items or not self.table.rowCount():
             self.say("Add some notes first.")
             return
@@ -1674,7 +1736,8 @@ class Win(QMainWindow):
         from PySide6.QtGui import QPageSize, QPdfWriter, QTextDocument
         from PySide6.QtCore import QMarginsF
         default = str(OUT_DIR / (self.src.stem + "_notes_schedule.pdf"))
-        path, _ = QFileDialog.getSaveFileName(self, "Save notes schedule", default, "PDF (*.pdf)")
+        if not path:
+            path, _ = QFileDialog.getSaveFileName(self, "Save notes schedule", default, "PDF (*.pdf)")
         if not path:
             return
         appr = approved_set()
@@ -1700,6 +1763,48 @@ class Win(QMainWindow):
         d.setHtml(html)
         d.print_(w)
         self.say(f"Notes schedule saved: {path}")
+
+    # ---- batch: every detail in a folder
+    def batch_folder(self, folder=None):
+        from PySide6.QtWidgets import QProgressDialog
+        folder = folder or QFileDialog.getExistingDirectory(self, "Folder with your details (DXF" + (" / DWG" if core.find_oda() else "") + ")")
+        if not folder:
+            return
+        files = sorted(f for f in Path(folder).iterdir()
+                       if f.suffix.lower() in (".dxf",) + ((".dwg",) if core.find_oda() else ())
+                       and "_noted" not in f.stem)
+        if not files:
+            self.say("No DXF files found in that folder.")
+            return
+        prog = QProgressDialog("Writing notes...", "Stop", 0, len(files), self)
+        prog.setWindowModality(Qt.WindowModality.WindowModal)
+        done, failed = [], []
+        for n, f in enumerate(files):
+            prog.setValue(n)
+            prog.setLabelText(f"{f.name}  ({n + 1} of {len(files)})")
+            QApplication.processEvents()
+            if prog.wasCanceled():
+                break
+            try:
+                self.open_file(str(f))
+                QApplication.processEvents()
+                if not self.items:
+                    raise RuntimeError("no materials found")
+                if not self.table.rowCount():       # nothing saved for this detail yet: write the standard notes
+                    self.generate(use_ai=False)
+                self.apply_and_save()
+                QApplication.processEvents()
+                self.export_schedule(str(OUT_DIR / (f.stem + "_notes_schedule.pdf")))
+                done.append(f.name)
+            except Exception as ex:
+                traceback.print_exc()
+                failed.append(f"{f.name}: {ex}")
+        prog.setValue(len(files))
+        msg = f"Done: {len(done)} detail(s) noted, saved with a notes schedule in {OUT_DIR}."
+        if failed:
+            msg += "  Could not do: " + "; ".join(failed)
+        self.say(msg)
+        QMessageBox.information(self, "Batch finished", msg + "\n\nOpen each detail to check the notes: they are the standard wording and still need your approval.")
 
     # ---- templates: click the parts in turn, each note is written for you
     def template_menu(self):
@@ -1790,7 +1895,8 @@ class Win(QMainWindow):
     def save_edits(self):
         try:
             OUT_DIR.mkdir(parents=True, exist_ok=True)
-            write_json(self.edits_path(), {"elements": self.user, "overrides": self.overrides, "specs": self.specs})
+            write_json(self.edits_path(), {"elements": self.user, "overrides": self.overrides, "specs": self.specs,
+                                           "note_pos": {k: list(v) for k, v in self.note_pos.items()}})
         except Exception:
             traceback.print_exc()
 
@@ -1875,6 +1981,7 @@ class Win(QMainWindow):
                          typed=(self.tpl["steps"][self.tpl["i"]][1] if self.tpl and not cur else ""))
         if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.note:
             return False
+        dlg.note = self.xa_fill(dlg.note, it)
         self.set_row_note(it, dlg.note)
         if it.get("picked"):
             self.specs[it["picked"]] = {"note": dlg.note, "x": it["point"][0], "y": it["point"][1], "cat": dlg.cat_final}
@@ -1948,6 +2055,33 @@ class Win(QMainWindow):
             if it is not None:
                 ids.add(int(it.text()))
         return ids
+
+    def item_key(self, it):
+        """a key for a note that stays the same when the detail is reopened"""
+        if it.get("picked"):
+            return "h:" + str(it["picked"])
+        if it.get("user"):
+            return "u:" + str(it["user"])
+        if it.get("key"):
+            return "k:" + str(it["key"])
+        return "i:" + str(it["id"])
+
+    def on_note_moved(self, iid, x, y):
+        it = next((i for i in self.items if i["id"] == iid), None)
+        if it is None:
+            return
+        self.note_pos[self.item_key(it)] = (x, y)
+        self.commit()
+        self.save_edits()
+        self.timer.start()
+        self.say("Note moved. Drag it again to adjust, or press \u201cAuto-arrange notes\u201d to put them back in a column.")
+
+    def auto_arrange(self):
+        if self.note_pos:
+            self.note_pos = {}
+            self.commit()
+            self.save_edits()
+            self.timer.start()
 
     def on_table_sel(self):
         if self._syncing:
@@ -2024,10 +2158,10 @@ class Win(QMainWindow):
         self.timer.start()
 
     # ---- generate
-    def generate(self):
+    def generate(self, use_ai=True):
         if not self.items:
             return
-        key = api_key()
+        key = api_key() if use_ai else ""
         self.btn_gen.setEnabled(False)
         if key:
             self.say("Asking Claude to read the detail and write the notes...")
@@ -2040,7 +2174,8 @@ class Win(QMainWindow):
             self.worker.fail.connect(self.ai_failed)
             self.worker.start()
         else:
-            self.say("No API key saved - using rule-based notes (Settings to add a key).")
+            if use_ai:
+                self.say("No API key saved - using rule-based notes (Settings to add a key).")
             self.notes_ready(None)
 
     def ai_failed(self, msg):
@@ -2063,6 +2198,7 @@ class Win(QMainWindow):
                     txt, ver = remembered, False       # a note you chose before for this material name
                 else:
                     txt, ver = core.rule_note(it["layer"], it["pattern"], core.measured_mm(it, self.mmu))
+                    txt = self.xa_fill(txt, it)
                 if txt.strip().lower() in seen:    # one callout per identical note
                     continue
                 seen[txt.strip().lower()] = True
@@ -2170,7 +2306,9 @@ class Win(QMainWindow):
             ext = ezbbox.extents(msp)
             extents = (ext.extmin.x, ext.extmin.y, ext.extmax.x, ext.extmax.y)
             ordered = core.place_notes(doc, notes, extents, self.mmu, self.scale.value(),
-                                       self.text_mm.value(), self.note_w.value(), 12, self.number_notes.isChecked())
+                                       self.text_mm.value(), self.note_w.value(), 12, self.number_notes.isChecked(),
+                                       manual={i["id"]: self.note_pos[self.item_key(i)] for i in self.items
+                                               if self.item_key(i) in self.note_pos})
             self.note_boxes = {n["id"]: n["box"] for n in ordered if "box" in n}
             self.note_targets = {n["id"]: n["target"] for n in ordered if "target" in n}
             OUT_DIR.mkdir(parents=True, exist_ok=True)

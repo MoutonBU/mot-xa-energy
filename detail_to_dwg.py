@@ -1065,7 +1065,7 @@ def _layout(notes, heights, ax, y_top, h, dmin, iters=6000):
     return best, cands
 
 
-def place_notes(doc, notes, extents, mmu, scale, text_mm, width_mm, gap_mm, number=False):
+def place_notes(doc, notes, extents, mmu, scale, text_mm, width_mm, gap_mm, number=False, manual=None):
     if not notes:
         return []
     msp = doc.modelspace()
@@ -1093,20 +1093,24 @@ def place_notes(doc, notes, extents, mmu, scale, text_mm, width_mm, gap_mm, numb
     order, pick = best[2], best[3]
     ordered = []
     y = y_top
+    manual = manual or {}
     for k in order:
         n = notes[k]
         tx, ty = cands[k][pick[k]]
         n["target"] = (tx, ty)
-        n["box"] = (x, y - heights[k], x + width, y)
+        mp = manual.get(n.get("id"))
+        px, py = (mp if mp else (x, y))                  # a note you dragged keeps your position and takes no slot in the stack
+        n["box"] = (px, py - heights[k], px + width, py)
         msp.add_mtext((f"{len(ordered) + 1}.  " if number else "") + n["note"], dxfattribs={
             "layer": NOTE_LAYER, "style": "MOT_NOTE", "char_height": h, "width": width,
-            "insert": (x, y), "attachment_point": 1,
+            "insert": (px, py), "attachment_point": 1,
             "color": 1 if n["verify"] else 256})
-        ymid = y - 0.6 * h
-        msp.add_lwpolyline([(ax, ymid), (tx, ymid), (tx, ty)], dxfattribs={"layer": LEADER_LAYER})
+        ymid = py - 0.6 * h
+        msp.add_lwpolyline([(px - 0.4 * h, ymid), (tx, ymid), (tx, ty)], dxfattribs={"layer": LEADER_LAYER})
         hatch = msp.add_hatch(color=7, dxfattribs={"layer": LEADER_LAYER})
         hatch.paths.add_polyline_path([(tx - dot_r, ty, 1), (tx + dot_r, ty, 1)], is_closed=True)
-        y -= heights[k]
+        if not mp:
+            y -= heights[k]
         ordered.append(n)
     return ordered
 
