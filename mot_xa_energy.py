@@ -12346,6 +12346,12 @@ class MainWindow(QMainWindow):
             hl = QHBoxLayout()
             hl.addWidget(QLabel(f"<b>{lab}</b>")); hl.addStretch()
             b1 = QPushButton(ph); b1.clicked.connect(lambda _=False, f=add_: f())
+            if t_ is self.cov_blocks:
+                bi_ = QPushButton("Add block from IFC...")
+                bi_.setToolTip("Reads one more block from its own IFC file: its levels, storeys and floor areas. "
+                               "Uses the 'Areas from' choice above (net rooms + wall allowance, or the IFC gross floor area).")
+                bi_.clicked.connect(self._cov_add_block_from_ifc)
+                hl.addWidget(bi_)
             b2 = QPushButton("Remove selected")
             b2.clicked.connect(lambda _=False, t=t_: (t.removeRow(t.currentRow()) if t.currentRow() >= 0 else None,
                                                       self._cov_refresh()))
@@ -12450,6 +12456,36 @@ class MainWindow(QMainWindow):
         ck.setCheckState(Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
         t.setItem(r, 4, ck)
         self._cov_busy = False
+        self._cov_refresh()
+
+    def _cov_add_block_from_ifc(self):
+        """Add one more block (a row) from another IFC file, keeping the blocks already in the table."""
+        fn, _ = QFileDialog.getOpenFileName(self, "Choose the IFC of this block", "", "IFC files (*.ifc *.ifczip)")
+        if not fn:
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            data = read_ifc_model(fn)
+        except Exception as ex:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, APP_NAME, "That IFC could not be read:\n%s" % ex)
+            return
+        QApplication.restoreOverrideCursor()
+        ifr = data.get("rooms") or []
+
+        class _R:
+            def __init__(s_, d):
+                s_.name, s_.area_m2, s_.floor, s_.unit = d.get("name", ""), d.get("area", 0), d.get("floor", ""), ""
+        nm = os.path.splitext(os.path.basename(fn))[0]
+        total = cov_num(data.get("gross", 0)) if self.cov_basis.currentIndex() == 1 else None
+        blocks, roofs = cov_from_rooms([_R(d) for d in ifr], self.cov_walls.value(), nm, total or None)
+        if not blocks:
+            QMessageBox.information(self, APP_NAME, "That IFC has no rooms with areas. Add the block by hand with Add block.")
+            return
+        for b in blocks:
+            self._cov_add_block(b["name"], b["fp"], b["storeys"], b["floor"], True, b["levels"])
+        for r in roofs:
+            self._cov_add_roof(r["name"], r["area"], r["on"])
         self._cov_refresh()
 
     def _cov_add_roof(self, name=None, area="", on=True):
