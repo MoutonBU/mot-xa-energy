@@ -68,17 +68,7 @@ begin
   else if C is TNewCheckBox then
     TNewCheckBox(C).Font.Color := TXT
   else if C is TNewRadioButton then
-    TNewRadioButton(C).Font.Color := TXT
-  else if C is TFolderTreeView then
-  begin
-    TFolderTreeView(C).Color := PANEL;
-    TFolderTreeView(C).Font.Color := TXT;
-  end
-  else if C is TStartMenuFolderTreeView then
-  begin
-    TStartMenuFolderTreeView(C).Color := PANEL;
-    TStartMenuFolderTreeView(C).Font.Color := TXT;
-  end;
+    TNewRadioButton(C).Font.Color := TXT;
   if C is TWinControl then
     for i := 0 to TWinControl(C).ControlCount - 1 do
       ThemeControl(TWinControl(C).Controls[i]);
