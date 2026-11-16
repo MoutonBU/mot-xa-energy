@@ -1061,6 +1061,8 @@ def _layout(notes, heights, ax, y_top, h, dmin, iters=6000):
 
 
 def place_notes(doc, notes, extents, mmu, scale, text_mm, width_mm, gap_mm, number=False):
+    if not notes:
+        return []
     msp = doc.modelspace()
     h = text_mm * scale / mmu                # text height, drawing units
     width = width_mm * scale / mmu

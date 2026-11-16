@@ -9,6 +9,7 @@ saves <name>_noted.dwg + <name>_notes.txt into the "outputs" folder next to this
 import base64
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -172,13 +173,20 @@ class View(QGraphicsView):
         return x, y, False
 
     def _pt(self, e):
+        if self.tool in ("spec", "edit", "del"):      # picking a part needs the exact spot, not the nearest corner
+            p = self.mapToScene(e.position().toPoint())
+            return p.x(), p.y(), False
         return self.snap(self.mapToScene(e.position().toPoint()))
 
     def show_snap(self, x, y, on):
         sc = self.scene()
         if sc is None:
             return
-        if self._mark is None or self._mark.scene() is not sc:
+        try:
+            gone = self._mark is None or self._mark.scene() is not sc
+        except RuntimeError:          # the scene was rebuilt and took the marker with it
+            gone = True
+        if gone:
             self._mark = QGraphicsEllipseItem(-5, -5, 10, 10)
             self._mark.setFlag(QGraphicsEllipseItem.GraphicsItemFlag.ItemIgnoresTransformations)
             self._mark.setPen(QPen(QColor("#00e5ff"), 2))
@@ -191,7 +199,11 @@ class View(QGraphicsView):
         sc = self.scene()
         if sc is None:
             return
-        if self._rub is None or self._rub.scene() is not sc:
+        try:
+            gone = self._rub is None or self._rub.scene() is not sc
+        except RuntimeError:
+            gone = True
+        if gone:
             self._rub = QGraphicsPathItem()
             pen = QPen(QColor("#00e5ff"), 1.5, Qt.PenStyle.DashLine)
             pen.setCosmetic(True)
@@ -371,8 +383,9 @@ def save_custom(entry):
 class SpecDialog(QDialog):
     """Pick a specification from the catalog for one part of the detail. The note can be edited before it is used."""
 
-    def __init__(self, parent, title, cat_name, measured=None, current=""):
+    def __init__(self, parent, title, cat_name, measured=None, current="", name=""):
         super().__init__(parent)
+        self.name = name
         self.setWindowTitle("Choose specification")
         self.resize(980, 640)
         self.note = ""
@@ -443,7 +456,8 @@ class SpecDialog(QDialog):
         opts = self._all().get(k, [])
         self._show(opts, [None] * len(opts))
         if select and opts:
-            self.opts.setCurrentRow(cat.nearest_index(opts, self.measured) if self.measured else 0)
+            m_ = re.search(r"(\d+)\s*mm", self.name or "")
+            self.opts.setCurrentRow(cat.match_index(opts, self.name, float(m_.group(1)) if m_ else self.measured))
 
     def _show(self, opts, cats):
         self.opts.blockSignals(True)
@@ -698,7 +712,8 @@ class Win(QMainWindow):
         self.lbl_file2.setObjectName("muted")
         top.addWidget(self.lbl_file2, 1)
         nl.addLayout(top)
-        tb = QHBoxLayout()
+        tbm = QHBoxLayout()                       # the two modes: auto, or by clicking
+        tb = QHBoxLayout()                        # extra drawing tools (hidden until asked for)
         self.user = []
         self.uid = 0
         self.overrides = {}
@@ -711,14 +726,21 @@ class Win(QMainWindow):
         self.tool_group = QButtonGroup(self)
         self.tool_group.setExclusive(True)
         self.tool_btns = {}
-        for key, label in (("spec", "Choose spec"), ("pan", "Pan"), ("sheet", "Roof sheet"), ("purlin", "Purlin"), ("box", "Fill box"),
+        self.btn_auto = QPushButton("Auto note everything")
+        self.btn_auto.setObjectName("primary")
+        self.btn_auto.setToolTip("Writes a note for every part of the detail in one go. You can still change any note afterwards.")
+        self.btn_auto.clicked.connect(self.auto_all)
+        tbm.addWidget(self.btn_auto)
+        tbm.addSpacing(14)
+        tbm.addWidget(QLabel("or by hand:"))
+        for key, label in (("spec", "Click a part and choose its spec"), ("pan", "Pan / zoom"), ("sheet", "Roof sheet"), ("purlin", "Purlin"), ("box", "Fill box"),
                            ("line", "Line"), ("note", "Note"), ("edit", "Edit fill"), ("del", "Delete")):
             b = QPushButton(label)
             b.setCheckable(True)
             b.clicked.connect(lambda _=False, k=key: self.set_tool(k))
             self.tool_group.addButton(b)
             self.tool_btns[key] = b
-            tb.addWidget(b)
+            (tbm if key in ("spec", "pan") else tb).addWidget(b)
         self.tool_btns["spec"].setChecked(True)
         self.mat_combo = QComboBox()
         for k, (lab, _rgb, _n) in core.USER_MATS.items():
@@ -727,10 +749,8 @@ class Win(QMainWindow):
         tb.addWidget(self.mat_combo)
         self.btn_undo = QPushButton("Undo")
         self.btn_undo.clicked.connect(self.undo_user)
-        tb.addWidget(self.btn_undo)
         self.btn_redo = QPushButton("Redo")
         self.btn_redo.clicked.connect(self.redo_user)
-        tb.addWidget(self.btn_redo)
         self.hist, self.redo = [], []
         from PySide6.QtGui import QKeySequence, QShortcut
         for keys_, fn_ in (("Ctrl+Z", self.undo_user), ("Ctrl+Y", self.redo_user), ("Ctrl+Shift+Z", self.redo_user),
@@ -742,8 +762,21 @@ class Win(QMainWindow):
         self.btn_clear_user.clicked.connect(self.clear_user)
         tb.addWidget(self.btn_clear_user)
         tb.addStretch()
-        nl.addLayout(tb)
-        self.tool_hint = QLabel("Pan: drag to move, wheel to zoom. Pick a tool to draw your own detail.")
+        tbm.addStretch()
+        tbm.addWidget(self.btn_undo)
+        tbm.addWidget(self.btn_redo)
+        self.btn_more = QPushButton("More tools")
+        self.btn_more.setCheckable(True)
+        self.btn_more.setToolTip("Draw your own roof sheets, purlins, fill boxes and lines, edit a fill, delete your own elements")
+        tbm.addWidget(self.btn_more)
+        nl.addLayout(tbm)
+        self.more = QWidget()
+        self.more.setLayout(tb)
+        tb.setContentsMargins(0, 0, 0, 0)
+        self.more.setVisible(False)
+        self.btn_more.toggled.connect(self.more.setVisible)
+        nl.addWidget(self.more)
+        self.tool_hint = QLabel("")
         self.tool_hint.setObjectName("muted")
         nl.addWidget(self.tool_hint)
         split = QSplitter()
@@ -776,7 +809,7 @@ class Win(QMainWindow):
         br.addWidget(self.btn_choose)
         br.addWidget(self.btn_remove)
         br.addStretch()
-        br.addWidget(self.btn_gen)
+        self.btn_gen.setVisible(False)
         br.addWidget(self.btn_apply)
         nl.addLayout(br)
         self.tabs.addTab(nt, "Detail")
@@ -947,12 +980,11 @@ class Win(QMainWindow):
             self.view.fit()
             self.first_apply = True
             self.btn_gen.setEnabled(True)
-            self.btn_apply.setEnabled(self.table.rowCount() > 0)
+            self.btn_apply.setEnabled(True)
             self.lbl_file.setText(f"Opened: {self.src}")
             self.lbl_file2.setText(f"Opened: {self.src.name}   -   click a part of the detail to choose its specification")
             self.say(f"{self.src.name}: {len(self.items)} materials found. Click a part of the detail to choose its specification.")
-            if self.table.rowCount() > 0:
-                self.timer.start()
+            self.timer.start()               # show the detail in house colours and real bricks straight away
         except Exception as ex:
             traceback.print_exc()
             QMessageBox.warning(self, "Could not open", str(ex))
@@ -960,8 +992,8 @@ class Win(QMainWindow):
 
     # ---- your own detailing
     HINTS = {
-        "spec": "Choose spec: click a part of the detail (concrete, brick, insulation, timber...) and pick its specification from the catalog. Double-click a note in the list to change it.",
-        "pan": "Pan: drag to move, wheel to zoom. Pick a tool to draw your own detail.",
+        "spec": "Click a part of the detail (concrete, brick, stone, insulation, waterproofing...) and choose what it is from the catalog. Double-click a note in the list to change it.",
+        "pan": "Drag to move the drawing, wheel to zoom.",
         "sheet": "Roof sheet: click the start, then the end of the roof line. The sheet profile snaps to the drawing and gets its own note.",
         "purlin": "Purlin: click where the 76 x 50 purlin goes (it follows the roof slope).",
         "box": "Fill box: pick a material in the list, click two opposite corners.",
@@ -1268,7 +1300,7 @@ class Win(QMainWindow):
         cur = self.table.item(r, 1).text() if r >= 0 else ""
         name = core.clean_name(it["pattern"]) or it["layer"]
         dlg = SpecDialog(self, f"{name}  ({it['layer']})", cat.guess_category(it["layer"], it["pattern"]),
-                         core.measured_mm(it, self.mmu), cur)
+                         core.measured_mm(it, self.mmu), cur, name)
         if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.note:
             return False
         self.set_row_note(it, dlg.note)
@@ -1432,8 +1464,15 @@ class Win(QMainWindow):
 
     # ---- apply
     def auto_apply(self):
-        if self.items and self.table.rowCount() > 0 and self.btn_apply.isEnabled():
+        if self.items and self.btn_apply.isEnabled():
             self.apply_and_save()
+
+    def auto_all(self):
+        """Auto mode: write the notes for every part of the detail."""
+        if not self.items:
+            self.say("Open a detail first.")
+            return
+        self.generate()
 
     def apply_and_save(self):
         try:

@@ -148,11 +148,11 @@ CATALOG["Insulation"] = (
       f"{t} mm Think Pink Aerolite or similar glasswool insulation, achieving min. R-value per SANS 10400-XA, installed above ceiling")
      for t in (75, 100, 135, 150, 170, 200)] +
     [(f"{t} mm EPS board", f"{t} mm EPS insulation board or similar, achieving min. R-value per SANS 10400-XA")
-     for t in (25, 40, 50, 75)] +
+     for t in (25, 40, 50, 75, 100, 135)] +
     [(f"{t} mm XPS board", f"{t} mm XPS insulation board or similar, achieving min. R-value per SANS 10400-XA")
-     for t in (25, 40, 50, 75)] +
+     for t in (25, 40, 50, 75, 100)] +
     [(f"{t} mm PIR board", f"{t} mm PIR insulation board or similar, achieving min. R-value per SANS 10400-XA")
-     for t in (25, 40, 50)] +
+     for t in (25, 40, 50, 75, 100)] +
     [("Reflective foil sarking (roof)", "Reflective foil sarking laid over trusses under roof sheeting, lapped and taped, to manufacturer's spec (SANS 10400-XA)"),
      ("Foil-faced insulation under roof sheets", "Foil-backed insulation blanket under roof sheeting, to manufacturer's spec, achieving min. R-value per SANS 10400-XA"),
      ("Cavity insulation board", "Cavity insulation board fixed to inner leaf with clips, achieving min. R-value per SANS 10400-XA"),
@@ -256,7 +256,7 @@ CATALOG["Fascias, gutters, rainwater"] = [
 # ------------------------------------------------------------------ floors, finishes
 CATALOG["Screeds and floor finishes"] = (
     [(f"{t} mm sand-cement screed",
-      f"{t} mm sand-cement screed, uniform thickness, movement joints per specification") for t in (25, 30, 40, 50, 65)] +
+      f"{t} mm sand-cement screed, uniform thickness, movement joints per specification") for t in (25, 30, 35, 40, 50, 65)] +
     [("Ceramic / porcelain floor tiles", "Ceramic or porcelain floor tiles on adhesive over screed, to specification"),
      ("Polished concrete floor", "Power-floated polished concrete floor, sealed, control joints as detailed"),
      ("Vinyl / laminate floor", "Vinyl or laminate flooring on underlay over screed, to manufacturer's spec"),
@@ -287,6 +287,23 @@ CATALOG["Windows, doors, openings"] = [
 ]
 
 # ------------------------------------------------------------------ steel, timber, stairs
+CATALOG["Stone, coping and cladding"] = [
+    ("Concrete coping (precast)", "Precast concrete coping with drip grooves, sloped to fall inwards, bedded in mortar over DPC, to manufacturer's spec"),
+    ("Concrete coping (cast in situ)", "Cast in situ concrete coping, min. 25 MPa, sloped to fall with drip grooves, over DPC (SANS 10100-1)"),
+    ("Stone coping", "Natural stone coping with drip grooves, sloped to fall, bedded in mortar over DPC"),
+    ("Brick-on-edge coping", "Brick-on-edge coping course, sloped, bedded in mortar over DPC, with weathering to wall below"),
+    ("Aluminium coping / cap flashing", "Powder-coated aluminium coping or cap flashing, fixed with concealed clips, over waterproofing and DPC, to manufacturer's spec"),
+    ("Cut stone", "Cut stone to specification, bedded in mortar and fixed per Eng. detail"),
+    ("Stone cladding (fixed)", "Natural stone cladding fixed to wall with stainless steel fixings, to specification and manufacturer's spec"),
+    ("Stone cladding (adhered)", "Stone cladding adhered to prepared substrate with approved adhesive and movement joints, to manufacturer's spec"),
+    ("Stone paving", "Natural stone paving on 25 mm sand-cement bed over compacted sub-base, falling away from the building"),
+    ("Stone cill / threshold", "Natural stone cill with drip groove, sloped away from the window, bedded over DPC"),
+    ("Stone plinth / base course", "Stone plinth to base of wall, bedded over DPC, min. 150 mm above finished ground level"),
+    ("Dry-packed stone wall", "Stone wall to Eng. design with Eng. foundation and drainage behind (SANS 10400-K)"),
+    ("Precast concrete element", "Precast concrete element to Eng. design and manufacturer's spec"),
+    ("Concrete plinth / upstand", "Concrete upstand min. 150 mm above finished level, waterproofing turned up and terminated under flashing"),
+]
+
 CATALOG["Steel and structural"] = [
     ("Steel beam (hot-dip galvanised)", "Steel beam to Eng. design, hot-dip galvanised (SANS 121)"),
     ("Steel beam (painted)", "Steel beam to Eng. design, primed and painted"),
@@ -334,6 +351,7 @@ CATALOG["General notes"] = [
 
 # ------------------------------------------------------------------ guess the category from the material
 GUESS = [
+    (r"coping|cut.?stone|stone|cladding|plinth|paving", "Stone, coping and cladding"),
     (r"dpm|dpc|membrane|damp|waterproof|torch", "Damp-proofing and waterproofing"),
     (r"insul|isotherm|aerolite|glasswool|rockwool|polystyrene|eps|xps|pir|iso.?board", "Insulation"),
     (r"purlin|batten|brander", "Purlins and battens"),
@@ -348,7 +366,7 @@ GUESS = [
     (r"found|footing|strip|pad", "Foundations"),
     (r"slab|conc|floor", "Concrete slabs and floors"),
     (r"steel|metal|angle|alumin", "Steel and structural"),
-    (r"gravel|stone|soil|earth|fill|sand|hardcore|ground", "Ground and fill"),
+    (r"gravel|soil|earth|fill|sand|hardcore|ground", "Ground and fill"),
     (r"window|door|glaz", "Windows, doors, openings"),
     (r"stair|balustrade|rail", "Stairs, balustrades, safety"),
 ]
@@ -386,3 +404,22 @@ def nearest_index(options, mm):
 
 def count():
     return sum(len(v) for v in CATALOG.values())
+
+
+def match_index(options, name, mm=None):
+    """Which option to pre-select: the one whose words best match the material name; among equals the closest size."""
+    words = {w for w in re.findall(r"[a-z]+", (name or "").lower()) if len(w) > 2 and w not in ("mm", "the", "and", "eng", "design")}
+    best, cand = 0, []
+    for i, (lab, _n) in enumerate(options):
+        sc = len(words & set(re.findall(r"[a-z]+", lab.lower())))
+        if mm and first_number(lab) is not None and abs(first_number(lab) - mm) <= 2:
+            sc += 2                                   # the size drawn matches this option
+        if sc > best:
+            best, cand = sc, [i]
+        elif sc == best and sc > 0:
+            cand.append(i)
+    if not cand:
+        return nearest_index(options, mm) if mm else 0
+    if mm:
+        return min(cand, key=lambda i: abs((first_number(options[i][0]) or 1e9) - mm))
+    return cand[0]
