@@ -2194,6 +2194,7 @@ class Win(QMainWindow):
         prog = QProgressDialog("Writing notes...", "Stop", 0, len(files), self)
         prog.setWindowModality(Qt.WindowModality.WindowModal)
         done, failed = [], []
+        self.proj_rows = []
         for n, f in enumerate(files):
             prog.setValue(n)
             prog.setLabelText(f"{f.name}  ({n + 1} of {len(files)})")
@@ -2210,6 +2211,7 @@ class Win(QMainWindow):
                 self.apply_and_save()
                 QApplication.processEvents()
                 self.export_schedule(str(OUT_DIR / (f.stem + "_notes_schedule.pdf")))
+                self.collect_project_rows(f.stem)
                 done.append(f.name)
             except Exception as ex:
                 traceback.print_exc()
@@ -2220,6 +2222,91 @@ class Win(QMainWindow):
             msg += "  Could not do: " + "; ".join(failed)
         self.say(msg)
         QMessageBox.information(self, "Batch finished", msg + "\n\nOpen each detail to check the notes: they are the standard wording and still need your approval.")
+        if done:
+            self.project_report(folder)
+
+    def collect_project_rows(self, detail):
+        by_id = {i["id"]: i for i in self.items}
+        for r in range(self.table.rowCount()):
+            it = by_id.get(int(self.table.item(r, 0).text()))
+            txt = " ".join(self.table.item(r, 1).text().split())
+            if it is None or not txt:
+                continue
+            c = cat.guess_category(it["layer"], it["pattern"]) or "Other"
+            self.proj_rows.append((detail, c, core.clean_name(it["pattern"]) or it["layer"], txt))
+
+    @staticmethod
+    def _wording_key(txt):
+        t = re.sub(r"^\s*\d+(\.\d+)?\s*mm\s*", "", txt.lower())     # a different thickness is not a different wording
+        return re.sub(r"[^a-z0-9]+", " ", t).strip()
+
+    def project_findings(self):
+        """-> {category: {wording: [details]}} for categories that are worded differently on different details"""
+        groups = {}
+        for d, c, nm, txt in self.proj_rows:
+            if self.is_unfinished(txt) or refs.norm(nm) in ("", "solid"):
+                continue                                   # unfinished notes are listed on their own
+            groups.setdefault(f"{c}: {nm}", {}).setdefault(self._wording_key(txt), {"txt": txt, "details": []})["details"].append(d)
+        return {c: v for c, v in groups.items() if len(v) > 1}
+
+    @staticmethod
+    def is_unfinished(txt):
+        t = txt.lower()
+        return "confirm specification" in t or "describe element" in t or "to be confirmed" in t or "thin solid fill" in t
+
+    def project_unfinished(self):
+        return [(d, nm, txt) for d, c, nm, txt in self.proj_rows if self.is_unfinished(txt)]
+
+    def project_report(self, folder):
+        """one schedule for the whole folder + the places where the same kind of element is worded differently"""
+        import datetime
+        from PySide6.QtGui import QPageSize, QPdfWriter, QTextDocument
+        from PySide6.QtCore import QMarginsF
+        if not getattr(self, "proj_rows", None):
+            return None
+        diff = self.project_findings()
+        esc = lambda t: str(t).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        h = [f"<h2>Project notes schedule</h2><p>{esc(Path(folder).name)} &nbsp; {datetime.date.today():%d %B %Y}</p>"]
+        if diff:
+            h.append("<h3>Check: same kind of element, different wording</h3>")
+            for c, v in sorted(diff.items()):
+                h.append(f"<p><b>{esc(c)}</b></p><ul>")
+                for w in v.values():
+                    h.append(f"<li>{esc(w['txt'])} <i>({esc(', '.join(sorted(set(w['details']))))})</i></li>")
+                h.append("</ul>")
+        else:
+            h.append("<p><b>Consistency check:</b> the same kind of element is worded the same way on every detail.</p>")
+        todo = self.project_unfinished()
+        if todo:
+            h.append("<h3>Still to finish (no specification chosen yet)</h3><ul>" +
+                     "".join(f"<li>{esc(d)}: {esc(nm)}</li>" for d, nm, _t in todo) + "</ul>")
+        cur = None
+        for d, c, nm, txt in self.proj_rows:
+            if d != cur:
+                h.append(f"<h3>{esc(d)}</h3>")
+                cur = d
+            h.append(f"<p>{esc(txt)}</p>")
+        path = str(OUT_DIR / (Path(folder).name + "_project_notes_schedule.pdf"))
+        w = QPdfWriter(path)
+        w.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
+        w.setPageMargins(QMarginsF(15, 15, 15, 15))
+        doc = QTextDocument()
+        doc.setHtml("<body style='font-family:Arial;font-size:9pt'>" + "".join(h) + "</body>")
+        doc.print_(w)
+        n = sum(len(v) for v in diff.values())
+        msg = (f"Project check: {len(diff)} kind(s) of element are worded differently on different details. " if diff
+               else "Project check: wording is consistent across all details. ") + f"Project schedule saved: {path}"
+        self.say(msg)
+        if diff or todo:
+            lines = [f"{c}: " + " | ".join(f"{w['txt'][:70]} ({', '.join(sorted(set(w['details'])))})" for w in v.values())
+                     for c, v in sorted(diff.items())]
+            txt = ""
+            if lines:
+                txt += "Same material, different wording on different details. Decide which is right and use it on all of them:\n\n" + "\n\n".join(lines[:12])
+            if todo:
+                txt += f"\n\n{len(todo)} part(s) still have no specification chosen (listed in the project schedule)."
+            QMessageBox.information(self, "Project check", txt.strip())
+        return path
 
     # ---- templates: click the parts in turn, each note is written for you
     def template_menu(self):
