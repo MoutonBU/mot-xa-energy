@@ -19,9 +19,9 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from PySide6.QtCore import QEventLoop, QBuffer, QPointF, QRectF, QVariantAnimation, QEasingCurve, QByteArray, QIODevice, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import QSize, QEventLoop, QBuffer, QPointF, QRectF, QVariantAnimation, QEasingCurve, QByteArray, QIODevice, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QIcon, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QComboBox, QGraphicsLineItem, QGraphicsPathItem, QGraphicsRectItem, QRubberBand, QInputDialog, QCheckBox, QFrame, QTabWidget, QDialog, QDialogButtonBox, QDoubleSpinBox,
+from PySide6.QtWidgets import (QStyle, QStyledItemDelegate, QTreeWidget, QTreeWidgetItem, QAbstractItemView, QApplication, QButtonGroup, QComboBox, QGraphicsLineItem, QGraphicsPathItem, QGraphicsRectItem, QRubberBand, QInputDialog, QCheckBox, QFrame, QTabWidget, QDialog, QDialogButtonBox, QDoubleSpinBox,
                                QFileDialog, QFormLayout, QGraphicsEllipseItem, QGraphicsScene,
                                QGraphicsSimpleTextItem, QGraphicsView, QHBoxLayout, QHeaderView,
                                QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QSplitter,
@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QC
 import detail_catalog as cat
 import detail_smart as smart
 import detail_refs as refs
+import detail_icons as icons
 import detail_to_dwg as core
 
 HERE = Path(__file__).resolve().parent
@@ -68,6 +69,13 @@ QGraphicsView {{ border:1px solid #2c2c30; border-radius:8px; }}
 QSplitter::handle {{ background:#232326; border-radius:3px; margin:2px 1px; }}
 QSplitter::handle:hover {{ background:{RED}; }}
 QPushButton[compact="true"] {{ padding:6px 12px; border-radius:8px; }}
+QPushButton#chip {{ background:#202024; border:1px solid #34343a; border-radius:12px; padding:4px 12px; color:#cfcfd4; }}
+QPushButton#chip:hover {{ border:1px solid {RED}; color:white; }}
+QTreeWidget {{ background:#1b1b1d; border:1px solid #2c2c30; border-radius:10px; padding:4px; outline:0; }}
+QTreeWidget::item {{ padding:6px 4px; border-radius:6px; }}
+QTreeWidget::item:selected {{ background:#4a0f1c; color:white; }}
+QTreeWidget::item:hover {{ background:#26262b; }}
+QListWidget {{ background:#1b1b1d; border:1px solid #2c2c30; border-radius:10px; padding:4px; outline:0; }}
 QPushButton:checked {{ background:#3a1018; border:1px solid {RED}; color:white; }}
 QPushButton#canvasbtn {{ background:rgba(24,24,26,215); border:1px solid #3a3a40; padding:0; border-radius:8px; min-width:30px; max-width:30px; min-height:30px; max-height:30px; font-size:16px; font-weight:700; }}
 QPushButton#canvasbtn:hover {{ border:1px solid {RED}; background:rgba(50,20,26,230); }}
@@ -836,6 +844,53 @@ def ref_text(category):
     return refs.ref_for(category)
 
 
+class OptionDelegate(QStyledItemDelegate):
+    """One option = a bold title and a muted preview of its note, so you can choose without opening each one."""
+
+    def sizeHint(self, option, index):
+        return QSize(option.rect.width(), 58)
+
+    def paint(self, painter, option, index):
+        from PySide6.QtGui import QFontMetrics
+        painter.save()
+        r = option.rect.adjusted(4, 2, -4, -2)
+        sel = bool(option.state & QStyle.StateFlag.State_Selected)
+        hov = bool(option.state & QStyle.StateFlag.State_MouseOver)
+        if sel:
+            painter.setBrush(QColor("#4a0f1c"))
+            painter.setPen(QPen(QColor(RED), 1))
+        elif hov:
+            painter.setBrush(QColor("#26262b"))
+            painter.setPen(Qt.PenStyle.NoPen)
+        else:
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(r, 8, 8)
+        f = painter.font()
+        f.setBold(True)
+        f.setPointSize(11)
+        painter.setFont(f)
+        painter.setPen(QColor("#f2f2f4"))
+        tag = index.data(Qt.ItemDataRole.UserRole + 1) or ""
+        title = index.data(Qt.ItemDataRole.DisplayRole) or ""
+        tr = r.adjusted(12, 6, -12, 0)
+        painter.drawText(tr, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+                         QFontMetrics(f).elidedText(title, Qt.TextElideMode.ElideRight, tr.width() - (150 if tag else 0)))
+        f.setBold(False)
+        f.setPointSize(9)
+        painter.setFont(f)
+        if tag:
+            painter.setPen(QColor("#9aa0a6"))
+            painter.drawText(tr, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop,
+                             QFontMetrics(f).elidedText(tag, Qt.TextElideMode.ElideRight, 190))
+        painter.setPen(QColor("#9a9aa2"))
+        note = index.data(Qt.ItemDataRole.UserRole) or ""
+        br = r.adjusted(12, 28, -12, -4)
+        painter.drawText(br, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
+                         QFontMetrics(f).elidedText(note, Qt.TextElideMode.ElideRight, br.width()))
+        painter.restore()
+
+
 class SpecDialog(QDialog):
     """Pick a specification from the catalog for one part of the detail. The note can be edited before it is used."""
 
@@ -848,36 +903,81 @@ class SpecDialog(QDialog):
         self.custom = load_custom()
         self.measured = measured
         v = QVBoxLayout(self)
-        head = QLabel("<b>%s</b>" % title + (f"  &middot;  drawn thickness about <b>{measured} mm</b>" if measured else ""))
+        v.setSpacing(10)
+        head = QLabel("<span style='font-size:15px'><b>%s</b></span>" % title +
+                      (f"   <span style='color:#9aa0a6'>drawn thickness about <b style='color:#e8e8ea'>{measured} mm</b></span>" if measured else ""))
         v.addWidget(head)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Type what it is, e.g. concrete coping, stone cill, 170 slab, 50 x 50 purlin... and the note is written for you")
+        self.search.setPlaceholderText("\U0001F50E  Type what it is  (e.g. concrete coping)  and the note is written for you")
         self.search.setClearButtonEnabled(True)
+        self.search.setMinimumHeight(40)
         v.addWidget(self.search)
+        chips = QHBoxLayout()
+        chips.setSpacing(6)
+        lab_ = QLabel("Try:")
+        lab_.setObjectName("muted")
+        chips.addWidget(lab_)
+        for ex in icons.EXAMPLES:
+            cb = QPushButton(ex)
+            cb.setObjectName("chip")
+            cb.setCursor(Qt.CursorShape.PointingHandCursor)
+            cb.clicked.connect(lambda _=False, t=ex: self.search.setText(t))
+            chips.addWidget(cb)
+        chips.addStretch()
+        v.addLayout(chips)
         row = QHBoxLayout()
-        self.cats = QListWidget()
-        self.cats.setMaximumWidth(250)
+        self.cats = QTreeWidget()
+        self.cats.setHeaderHidden(True)
+        self.cats.setIndentation(14)
+        self.cats.setMaximumWidth(290)
+        self.cats.setMinimumWidth(230)
+        self.cats.setUniformRowHeights(True)
+        self.cats.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.opts = QListWidget()
+        self.opts.setItemDelegate(OptionDelegate(self.opts))
+        self.opts.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.opts.setMouseTracking(True)
+        self.opts.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         row.addWidget(self.cats)
         row.addWidget(self.opts, 1)
         v.addLayout(row, 1)
-        v.addWidget(QLabel("Note on the drawing (you can change the wording):"))
+        nl_ = QLabel("Your note  <span style='color:#9aa0a6'>(change the wording if you like)</span>")
+        nl_.setTextFormat(Qt.TextFormat.RichText)
+        v.addWidget(nl_)
         self.text = QTextEdit()
-        self.text.setMaximumHeight(90)
+        self.text.setMaximumHeight(84)
         self.text.setAcceptRichText(False)
         v.addWidget(self.text)
-        self.remember = QCheckBox(f"Remember this note for \u201c{name}\u201d in future details" if name else "Remember")
-        self.remember.setChecked(bool(name) and name.upper() not in ("SOLID", "WOOD"))
-        self.remember.setVisible(bool(name))
-        v.addWidget(self.remember)
         self.ref_lbl = QLabel("")
         self.ref_lbl.setWordWrap(True)
         self.ref_lbl.setTextFormat(Qt.TextFormat.RichText)
         v.addWidget(self.ref_lbl)
         self.text.textChanged.connect(self._ref)
+        # the less-used controls fold away
+        self.more_btn = QPushButton("More options  \u25B8")
+        self.more_btn.setObjectName("chip")
+        self.more_btn.setCheckable(True)
+        more = QWidget()
+        mh = QHBoxLayout(more)
+        mh.setContentsMargins(0, 0, 0, 0)
+        self.remember = QCheckBox(f"Remember this note for \u201c{name}\u201d" if name else "Remember")
+        self.remember.setChecked(bool(name) and name.upper() not in ("SOLID", "WOOD"))
+        self.remember.setVisible(bool(name))
+        mh.addWidget(self.remember)
+        mh.addStretch()
+        self.appr_btn = QPushButton("Approve this wording")
+        self.appr_btn.setToolTip("Marks this exact wording as checked by you against the standard. It then shows a green tick everywhere.")
+        self.appr_btn.clicked.connect(self.toggle_approve)
+        mh.addWidget(self.appr_btn)
+        bs = QPushButton("Save to My specs...")
+        bs.clicked.connect(self.save_mine)
+        mh.addWidget(bs)
+        more.setVisible(False)
+        self.more_btn.toggled.connect(lambda on: (more.setVisible(on), self.more_btn.setText("More options  " + ("\u25BE" if on else "\u25B8"))))
         br = QHBoxLayout()
-        self.cnt = QLabel(f"{cat.count()} specifications in the catalog")
+        self.cnt = QLabel(f"{cat.count()} specifications")
         self.cnt.setObjectName("muted")
+        br.addWidget(self.more_btn)
         br.addWidget(self.cnt)
         br.addStretch()
         self.ai_btn = QPushButton("Write it with AI")
@@ -885,27 +985,21 @@ class SpecDialog(QDialog):
         self.ai_btn.clicked.connect(self.ask_ai)
         self.ai_btn.setVisible(bool(api_key()))
         br.addWidget(self.ai_btn)
-        self.appr_btn = QPushButton("Approve this wording")
-        self.appr_btn.setToolTip("Marks this exact wording as checked by you against the standard. It then shows a green tick everywhere.")
-        self.appr_btn.clicked.connect(self.toggle_approve)
-        br.addWidget(self.appr_btn)
-        bs = QPushButton("Save this note to My specs...")
-        bs.clicked.connect(self.save_mine)
         bo = QPushButton("Use this note")
         bo.setObjectName("primary")
         bo.setDefault(True)
         bo.clicked.connect(self.use)
         bc = QPushButton("Cancel")
         bc.clicked.connect(self.reject)
-        for b_ in (bs, bc, bo):
-            br.addWidget(b_)
+        br.addWidget(bc)
+        br.addWidget(bo)
+        v.addWidget(more)
         v.addLayout(br)
         self._cur = current
         self.cat_name, self.title = cat_name, title
         self._fill_cats()
-        names = [self.cats.item(i).text() for i in range(self.cats.count())]
-        self.cats.setCurrentRow(names.index(cat_name) if cat_name in names else 0)
-        self.cats.currentRowChanged.connect(lambda *_: self._fill_opts())
+        self._select_cat(cat_name)
+        self.cats.currentItemChanged.connect(lambda *_: self._fill_opts())
         self.opts.currentRowChanged.connect(self._pick)
         self.opts.itemDoubleClicked.connect(lambda *_: self.use())
         self.search.textChanged.connect(self._search)
@@ -948,13 +1042,56 @@ class SpecDialog(QDialog):
 
     def _fill_cats(self):
         self.cats.clear()
-        for k in self._all():
-            self.cats.addItem(k)
+        self._cat_items = {}
+        data = self._all()
+        used = set()
+        for ic, fam, groups in icons.FAMILIES:
+            groups = [g for g in groups if g in data]
+            if not groups:
+                continue
+            top = QTreeWidgetItem([f"{ic}  {fam}"])
+            f = top.font(0)
+            f.setBold(True)
+            top.setFont(0, f)
+            top.setData(0, Qt.ItemDataRole.UserRole, None)
+            self.cats.addTopLevelItem(top)
+            for g in groups:
+                used.add(g)
+                ch = QTreeWidgetItem([f"{icons.ICONS.get(g, '')}  {g}"])
+                ch.setData(0, Qt.ItemDataRole.UserRole, g)
+                ch.setToolTip(0, f"{len(data[g])} specifications")
+                top.addChild(ch)
+                self._cat_items[g] = ch
+        for g in data:                              # anything not placed in a family
+            if g not in used:
+                ch = QTreeWidgetItem([g])
+                ch.setData(0, Qt.ItemDataRole.UserRole, g)
+                self.cats.addTopLevelItem(ch)
+                self._cat_items[g] = ch
+
+    def _select_cat(self, name):
+        it = self._cat_items.get(name) or next(iter(self._cat_items.values()), None)
+        if it is None:
+            return
+        self.cats.collapseAll()
+        if it.parent() is not None:
+            it.parent().setExpanded(True)
+        self.cats.setCurrentItem(it)
+
+    def _cur_cat(self):
+        it = self.cats.currentItem()
+        return it.data(0, Qt.ItemDataRole.UserRole) if it else None
 
     def _fill_opts(self, select=False):
         if self.search.text().strip():
             return
-        k = self.cats.currentItem().text() if self.cats.currentItem() else None
+        k = self._cur_cat()
+        if k is None and self.cats.currentItem() is not None:          # a family heading: open it, show its first group
+            top = self.cats.currentItem()
+            top.setExpanded(True)
+            if top.childCount():
+                self.cats.setCurrentItem(top.child(0))
+            return
         opts = self._all().get(k, [])
         self._show(opts, [None] * len(opts))
         if select and opts:
@@ -966,7 +1103,9 @@ class SpecDialog(QDialog):
         self.opts.clear()
         self._notes = []
         for (lab, note), c in zip(opts, cats):
-            it = QListWidgetItem(lab if not c else f"{lab}   [{c}]")
+            it = QListWidgetItem(lab)
+            it.setData(Qt.ItemDataRole.UserRole, note)
+            it.setData(Qt.ItemDataRole.UserRole + 1, (icons.ICONS.get(c, "") + "  " + c) if c else "")
             it.setToolTip(note)
             self.opts.addItem(it)
             self._notes.append(note)
@@ -1033,8 +1172,7 @@ class SpecDialog(QDialog):
             self.custom = load_custom()
             self.search.clear()
             self._fill_cats()
-            names = [self.cats.item(i).text() for i in range(self.cats.count())]
-            self.cats.setCurrentRow(names.index("My specs"))
+            self._select_cat("My specs")
 
     def use(self):
         self.note = " ".join(self.text.toPlainText().split())
