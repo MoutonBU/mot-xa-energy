@@ -7,6 +7,7 @@ notes (AI if an API key is saved, otherwise rules), places them with leaders and
 saves <name>_noted.dwg + <name>_notes.txt into the "outputs" folder next to this file.
 """
 import base64
+import copy
 import json
 import os
 import re
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QC
 
 import detail_catalog as cat
 import detail_smart as smart
+import detail_refs as refs
 import detail_to_dwg as core
 
 HERE = Path(__file__).resolve().parent
@@ -577,10 +579,30 @@ def save_custom(entry):
     write_json(OWN_SETTINGS, o)
 
 
+def approved_set():
+    return set(read_json(OWN_SETTINGS).get("approved", []))
+
+
+def approve_notes(texts, on=True):
+    o = read_json(OWN_SETTINGS)
+    cur = set(o.get("approved", []))
+    for t in texts:
+        n = refs.norm(t)
+        if n:
+            (cur.add if on else cur.discard)(n)
+    o["approved"] = sorted(cur)
+    write_json(OWN_SETTINGS, o)
+
+
+def ref_text(category):
+    """-> (short, long) or None"""
+    return refs.ref_for(category)
+
+
 class SpecDialog(QDialog):
     """Pick a specification from the catalog for one part of the detail. The note can be edited before it is used."""
 
-    def __init__(self, parent, title, cat_name, measured=None, current="", name=""):
+    def __init__(self, parent, title, cat_name, measured=None, current="", name="", typed=""):
         super().__init__(parent)
         self.name = name
         self.setWindowTitle("Choose specification")
@@ -607,6 +629,11 @@ class SpecDialog(QDialog):
         self.text.setMaximumHeight(90)
         self.text.setAcceptRichText(False)
         v.addWidget(self.text)
+        self.ref_lbl = QLabel("")
+        self.ref_lbl.setWordWrap(True)
+        self.ref_lbl.setTextFormat(Qt.TextFormat.RichText)
+        v.addWidget(self.ref_lbl)
+        self.text.textChanged.connect(self._ref)
         br = QHBoxLayout()
         self.cnt = QLabel(f"{cat.count()} specifications in the catalog")
         self.cnt.setObjectName("muted")
@@ -617,6 +644,10 @@ class SpecDialog(QDialog):
         self.ai_btn.clicked.connect(self.ask_ai)
         self.ai_btn.setVisible(bool(api_key()))
         br.addWidget(self.ai_btn)
+        self.appr_btn = QPushButton("Approve this wording")
+        self.appr_btn.setToolTip("Marks this exact wording as checked by you against the standard. It then shows a green tick everywhere.")
+        self.appr_btn.clicked.connect(self.toggle_approve)
+        br.addWidget(self.appr_btn)
         bs = QPushButton("Save this note to My specs...")
         bs.clicked.connect(self.save_mine)
         bo = QPushButton("Use this note")
@@ -640,6 +671,33 @@ class SpecDialog(QDialog):
         self._fill_opts(select=True)
         if current:
             self.text.setPlainText(current)
+        if typed:
+            self.search.setText(typed)
+        self._ref()
+
+    def category_now(self):
+        return refs.category_of(self.text.toPlainText()) or self.cat_name
+
+    def _ref(self):
+        txt = self.text.toPlainText()
+        if not txt.strip():
+            self.ref_lbl.setText("")
+            return
+        r = ref_text(self.category_now())
+        ok = refs.norm(txt) in approved_set()
+        bits = []
+        bits.append("<span style='color:#43a047'>&#10004; approved by you</span>" if ok else
+                    "<span style='color:#ffb300'>not yet checked by you</span>")
+        bits.append(f"reference: <b>{r[1]}</b> <span style='color:#9aa0a6'>(part level - confirm the clause)</span>"
+                    if r else "<span style='color:#9aa0a6'>no reference for this group - check the standard yourself</span>")
+        self.ref_lbl.setText("  |  ".join(bits))
+        self.appr_btn.setText("Remove approval" if ok else "Approve this wording")
+
+    def toggle_approve(self):
+        txt = " ".join(self.text.toPlainText().split())
+        if txt:
+            approve_notes([txt], on=refs.norm(txt) not in approved_set())
+            self._ref()
 
     def _all(self):
         d = {k: list(v) for k, v in cat.CATALOG.items()}
@@ -739,6 +797,7 @@ class SpecDialog(QDialog):
 
     def use(self):
         self.note = " ".join(self.text.toPlainText().split())
+        self.cat_final = self.category_now()
         if self.note:
             self.accept()
 
@@ -982,7 +1041,8 @@ class Win(QMainWindow):
         self.btn_undo.clicked.connect(self.undo_user)
         self.btn_redo = QPushButton("Redo")
         self.btn_redo.clicked.connect(self.redo_user)
-        self.hist, self.redo = [], []
+        self.undo_stack, self.redo_stack, self._prev, self._restoring = [], [], None, False
+        self.tpl = None
         from PySide6.QtGui import QKeySequence, QShortcut
         for keys_, fn_ in (("Ctrl+Z", self.undo_user), ("Ctrl+Y", self.redo_user), ("Ctrl+Shift+Z", self.redo_user),
                            ("Esc", lambda: (self.tool_btns["pan"].setChecked(True), self.set_tool("pan")))):
@@ -1000,6 +1060,14 @@ class Win(QMainWindow):
         self.btn_more.setCheckable(True)
         self.btn_more.setToolTip("Draw your own roof sheets, purlins, fill boxes and lines, edit a fill, delete your own elements")
         tbm.addWidget(self.btn_more)
+        self.btn_tpl = QPushButton("Templates")
+        self.btn_tpl.setToolTip("Pick a common detail (parapet with coping, slab at the wall, window head...) and click its parts in turn: every note is written for you")
+        self.btn_tpl.clicked.connect(self.template_menu)
+        tbm.addWidget(self.btn_tpl)
+        self.btn_tpl_stop = QPushButton("Stop template")
+        self.btn_tpl_stop.setVisible(False)
+        self.btn_tpl_stop.clicked.connect(self.stop_template)
+        tbm.addWidget(self.btn_tpl_stop)
         self.btn_fit = QPushButton("Fit")
         self.btn_fit.setToolTip("Show the whole detail (key F)")
         self.btn_fit.clicked.connect(lambda: self.view.fit())
@@ -1026,8 +1094,8 @@ class Win(QMainWindow):
         self._syncing = False
         self.view.setScene(QGraphicsScene())
         split.addWidget(self.view)
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["#", "Note (edit freely)", "Check", "Material"])
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["#", "Note (edit freely)", "Check", "Material", "Reference"])
         h = self.table.horizontalHeader()
         h.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.setWordWrap(True)
@@ -1038,6 +1106,11 @@ class Win(QMainWindow):
         split.addWidget(self.table)
         split.setSizes([760, 600])
         nl.addWidget(split, 1)
+        self.lbl_checks = QLabel("")
+        self.lbl_checks.setObjectName("muted")
+        self.lbl_checks.setWordWrap(True)
+        self.lbl_checks.setTextFormat(Qt.TextFormat.RichText)
+        nl.addWidget(self.lbl_checks)
         br = QHBoxLayout()
         self.btn_gen = QPushButton("Suggest notes for everything (optional)")
         self.btn_gen.clicked.connect(self.generate)
@@ -1050,8 +1123,15 @@ class Win(QMainWindow):
         self.btn_choose.clicked.connect(lambda: self.row_spec(self.table.currentRow()))
         self.btn_remove = QPushButton("Remove selected notes")
         self.btn_remove.clicked.connect(self.remove_note)
+        self.btn_approve = QPushButton("Mark selected as checked")
+        self.btn_approve.setToolTip("You have checked these notes against SANS 10400 / the NHBRC manual: they get a green tick")
+        self.btn_approve.clicked.connect(self.approve_selected)
+        self.btn_sched = QPushButton("Notes schedule (PDF)...")
+        self.btn_sched.clicked.connect(self.export_schedule)
         br.addWidget(self.btn_choose)
         br.addWidget(self.btn_remove)
+        br.addWidget(self.btn_approve)
+        br.addWidget(self.btn_sched)
         br.addStretch()
         self.btn_gen.setVisible(False)
         br.addWidget(self.btn_apply)
@@ -1069,7 +1149,7 @@ class Win(QMainWindow):
             sp.valueChanged.connect(lambda *_: self.timer.start())
         for cb_ in (self.clear_old, self.number_notes, self.house_cols, self.do_brick, self.draw_missing):
             cb_.toggled.connect(lambda *_: self.timer.start())
-        self.table.itemChanged.connect(lambda *_: self.timer.start())
+        self.table.itemChanged.connect(lambda *_: (self.refresh_refs(), self.commit(), self.timer.start()))
         self.table.cellDoubleClicked.connect(lambda r, c: self.row_spec(r) if c != 1 else None)
         from PySide6.QtGui import QKeySequence as _QKS, QShortcut as _QSC
         _del = _QSC(_QKS("Delete"), self.table)
@@ -1228,6 +1308,8 @@ class Win(QMainWindow):
             self.lbl_file.setText(f"Opened: {self.src}")
             self.lbl_file2.setText(f"Opened: {self.src.name}   -   click a part of the detail to choose its specification")
             self.say(f"{self.src.name}: {len(self.items)} materials found. Click a part of the detail to choose its specification.")
+            self.undo_stack, self.redo_stack, self.tpl = [], [], None
+            self._prev = self.snap()
             self.timer.start()               # show the detail in house colours and real bricks straight away
         except Exception as ex:
             traceback.print_exc()
@@ -1270,6 +1352,8 @@ class Win(QMainWindow):
         if t == "spec":
             if btn == 1 or btn == 0 or btn is None:
                 self.pick_spec(x, y)
+            elif btn == 2 and self.tpl:
+                self.tpl_next()
             return
         if btn == 2:
             if t == "line" and len(self.pend) >= 2:
@@ -1314,9 +1398,6 @@ class Win(QMainWindow):
             self.delete_near(x, y)
 
     def add_user(self, el, rec=True):
-        if rec:
-            self.hist.append(("add", el))
-            self.redo = []
         self.uid += 1
         el["uid"] = self.uid
         self.user.append(el)
@@ -1368,6 +1449,7 @@ class Win(QMainWindow):
             self.overrides.pop(hid, None)
         else:
             self.overrides[hid] = act
+        self.commit()
         self.save_edits()
         self.timer.start()
 
@@ -1383,45 +1465,271 @@ class Win(QMainWindow):
             if d <= tol and (best is None or d < best[0]):
                 best = (d, el["uid"])
         if best:
-            el_ = next((e for e in self.user if e["uid"] == best[1]), None)
-            if el_ is not None:
-                self.hist.append(("del", el_))
-                self.redo = []
             self.remove_user(best[1])
             self.user_changed()
 
+    # ---- undo / redo: every change to the notes, your elements and fills (Ctrl+Z / Ctrl+Y)
+    def _rows_state(self):
+        out = []
+        for r in range(self.table.rowCount()):
+            a = self.table.item(r, 0)
+            if a is None:
+                continue
+            g = lambda c: (self.table.item(r, c).text() if self.table.item(r, c) is not None else "")
+            out.append((int(a.text()), g(1), g(2), g(3)))
+        return out
+
+    def snap(self):
+        st = {"rows": self._rows_state(), "specs": copy.deepcopy(self.specs), "user": copy.deepcopy(self.user),
+              "overrides": copy.deepcopy(self.overrides), "uid": self.uid,
+              "items": [(i, i.get("point")) for i in self.items]}
+        st["sig"] = json.dumps([st["rows"], st["specs"], st["user"], st["overrides"]], sort_keys=True, default=str)
+        return st
+
+    def commit(self):
+        """call after a change: the state before it becomes one undo step"""
+        if self._restoring or not self.items:
+            return
+        st = self.snap()
+        if self._prev is not None and st["sig"] != self._prev["sig"]:
+            self.undo_stack.append(self._prev)
+            self.undo_stack = self.undo_stack[-80:]
+            self.redo_stack = []
+        self._prev = st
+
+    def _fill_rows(self, rows):
+        self.table.blockSignals(True)
+        self.table.setRowCount(len(rows))
+        for r, (iid, txt, chk, mat) in enumerate(rows):
+            a = QTableWidgetItem(str(iid))
+            a.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            self.table.setItem(r, 0, a)
+            self.table.setItem(r, 1, QTableWidgetItem(txt))
+            c = QTableWidgetItem(chk)
+            c.setForeground(QColor(RED))
+            c.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            self.table.setItem(r, 2, c)
+            m = QTableWidgetItem(mat)
+            m.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            self.table.setItem(r, 3, m)
+        self.table.blockSignals(False)
+        self.table.resizeRowsToContents()
+        self.table.setColumnWidth(0, 36)
+        self.table.setColumnWidth(2, 60)
+        self.table.setColumnWidth(3, 150)
+        self.table.setColumnWidth(4, 130)
+        self.refresh_refs()
+
+    def restore(self, st):
+        self._restoring = True
+        try:
+            self.specs = copy.deepcopy(st["specs"])
+            self.user = copy.deepcopy(st["user"])
+            self.overrides = copy.deepcopy(st["overrides"])
+            self.uid = max(self.uid, st["uid"])
+            self.items = []
+            for i, pt in st["items"]:
+                if pt is not None:
+                    i["point"] = pt
+                self.items.append(i)
+            self._fill_rows(st["rows"])
+            self.view.set_selected(set())
+            self.btn_apply.setEnabled(True)
+            self.save_edits()
+            self.timer.start()
+        finally:
+            self._restoring = False
+        self._prev = self.snap()
+
     def undo_user(self):
-        """Undo the last thing you drew or deleted (Ctrl+Z)."""
-        if self.hist:
-            kind, el = self.hist.pop()
-            if kind == "add":
-                self.remove_user(el["uid"])
-            else:
-                self.add_user(el, rec=False)
-            self.redo.append((kind, el))
-            self.user_changed()
-        elif self.user:                       # elements loaded from the saved edits file
-            self.remove_user(self.user[-1]["uid"])
-            self.user_changed()
+        if not self.undo_stack:
+            self.say("Nothing to undo.")
+            return
+        self.redo_stack.append(self.snap())
+        self.restore(self.undo_stack.pop())
+        self.say("Undone.")
 
     def redo_user(self):
-        """Put back what Undo took away (Ctrl+Y)."""
-        if not self.redo:
+        if not self.redo_stack:
+            self.say("Nothing to redo.")
             return
-        kind, el = self.redo.pop()
-        if kind == "add":
-            self.add_user(el, rec=False)
-        else:
-            self.remove_user(el["uid"])
-        self.hist.append((kind, el))
-        self.user_changed()
+        self.undo_stack.append(self.snap())
+        self.restore(self.redo_stack.pop())
+        self.say("Redone.")
+
+    # ---- reference / approval column and the checks under the list
+    def note_category(self, note, it):
+        c = refs.category_of(note)
+        if c:
+            return c
+        if it is not None:
+            sp = self.specs.get(it.get("picked") or "", {})
+            if sp.get("cat"):
+                return sp["cat"]
+            return cat.guess_category(it["layer"], it["pattern"])
+        return ""
+
+    def refresh_refs(self):
+        appr = approved_set()
+        by_id = {i["id"]: i for i in self.items}
+        self.table.blockSignals(True)
+        for r in range(self.table.rowCount()):
+            a, n = self.table.item(r, 0), self.table.item(r, 1)
+            if a is None or n is None:
+                continue
+            note = n.text()
+            ref = ref_text(self.note_category(note, by_id.get(int(a.text()))))
+            ok = refs.norm(note) in appr and bool(note.strip())
+            if ok:
+                txt, col = "✔ " + (ref[0] if ref else "approved"), "#43a047"
+            elif ref:
+                txt, col = ref[0], "#ffb300"
+            else:
+                txt, col = "no reference", "#9aa0a6"
+            c = QTableWidgetItem(txt)
+            c.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            c.setForeground(QColor(col))
+            c.setToolTip((("Approved by you.\n" if ok else "Not yet checked by you.\n") +
+                          (ref[1] + "\n" + refs.CLAUSE_WARNING if ref else "No reference for this group: check the standard yourself.")))
+            self.table.setItem(r, 4, c)
+        self.table.blockSignals(False)
+
+    def approve_selected(self):
+        ids = self.sel_ids() or ({int(self.table.item(self.table.currentRow(), 0).text())}
+                                 if self.table.currentRow() >= 0 else set())
+        texts = []
+        for r in range(self.table.rowCount()):
+            a = self.table.item(r, 0)
+            if a is not None and int(a.text()) in ids and self.table.item(r, 1) is not None:
+                texts.append(self.table.item(r, 1).text())
+        if not texts:
+            self.say("Select the notes you have checked against the standard first.")
+            return
+        approve_notes(texts)
+        self.refresh_refs()
+        self.say(f"{len(texts)} note(s) marked as checked by you.")
+
+    def refresh_checks(self):
+        by_id = {i["id"]: i for i in self.items}
+        rows = self._rows_state()
+        have = {r[0] for r in rows}
+        msgs = []
+        for iid, note, chk, _m in rows:
+            it = by_id.get(iid)
+            if not note.strip() or it is None or it.get("synthetic") or it.get("user"):
+                continue
+            m = core.measured_mm(it, self.mmu)
+            lead_ = re.match(r"\s*(\d+(?:\.\d+)?)\s*mm", note)       # only a size the note starts with is a thickness
+            nums = [float(lead_.group(1))] if lead_ else []
+            tol = max(12.0, 0.2 * m) if m else 0
+            if m and nums and not any(abs(n - m) <= tol for n in nums):
+                msgs.append(("warn", f"#{iid}: drawn about {m:g} mm but the note says {nums[0]:g} mm - check the note or the drawing"))
+        seen = {}
+        for iid, note, _c, _m in rows:
+            k = refs.norm(note)
+            if k and k in seen:
+                msgs.append(("warn", f"#{seen[k]} and #{iid} have the same wording - one callout is enough"))
+            seen.setdefault(k, iid)
+        missing = []
+        for it in sorted([i for i in self.items if not i.get("synthetic") and not i.get("user")], key=lambda i: -i["area"]):
+            if it["id"] in have or max(it["bbox"]) * self.mmu < 30:
+                continue
+            nm = core.clean_name(it["pattern"]) or it["layer"]
+            if nm not in missing:
+                missing.append(nm)
+        if missing:
+            msgs.append(("info", f"{len(missing)} part(s) without a note yet: " + ", ".join(missing[:6]) + (" ..." if len(missing) > 6 else "")))
+        appr = approved_set()
+        n_un = sum(1 for _i, n, _c, _m in rows if n.strip() and refs.norm(n) not in appr)
+        if rows:
+            msgs.append(("info", f"{len(rows) - n_un} of {len(rows)} notes approved by you"))
+        ver = [r[0] for r in rows if r[2] in ("VERIFY", "ADDED") and r[1].strip()]
+        if ver:
+            msgs.append(("warn", "VERIFY on #" + ", #".join(str(v) for v in ver) + " (size read from the drawing or part drawn by the tool)"))
+        col = {"warn": "#ffb300", "info": "#9aa0a6"}
+        html = "<br>".join(f"<span style='color:{col[k]}'>{'&#9888;' if k == 'warn' else '&bull;'} {m}</span>" for k, m in msgs)
+        self.lbl_checks.setText(html or "<span style='color:#43a047'>&#10004; No problems found.</span>")
+
+    def export_schedule(self):
+        if not self.items or not self.table.rowCount():
+            self.say("Add some notes first.")
+            return
+        import datetime
+        from PySide6.QtGui import QPageSize, QPdfWriter, QTextDocument
+        from PySide6.QtCore import QMarginsF
+        default = str(OUT_DIR / (self.src.stem + "_notes_schedule.pdf"))
+        path, _ = QFileDialog.getSaveFileName(self, "Save notes schedule", default, "PDF (*.pdf)")
+        if not path:
+            return
+        appr = approved_set()
+        by_id = {i["id"]: i for i in self.items}
+        rows_html = []
+        for k, (iid, note, chk, mat) in enumerate([r for r in self._rows_state() if r[1].strip()], 1):
+            ref = ref_text(self.note_category(note, by_id.get(iid)))
+            ok = refs.norm(note) in appr
+            st = ("checked" if ok else "NOT yet checked") + (f" - {ref[1]}" if ref else " - no reference")
+            rows_html.append(f"<tr><td>{k}</td><td>{note}{'  <b>[VERIFY]</b>' if chk in ('VERIFY', 'ADDED') else ''}</td>"
+                             f"<td>{mat}</td><td>{st}</td></tr>")
+        html = (f"<h2>Notes schedule - {self.src.stem}</h2><p>{datetime.date.today():%d %B %Y}</p>"
+                "<table border='1' cellspacing='0' cellpadding='4' width='100%'>"
+                "<tr><th>No.</th><th>Note</th><th>Material</th><th>Reference / status</th></tr>"
+                + "".join(rows_html) + "</table>"
+                "<p><small>These notes support, and do not replace, the competent person's judgement and the engineer's design. "
+                "References are at part level only: confirm the clause in the current edition of SANS 10400 and the "
+                "NHBRC Home Building Manual before issuing. Items marked VERIFY were read from the drawing and must be confirmed.</small></p>")
+        w = QPdfWriter(path)
+        w.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
+        w.setPageMargins(QMarginsF(15, 15, 15, 15))
+        d = QTextDocument()
+        d.setHtml(html)
+        d.print_(w)
+        self.say(f"Notes schedule saved: {path}")
+
+    # ---- templates: click the parts in turn, each note is written for you
+    def template_menu(self):
+        from PySide6.QtWidgets import QMenu
+        m = QMenu(self)
+        for name, steps in refs.TEMPLATES:
+            m.addAction(name, lambda n=name, st=steps: self.start_template(n, st))
+        m.exec(self.btn_tpl.mapToGlobal(self.btn_tpl.rect().bottomLeft()))
+
+    def start_template(self, name, steps):
+        if not self.items:
+            self.say("Open a detail first.")
+            return
+        self.tpl = {"name": name, "steps": list(steps), "i": 0}
+        self.btn_tpl_stop.setVisible(True)
+        self.set_tool("spec")
+        self.tpl_hint()
+
+    def tpl_hint(self):
+        t = self.tpl
+        if not t:
+            self.btn_tpl_stop.setVisible(False)
+            self.tool_hint.setText(self.HINTS["spec"])
+            return
+        lab, _w = t["steps"][t["i"]]
+        self.tool_hint.setText(f"Template: {t['name']}  -  step {t['i'] + 1} of {len(t['steps'])}: click {lab}.  "
+                               "Right-click skips this step, Stop template ends it.")
+
+    def tpl_next(self):
+        if not self.tpl:
+            return
+        self.tpl["i"] += 1
+        if self.tpl["i"] >= len(self.tpl["steps"]):
+            self.say(f"Template '{self.tpl['name']}' finished. Check each note, then approve the ones you have verified.")
+            self.tpl = None
+        self.tpl_hint()
+
+    def stop_template(self):
+        self.tpl = None
+        self.tpl_hint()
 
     def clear_user(self):
         if self.user and QMessageBox.question(self, "Clear", "Remove everything you drew by hand?") \
                 == QMessageBox.StandardButton.Yes:
             for el in list(self.user):
                 self.remove_user(el["uid"])
-            self.hist, self.redo = [], []
             self.user_changed()
 
     def sync_rows(self):
@@ -1451,10 +1759,12 @@ class Win(QMainWindow):
                 self.table.setItem(r, 3, m)
         self.table.blockSignals(False)
         self.table.resizeRowsToContents()
+        self.refresh_refs()
 
     def user_changed(self):
         if self.table.rowCount() > 0:
             self.sync_rows()
+        self.commit()
         self.save_edits()
         self.timer.start()
 
@@ -1531,6 +1841,7 @@ class Win(QMainWindow):
         self.view.rubber(None)
         if not ok and new:
             self.items = [i for i in self.items if i is not it]
+        self.tpl_next()
 
     def _row_of(self, iid):
         for r in range(self.table.rowCount()):
@@ -1544,17 +1855,19 @@ class Win(QMainWindow):
         cur = self.table.item(r, 1).text() if r >= 0 else ""
         name = core.clean_name(it["pattern"]) or it["layer"]
         dlg = SpecDialog(self, f"{name}  ({it['layer']})", cat.guess_category(it["layer"], it["pattern"]),
-                         core.measured_mm(it, self.mmu), cur, name)
+                         core.measured_mm(it, self.mmu), cur, name,
+                         typed=(self.tpl["steps"][self.tpl["i"]][1] if self.tpl and not cur else ""))
         if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.note:
             return False
         self.set_row_note(it, dlg.note)
         if it.get("picked"):
-            self.specs[it["picked"]] = {"note": dlg.note, "x": it["point"][0], "y": it["point"][1]}
+            self.specs[it["picked"]] = {"note": dlg.note, "x": it["point"][0], "y": it["point"][1], "cat": dlg.cat_final}
         elif it.get("user"):
             for el in self.user:
                 if el["uid"] == it["user"]:
                     el["note"] = dlg.note
             it["note"] = dlg.note
+        self.commit()
         self.save_edits()
         self.timer.start()
         return True
@@ -1580,7 +1893,9 @@ class Win(QMainWindow):
         self.table.resizeRowsToContents()
         self.table.setColumnWidth(0, 36)
         self.table.setColumnWidth(2, 60)
-        self.table.setColumnWidth(3, 170)
+        self.table.setColumnWidth(3, 150)
+        self.table.setColumnWidth(4, 130)
+        self.refresh_refs()
         self.btn_apply.setEnabled(True)
 
     def restore_spec(self, hid, sp):
@@ -1595,7 +1910,7 @@ class Win(QMainWindow):
         self.hgeo[hid] = g
         x, y = float(sp.get("x", 0)), float(sp.get("y", 0))
         it = self._new_item(h, self._piece(g, Point(x, y)), x, y, hid)
-        self.specs[hid] = {"note": sp["note"], "x": x, "y": y}
+        self.specs[hid] = {"note": sp["note"], "x": x, "y": y, "cat": sp.get("cat", "")}
         self.set_row_note(it, sp["note"])
 
     def row_spec(self, r):
@@ -1686,6 +2001,7 @@ class Win(QMainWindow):
         self._syncing = False
         self.view.set_selected(set())
         self.btn_apply.setEnabled(self.table.rowCount() > 0)
+        self.commit()
         self.save_edits()
         self.timer.start()
 
@@ -1761,10 +2077,13 @@ class Win(QMainWindow):
         self.table.resizeRowsToContents()
         self.table.setColumnWidth(0, 36)
         self.table.setColumnWidth(2, 60)
-        self.table.setColumnWidth(3, 170)
+        self.table.setColumnWidth(3, 150)
+        self.table.setColumnWidth(4, 130)
         self.btn_gen.setEnabled(True)
         self.btn_apply.setEnabled(True)
         self.tabs.setCurrentIndex(0)
+        self.refresh_refs()
+        self.commit()
         self.apply_and_save()
 
     # ---- apply
@@ -1868,6 +2187,7 @@ class Win(QMainWindow):
             warn = ""
             if self.src.suffix.lower() == ".dwg" and final.suffix.lower() == ".dxf":
                 warn = "  - DWG could not be written, saved as DXF: open it in Archicad and Save As DWG"
+            self.refresh_checks()
             self.say(f"Saved: {final}   ({lead}){warn}")
         except Exception as ex:
             traceback.print_exc()

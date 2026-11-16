@@ -1,6 +1,6 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.15.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.16.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
@@ -19,6 +19,14 @@ Current version: **1.15.0**. You can read these notes in the program: File > Rel
 - **Updates**: the red "Update available" button and Menu > Check for updates download and install the new version in
   one click, with no token. Your work is saved and restored after the update.
 - **Dark / light mode** switch that changes the interface at once, without restarting. The installer matches the dark theme.
+- **Detail Notes: references, checks, templates, undo, schedule (1.16.0):**
+  - **Reference column** in the notes list: each note shows the SANS 10400 part (and the NHBRC Home Building Manual where it applies) for its group. These are part-level references only, never clause numbers: confirm the clause in the current edition. A group with no confident reference says "no reference".
+  - **Checked by you:** "Approve this wording" in the spec picker, or "Mark selected as checked" in the list, gives a note a green tick everywhere. Edit the wording and the tick goes, so only text you have verified shows as approved.
+  - **Checks under the list:** warns when a note starts with a thickness that does not match the drawing, when two notes say the same thing, lists parts that still have no note, VERIFY items, and how many notes you have approved.
+  - **Templates:** pick a common detail (parapet with concrete coping, slab-on-ground at the wall, window head and cill, pitched roof at the eaves, door threshold, garden / retaining wall), then click its parts in turn; each note is written for you. Right-click skips a step.
+  - **Undo / redo for everything** (Ctrl+Z / Ctrl+Y): choosing or removing a note, editing its wording, your own elements, recoloured fills and Auto notes.
+  - **Notes schedule (PDF):** a one-page table of the notes with material, reference and checked / not checked, with the competent-person disclaimer.
+  - Retaining wall and garden wall coping wording corrected.
 - **Detail Notes: easier to move around and select (1.15.0):** drag with the left mouse button to move the drawing in any mode (no more switching to Pan), wheel zooms, F or the Fit button shows the whole detail. Click a note on the drawing to select it (it turns yellow, and its row in the list is selected too); Ctrl+click adds more; Shift+drag selects every note in a box; Ctrl+A selects all; Esc clears. Selecting rows in the list highlights the same notes on the drawing and scrolls to them. Delete (on the drawing or in the list) removes all selected notes from both. Double-click a note on the drawing to change its spec.
 - **Detail Notes: type it and the note writes itself (1.14.0):** in the spec picker, just type what the part is (for example "concrete coping", "stone cill", "damp proof course", "50 x 50 purlin"). The first line of the list, "Write it from what I typed", builds the full detailed note: coping gets drip grooves (throatings) and a fall to the roof side, cills get a drip and a slope, slabs get DPM and mesh, and so on. Press Enter to use it, or edit the wording. If you have an API key set up, a "Write it with AI" button asks Claude to write the note from your words. The catalog grew to 461 specifications in 31 groups (foundations, waterproofing, roof falls, flashings, windows and doors, wet areas, drainage, electrical, paving, fencing and more). Please check the wording against your office standard and SANS before issuing drawings.
 - **Detail Notes cleaned up (1.13.0):**

@@ -149,7 +149,7 @@ _r("drain", r"drain|sewer|soil.?pipe|pipe", "uPVC",
 _r("kerb", r"kerb|curb", "concrete",
    "{lead} bedded on concrete, joints at max. 3 m, falling to drain")
 _r("retaining wall", r"retaining", "reinforced concrete",
-   "{lead} wall to Eng. design, with subsoil drain, weep holes and waterproofing to the retained face")
+   "{lead} to Eng. design, with subsoil drain, weep holes and waterproofing to the retained face")
 _r("steel", r"beam|column|angle|plate|\bshs\b|\bipe\b|\bpfc\b|\bsteel", "steel",
    "{lead} to Eng. design, hot-dip galvanised (SANS 121), connections as detailed", "section")
 _r("timber", r"joist|deck|pergola|post|timber|\bpine", "SA Pine",
@@ -167,7 +167,8 @@ def smart_note(text):
         return "", None
     low = t.lower()
     size, mat = _size(low), _mat(low)
-    for name, rx, default, tmpl, noun in R:
+    order = sorted(R, key=lambda r: 0 if (r[0] == "retaining wall" and "coping" not in low) else 1)
+    for name, rx, default, tmpl, noun in order:
         if rx.search(low):
             sz = size
             if name in ("purlin",) and not sz:
@@ -201,6 +202,8 @@ def smart_note(text):
             if name == "waterproofing" and "torch" in low:
                 lead = _lead(sz, "", "torch-on", "waterproofing membrane")
             note = tmpl.format(lead=lead.strip(), size=sz, mat=mat)
+            if name == "coping" and re.search(r"garden|boundary|free.?standing|wall coping", low) and "parapet" not in low:
+                note = note.replace("sloped to fall to the roof side", "sloped to shed water to one side")
             note = re.sub(r"\s+", " ", note).strip()
             return note[0].upper() + note[1:], name
     words = re.sub(r"\d+(?:\.\d+)?\s*(?:mm|m)?\b", "", t).strip()
