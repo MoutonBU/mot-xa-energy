@@ -4737,7 +4737,7 @@ def cov_block_floor(b):
     return fa if fa > 0 else cov_num(b.get("fp", 0)) * max(cov_num(b.get("storeys", 1)), 1.0)
 
 
-def cov_from_rooms(rooms, walls_pct=15.0, block_name="Building"):
+def cov_from_rooms(rooms, walls_pct=15.0, block_name="Building", total=None):
     """One block (the loaded building, all its units together) with the room area on each level, from the Rooms list. The footprint is the largest level
     and the floor area is every level added up; both are raised by the wall allowance (net room area -> gross)."""
     k = 1.0 + cov_num(walls_pct) / 100.0
@@ -4759,6 +4759,9 @@ def cov_from_rooms(rooms, walls_pct=15.0, block_name="Building"):
     blocks = []
     for blk, lv in by.items():
         levels = [[n, round(a * k, 2)] for n, a in lv.items()]
+        if total and total > 0:          # a known gross total: share it over the levels in proportion to the room areas
+            sm = sum(a for _, a in levels) or 1.0
+            levels = [[n, round(a / sm * total, 2)] for n, a in levels]
         blocks.append({"name": blk, "fp": round(max(a for _, a in levels), 2), "storeys": len(levels),
                        "floor": round(sum(a for _, a in levels), 2), "on": True, "levels": levels})
     return blocks, roofs
@@ -12248,6 +12251,14 @@ class MainWindow(QMainWindow):
         self.cov_walls.setSuffix(" %"); self.cov_walls.setValue(15.0)
         self.cov_walls.setToolTip("Rooms are net areas. This adds the thickness of the walls to get the gross floor "
                                   "area and footprint. Set it to 0 if your room areas already include the walls.")
+        self.cov_basis = QComboBox()
+        self.cov_basis.addItems(["Net room areas + wall allowance", "IFC gross floor area (from the model)",
+                                 "Gross floor area typed in Building details (Energy XA)"])
+        self.cov_basis.setToolTip("Where the floor areas come from.\n1: the room areas on the Rooms tab (net) plus the wall "
+                                  "allowance.\n2: the gross area the IFC gives for its rooms (GrossFloorArea).\n3: the "
+                                  "whole-building gross floor area typed on the Energy XA tab.\nOptions 2 and 3 are shared "
+                                  "over the levels in proportion to their room areas.")
+        top.addWidget(QLabel("Areas from:")); top.addWidget(self.cov_basis); top.addSpacing(10)
         top.addWidget(QLabel("Add for walls:")); top.addWidget(self.cov_walls)
         top.addStretch()
         lay.addLayout(top)
@@ -12256,7 +12267,10 @@ class MainWindow(QMainWindow):
         bf.setToolTip("Adds up the rooms on the Rooms tab per level: the footprint is the biggest level, "
                       "the floor area is all levels together. Add your other blocks by hand.")
         bf.clicked.connect(lambda: self.cov_fill_from_rooms(True))
-        fill.addWidget(bf); fill.addStretch()
+        fill.addWidget(bf)
+        self.cov_lvl = QLabel("")
+        self.cov_lvl.setWordWrap(True)
+        fill.addWidget(self.cov_lvl, 1)
         lay.addLayout(fill)
         info = QLabel("Coverage = footprint of the buildings (plus the roofs you tick) / stand area.  "
                       "FAR (floor area ratio) = total floor area of all storeys / stand area.  "
@@ -12303,6 +12317,8 @@ class MainWindow(QMainWindow):
         for sp in (self.cov_stand, self.cov_maxcov, self.cov_maxfar):
             sp.valueChanged.connect(lambda *_: self._cov_refresh())
         self.cov_walls.valueChanged.connect(lambda *_: self.cov_fill_from_rooms(False, "walls"))
+        self.cov_basis.currentIndexChanged.connect(lambda *_: (self.cov_walls.setEnabled(self.cov_basis.currentIndex() == 0),
+                                                                self.cov_fill_from_rooms(True)))
         self.main_tabs.currentChanged.connect(lambda i: self.cov_fill_from_rooms(False)
                                               if self.main_tabs.widget(i) is self.cov_page else None)
         self._cov_busy = False
@@ -12327,7 +12343,28 @@ class MainWindow(QMainWindow):
             rooms = []
         _nm = os.path.splitext(os.path.basename(getattr(self, "ifc_path", "") or ""))[0]
         _nm = re.sub(r"(?i)^.*?(block\s*\w+).*$", r"\1", _nm).strip() if re.search(r"(?i)block\s*\w+", _nm) else ""
-        blocks, roofs = cov_from_rooms(rooms, self.cov_walls.value(), _nm or "Block A")
+        bi = self.cov_basis.currentIndex()
+        total = None
+        if bi == 1:
+            total = cov_num((getattr(self, "ifc_data", None) or {}).get("gross", 0))
+        elif bi == 2:
+            total = cov_num(self.xa_gross.text()) if hasattr(self, "xa_gross") else 0.0
+        if bi and not total:
+            if force:
+                QMessageBox.information(self, APP_NAME, "That area is not available (" + (
+                    "no IFC is loaded or it has no gross floor areas" if bi == 1 else
+                    "type the gross floor area under Building details on the Energy XA tab") +
+                    "). The net room areas plus the wall allowance are used instead.")
+            total = None
+        blocks, roofs = cov_from_rooms(rooms, self.cov_walls.value(), _nm or "Block A", total)
+        # the room table has no level names: take the levels from the IFC rooms instead
+        ifr = (getattr(self, "ifc_data", None) or {}).get("rooms") or []
+        if blocks and blocks[0]["storeys"] <= 1 and len({(r.get("floor") or "") for r in ifr}) > 1:
+            class _R:
+                def __init__(s_, d):
+                    s_.name, s_.area_m2, s_.floor, s_.unit = d.get("name", ""), d.get("area", 0), d.get("floor", ""), ""
+            blocks, roofs2 = cov_from_rooms([_R(d) for d in ifr], self.cov_walls.value(), _nm or "Block A", total)
+            roofs = roofs or roofs2
         if not blocks:
             if force:
                 QMessageBox.information(self, APP_NAME, "There are no rooms yet. Load the IFC or add the rooms on the "
@@ -12382,7 +12419,7 @@ class MainWindow(QMainWindow):
         def on(t, r, c):
             it = t.item(r, c)
             return bool(it and it.checkState() == Qt.CheckState.Checked)
-        return {"walls": self.cov_walls.value(), "stand": self.cov_stand.value(), "max_cov": self.cov_maxcov.value(), "max_far": self.cov_maxfar.value(),
+        return {"basis": self.cov_basis.currentIndex(), "walls": self.cov_walls.value(), "stand": self.cov_stand.value(), "max_cov": self.cov_maxcov.value(), "max_far": self.cov_maxfar.value(),
                 "blocks": [{"name": tx(self.cov_blocks, r, 0), "fp": tx(self.cov_blocks, r, 1),
                             "storeys": tx(self.cov_blocks, r, 2), "floor": tx(self.cov_blocks, r, 3),
                             "on": on(self.cov_blocks, r, 4),
@@ -12395,6 +12432,10 @@ class MainWindow(QMainWindow):
         st = st or {}
         self._cov_busy = True
         self.cov_walls.setValue(cov_num(st.get("walls", 15)) if "walls" in st else 15.0)
+        self.cov_basis.blockSignals(True)
+        self.cov_basis.setCurrentIndex(int(cov_num(st.get("basis", 0))))
+        self.cov_basis.blockSignals(False)
+        self.cov_walls.setEnabled(self.cov_basis.currentIndex() == 0)
         self.cov_stand.setValue(cov_num(st.get("stand", 0)))
         self.cov_maxcov.setValue(cov_num(st.get("max_cov", 0)))
         self.cov_maxfar.setValue(cov_num(st.get("max_far", 0)))
@@ -12413,7 +12454,10 @@ class MainWindow(QMainWindow):
     def _cov_refresh(self):
         if getattr(self, "_cov_busy", True) or not hasattr(self, "cov_result"):
             return
-        sc = cov_scenarios(self.cov_state())
+        _st = self.cov_state()
+        self.cov_lvl.setText("   ".join(f"{b['name']}: " + ", ".join(f"{n} {a:.1f} m2" for n, a in b["levels"]) +
+                                        f"  ({len(b['levels'])} storeys)" for b in _st["blocks"] if b.get("levels")))
+        sc = cov_scenarios(_st)
         if not sc or sc[0]["stand"] <= 0:
             self.cov_result.setText("<i>Enter the stand area and the block footprints to see the coverage and FAR.</i>")
             return
@@ -12473,6 +12517,9 @@ class MainWindow(QMainWindow):
                      f'FAR = total floor area of all storeys / stand area. Limits used: coverage '
                      f'{(str(round(cov_num(st["max_cov"]), 1)) + "%") if cov_num(st["max_cov"]) > 0 else "none set"}, FAR '
                      f'{round(cov_num(st["max_far"]), 2) if cov_num(st["max_far"]) > 0 else "none set"}.</p>')
+        _bn = ["net room areas from the Rooms list plus a " + f"{cov_num(st.get('walls', 15)):g}% wall allowance",
+               "the gross floor area given by the IFC model", "the gross floor area typed in Building details"][int(cov_num(st.get("basis", 0))) % 3]
+        frags.append(f'<p style="font-size:8pt; color:#555555;">Floor areas taken from: {e(_bn)}. The footprint is the largest level.</p>')
         blocks_by_name = {(b.get("name") or "").strip() or f"Block {i}": b for i, b in enumerate(st["blocks"], 1)}
         for r in scen:
             frags.append(f'<p style="font-size:12pt; font-weight:bold; color:{RED}; margin-left:10px; margin-top:12px;">{e(r["name"])}</p>')
