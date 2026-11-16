@@ -1,6 +1,6 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.25.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.26.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
@@ -19,6 +19,7 @@ Current version: **1.25.0**. You can read these notes in the program: File > Rel
 - **Updates**: the red "Update available" button and Menu > Check for updates download and install the new version in
   one click, with no token. Your work is saved and restored after the update.
 - **Dark / light mode** switch that changes the interface at once, without restarting. The installer matches the dark theme.
+- **Layout menu, layer matching and style presets (1.26.0):** new Layout button on the Detail Notes toolbar. Note column on the right, left, or both sides (each note goes to the nearer side). Align selected notes (left or right edges), spread three or more evenly top to bottom, or snap them to the column; moved notes snap to the nearest column. Choose the note text font. Save the whole look (scale, text size, width, numbering, pointer, column side, font) as a named style preset and reuse it on any detail. In the spec picker, More options now has “Use this for everything on layer ...”: next time any part on that layer gets the note automatically on every detail. Layout > Remembered matches lists the material and layer matches so you can forget any.
 - **Straight note column and leader end styles (1.25.0):** a note you move now snaps back into the straight column of the other notes when you drop it close to the column (tick "Keep notes in line" off, or hold Alt while dropping, to place it freely). New "Pointer" list: dot, arrow, ring, tick or none for the end of the leader. With notes selected it changes those notes, with none selected it changes all of them. Saved with the detail and covered by undo/redo.
 - **Friendlier spec picker (1.23.0):** the 34 groups are folded into 8 families with icons (foundations and floors, walls, roof and ceiling, waterproofing and insulation, windows and doors, services and outside, finishes, South African products) and each group has its own icon. Each option shows a short preview of its note under its name. Click-to-try chips under the search box ("concrete coping", "stone cill", "170 slab"...). Approve, Save to My specs and Remember moved under "More options", so the main view is just: search, pick, check your note, Use this note.
 - **Other notes adjust around the ones you move (1.22.0):** when you drag a note, the remaining notes close the gap it left and flow around its new spot, so nothing overlaps. Move one and the whole column re-arranges itself.

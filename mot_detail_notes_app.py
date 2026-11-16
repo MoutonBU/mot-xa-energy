@@ -841,6 +841,40 @@ def mapping_set(name, note):
     write_json(OWN_SETTINGS, o)
 
 
+def layer_get(layer):
+    k = refs.norm(layer)
+    return read_json(OWN_SETTINGS).get("layer_map", {}).get(k) if k and k != "0" else None
+
+
+def layer_set(layer, note):
+    k = refs.norm(layer)
+    if not k or k == "0":
+        return
+    o = read_json(OWN_SETTINGS)
+    m = o.get("layer_map", {})
+    m[k] = note
+    o["layer_map"] = m
+    write_json(OWN_SETTINGS, o)
+
+
+def preset_all():
+    return read_json(OWN_SETTINGS).get("presets", {})
+
+
+def preset_save(name, d):
+    o = read_json(OWN_SETTINGS)
+    p = o.get("presets", {})
+    p[name] = d
+    o["presets"] = p
+    write_json(OWN_SETTINGS, o)
+
+
+def preset_delete(name):
+    o = read_json(OWN_SETTINGS)
+    o.get("presets", {}).pop(name, None)
+    write_json(OWN_SETTINGS, o)
+
+
 def ref_text(category):
     """-> (short, long) or None"""
     return refs.ref_for(category)
@@ -1460,6 +1494,10 @@ class Win(QMainWindow):
         self.ptr_combo.setToolTip("The end of the leader. With notes selected it changes those notes; with none selected it changes all of them.")
         self.ptr_combo.activated.connect(self.on_pointer_pick)
         tbm.addWidget(self.ptr_combo)
+        self.btn_layout = QPushButton("Layout \u25be")
+        self.btn_layout.setToolTip("Note column side, align and distribute selected notes, text font, style presets, remembered matches")
+        self.btn_layout.clicked.connect(self.layout_menu)
+        tbm.addWidget(self.btn_layout)
         self.btn_arrange = QPushButton("Reset note positions")
         self.btn_arrange.setToolTip("Drag any note on the drawing to move it. This puts them all back in a neat column.")
         self.btn_arrange.clicked.connect(self.auto_arrange)
@@ -1490,6 +1528,7 @@ class Win(QMainWindow):
         self.view.target_moved.connect(self.on_target_moved)
         self.note_pos, self.note_tgt = {}, {}
         self.ptr_default, self.note_ptr = "dot", {}
+        self.side, self.font = "right", "arial.ttf"
         self.note_boxes, self.note_targets = {}, {}
         self.xa_provider = None              # set by the suite: returns {'zone','roof','heavy','light'}
         self._syncing = False
@@ -1710,6 +1749,7 @@ class Win(QMainWindow):
             _e = read_json(self.edits_path())
             self.ptr_default = _e.get("pointer", "dot")
             self.note_ptr = dict(_e.get("note_ptr", {}) or {})
+            self.side, self.font = _e.get("side", "right"), _e.get("font", "arial.ttf")
             self.ptr_combo.setCurrentIndex(max(0, self.ptr_combo.findData(self.ptr_default)))
             self.table.setRowCount(0)
             for hid, sp in (read_json(self.edits_path()).get("specs", {}) or {}).items():
@@ -2273,7 +2313,8 @@ class Win(QMainWindow):
             write_json(self.edits_path(), {"elements": self.user, "overrides": self.overrides, "specs": self.specs,
                                            "note_pos": {k: list(v) for k, v in self.note_pos.items()},
                                            "note_tgt": {k: list(v) for k, v in self.note_tgt.items()},
-                                           "pointer": self.ptr_default, "note_ptr": self.note_ptr})
+                                           "pointer": self.ptr_default, "note_ptr": self.note_ptr,
+                                           "side": self.side, "font": self.font})
         except Exception:
             traceback.print_exc()
 
@@ -2356,6 +2397,15 @@ class Win(QMainWindow):
         dlg = SpecDialog(self, f"{name}  ({it['layer']})", cat.guess_category(it["layer"], it["pattern"]),
                          core.measured_mm(it, self.mmu), cur, name,
                          typed=(self.tpl["steps"][self.tpl["i"]][1] if self.tpl and not cur else ""))
+        if str(it["layer"]).upper().startswith("MOT_") or str(it["layer"]) == "0":
+            dlg.remember_layer = None
+        else:
+            dlg.remember_layer = QCheckBox(f"Use this for everything on layer \u201c{it['layer']}\u201d (all details)")
+            dlg.remember_layer.setToolTip("Next time any part on this layer gets this note automatically.")
+            try:
+                dlg.remember.parentWidget().layout().addWidget(dlg.remember_layer)
+            except Exception:
+                dlg.remember_layer = None
         if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.note:
             return False
         dlg.note = self.xa_fill(dlg.note, it)
@@ -2364,6 +2414,8 @@ class Win(QMainWindow):
             self.specs[it["picked"]] = {"note": dlg.note, "x": it["point"][0], "y": it["point"][1], "cat": dlg.cat_final}
             if dlg.remember.isChecked() and name:
                 mapping_set(name, dlg.note)
+            if getattr(dlg, "remember_layer", None) is not None and dlg.remember_layer.isChecked():
+                layer_set(it["layer"], dlg.note)
         elif it.get("user"):
             for el in self.user:
                 if el["uid"] == it["user"]:
@@ -2447,8 +2499,9 @@ class Win(QMainWindow):
         it = next((i for i in self.items if i["id"] == iid), None)
         if it is None:
             return
-        colx = core.LAST_COLUMN_X[0]
-        if self.chk_align.isChecked() and colx is not None and not self.view.last_free:
+        cols = list(core.LAST_COLUMNS)
+        if self.chk_align.isChecked() and cols and not self.view.last_free:
+            colx = min(cols, key=lambda c: abs(c - x))
             w_ = (self.note_boxes[iid][2] - self.note_boxes[iid][0]) if iid in self.note_boxes else 0
             if abs(x - colx) <= 1.5 * w_:
                 x = colx                      # close to the column: line up with the other notes
@@ -2467,6 +2520,190 @@ class Win(QMainWindow):
         self.save_edits()
         self.timer.start()
         self.say("Pointer moved. Drag the dot again to adjust it.")
+
+    def layout_menu(self):
+        from PySide6.QtGui import QActionGroup
+        from PySide6.QtWidgets import QMenu
+        m = QMenu(self)
+        sm = m.addMenu("Note column")
+        g = QActionGroup(sm)
+        for lab, key in (("On the right", "right"), ("On the left", "left"), ("Both sides (nearest)", "both")):
+            a = sm.addAction(lab)
+            a.setCheckable(True)
+            a.setChecked(self.side == key)
+            g.addAction(a)
+            a.triggered.connect(lambda _c=False, k=key: self.set_side(k))
+        m.addSeparator()
+        for lab, fn in (("Align selected: left edges", lambda: self.align_notes("left")),
+                        ("Align selected: right edges", lambda: self.align_notes("right")),
+                        ("Distribute selected evenly (top to bottom)", self.distribute_notes),
+                        ("Snap selected to the column", lambda: self.align_notes("column"))):
+            a = m.addAction(lab)
+            a.triggered.connect(lambda _c=False, f=fn: f())
+        m.addSeparator()
+        fm = m.addMenu("Text font")
+        fg = QActionGroup(fm)
+        for lab, f in (("Arial", "arial.ttf"), ("Calibri", "calibri.ttf"), ("Romans (CAD)", "romans.shx"),
+                       ("Simplex (CAD)", "simplex.shx"), ("Segoe UI", "segoeui.ttf")):
+            a = fm.addAction(lab)
+            a.setCheckable(True)
+            a.setChecked(self.font == f)
+            fg.addAction(a)
+            a.triggered.connect(lambda _c=False, ff=f: self.set_font(ff))
+        pm = m.addMenu("Style presets")
+        a = pm.addAction("Save current look as preset...")
+        a.triggered.connect(lambda _c=False: self.save_preset())
+        pre = preset_all()
+        if pre:
+            pm.addSeparator()
+        for nm in sorted(pre):
+            a = pm.addAction("Use: " + nm)
+            a.triggered.connect(lambda _c=False, n=nm: self.use_preset(n))
+        if pre:
+            dm = pm.addMenu("Delete preset")
+            for nm in sorted(pre):
+                a = dm.addAction(nm)
+                a.triggered.connect(lambda _c=False, n=nm: (preset_delete(n), self.say(f"Preset \u201c{n}\u201d deleted.")))
+        a = m.addAction("Remembered matches...")
+        a.triggered.connect(lambda _c=False: self.manage_matches())
+        m.exec(self.btn_layout.mapToGlobal(self.btn_layout.rect().bottomLeft()))
+
+    def set_side(self, key):
+        if key == self.side:
+            return
+        self.side = key
+        self.note_pos = {}            # old positions belong to the other column
+        self.commit()
+        self.save_edits()
+        self.timer.start()
+
+    def set_font(self, f):
+        self.font = f
+        self.commit()
+        self.save_edits()
+        self.timer.start()
+
+    def _sel_boxes(self):
+        ids = [i for i in self.sel_ids() if i in self.note_boxes]
+        return [(i, self.note_boxes[i]) for i in ids]
+
+    def _store_pos(self, iid, x, ytop):
+        it = next((i for i in self.items if i["id"] == iid), None)
+        if it is not None:
+            self.note_pos[self.item_key(it)] = (x, ytop)
+
+    def align_notes(self, how):
+        sel = self._sel_boxes()
+        if how != "column" and len(sel) < 2:
+            self.say("Select two or more notes first (click one, then Shift-click the others).")
+            return
+        if not sel:
+            self.say("Select the notes to snap first.")
+            return
+        if how == "left":
+            x = min(b[0] for _, b in sel)
+            for i, b in sel:
+                self._store_pos(i, x, b[3])
+        elif how == "right":
+            xr = max(b[2] for _, b in sel)
+            for i, b in sel:
+                self._store_pos(i, xr - (b[2] - b[0]), b[3])
+        else:
+            cols = list(core.LAST_COLUMNS)
+            if not cols:
+                return
+            for i, b in sel:
+                self._store_pos(i, min(cols, key=lambda c: abs(c - b[0])), b[3])
+        self.commit()
+        self.save_edits()
+        self.timer.start()
+
+    def distribute_notes(self):
+        sel = sorted(self._sel_boxes(), key=lambda t: -t[1][3])
+        if len(sel) < 3:
+            self.say("Select three or more notes to spread them evenly.")
+            return
+        top = sel[0][1][3]
+        bottom = sel[-1][1][1]
+        total = sum(b[3] - b[1] for _, b in sel)
+        gap = max(0.0, ((top - bottom) - total) / (len(sel) - 1))
+        y = top
+        for i, b in sel:
+            self._store_pos(i, b[0], y)
+            y -= (b[3] - b[1]) + gap
+        self.commit()
+        self.save_edits()
+        self.timer.start()
+
+    def preset_dict(self):
+        return {"scale": self.scale.value(), "text": self.text_mm.value(), "width": self.note_w.value(),
+                "number": self.number_notes.isChecked(), "pointer": self.ptr_default, "align": self.chk_align.isChecked(),
+                "side": self.side, "font": self.font}
+
+    def save_preset(self):
+        name, ok = QInputDialog.getText(self, "Save style preset", "Name for this look (e.g. \u201cOffice 1:10\u201d):")
+        name = (name or "").strip()
+        if ok and name:
+            preset_save(name, self.preset_dict())
+            self.say(f"Preset \u201c{name}\u201d saved. Find it under Layout > Style presets.")
+
+    def use_preset(self, name):
+        d = preset_all().get(name)
+        if not d:
+            return
+        for w_, k in ((self.scale, "scale"), (self.text_mm, "text"), (self.note_w, "width")):
+            if k in d:
+                w_.setValue(float(d[k]))
+        self.number_notes.setChecked(bool(d.get("number", True)))
+        self.chk_align.setChecked(bool(d.get("align", True)))
+        self.ptr_default, self.note_ptr = d.get("pointer", "dot"), {}
+        self.ptr_combo.setCurrentIndex(max(0, self.ptr_combo.findData(self.ptr_default)))
+        if d.get("side", "right") != self.side:
+            self.note_pos = {}
+        self.side, self.font = d.get("side", "right"), d.get("font", "arial.ttf")
+        self.commit()
+        self.save_edits()
+        self.timer.start()
+        self.say(f"Preset \u201c{name}\u201d applied.")
+
+    def manage_matches(self):
+        o = read_json(OWN_SETTINGS)
+        rows = [("Material", k, v) for k, v in o.get("mapping", {}).items()] + \
+               [("Layer", k, v) for k, v in o.get("layer_map", {}).items()]
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Remembered matches")
+        dlg.resize(760, 420)
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel("When a material name or layer is listed here, its note is written automatically on every detail. "
+                             "Select a row and press Forget to remove it."))
+        tbl = QTableWidget(len(rows), 3)
+        tbl.setHorizontalHeaderLabels(["Type", "Name", "Note"])
+        tbl.horizontalHeader().setStretchLastSection(True)
+        tbl.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        tbl.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        for r, (t, k, v) in enumerate(rows):
+            for c, txt in enumerate((t, k, v)):
+                tbl.setItem(r, c, QTableWidgetItem(txt))
+        tbl.setColumnWidth(1, 200)
+        lay.addWidget(tbl)
+        bb = QHBoxLayout()
+        fg = QPushButton("Forget selected")
+
+        def forget():
+            o2 = read_json(OWN_SETTINGS)
+            for r in sorted({i.row() for i in tbl.selectedIndexes()}, reverse=True):
+                t, k = tbl.item(r, 0).text(), tbl.item(r, 1).text()
+                o2.get("mapping" if t == "Material" else "layer_map", {}).pop(k, None)
+                tbl.removeRow(r)
+            write_json(OWN_SETTINGS, o2)
+        fg.clicked.connect(forget)
+        cl = QPushButton("Close")
+        cl.clicked.connect(dlg.accept)
+        bb.addWidget(fg)
+        bb.addStretch()
+        bb.addWidget(cl)
+        lay.addLayout(bb)
+        dlg.exec()
 
     def on_pointer_pick(self, _i):
         style = self.ptr_combo.currentData()
@@ -2599,8 +2836,10 @@ class Win(QMainWindow):
                 if max(it["bbox"]) * self.mmu < 15:
                     continue                       # specks under 15 mm
                 remembered = mapping_get(core.clean_name(it["pattern"]) or "") if core.clean_name(it["pattern"]).upper() not in ("", "SOLID") else None
+                if not remembered:
+                    remembered = layer_get(it["layer"])  # or a note you chose for this layer
                 if remembered:
-                    txt, ver = remembered, False       # a note you chose before for this material name
+                    txt, ver = remembered, False       # a note you chose before for this material name / layer
                 else:
                     txt, ver = core.rule_note(it["layer"], it["pattern"], core.measured_mm(it, self.mmu))
                     txt = self.xa_fill(txt, it)
@@ -2726,7 +2965,7 @@ class Win(QMainWindow):
                                                if self.item_key(i) in self.note_pos},
                                        targets={i["id"]: self.note_tgt[self.item_key(i)] for i in self.items
                                                 if self.item_key(i) in self.note_tgt},
-                                       pointer=self.ptr_default,
+                                       pointer=self.ptr_default, side=self.side, font=self.font,
                                        pointers={i["id"]: self.note_ptr[self.item_key(i)] for i in self.items
                                                  if self.item_key(i) in self.note_ptr})
             self.note_boxes = {n["id"]: n["box"] for n in ordered if "box" in n}

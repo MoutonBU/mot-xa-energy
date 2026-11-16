@@ -1066,6 +1066,7 @@ def _layout(notes, heights, ax, y_top, h, dmin, iters=6000):
 
 
 LAST_COLUMN_X = [None]
+LAST_COLUMNS = []          # x of every note column drawn last time (left edge of the boxes)
 
 
 def _pointer(msp, style, tx, ty, fx, fy, h, dot_r):
@@ -1093,21 +1094,43 @@ def _pointer(msp, style, tx, ty, fx, fy, h, dot_r):
     hatch.paths.add_polyline_path([(tx - dot_r, ty, 1), (tx + dot_r, ty, 1)], is_closed=True)
 
 
-def place_notes(doc, notes, extents, mmu, scale, text_mm, width_mm, gap_mm, number=False, manual=None, targets=None, pointer="dot", pointers=None):
+def place_notes(doc, notes, extents, mmu, scale, text_mm, width_mm, gap_mm, number=False, manual=None, targets=None,
+                pointer="dot", pointers=None, side="right", font="arial.ttf"):
+    """side: "right", "left" or "both" (each note goes to the nearer side of the drawing)."""
+    LAST_COLUMNS.clear()
     if not notes:
         return []
+    kw = dict(number=number, manual=manual, targets=targets, pointer=pointer, pointers=pointers, font=font)
+    if side != "both":
+        return _place_column(doc, notes, extents, mmu, scale, text_mm, width_mm, gap_mm, side=side, start=0, **kw)
+    cx = (extents[0] + extents[2]) / 2
+    left = [n for n in notes if n["item"]["point"][0] < cx]
+    right = [n for n in notes if n["item"]["point"][0] >= cx]
+    out = []
+    if left:
+        out += _place_column(doc, left, extents, mmu, scale, text_mm, width_mm, gap_mm, side="left", start=0, **kw)
+    if right:
+        out += _place_column(doc, right, extents, mmu, scale, text_mm, width_mm, gap_mm, side="right", start=len(out), **kw)
+    return out
+
+
+def _place_column(doc, notes, extents, mmu, scale, text_mm, width_mm, gap_mm, number=False, manual=None, targets=None,
+                  pointer="dot", pointers=None, side="right", start=0, font="arial.ttf"):
     msp = doc.modelspace()
     h = text_mm * scale / mmu                # text height, drawing units
     width = width_mm * scale / mmu
     gap = gap_mm * scale / mmu
     minx, miny, maxx, maxy = extents
     if "MOT_NOTE" not in doc.styles:
-        doc.styles.add("MOT_NOTE", font="arial.ttf")
+        doc.styles.add("MOT_NOTE", font=font)
+    else:
+        doc.styles.get("MOT_NOTE").dxf.font = font
     for name, col in ((NOTE_LAYER, 7), (LEADER_LAYER, 7)):
         if name not in doc.layers:
             doc.layers.add(name, color=col)
-    x = maxx + gap
-    LAST_COLUMN_X[0] = x
+    x = maxx + gap if side != "left" else minx - gap - width
+    LAST_COLUMNS.append(x)
+    LAST_COLUMN_X[0] = LAST_COLUMNS[0]
     y_top = maxy + h
     cpl = max(10, int(width / (0.78 * h)))   # chars per line estimate
     dot_r = 0.35 * h
@@ -1116,7 +1139,7 @@ def place_notes(doc, notes, extents, mmu, scale, text_mm, width_mm, gap_mm, numb
         extra = 5 if number else 0
         lines = max(1, sum(math.ceil(max(1, len(p) + extra) / cpl) for p in n["note"].split("\n")))
         heights.append(lines * h * 1.4 + 1.2 * h)
-    ax = x - 0.4 * h
+    ax = x - 0.4 * h if side != "left" else x + width + 0.4 * h
     best, cands = _layout(notes, heights, ax, y_top, h, dmin=0.9 * h)
     LAST_CONFLICTS[0] = best[1]
     order, pick = best[2], best[3]
@@ -1143,12 +1166,12 @@ def place_notes(doc, notes, extents, mmu, scale, text_mm, width_mm, gap_mm, numb
                 y = min(b[1] for b in hit) - 0.3 * h
         px, py = (mp if mp else (x, y))                  # a note you dragged keeps your position and takes no slot in the stack
         n["box"] = (px, py - heights[k], px + width, py)
-        msp.add_mtext((f"{len(ordered) + 1}.  " if number else "") + n["note"], dxfattribs={
+        msp.add_mtext((f"{start + len(ordered) + 1}.  " if number else "") + n["note"], dxfattribs={
             "layer": NOTE_LAYER, "style": "MOT_NOTE", "char_height": h, "width": width,
             "insert": (px, py), "attachment_point": 1,
             "color": 1 if n["verify"] else 256})
         ymid = py - 0.6 * h
-        msp.add_lwpolyline([(px - 0.4 * h, ymid), (tx, ymid), (tx, ty)], dxfattribs={"layer": LEADER_LAYER})
+        msp.add_lwpolyline([((px - 0.4 * h) if side != "left" else (px + width + 0.4 * h), ymid), (tx, ymid), (tx, ty)], dxfattribs={"layer": LEADER_LAYER})
         _pointer(msp, (pointers or {}).get(n.get("id"), pointer), tx, ty, tx, ymid, h, dot_r)
         if not mp:
             y -= heights[k]
