@@ -17901,6 +17901,7 @@ class LoginDialog(QDialog):
         lay.addWidget(self.head)
         self.f_name = QLineEdit(); self.f_name.setPlaceholderText("Your name")
         self.f_email = QLineEdit(); self.f_email.setPlaceholderText("Email address")
+        self.f_email.setText(SETTINGS.get("last_email", ""))
         self.f_rec = QLineEdit(); self.f_rec.setPlaceholderText("Recovery key (XXXX-XXXX-XXXX-XXXX)")
         self.f_pw = QLineEdit(); self.f_pw.setPlaceholderText("Password")
         self.f_pw2 = QLineEdit(); self.f_pw2.setPlaceholderText("Repeat password")
@@ -18000,6 +18001,8 @@ class LoginDialog(QDialog):
             self.err.setText("This licence has expired. Contact MCP Architecture & Interiors for a new key.")
             return
         _off_set(u["email"], pw, u["name"])
+        SETTINGS["last_email"] = u["email"]
+        save_settings()
         if self.keep.isChecked() or self.mode in ("activate", "register"):
             SETTINGS["sb_refresh"] = u["refresh"]
             save_settings()
@@ -18141,9 +18144,8 @@ def sign_in_gate(app):
                 u = sb_refresh(rt)
             except SbError as ex:
                 _gate_log("refresh failed (offline=%s status=%s): %s" % (ex.offline, ex.status, ex))
-                if not ex.offline:                          # refused: that saved session is no good any more
-                    SETTINGS["sb_refresh"] = ""
-                    save_settings()
+                # the saved session is kept whatever the reason: a refusal can be a one-off (a quick double start
+                # uses the single-use token twice). It is only removed when the licence itself is switched off.
                 if cached:                                  # no internet, or the token was just used by a quick restart
                     return cached
             else:
@@ -18159,9 +18161,11 @@ def sign_in_gate(app):
                     _off_touch()
                     u["status"] = "ok"
                     return u
-                if st in ("revoked", "expired", "none"):
+                if st in ("revoked", "expired"):
                     SETTINGS["sb_refresh"] = ""
                     save_settings()
+                elif st == "none" and cached:               # no licence record could be made right now: do not throw them out
+                    return cached
         else:
             _gate_log("no saved session")
     else:
