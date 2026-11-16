@@ -9628,6 +9628,7 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         self.update_act = add(m, "Restart the program" if FROZEN else "Update - reload the latest program", self.restart_app)
         add(m, "Update from downloaded file...", self.update_from_download)
+        add(m, "Sign out (ask for the password next time)", self.sign_out)
         if FROZEN:
             add(m, "Check for updates now", lambda: self.gh_check(manual=True))
             add(m, "Update settings (GitHub)...", self.gh_settings)
@@ -10495,6 +10496,10 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, APP_NAME, f"Could not save the icons: {e}")
             return
         QMessageBox.information(self, APP_NAME, f"{n} icon files saved in:\n{os.path.join(d, 'MCP_icons')}")
+
+    def sign_out(self):
+        acc_forget()
+        QMessageBox.information(self, APP_NAME, "You are signed out. The password is asked for the next time the program starts.")
 
     def toggle_mode(self):
         """Swap the dark and light look on the spot: no restart, nothing is reloaded."""
@@ -16952,6 +16957,238 @@ def apply_glass_theme(app, win):
         pass
 
 
+# ---------------------------------------------------------------- sign-in screen (accounts kept on this PC)
+ACCOUNTS_PATH = os.path.join(os.path.dirname(SETTINGS_PATH), "accounts.json")
+
+
+def _acc_load():
+    try:
+        with open(ACCOUNTS_PATH, encoding="utf-8") as f:
+            d = json.load(f)
+            d.setdefault("users", [])
+            return d
+    except Exception:
+        return {"users": []}
+
+
+def _acc_save(d):
+    try:
+        os.makedirs(os.path.dirname(ACCOUNTS_PATH), exist_ok=True)
+        with open(ACCOUNTS_PATH, "w", encoding="utf-8") as f:
+            json.dump(d, f, indent=1)
+        return True
+    except Exception:
+        return False
+
+
+def _pw_hash(pw, salt_hex):
+    import hashlib
+    return hashlib.pbkdf2_hmac("sha256", pw.encode("utf-8"), bytes.fromhex(salt_hex), 200000).hex()
+
+
+def acc_register(name, email, pw):
+    """Creates an account. Returns (recovery_key, error). The password itself is never stored, only a salted hash."""
+    import secrets
+    d = _acc_load()
+    em = email.strip().lower()
+    if any(u["email"] == em for u in d["users"]):
+        return None, "An account with that email already exists. Sign in instead."
+    salt, rsalt = secrets.token_hex(16), secrets.token_hex(16)
+    rk = "-".join(secrets.token_hex(2).upper() for _ in range(4))
+    d["users"].append({"name": name.strip(), "email": em, "salt": salt, "hash": _pw_hash(pw, salt),
+                       "rsalt": rsalt, "rhash": _pw_hash(rk, rsalt)})
+    if not _acc_save(d):
+        return None, "The account could not be saved on this PC."
+    return rk, ""
+
+
+def acc_check(email, pw):
+    import hmac
+    em = email.strip().lower()
+    for u in _acc_load()["users"]:
+        if u["email"] == em:
+            return u if hmac.compare_digest(_pw_hash(pw, u["salt"]), u["hash"]) else None
+    return None
+
+
+def acc_reset(email, recovery, new_pw):
+    import hmac, secrets
+    d = _acc_load()
+    em = email.strip().lower()
+    for u in d["users"]:
+        if u["email"] == em and hmac.compare_digest(_pw_hash(recovery.strip().upper(), u["rsalt"]), u["rhash"]):
+            u["salt"] = secrets.token_hex(16)
+            u["hash"] = _pw_hash(new_pw, u["salt"])
+            return _acc_save(d)
+    return False
+
+
+def acc_remember(email):
+    import secrets, hashlib
+    tok = secrets.token_hex(24)
+    d = _acc_load()
+    d["remember"] = {"email": email.strip().lower(), "tok": hashlib.sha256(tok.encode()).hexdigest()}
+    _acc_save(d)
+    SETTINGS["login_token"] = tok
+    save_settings()
+
+
+def acc_forget():
+    d = _acc_load()
+    d.pop("remember", None)
+    _acc_save(d)
+    SETTINGS["login_token"] = ""
+    save_settings()
+
+
+def acc_remembered():
+    """The user who ticked 'Keep me signed in' on this PC, or None."""
+    import hashlib
+    d = _acc_load()
+    r, tok = d.get("remember"), SETTINGS.get("login_token", "")
+    if r and tok and hashlib.sha256(tok.encode()).hexdigest() == r.get("tok"):
+        for u in d["users"]:
+            if u["email"] == r["email"]:
+                return u
+    return None
+
+
+class LoginDialog(QDialog):
+    """Start screen: the logo in the middle, the sign-in form underneath. First time on a PC it opens on 'Create account'."""
+
+    def __init__(self):
+        super().__init__()
+        self.user = None
+        self.setWindowTitle(APP_NAME)
+        self.setWindowIcon(app_icon())
+        self.setFixedSize(460, 700)
+        self.mode = "login" if _acc_load()["users"] else "register"
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(46, 34, 46, 28)
+        lay.setSpacing(8)
+        mark = QLabel()
+        mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        mark.setPixmap(logo_pixmap().scaledToHeight(120, Qt.TransformationMode.SmoothTransformation))
+        lay.addWidget(mark)
+        t = QLabel("<span style='font-size:17px;font-weight:700;letter-spacing:2px'>MCP ARCHITECTURE &amp; INTERIORS</span><br>"
+                   "<span style='font-size:12px;color:#9aa0a8;letter-spacing:1px'>SANS Compliance Suite</span>")
+        t.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(t)
+        lay.addStretch(1)
+        self.head = QLabel()
+        self.head.setStyleSheet("font-size:15px;font-weight:700;")
+        lay.addWidget(self.head)
+        self.f_name = QLineEdit(); self.f_name.setPlaceholderText("Your name")
+        self.f_email = QLineEdit(); self.f_email.setPlaceholderText("Email address")
+        self.f_rec = QLineEdit(); self.f_rec.setPlaceholderText("Recovery key (XXXX-XXXX-XXXX-XXXX)")
+        self.f_pw = QLineEdit(); self.f_pw.setPlaceholderText("Password")
+        self.f_pw2 = QLineEdit(); self.f_pw2.setPlaceholderText("Repeat password")
+        for f_ in (self.f_pw, self.f_pw2):
+            f_.setEchoMode(QLineEdit.EchoMode.Password)
+        for f_ in (self.f_name, self.f_email, self.f_rec, self.f_pw, self.f_pw2):
+            f_.setMinimumHeight(34)
+            f_.returnPressed.connect(self.go)
+            lay.addWidget(f_)
+        self.show_pw = QCheckBox("Show password")
+        self.show_pw.toggled.connect(lambda on: [f_.setEchoMode(QLineEdit.EchoMode.Normal if on else QLineEdit.EchoMode.Password) for f_ in (self.f_pw, self.f_pw2)])
+        lay.addWidget(self.show_pw)
+        self.keep = QCheckBox("Keep me signed in on this PC")
+        lay.addWidget(self.keep)
+        self.err = QLabel("")
+        self.err.setWordWrap(True)
+        self.err.setStyleSheet("color:#ff8f9c;")
+        lay.addWidget(self.err)
+        self.btn = QPushButton()
+        self.btn.setProperty("accent", True)
+        self.btn.setMinimumHeight(42)
+        self.btn.clicked.connect(self.go)
+        lay.addWidget(self.btn)
+        row = QHBoxLayout()
+        self.l1 = QPushButton(); self.l2 = QPushButton()
+        for b_ in (self.l1, self.l2):
+            b_.setFlat(True)
+            b_.setCursor(Qt.CursorShape.PointingHandCursor)
+            b_.setStyleSheet("QPushButton{background:transparent;border:none;color:#9aa0a8;text-decoration:underline;}"
+                             "QPushButton:hover{color:#d8132b;}")
+            row.addWidget(b_)
+        lay.addLayout(row)
+        self.l1.clicked.connect(lambda: self.set_mode("register" if self.mode == "login" else "login"))
+        self.l2.clicked.connect(lambda: self.set_mode("reset"))
+        self.set_mode(self.mode)
+
+    def set_mode(self, m):
+        self.mode = m
+        self.err.setText("")
+        reg, res = m == "register", m == "reset"
+        self.head.setText({"login": "Sign in", "register": "Create your account", "reset": "Reset your password"}[m])
+        self.f_name.setVisible(reg)
+        self.f_rec.setVisible(res)
+        self.f_pw.setPlaceholderText("New password (at least 8 characters)" if (reg or res) else "Password")
+        self.f_pw2.setVisible(reg or res)
+        self.show_pw.setVisible(True)
+        self.keep.setVisible(m == "login")
+        self.btn.setText({"login": "Sign in", "register": "Create account", "reset": "Set new password"}[m])
+        self.l1.setText("Create a new account" if m == "login" else "I already have an account")
+        self.l2.setText("Forgot password?" if m == "login" else "")
+        self.l2.setVisible(m == "login")
+        (self.f_email if m != "register" else self.f_name).setFocus()
+
+    def go(self):
+        em, pw = self.f_email.text().strip(), self.f_pw.text()
+        if self.mode == "login":
+            u = acc_check(em, pw)
+            if not u:
+                self.err.setText("That email and password do not match.")
+                return
+            if self.keep.isChecked():
+                acc_remember(u["email"])
+            self.user = u
+            self.accept()
+            return
+        if "@" not in em or "." not in em.split("@")[-1]:
+            self.err.setText("Enter a valid email address.")
+            return
+        if len(pw) < 8:
+            self.err.setText("The password needs at least 8 characters.")
+            return
+        if pw != self.f_pw2.text():
+            self.err.setText("The two passwords are not the same.")
+            return
+        if self.mode == "register":
+            if not self.f_name.text().strip():
+                self.err.setText("Enter your name.")
+                return
+            rk, er = acc_register(self.f_name.text(), em, pw)
+            if er:
+                self.err.setText(er)
+                return
+            QMessageBox.information(self, APP_NAME,
+                                    "Your account is ready.\n\nRECOVERY KEY:   %s\n\nWrite it down and keep it safe. It is the only way to "
+                                    "set a new password if you forget this one." % rk)
+            self.user = acc_check(em, pw)
+            self.accept()
+        else:
+            if acc_reset(em, self.f_rec.text(), pw):
+                QMessageBox.information(self, APP_NAME, "Your password was changed. Sign in with the new one.")
+                self.f_pw.clear(); self.f_pw2.clear()
+                self.set_mode("login")
+            else:
+                self.err.setText("The email or the recovery key is not right.")
+
+
+def sign_in_gate(app):
+    """True when the person may continue. Skipped for the user who chose 'Keep me signed in'."""
+    u = acc_remembered()
+    if u:
+        return u
+    app.setStyle("Fusion")
+    app.setStyleSheet((light_qss(STUDIO_QSS) if light() else STUDIO_QSS).replace("@TICK@", _tick_png()))
+    dlg = LoginDialog()
+    if dlg.exec() == QDialog.DialogCode.Accepted:
+        return dlg.user
+    return None
+
+
 def main():
     if len(sys.argv) == 3 and sys.argv[1] == "--selftest":
         # Developer check: python mot_light_vent.py --selftest picture.png
@@ -16962,6 +17199,10 @@ def main():
             print(ln[4])
         return
     app = QApplication(sys.argv)
+    if not any(a in sys.argv for a in ("--restore", "--ready", "--after-update")):   # reloads and updates stay signed in
+        user = sign_in_gate(app)
+        if not user:
+            return
     win = MainWindow()
     apply_glass_theme(app, win)
     app._icon_filter = _IconFilter(app)
