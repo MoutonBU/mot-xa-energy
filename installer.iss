@@ -9,6 +9,7 @@ OutputBaseFilename=MOT_XA_Energy_Setup
 OutputDir=installer_out
 SetupIconFile=mcp_logo.ico
 WizardStyle=modern
+WizardDarkStyle=dark
 WizardImageFile=wiz_big.bmp
 WizardSmallImageFile=wiz_small.bmp
 WizardImageBackColor=$1A1716
@@ -49,6 +50,35 @@ begin
   begin
     TRichEditViewer(C).Color := PANEL;
     TRichEditViewer(C).Font.Color := TXT;
+  end
+  else if C is TNewMemo then
+  begin
+    TNewMemo(C).Color := PANEL;
+    TNewMemo(C).Font.Color := TXT;
+  end
+  else if C is TEdit then
+  begin
+    TEdit(C).Color := PANEL;
+    TEdit(C).Font.Color := TXT;
+  end
+  else if C is TNewComboBox then
+  begin
+    TNewComboBox(C).Color := PANEL;
+    TNewComboBox(C).Font.Color := TXT;
+  end
+  else if C is TNewCheckBox then
+    TNewCheckBox(C).Font.Color := TXT
+  else if C is TNewRadioButton then
+    TNewRadioButton(C).Font.Color := TXT
+  else if C is TFolderTreeView then
+  begin
+    TFolderTreeView(C).Color := PANEL;
+    TFolderTreeView(C).Font.Color := TXT;
+  end
+  else if C is TStartMenuFolderTreeView then
+  begin
+    TStartMenuFolderTreeView(C).Color := PANEL;
+    TStartMenuFolderTreeView(C).Font.Color := TXT;
   end;
   if C is TWinControl then
     for i := 0 to TWinControl(C).ControlCount - 1 do
