@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QComboBox, QGraphicsP
                                QListWidget, QListWidgetItem, QTextEdit, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 import detail_catalog as cat
+import detail_smart as smart
 import detail_to_dwg as core
 
 HERE = Path(__file__).resolve().parent
@@ -107,6 +108,37 @@ def ai_request(prompt, image_b64, key, model):
     except urllib.error.URLError as e:
         raise RuntimeError(f"No internet connection ({e.reason})")
     return "".join(p.get("text", "") for p in data.get("content", []))
+
+
+SMART_SYSTEM = (
+    "You are a South African architectural technologist writing ONE construction-detail callout note in spec voice. "
+    "The person types a few words for the element (e.g. 'concrete coping'). Expand them into the complete note: size and "
+    "material where given or standard, then the detailing that goes with it in South African practice (falls and slopes, "
+    "drips or throatings, DPC/DPM, laps, fixings, treatment, joints), and a SANS reference only where you are confident "
+    "(SANS 10400 parts K walls, L roofs, J floors, H foundations, R stormwater, P drainage, N glazing, XA energy, "
+    "SANS 10100-1 concrete, SANS 1783 and 10005 timber, SANS 952/248 DPM/DPC). Do not invent brand names or numbers: write "
+    "'to Eng. design' or 'to manufacturer's spec' instead. Metric mm only, thousands with a space (1 200). "
+    "At most 260 characters, one or two sentences, no leading number, no quotes, no explanation. Return only the note text.")
+
+
+def ai_text(prompt, key, model):
+    body = {"model": model, "max_tokens": 400, "system": SMART_SYSTEM,
+            "messages": [{"role": "user", "content": prompt}]}
+    req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=json.dumps(body).encode(),
+                                 headers={"x-api-key": key, "anthropic-version": "2023-06-01",
+                                          "content-type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            data = json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            msg = json.loads(e.read().decode("utf-8")).get("error", {}).get("message", "")
+        except Exception:
+            msg = ""
+        raise RuntimeError(f"Claude said: {msg or e.reason} (code {e.code})")
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"No internet connection ({e.reason})")
+    return " ".join("".join(p.get("text", "") for p in data.get("content", [])).split()).strip(' "')
 
 
 class Worker(QThread):
@@ -395,7 +427,7 @@ class SpecDialog(QDialog):
         head = QLabel("<b>%s</b>" % title + (f"  &middot;  drawn thickness about <b>{measured} mm</b>" if measured else ""))
         v.addWidget(head)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Search the whole catalog, e.g. 170, purlin, DPC, gutter, 50 x 50...")
+        self.search.setPlaceholderText("Type what it is, e.g. concrete coping, stone cill, 170 slab, 50 x 50 purlin... and the note is written for you")
         self.search.setClearButtonEnabled(True)
         v.addWidget(self.search)
         row = QHBoxLayout()
@@ -415,6 +447,11 @@ class SpecDialog(QDialog):
         self.cnt.setObjectName("muted")
         br.addWidget(self.cnt)
         br.addStretch()
+        self.ai_btn = QPushButton("Write it with AI")
+        self.ai_btn.setToolTip("Asks Claude to write the full detailed note from the words you typed (needs the internet and your API key).")
+        self.ai_btn.clicked.connect(self.ask_ai)
+        self.ai_btn.setVisible(bool(api_key()))
+        br.addWidget(self.ai_btn)
         bs = QPushButton("Save this note to My specs...")
         bs.clicked.connect(self.save_mine)
         bo = QPushButton("Use this note")
@@ -427,6 +464,7 @@ class SpecDialog(QDialog):
             br.addWidget(b_)
         v.addLayout(br)
         self._cur = current
+        self.cat_name, self.title = cat_name, title
         self._fill_cats()
         names = [self.cats.item(i).text() for i in range(self.cats.count())]
         self.cats.setCurrentRow(names.index(cat_name) if cat_name in names else 0)
@@ -483,10 +521,38 @@ class SpecDialog(QDialog):
                 if all(w in hay for w in words):
                     hits.append((lab, note))
                     cats.append(k)
-        self._show(hits, cats)
-        self.cnt.setText(f"{len(hits)} found")
-        if hits:
-            self.opts.setCurrentRow(0)
+        note, rec = smart.smart_note(txt.strip())
+        label = f"\u270E  Write it from what I typed:  {txt.strip()}" + (f"   [{rec}]" if rec else "")
+        self._show([(label, note)] + hits, [None] + cats)
+        self.cnt.setText(f"{len(hits)} catalog matches  -  the first line is the note written from your words")
+        self.opts.setCurrentRow(0)
+
+    def ask_ai(self):
+        typed = self.search.text().strip() or self.title
+        key = api_key()
+        if not key:
+            return
+        ctx = [n for _l, n in cat.CATALOG.get(self.cat_name, [])[:3]]
+        prompt = (f"Element typed: {typed}\nMaterial in the drawing: {self.title}\n"
+                  + (f"Thickness measured from the drawing: about {self.measured} mm\n" if self.measured else "")
+                  + "Examples of the house style:\n- " + "\n- ".join(ctx) + "\n\nWrite the note.")
+        self.ai_btn.setEnabled(False)
+        self.ai_btn.setText("Writing...")
+        self._w = Worker(lambda: ai_text(prompt, key, api_model()))
+        self._w.done.connect(self._ai_done)
+        self._w.fail.connect(self._ai_fail)
+        self._w.start()
+
+    def _ai_done(self, txt):
+        self.ai_btn.setEnabled(True)
+        self.ai_btn.setText("Write it with AI")
+        if txt:
+            self.text.setPlainText(txt)
+
+    def _ai_fail(self, msg):
+        self.ai_btn.setEnabled(True)
+        self.ai_btn.setText("Write it with AI")
+        QMessageBox.warning(self, "AI", f"{msg}\n\nThe note written from your words is still available.")
 
     def _pick(self, r):
         if 0 <= r < len(self._notes):

@@ -1,6 +1,6 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.13.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.14.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
@@ -19,6 +19,7 @@ Current version: **1.13.0**. You can read these notes in the program: File > Rel
 - **Updates**: the red "Update available" button and Menu > Check for updates download and install the new version in
   one click, with no token. Your work is saved and restored after the update.
 - **Dark / light mode** switch that changes the interface at once, without restarting. The installer matches the dark theme.
+- **Detail Notes: type it and the note writes itself (1.14.0):** in the spec picker, just type what the part is (for example "concrete coping", "stone cill", "damp proof course", "50 x 50 purlin"). The first line of the list, "Write it from what I typed", builds the full detailed note: coping gets drip grooves (throatings) and a fall to the roof side, cills get a drip and a slope, slabs get DPM and mesh, and so on. Press Enter to use it, or edit the wording. If you have an API key set up, a "Write it with AI" button asks Claude to write the note from your words. The catalog grew to 461 specifications in 31 groups (foundations, waterproofing, roof falls, flashings, windows and doors, wet areas, drainage, electrical, paving, fencing and more). Please check the wording against your office standard and SANS before issuing drawings.
 - **Detail Notes cleaned up (1.13.0):**
   - Fixed: clicking a part of the detail did nothing (clicks snapped to corner points instead of the part itself).
   - The detail shows in house colours (red brick with real bricks, green concrete, pink insulation) as soon as it opens, again.

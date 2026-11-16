@@ -349,8 +349,22 @@ CATALOG["General notes"] = [
     ("Fall to drain", "Fall 1:100 to drain"),
 ]
 
+try:                                   # the extra groups live in their own file
+    from detail_catalog_more import EXTRA as _EXTRA
+    for _k, _v in _EXTRA.items():
+        CATALOG.setdefault(_k, [])
+        CATALOG[_k] = list(CATALOG[_k]) + list(_v)
+except Exception:
+    pass
+
 # ------------------------------------------------------------------ guess the category from the material
 GUESS = [
+    (r"parapet|flat.?roof|torch|roof.?outlet", "Roofs: flat roofs and waterproofing"),
+    (r"shower|bath|basin|toilet|soil|drain|sewer|plumb", "Wet areas and plumbing"),
+    (r"driveway|kerb|retaining|boundary|deck|pergola|stormwater", "External works"),
+    (r"skirting|architrave|cupboard|counter|joinery", "Joinery, trims and internal finishes"),
+    (r"drywall|stud|partition|timber.?frame|steel.?frame", "Light-weight and framed walls"),
+    (r"joist|decking|plywood|osb", "Timber and carpentry"),
     (r"coping|cut.?stone|stone|cladding|plinth|paving", "Stone, coping and cladding"),
     (r"dpm|dpc|membrane|damp|waterproof|torch", "Damp-proofing and waterproofing"),
     (r"insul|isotherm|aerolite|glasswool|rockwool|polystyrene|eps|xps|pir|iso.?board", "Insulation"),
@@ -408,10 +422,11 @@ def count():
 
 def match_index(options, name, mm=None):
     """Which option to pre-select: the one whose words best match the material name; among equals the closest size."""
-    words = {w for w in re.findall(r"[a-z]+", (name or "").lower()) if len(w) > 2 and w not in ("mm", "the", "and", "eng", "design")}
+    stem = lambda w: w[:4]
+    words = {stem(w) for w in re.findall(r"[a-z]+", (name or "").lower()) if len(w) > 2 and w not in ("mm", "the", "and", "eng", "design")}
     best, cand = 0, []
     for i, (lab, _n) in enumerate(options):
-        sc = len(words & set(re.findall(r"[a-z]+", lab.lower())))
+        sc = len(words & {stem(w) for w in re.findall(r"[a-z]+", lab.lower()) if len(w) > 2})
         if mm and first_number(lab) is not None and abs(first_number(lab) - mm) <= 2:
             sc += 2                                   # the size drawn matches this option
         if sc > best:
