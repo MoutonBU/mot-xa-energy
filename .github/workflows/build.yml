@@ -28,8 +28,10 @@ jobs:
       - run: choco install innosetup -y --no-progress
       - run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss'
       - uses: actions/upload-artifact@v4
+        continue-on-error: true   # a full storage quota must never stop the release below
         with:
           name: installer
+          retention-days: 1
           path: installer_out/MCP_XA_Energy_Setup_*.exe
       - name: Release
         if: github.ref_type == 'branch'
