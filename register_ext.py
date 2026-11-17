@@ -15,7 +15,7 @@ from email.utils import parsedate_to_datetime
 
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QLabel,
+from PySide6.QtWidgets import (QWidget, QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QTableWidget,
                                QTableWidgetItem, QVBoxLayout)
 
@@ -77,6 +77,66 @@ def short_date(iso):
 
 
 _KEEP = []
+
+
+class EmailPreviewDialog(QDialog):
+    """Two tabs: Edit (To, Cc, Subject and the text) and How it will look."""
+
+    def __init__(self, page, to, cc, subject, body, attached):
+        super().__init__(page)
+        from PySide6.QtWidgets import QTabWidget, QTextBrowser
+        self.setWindowTitle("Preview and edit the email")
+        self.resize(780, 700)
+        v = QVBoxLayout(self)
+        self.tabs = QTabWidget()
+        ed = QWidget()
+        ev = QVBoxLayout(ed)
+        f = QFormLayout()
+        self.to, self.cc, self.sub = QLineEdit(to), QLineEdit(cc), QLineEdit(subject)
+        try:
+            import contacts
+            contacts.attach(self.to, lambda: page._M())
+            contacts.attach(self.cc, lambda: page._M())
+        except Exception:
+            pass
+        f.addRow("To", self.to)
+        f.addRow("Cc", self.cc)
+        f.addRow("Subject", self.sub)
+        ev.addLayout(f)
+        self.body = QPlainTextEdit(body)
+        ev.addWidget(self.body, 1)
+        self.tabs.addTab(ed, "Edit")
+        self.view = QTextBrowser()
+        self.tabs.addTab(self.view, "How it will look")
+        self.attached = attached
+        self.tabs.currentChanged.connect(self._look)
+        v.addWidget(self.tabs, 1)
+        v.addWidget(QLabel(attached))
+        bar = QHBoxLayout()
+        bar.addStretch(1)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        use = QPushButton("Use this email")
+        use.setStyleSheet("font-weight:700;")
+        use.clicked.connect(self.accept)
+        bar.addWidget(cancel)
+        bar.addWidget(use)
+        v.addLayout(bar)
+
+    def values(self):
+        return self.to.text().strip(), self.cc.text().strip(), self.sub.text().strip(), self.body.toPlainText()
+
+    def _look(self, i):
+        if i != 1:
+            return
+        import html
+        to, cc, sub, body = self.values()
+        h = ('<div style="font-family:Segoe UI,Arial; font-size:10pt;">'
+             '<table cellspacing="0" cellpadding="3"><tr><td><b>To</b></td><td>%s</td></tr>%s<tr><td><b>Subject</b></td><td><b>%s</b></td></tr></table><hr>'
+             '<div style="white-space:pre-wrap;">%s</div><hr><p style="color:#777;">%s</p></div>' %
+             (html.escape(to or "(nobody yet: add their email)"), ("<tr><td><b>Cc</b></td><td>%s</td></tr>" % html.escape(cc)) if cc else "",
+              html.escape(sub), html.escape(body), html.escape(self.attached)))
+        self.view.setHtml(h)
 
 SIGK = (("sig_name", "Your name", "Mouton Burger"), ("sig_role", "Your position", "Director"), ("sig_company", "Company", "MCP Architecture & Interiors"),
         ("sig_phone", "Phone", "082 000 0000"), ("sig_email", "Email", "name@company.co.za"), ("sig_web", "Website", ""), ("sig_address", "Address", ""))
@@ -891,6 +951,24 @@ class LogMixin:
 class MailMixin:
     def _M(self):
         return sys.modules[type(self.host).__module__]
+
+    def preview_email(self):
+        """Show the email as the client will get it, and let the person change anything before it is sent."""
+        subj, body = self._mail_parts()
+        d = EmailPreviewDialog(self, self.info.get("email", ""), self.info.get("cc", ""), subj, body, self.att_lbl.text())
+        if d.exec():
+            to, cc, subj, body = d.values()
+            self.info["email"], self.info["cc"] = to, cc
+            if "email" in self.f:
+                self.f["email"].setText(to)
+            if "cc" in self.f:
+                self.f["cc"].setText(cc)
+            self._mail_setting = True
+            try:
+                self.mail.setPlainText(("Subject: %s\n\n" % subj if subj else "") + body)
+            finally:
+                self._mail_setting = False
+            self._mail_manual = True
 
     def my_signature(self):
         M = self._M()

@@ -363,7 +363,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         self.send_btn.setStyleSheet("font-weight:700; padding: 0 22px;")
         self.send_btn.clicked.connect(self.send_mail)
         bar.addWidget(self.send_btn)
-        for text, fn in (("Preview the PDF", self.preview_pdf), ("Save the PDF", self.export_pdf)):
+        for text, fn in (("Preview and edit the email", self.preview_email), ("Preview the PDF", self.preview_pdf), ("Save the PDF", self.export_pdf)):
             b = QPushButton(text)
             b.setMinimumHeight(38)
             b.clicked.connect(fn)
@@ -409,6 +409,8 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             self._mail_setting = True
             try:
                 self.write_mail()
+            except Exception as e:       # never leave the email box empty
+                self.mail.setPlainText("(The email could not be written automatically: %s.)\n\nYou can still type it here." % e)
             finally:
                 self._mail_setting = False
         gi = self.groups_in_issue()
@@ -792,7 +794,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         o = ((h or {}).get("rows") or {}).get(self.key(r)) or {}
         orev, odate = (o.get("rev") or ""), (o.get("rdate") or "")
         out = []
-        for it in sorted((tuple(x) for x in (r.get("revs") or []) if len(x) >= 3), key=lambda x: (x[1], x[0])):
+        for it in sorted((tuple(str(v or "") for v in x[:3]) for x in (r.get("revs") or []) if len(x) >= 3), key=lambda x: (x[1], x[0])):
             rv, dt, ds = it[0], it[1], it[2]
             if not ds:
                 continue
@@ -807,7 +809,10 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
 
     def _what(self, r):
         """What changed on a drawing, read from the title block's revision column; falls back to the typed comment."""
-        items = self.rev_items(r)
+        try:
+            items = self.rev_items(r)
+        except Exception:
+            items = []
         by = r.get("by") or ""
         if items:
             return (by + ": " if by else "") + "; ".join("Rev %s - %s" % (rv, ds) for rv, _dt, ds in items)

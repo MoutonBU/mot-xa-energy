@@ -1,11 +1,14 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.55.1**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.56.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Preview and edit the email, 1.56.0**: a new button next to Send opens the email in two tabs: Edit (To, Cc, Subject and the text, with contact suggestions)
+  and How it will look (as the client sees it, with the attachments). "Use this email" keeps your changes.
+  Fixed: if a drawing's revision row had no date, the email box could stay empty.
 - **Email suggestions load as soon as the register opens, 1.55.1**: typing in To / Cc / Their email now offers your Gmail contacts (loaded when the register opens, not only when sending) plus every address already used in the register. If your account still needs to allow contacts, a grey note under the fields says what to press.
 - **Signature, changes from the PDFs, contacts, revision numbering, 1.55.0**:
   - *My email signature* (Drawing register > More): each person fills in their own name, position, company, phone, email, website and address. It is added to
