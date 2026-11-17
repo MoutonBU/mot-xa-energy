@@ -1,11 +1,15 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.48.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.49.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Big drawing issues, 1.49.0**: the send window shows the total size and warns when it is too big for one email (over about 17 MB
+  of files, which is about 22 MB once the mail is encoded). "Make the PDFs smaller" makes smaller copies for the email (pictures scaled
+  down, the file cleaned and compressed; your own files are not touched), with a second "smaller still" step. If it is still too big,
+  the drawings are shared over as few emails as possible ("part 1 of 3 ..."), each under the limit; the first has the full text.
 - **Email preview in the drawing register, 1.48.0**: under the drawing list the email is written for you and kept up to date as you add
   drawings, change the details, or add orders and changes (these are listed in the email with the client's email as the reference).
   The To address and what will be attached (the register PDF and the drawing PDFs, with their size) are shown. You can edit the text;

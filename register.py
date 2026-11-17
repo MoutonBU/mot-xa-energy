@@ -406,7 +406,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         self.to_lbl.setText("<b>To:</b> %s" % (self.info.get("email") or "<i>add their email above</i>"))
         self.att_lbl.setText("Attached when you send: the drawing register (PDF)%s.%s" % (
             (" and %d drawing PDFs (%.1f MB)" % (len(files), mb)) if files else "",
-            "  Large mail may be refused by the receiver (over about 20 MB): untick some drawings in the send window." if mb > 20 else ""))
+            "  That is too big for one email: the send window can make the PDFs smaller or send them in several emails." if mb > 17 else ""))
 
     SIMPLE = ("on", "no", "title", "rev", "comment")
 

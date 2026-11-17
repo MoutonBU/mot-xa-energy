@@ -391,6 +391,43 @@ def addresses(t):
     return [a.strip() for a in re.split(r"[;,]", t or "") if a.strip()]
 
 
+LIMIT_MB = 17.0      # raw size per email: mail adds about a third when it encodes attachments, and most servers stop at 20 to 25 MB
+
+LEVELS = [("normal", 150, 75), ("strong", 110, 55)]
+
+
+def shrink_pdf(src, dst, level=0):
+    """A smaller copy of a PDF: pictures are scaled down to print-sheet quality and the file is cleaned and compressed."""
+    try:
+        import pymupdf as fitz
+    except ImportError:
+        import fitz
+    _n, dpi, q = LEVELS[min(level, len(LEVELS) - 1)]
+    d = fitz.open(src)
+    try:
+        d.rewrite_images(dpi_threshold=dpi + 30, dpi_target=dpi, quality=q)
+    except Exception:
+        pass
+    d.save(dst, garbage=4, deflate=True, clean=True)
+    d.close()
+
+
+def split_parts(files, limit_mb=LIMIT_MB):
+    """Share the files over as few emails as possible, each under the limit (a file bigger than the limit goes alone)."""
+    parts, sizes = [], []
+    for p in sorted(files, key=lambda x: -os.path.getsize(x)):
+        mb = os.path.getsize(p) / 1e6
+        for i, used in enumerate(sizes):
+            if used + mb <= limit_mb:
+                parts[i].append(p)
+                sizes[i] += mb
+                break
+        else:
+            parts.append([p])
+            sizes.append(mb)
+    return parts
+
+
 class SendDialog(QDialog):
     def __init__(self, page, subject, body, pdf_path, drawings):
         super().__init__(page)
@@ -419,7 +456,21 @@ class SendDialog(QDialog):
         self.att.itemChanged.connect(self._size)
         v.addWidget(self.att, 2)
         self.size = QLabel("")
+        self.size.setWordWrap(True)
         v.addWidget(self.size)
+        sr = QHBoxLayout()
+        self.shrink_b = QPushButton("Make the PDFs smaller")
+        self.shrink_b.setToolTip("Makes smaller copies for the email (pictures are scaled down). Your own files are not changed.")
+        self.shrink_b.clicked.connect(self.shrink)
+        sr.addWidget(self.shrink_b)
+        self.split_chk = QCheckBox("If it is still too big, send it in several emails")
+        self.split_chk.setChecked(True)
+        self.split_chk.toggled.connect(self._size)
+        sr.addWidget(self.split_chk)
+        sr.addStretch(1)
+        v.addLayout(sr)
+        self.level = 0
+        self.tmp = tempfile.mkdtemp()
         bar = QHBoxLayout()
         self.send = QPushButton("Send")
         self.send.setDefault(True)
@@ -435,9 +486,50 @@ class SendDialog(QDialog):
     def files(self):
         return [p for it, p in self.items if it.checkState() == Qt.CheckState.Checked]
 
+    def parts(self):
+        fs = self.files()
+        if not self.split_chk.isChecked() or sum(os.path.getsize(p) for p in fs) / 1e6 <= LIMIT_MB:
+            return [fs]
+        return split_parts(fs)
+
+    def shrink(self):
+        from PySide6.QtWidgets import QApplication
+        lvl = min(self.level, len(LEVELS) - 1)
+        self.shrink_b.setEnabled(False)
+        before = sum(os.path.getsize(p) for p in self.files())
+        for i, (it, p) in enumerate(self.items):
+            if it.checkState() != Qt.CheckState.Checked or not p.lower().endswith(".pdf"):
+                continue
+            self.size.setText("Making smaller: %s ..." % os.path.basename(p))
+            QApplication.processEvents()
+            out = os.path.join(self.tmp, "%d_%d_%s" % (lvl, i, os.path.basename(p)))
+            try:
+                shrink_pdf(p, out, lvl)
+                if os.path.getsize(out) < os.path.getsize(p):
+                    it.setText("%s   (%.1f MB, made smaller)" % (os.path.basename(p), os.path.getsize(out) / 1e6))
+                    self.items[i] = (it, out)
+            except Exception:
+                pass
+        after = sum(os.path.getsize(p) for p in self.files())
+        self.level += 1
+        self.shrink_b.setText("Make them smaller still" if self.level < len(LEVELS) else "Smallest setting used")
+        self.shrink_b.setEnabled(self.level < len(LEVELS))
+        self._size()
+        self.size.setText("%.1f MB before, %.1f MB now.  %s" % (before / 1e6, after / 1e6, self.size.text()))
+
     def _size(self, *_a):
-        mb = sum(os.path.getsize(p) for p in self.files()) / 1e6
-        self.size.setText("%d files, %.1f MB%s" % (len(self.files()), mb, "   (many mail servers refuse more than 20 to 25 MB: untick drawings or send in two emails)" if mb > 20 else ""))
+        fs = self.files()
+        mb = sum(os.path.getsize(p) for p in fs) / 1e6
+        n = len(self.parts())
+        txt = "%d files, %.1f MB." % (len(fs), mb)
+        big = [os.path.basename(p) for p in fs if os.path.getsize(p) / 1e6 > LIMIT_MB]
+        if big:
+            txt += "  %s alone is over the limit: make the PDFs smaller, or untick it and send it separately." % big[0]
+        elif mb > LIMIT_MB and n > 1:
+            txt += "  That is too big for one email, so it will go as %d emails (part 1 of %d ...)." % (n, n)
+        elif mb > LIMIT_MB:
+            txt += "  That is too big for one email (most mail servers stop at 20 to 25 MB): make the PDFs smaller, or tick \"send it in several emails\"."
+        self.size.setText(txt)
 
     def _go(self):
         if not addresses(self.to.text()):
@@ -668,28 +760,41 @@ class MailMixin:
         dlg = SendDialog(self, subj, body, pdf, drawings)
         if not dlg.exec():
             return
-        m = EmailMessage()
         frm = S.get("mail_address") or S.get("smtp_from") or S.get("smtp_user")
         to, cc = addresses(dlg.to.text()), addresses(dlg.cc.text())
-        m["From"], m["To"], m["Subject"] = frm, ", ".join(to), dlg.sub.text().strip()
-        if cc:
-            m["Cc"] = ", ".join(cc)
-        m.set_content(dlg.body.toPlainText())
-        for p in dlg.files():
-            with open(p, "rb") as f:
-                m.add_attachment(f.read(), maintype="application", subtype="pdf" if p.lower().endswith(".pdf") else "octet-stream", filename=os.path.basename(p))
+        parts = [p for p in dlg.parts() if p] or [[]]
+        n = len(parts)
+        msgs = []
+        for i, files in enumerate(parts):
+            m = EmailMessage()
+            m["From"], m["To"] = frm, ", ".join(to)
+            m["Subject"] = dlg.sub.text().strip() + ((" (part %d of %d)" % (i + 1, n)) if n > 1 else "")
+            if cc:
+                m["Cc"] = ", ".join(cc)
+            if i == 0:
+                m.set_content((("This issue is sent in %d emails because of the size. This is part 1.\n\n" % n) if n > 1 else "") + dlg.body.toPlainText())
+            else:
+                m.set_content("Part %d of %d of the drawing issue for %s.\n\nIn this email:\n%s\n" % (i + 1, n, self.project_name(), "\n".join("  - " + os.path.basename(p) for p in files)))
+            for p in files:
+                with open(p, "rb") as f:
+                    m.add_attachment(f.read(), maintype="application", subtype="pdf" if p.lower().endswith(".pdf") else "octet-stream",
+                                     filename=re.sub(r"^\d+_\d+_", "", os.path.basename(p)))
+            msgs.append(m)
         bcc_me = bool(S.get("smtp_bcc_me", True))
         self.info["email"], self.info["cc"] = dlg.to.text().strip(), dlg.cc.text().strip()
-        self._sending = {"to": ", ".join(to + cc), "subject": m["Subject"], "msg": m}
-        self.count.setText("Sending...")
+        self._sending = {"to": ", ".join(to + cc), "subject": dlg.sub.text().strip(), "msg": msgs[0]}
+        self.count.setText("Sending %d email%s..." % (n, "s" if n > 1 else ""))
         self.setEnabled(False)
 
         def work():
+            done = 0
             try:
-                deliver(S, m, bcc_me)
+                for m in msgs:
+                    deliver(S, m, bcc_me and done == 0)
+                    done += 1
                 self.mail_done.emit(True, "")
             except Exception as e:
-                self.mail_done.emit(False, str(e))
+                self.mail_done.emit(False, ("Email %d of %d failed (%d already sent): " % (done + 1, n, done) if n > 1 else "") + str(e))
         threading.Thread(target=work, daemon=True).start()
 
     @staticmethod
