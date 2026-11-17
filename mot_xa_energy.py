@@ -17481,10 +17481,15 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
             QTimer.singleShot(0, lambda: (vs.setValue(int(fy * vs.maximum())), hs.setValue(int(fx * hs.maximum()))))
 
         def render():
+            here = (self.main_tabs.currentIndex(), self.tabs.currentIndex())
             (prepare or self.run_check)()
             (writer or self._write_report_pdf)(tmp)
             draw()
-            self._goto_lv(3)
+            if writer is None or writer == self._write_report_pdf:
+                self._goto_lv(3)                      # the Light & Ventilation report belongs on its results tab
+            else:                                     # every other report: stay on the page the person was looking at
+                self.main_tabs.setCurrentIndex(here[0])
+                self.tabs.setCurrentIndex(here[1])
 
         def step(sign):
             steps = [50, 75, 100, 125, 150, 200, 300, 400]

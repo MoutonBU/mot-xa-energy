@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.56.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.56.1**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Fix: PDF preview no longer jumps to Light & ventilation, 1.56.1**: previewing the Drawing register, Energy (XA), Coverage, Costing or Building materials report now leaves you on that same page when you close the preview.
 - **Preview and edit the email, 1.56.0**: a new button next to Send opens the email in two tabs: Edit (To, Cc, Subject and the text, with contact suggestions)
   and How it will look (as the client sees it, with the attachments). "Use this email" keeps your changes.
   Fixed: if a drawing's revision row had no date, the email box could stay empty.
