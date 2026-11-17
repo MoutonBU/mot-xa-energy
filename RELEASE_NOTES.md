@@ -1,11 +1,14 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.50.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.51.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Sign in with Google works out of the box, 1.51.0**: the program now carries its own Google registration, so a user only types their
+  Gmail address and presses "Sign in with Google"; Google's own page asks for the password and the program is linked for sending.
+  While the registration is in Google's Testing mode, each Gmail address must first be added as a test user, and the link needs renewing every 7 days.
 - **Clearer email connect errors, 1.50.0**: when Connect fails, the window now says why (no answer / blocked by a firewall or antivirus,
   secure connection failed, or the password was refused) instead of "could not find the mail server". Gmail is also tried on port 587,
   and a Gmail password that is not 16 letters is flagged before connecting, because only an app password works.
