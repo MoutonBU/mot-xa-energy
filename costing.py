@@ -1359,7 +1359,7 @@ class FinderDialog(QDialog):
         M = sys.modules[type(self.page.win).__module__]
         if not M.online_ready():
             QMessageBox.information(self, "Find a product", "Product search uses Claude with web search. Switch on Online mode and enter your "
-                                    "API key first (the Offline button, top right).")
+                                    "API key first (the Offline / Online AI button at the top right, or Tools > Online mode).")
             try:
                 self.page.win.online_settings()
             except Exception:

@@ -17996,6 +17996,9 @@ def apply_glass_theme(app, win):
     head = QHBoxLayout()
     pill = QLabel("Offline")
     win.mode_pill = pill
+    pill.setCursor(Qt.CursorShape.PointingHandCursor)
+    pill.setToolTip("Online mode: click to enter your API key and switch online AI on or off")
+    pill.mousePressEvent = lambda _e, w_=win: w_.online_settings()
     pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
     pill.setFixedWidth(96)
     pill.setStyleSheet("background: rgba(255,255,255,26); border: 1px solid rgba(255,255,255,90);"
