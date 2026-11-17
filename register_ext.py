@@ -93,7 +93,7 @@ class AccountDialog(QDialog):
         self.M = M
         self.S = M.SETTINGS
         self.setWindowTitle("Email account")
-        self.resize(560, 470)
+        self.resize(480, 300)
         v = QVBoxLayout(self)
         v.addWidget(QLabel("<b>Your email address</b>"))
         self.addr = QLineEdit(self.S.get("mail_address", ""))
@@ -218,15 +218,19 @@ class AccountDialog(QDialog):
         d = self._domain()
         link = ac.APP_PASSWORD_DOMAINS.get(d)
         self.easy = d in ("gmail.com", "googlemail.com") and self.mo.configured(self.S, "gmail") and not self._pw_mode
-        self.pwlink.setVisible(d in ("gmail.com", "googlemail.com") and self.mo.configured(self.S, "gmail"))
+        self.pwlink.setVisible(False)
+        self.adv.setVisible(False)
+        self.bcc.setVisible(False)
+        self.test_b.setVisible(False)
+        self.out_b.setVisible(bool(mail_ready(self.S)))
         self.pwlink.setText("Use an app password instead" if self.easy else "Back: sign in with Google instead")
-        self.pw_lbl.setVisible(not self.easy)
-        self.pw.setVisible(not self.easy)
-        self.connect_b.setText("Sign in with Google" if self.easy else "Connect")
+        self.pw_lbl.setVisible(not self.easy and bool(d))
+        self.pw.setVisible(not self.easy and bool(d))
+        self.connect_b.setText("Sign in with Google" if (self.easy or not d) else "Connect")
+        self.connect_b.setVisible(True)
         self.gbtn.setVisible(bool(link) and not self.easy)
-        if self.easy:
-            self.hint.setText("Press the button. Google's own window opens: choose your account, type your password there and press Allow. "
-                              "The first time Google may say the app is not verified: press Advanced, then Continue.")
+        if self.easy or not d:
+            self.hint.setText("Type your Gmail address, then press the button. Google's own window opens: sign in there and press Allow.")
         elif link:
             self.pw_lbl.setText("<b>App password</b> (not your normal password)")
             self.hint.setText("%s does not accept your normal password in other programs. Press the button below, sign in, make an app password "
@@ -289,6 +293,9 @@ class AccountDialog(QDialog):
     def connect_now(self):
         import mail_autoconfig as ac
         addr, pw = self.addr.text().strip(), self.pw.text()
+        if not addr:
+            self.status.setText("Type your email address first.")
+            return
         if self.easy:
             if "@" not in addr:
                 self.status.setText("Type your Gmail address first.")
@@ -387,7 +394,10 @@ class AccountDialog(QDialog):
         self.M.save_settings()
 
     def finish_up(self):
-        self._commit()
+        try:
+            self._commit()
+        except Exception:
+            pass
         self.accept()
 
     def test(self):
