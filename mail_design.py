@@ -1,17 +1,38 @@
-"""The designed (HTML) version of the register email: dark cards, MCP red and black, logo banner.
+"""The designed (HTML) version of the register email: dark MCP look, logo on a rounded white tile above the company name,
+a rounded title card with a red rounded bar, rounded cards, MCP red.
+It is dark by default and carries a light version for mail programs that are in light mode; the logo sits on its own white tile so it reads in both.
 The plain text in the email box stays the one thing the person edits; this turns that text into the designed email.
-Email programs only understand old-style HTML, so everything is tables with inline styles."""
+Email programs only understand old-style HTML, so everything is tables with inline styles plus a few dark-mode classes."""
 import html
 import re
 
 RED = "#E4203A"
-BG = "#0E0F12"
-CARD = "#23262D"
-CARD2 = "#1A1C21"
-LINE = "#383C45"
-TXT = "#D7D9DE"
-MUTED = "#8E929B"
+PAGE = "#0E0F12"       # class pg
+HEAD = "#2A2D34"       # class hd   (the title card)
+CARD = "#23262D"       # class cd
+ROW1 = "#1A1C21"       # class r1
+ROW2 = "#202329"       # class r2
+LINE = "#383C45"       # class bd
+TXT = "#D7D9DE"        # class tx
+STRONG = "#FFFFFF"     # class st
+MUTED = "#9DA1AA"      # class mu
 FONT = "'Segoe UI',Helvetica,Arial,sans-serif"
+
+# the same look in light, for mail programs that are in light mode
+LIGHT_CSS = """
+:root{color-scheme:light dark;supported-color-schemes:light dark;}
+@media (prefers-color-scheme: light){
+ .pg{background-color:#FFFFFF !important;}
+ .hd{background-color:#DCDCDC !important;border-color:#C9C9C9 !important;}
+ .cd{background-color:#F3F3F3 !important;border-color:#CFCFCF !important;}
+ .r1{background-color:#FFFFFF !important;}
+ .r2{background-color:#F6F6F6 !important;}
+ .bd{border-color:#CFCFCF !important;}
+ .tx{color:#2B2B2B !important;}
+ .st{color:#111111 !important;}
+ .mu{color:#6B6B6B !important;}
+}
+"""
 
 DRAWING = re.compile(r"^(\S+)\s{2,}(.*?)\s{2,}Rev (\S+)\s+\(([^)]*)\):?\s*(.*)$")
 
@@ -20,11 +41,13 @@ def _e(t):
     return html.escape(t or "", quote=True)
 
 
-def _rule(width, height, align="left", gap="10px 0 18px 0"):
-    """A thin coloured line made of a table cell (works in email programs and in the program's own preview)."""
-    return ('<table cellpadding="0" cellspacing="0" border="0" width="%d" align="%s" style="margin:%s;"><tr>'
-            '<td width="%d" height="%d" bgcolor="%s" style="background-color:%s;height:%dpx;font-size:1px;line-height:%dpx;">&nbsp;</td></tr></table>'
-            % (width, align, gap, width, height, RED, RED, height, height))
+def _bar(width, height, align="left", gap="10px 0 18px 0", radius=None):
+    """A red rounded bar made of a table cell (works in email programs and in the program's own preview)."""
+    r = height // 2 if radius is None else radius
+    w = ('width="%d" ' % width) if isinstance(width, int) else 'width="100%"'
+    return ('<table cellpadding="0" cellspacing="0" border="0" %s align="%s" style="margin:%s;"><tr>'
+            '<td height="%d" bgcolor="%s" style="background-color:%s;height:%dpx;border-radius:%dpx;font-size:1px;line-height:%dpx;">&nbsp;</td></tr></table>'
+            % (w, align, gap, height, RED, RED, height, r, height))
 
 
 def _caps(line):
@@ -80,22 +103,22 @@ def parse(body):
 
 def _heading(kind, text):
     if kind == "h":
-        return ('<tr><td align="center" style="padding:30px 0 12px 0;font-family:%s;font-size:12px;letter-spacing:4px;color:%s;font-weight:600;">%s</td></tr>'
+        return ('<tr><td align="center" style="padding:28px 0 12px 0;font-family:%s;font-size:12px;letter-spacing:4px;color:%s;font-weight:700;">%s</td></tr>'
                 % (FONT, RED, _e(text)))
-    return ('<tr><td style="padding:14px 4px 8px 4px;font-family:%s;font-size:13px;letter-spacing:1.5px;color:#FFFFFF;font-weight:600;">%s</td></tr>' % (FONT, _e(text)))
+    return ('<tr><td class="st" style="padding:14px 4px 8px 4px;font-family:%s;font-size:13px;letter-spacing:1.5px;color:%s;font-weight:700;">%s</td></tr>' % (FONT, STRONG, _e(text)))
 
 
 def _drawing_table(rows):
-    head = "".join('<td width="%s" style="padding:10px 12px;font-family:%s;font-size:11px;letter-spacing:1.5px;color:%s;border-bottom:1px solid %s;">%s</td>' % (w, FONT, MUTED, LINE, _e(t))
+    head = "".join('<td class="mu bd" width="%s" style="padding:10px 12px;font-family:%s;font-size:11px;letter-spacing:1.5px;color:%s;border-bottom:1px solid %s;">%s</td>' % (w, FONT, MUTED, LINE, _e(t))
                    for w, t in (("14%", "DRAWING"), ("30%", "TITLE"), ("8%", "REV"), ("18%", "SIZE / SCALE"), ("30%", "SHOWS")))
     body = ""
     for n, (no, title, rev, size, about) in enumerate(rows):
-        bg = CARD2 if n % 2 == 0 else "#202329"
-        cell = 'style="padding:10px 12px;font-family:%s;font-size:13px;color:%s;background-color:%s;" bgcolor="%s"' % (FONT, TXT, bg, bg)
-        body += ('<tr><td %s><b style="color:#FFFFFF;">%s</b></td><td %s>%s</td>'
-                 '<td %s><span style="background-color:%s;color:#FFFFFF;border-radius:10px;padding:2px 8px;font-size:12px;" bgcolor="%s">%s</span></td>'
-                 '<td %s>%s</td><td %s>%s</td></tr>') % (cell, _e(no), cell, _e(title), cell, RED, RED, _e(rev), cell, _e(size), cell, _e(about))
-    return ('<table width="100%%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid %s;border-radius:14px;border-collapse:separate;overflow:hidden;table-layout:fixed;">'
+        cls, bg = ("r1", ROW1) if n % 2 == 0 else ("r2", ROW2)
+        cell = 'class="%s tx" style="padding:10px 12px;font-family:%s;font-size:13px;color:%s;background-color:%s;" bgcolor="%s"' % (cls, FONT, TXT, bg, bg)
+        body += ('<tr><td %s><b class="st" style="color:%s;">%s</b></td><td %s>%s</td>'
+                 '<td %s><span style="background-color:%s;color:#FFFFFF;border-radius:10px;padding:2px 8px;font-size:12px;font-weight:700;" bgcolor="%s">%s</span></td>'
+                 '<td %s>%s</td><td %s>%s</td></tr>') % (cell, STRONG, _e(no), cell, _e(title), cell, RED, RED, _e(rev), cell, _e(size), cell, _e(about))
+    return ('<table class="bd" width="100%%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid %s;border-radius:14px;border-collapse:separate;overflow:hidden;table-layout:fixed;">'
             '<tr>%s</tr>%s</table>' % (LINE, head, body))
 
 
@@ -106,25 +129,26 @@ def _list(items):
         main = re.sub(r"\s*\[[^\]]+\]", "", it).strip()
         if ": " in main and len(main.split(": ", 1)[0]) < 70:
             lead, rest = main.split(": ", 1)
-            main_html = '<b style="color:#FFFFFF;">%s</b><br><span style="color:%s;">%s</span>' % (_e(lead), TXT, _e(rest))
+            main_html = '<b class="st" style="color:%s;">%s</b><br><span class="tx" style="color:%s;">%s</span>' % (STRONG, _e(lead), TXT, _e(rest))
         else:
-            main_html = '<span style="color:%s;">%s</span>' % (TXT, _e(main))
-        tag_html = "".join('<br><span style="color:%s;font-size:12px;">%s</span>' % (MUTED, _e(t)) for t in tags)
-        out += ('<tr><td width="4" bgcolor="%s" style="background-color:%s;font-size:0;line-height:0;">&nbsp;</td>'
-                '<td style="padding:10px 14px;font-family:%s;font-size:14px;line-height:21px;background-color:%s;" bgcolor="%s">%s%s</td></tr>'
-                '<tr><td colspan="2" height="6" style="font-size:0;line-height:0;">&nbsp;</td></tr>') % (RED, RED, FONT, CARD2, CARD2, main_html, tag_html)
+            main_html = '<span class="tx" style="color:%s;">%s</span>' % (TXT, _e(main))
+        tag_html = "".join('<br><span class="mu" style="color:%s;font-size:12px;">%s</span>' % (MUTED, _e(t)) for t in tags)
+        out += ('<tr><td width="5" bgcolor="%s" style="background-color:%s;border-radius:6px 0 0 6px;font-size:0;line-height:0;">&nbsp;</td>'
+                '<td class="r1" style="padding:10px 14px;font-family:%s;font-size:14px;line-height:21px;background-color:%s;border-radius:0 10px 10px 0;" bgcolor="%s">%s%s</td></tr>'
+                '<tr><td colspan="2" height="6" style="font-size:0;line-height:0;">&nbsp;</td></tr>') % (RED, RED, FONT, ROW1, ROW1, main_html, tag_html)
     return '<table width="100%%" cellpadding="0" cellspacing="0" border="0">%s</table>' % out
 
 
 def _title_parts(subject):
+    """(project name, 'Revision 2 | 17 November 2026') from the subject line."""
     m = re.match(r"^(.*?)\s+-\s+revision\s+(\S+)\s*(?:\((.*)\))?\s*$", subject or "", re.I)
     if m:
-        return m.group(1).strip(), "REVISION %s%s" % (m.group(2), ("  ·  " + m.group(3).upper()) if m.group(3) else "")
-    return (subject or "Drawing register").strip(), "DRAWING REGISTER"
+        return m.group(1).strip(), "Revision %s%s" % (m.group(2), ("  |  " + m.group(3)) if m.group(3) else "")
+    return (subject or "Drawing register").strip(), ""
 
 
 def build(subject, body, logo_src="cid:mcplogo", attached="", company="MCP Architecture & Interiors"):
-    title, strip = _title_parts(subject)
+    project, strip = _title_parts(subject)
     blocks = parse(body)
     greet = next((b[1] for b in blocks if b[0] == "greet"), "")
     rows = []
@@ -132,7 +156,7 @@ def build(subject, body, logo_src="cid:mcplogo", attached="", company="MCP Archi
         if kind == "greet":
             continue
         if kind == "p":
-            rows.append('<tr><td style="padding:0 0 14px 0;font-family:%s;font-size:15px;line-height:24px;color:%s;">%s</td></tr>' % (FONT, TXT, _e(val).replace("\n", "<br>")))
+            rows.append('<tr><td class="tx" style="padding:0 0 14px 0;font-family:%s;font-size:15px;line-height:24px;color:%s;">%s</td></tr>' % (FONT, TXT, _e(val).replace("\n", "<br>")))
         elif kind in ("h", "sub"):
             rows.append(("H", kind, val))
         elif kind == "items":
@@ -142,12 +166,10 @@ def build(subject, body, logo_src="cid:mcplogo", attached="", company="MCP Archi
             else:
                 rows.append(("L", val))
         elif kind == "status":
-            txt = val.split(":", 1)[-1].strip().rstrip(".")
-            rows.append(("S", txt))
+            rows.append(("S", val.split(":", 1)[-1].strip().rstrip(".")))
         elif kind == "sig":
             rows.append(("G", val))
 
-    # the first card holds the greeting, the heading and the introduction paragraphs; sections and the signature follow
     intro, rest, seen_section = "", [], False
     for r in rows:
         if not seen_section and isinstance(r, str):
@@ -159,7 +181,7 @@ def build(subject, body, logo_src="cid:mcplogo", attached="", company="MCP Archi
     sections = ""
     for r in rest:
         if isinstance(r, str):
-            sections += ('<tr><td style="padding:14px 6px 0 6px;font-family:%s;font-size:15px;line-height:24px;color:%s;">%s</td></tr>' % (FONT, TXT, r.split(">", 2)[-1].rsplit("</td>", 1)[0]))
+            sections += ('<tr><td class="tx" style="padding:14px 6px 0 6px;font-family:%s;font-size:15px;line-height:24px;color:%s;">%s</td></tr>' % (FONT, TXT, r.split(">", 2)[-1].rsplit("</td>", 1)[0]))
         elif r[0] == "H":
             sections += _heading(r[1], r[2])
         elif r[0] == "T":
@@ -167,49 +189,51 @@ def build(subject, body, logo_src="cid:mcplogo", attached="", company="MCP Archi
         elif r[0] == "L":
             sections += '<tr><td style="padding:0 0 8px 0;">%s</td></tr>' % _list(r[1])
         elif r[0] == "S":
-            sections += ('<tr><td align="center" style="padding:20px 0 6px 0;font-family:%s;font-size:12px;letter-spacing:3px;color:%s;">STATUS OF THIS REVISION</td></tr>'
-                         '<tr><td align="center" style="padding:0 0 10px 0;"><span style="font-family:%s;font-size:16px;font-weight:600;color:#FFFFFF;background-color:%s;border-radius:18px;padding:7px 22px;" bgcolor="%s">%s</span></td></tr>'
+            sections += ('<tr><td align="center" class="mu" style="padding:20px 0 6px 0;font-family:%s;font-size:12px;letter-spacing:3px;color:%s;">STATUS OF THIS REVISION</td></tr>'
+                         '<tr><td align="center" style="padding:0 0 10px 0;"><span style="font-family:%s;font-size:16px;font-weight:700;color:#FFFFFF;background-color:%s;border-radius:18px;padding:7px 22px;" bgcolor="%s">%s</span></td></tr>'
                          % (FONT, MUTED, FONT, RED, RED, _e(r[1])))
         elif r[0] == "G":
             sig = r[1]
             name = sig[0] if sig else ""
             role = sig[1] if len(sig) > 1 else ""
-            more = "".join('<br><span style="color:%s;">%s</span>' % (MUTED, _e(x)) for x in sig[2:])
-            sections += ('<tr><td style="padding:26px 0 0 0;"><table width="100%%" cellpadding="0" cellspacing="0" border="0" style="background-color:%s;border:1px solid %s;border-radius:18px;" bgcolor="%s"><tr>'
-                         '<td width="5" bgcolor="%s" style="background-color:%s;border-radius:18px 0 0 18px;font-size:0;">&nbsp;</td>'
-                         '<td style="padding:18px 22px;font-family:%s;font-size:14px;line-height:22px;color:%s;">'
-                         '<span style="color:%s;font-size:12px;letter-spacing:3px;">REGARDS</span><br><b style="font-size:17px;color:#FFFFFF;">%s</b><br>%s%s</td></tr></table></td></tr>'
-                         % (CARD, LINE, CARD, RED, RED, FONT, TXT, RED, _e(name), _e(role), more))
+            more = "".join('<br><span class="mu" style="color:%s;">%s</span>' % (MUTED, _e(x)) for x in sig[2:])
+            sections += ('<tr><td style="padding:26px 0 0 0;"><table class="cd bd" width="100%%" cellpadding="0" cellspacing="0" border="0" style="background-color:%s;border:1px solid %s;border-radius:18px;border-collapse:separate;" bgcolor="%s"><tr>'
+                         '<td width="6" bgcolor="%s" style="background-color:%s;border-radius:18px 0 0 18px;font-size:0;">&nbsp;</td>'
+                         '<td class="tx" style="padding:18px 22px;font-family:%s;font-size:14px;line-height:22px;color:%s;">'
+                         '<span style="color:%s;font-size:12px;letter-spacing:3px;font-weight:700;">REGARDS</span><br><b class="st" style="font-size:17px;color:%s;">%s</b><br>%s%s</td></tr></table></td></tr>'
+                         % (CARD, LINE, CARD, RED, RED, FONT, TXT, RED, STRONG, _e(name), _e(role), more))
 
-    attached_html = ('<tr><td align="center" style="padding:18px 10px 0 10px;font-family:%s;font-size:12px;color:%s;">%s</td></tr>' % (FONT, MUTED, _e(attached))) if attached else ""
+    attached_html = ('<tr><td align="center" class="mu" style="padding:18px 10px 0 10px;font-family:%s;font-size:12px;color:%s;">%s</td></tr>' % (FONT, MUTED, _e(attached))) if attached else ""
+    sub_line = ('<div class="mu" style="font-family:%s;font-size:14px;color:%s;padding-top:6px;">%s</div>' % (FONT, MUTED, _e(strip))) if strip else ""
     return ('<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-            '<meta name="color-scheme" content="dark"><title>%(title)s</title></head>'
-            '<body style="margin:0;padding:0;background-color:%(bg)s;" bgcolor="%(bg)s">'
-            '<table width="100%%" cellpadding="0" cellspacing="0" border="0" bgcolor="%(bg)s" style="background-color:%(bg)s;"><tr><td align="center" style="padding:22px 12px;">'
+            '<meta name="color-scheme" content="light dark"><meta name="supported-color-schemes" content="light dark">'
+            '<title>%(title)s</title><style>%(css)s</style></head>'
+            '<body class="pg" style="margin:0;padding:0;background-color:%(page)s;" bgcolor="%(page)s">'
+            '<table class="pg" width="100%%" cellpadding="0" cellspacing="0" border="0" bgcolor="%(page)s" style="background-color:%(page)s;"><tr><td align="center" style="padding:22px 12px;">'
             '<table width="640" cellpadding="0" cellspacing="0" border="0" style="width:100%%;max-width:640px;">'
-            # banner
-            '<tr><td style="border-radius:20px;border:1px solid %(line)s;background-color:#0B0C0F;background-image:linear-gradient(135deg,#2A0A12 0%%,#0B0C0F 55%%,#1F0710 100%%);" bgcolor="#0B0C0F" align="center">'
-            '<table width="100%%" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" style="padding:34px 26px;">'
-            '<table cellpadding="0" cellspacing="0" border="0" style="border:2px solid #9A9DA6;border-radius:30px;background-color:#16181D;" bgcolor="#16181D"><tr><td align="center" style="padding:30px 46px 26px 46px;">'
-            '<img src="%(logo)s" width="86" alt="MCP" style="display:block;margin:0 auto 14px auto;border:0;">'
-            '<div style="font-family:%(font)s;font-size:38px;letter-spacing:10px;color:#FFFFFF;font-weight:300;padding-left:10px;">MCP</div>'
-            '%(rule1)s'
-            '<div style="font-family:%(font)s;font-size:11px;letter-spacing:4px;color:#C9CCD3;">ARCHITECTURE &amp; INTERIORS</div>'
-            '<div style="font-family:%(font)s;font-size:10px;letter-spacing:3px;color:%(muted)s;padding-top:10px;">%(strip)s</div>'
-            '</td></tr></table></td></tr></table></td></tr>'
-            '<tr><td height="18" style="font-size:0;line-height:0;">&nbsp;</td></tr>'
+            # logo on its own white rounded tile, company name under it
+            '<tr><td align="center" style="padding:6px 0 4px 0;">'
+            '<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:separate;"><tr><td align="center" bgcolor="#FFFFFF" style="background-color:#FFFFFF;border:1px solid #E1E1E1;border-radius:26px;padding:16px 22px;">'
+            '<img src="%(logo)s" width="120" alt="MCP" style="display:block;border:0;border-radius:14px;"></td></tr></table></td></tr>'
+            '<tr><td align="center" class="tx" style="padding:14px 0 22px 0;font-family:%(font)s;font-size:20px;color:%(tx)s;">%(company)s</td></tr>'
+            # grey rounded title card + red rounded bar, as on the PDF
+            '<tr><td class="hd" bgcolor="%(head)s" style="background-color:%(head)s;border:1px solid #454953;border-radius:18px;padding:22px 26px 20px 26px;">'
+            '<div class="st" style="font-family:%(font)s;font-size:34px;line-height:38px;font-weight:700;color:%(st)s;">DRAWING REGISTER</div>'
+            '%(sub)s'
+            '<div class="tx" style="font-family:%(font)s;font-size:15px;color:%(tx)s;padding-top:8px;font-weight:700;">%(project)s</div>'
+            '</td></tr>'
+            '<tr><td style="padding:10px 0 14px 0;">%(bar)s</td></tr>'
             # intro card
-            '<tr><td style="background-color:%(card)s;border:1px solid %(line)s;border-radius:24px;" bgcolor="%(card)s">'
-            '<table width="100%%" cellpadding="0" cellspacing="0" border="0"><tr><td style="padding:30px 34px 18px 34px;">'
-            '<div style="font-family:%(font)s;font-size:15px;color:%(muted)s;padding-bottom:10px;">%(greet)s</div>'
-            '<div style="font-family:%(font)s;font-size:28px;line-height:34px;font-weight:700;color:#FFFFFF;padding-bottom:6px;">%(title)s</div>'
-            '%(rule2)s'
+            '<tr><td class="cd" style="background-color:%(card)s;border:1px solid %(line)s;border-radius:22px;" bgcolor="%(card)s">'
+            '<table width="100%%" cellpadding="0" cellspacing="0" border="0"><tr><td style="padding:26px 30px 14px 30px;">'
+            '<div class="st" style="font-family:%(font)s;font-size:16px;font-weight:700;color:%(st)s;padding-bottom:12px;">%(greet)s</div>'
             '<table width="100%%" cellpadding="0" cellspacing="0" border="0">%(intro)s</table>'
             '</td></tr></table></td></tr>'
             '%(sections_wrap)s'
             '%(attached)s'
-            '<tr><td align="center" style="padding:22px 0 4px 0;font-family:%(font)s;font-size:11px;letter-spacing:3px;color:%(muted)s;">%(company)s</td></tr>'
+            '<tr><td align="center" class="mu" style="padding:22px 0 4px 0;font-family:%(font)s;font-size:11px;letter-spacing:3px;color:%(muted)s;">%(company_caps)s</td></tr>'
             '</table></td></tr></table></body></html>') % {
-        "title": _e(title), "bg": BG, "line": LINE, "logo": logo_src, "font": FONT, "red": RED, "muted": MUTED, "strip": _e(strip), "card": CARD,
-        "rule1": _rule(70, 2, "center", "12px auto 12px auto"), "rule2": _rule(46, 3, "left", "10px 0 18px 0"), "greet": _e(greet), "intro": intro, "attached": attached_html, "company": _e(company.upper()),
-        "sections_wrap": ('<tr><td><table width="100%%" cellpadding="0" cellspacing="0" border="0">%s</table></td></tr>' % sections) if sections else ""}
+        "title": _e(project), "css": LIGHT_CSS, "page": PAGE, "head": HEAD, "card": CARD, "line": LINE, "tx": TXT, "st": STRONG, "muted": MUTED,
+        "logo": logo_src, "font": FONT, "sub": sub_line, "project": _e(project), "company": _e(company), "company_caps": _e(company.upper()),
+        "bar": _bar(None, 12, "left", "0"), "greet": _e(greet), "intro": intro, "attached": attached_html,
+        "sections_wrap": ('<tr><td style="padding-top:6px;"><table width="100%%" cellpadding="0" cellspacing="0" border="0">%s</table></td></tr>' % sections) if sections else ""}

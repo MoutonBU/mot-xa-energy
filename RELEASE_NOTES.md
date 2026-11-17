@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.58.1**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.59.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Email redesign, 1.59.0**: the designed email now starts with the MCP logo (black and red, on a rounded white tile) with the company name under it, then a rounded DRAWING REGISTER title card ("Revision 2 | date" and the project name) with the red rounded bar, as on the PDF. All the cards, lists, tables and the signature have rounded corners.
+  It is dark by default and switches to a light version in mail programs that are in light mode, and the logo reads in both. Outlook for Windows ignores rounded corners and shows square ones.
 - **Kind of change tick boxes, 1.58.1**: every line in Orders and changes now has tick boxes for Minor changes, Major changes, Masters, Final plans and SDP. What you tick is added to that line in the email, for example [Major changes, SDP].
 - **Designed email in the MCP look, 1.58.0**: the register email now goes out as a dark, graphic email in the MCP red and black: a logo banner, the greeting and project
   heading in a card, red section titles, change lines with a red edge, the drawing lists as tables with revision badges, a status pill and a signature card.

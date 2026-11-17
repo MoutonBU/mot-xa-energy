@@ -1000,10 +1000,26 @@ class MailMixin:
         return sys.modules[type(self.host).__module__]
 
     def design_png(self):
-        """The MCP logo (white and red, for the dark email) as PNG bytes."""
+        """The MCP logo as in the PDF (black and red) on an opaque white background, as PNG bytes. It does not change with dark mode."""
         import base64
+        from PySide6.QtCore import QBuffer, QIODevice
+        from PySide6.QtGui import QColor, QImage, QPainter
         M = self._M()
-        return base64.b64decode(M.LOGO_B64)
+        im = QImage.fromData(base64.b64decode(M.LOGO_B64), "PNG").convertToFormat(QImage.Format.Format_ARGB32)
+        for y in range(im.height()):
+            for x in range(im.width()):
+                c = im.pixelColor(x, y)
+                if c.alpha() and c.red() > 200 and c.green() > 200 and c.blue() > 200:
+                    im.setPixelColor(x, y, QColor(17, 17, 17, c.alpha()))
+        out = QImage(im.size(), QImage.Format.Format_RGB32)
+        out.fill(QColor(255, 255, 255))
+        p = QPainter(out)
+        p.drawImage(0, 0, im)
+        p.end()
+        buf = QBuffer()
+        buf.open(QIODevice.OpenModeFlag.WriteOnly)
+        out.save(buf, "PNG")
+        return bytes(buf.data())
 
     def design_html(self, subject, body, src="cid:mcplogo", attached=""):
         import mail_design
