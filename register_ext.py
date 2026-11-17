@@ -537,6 +537,7 @@ class LogMixin:
             return
         k = LOGK[it.column()]
         self.log[it.row()][k] = it.text().strip()
+        self.update_mail()
 
     def refresh_log(self):
         self._busy = True
@@ -563,6 +564,7 @@ class LogMixin:
             t.resizeRowsToContents()
         finally:
             self._busy = False
+        self.update_mail()
 
     # called when an issue goes out
     def log_issue(self, gi, changes, first, sent):
@@ -650,7 +652,8 @@ class MailMixin:
             self.email_account()
             if not mail_ready(S):
                 return
-        self.write_mail()
+        if not getattr(self, "_mail_manual", False):
+            self.write_mail()
         subj, body = self._mail_parts()
         tmp = tempfile.mkdtemp()
         pdf = os.path.join(tmp, re.sub(r'[\\/:*?"<>|]+', "-", "Drawing register - %s - issue %s.pdf" % (self.project_name(), self.info["issue_no"] or "1")))

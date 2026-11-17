@@ -1,11 +1,15 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.47.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.48.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Email preview in the drawing register, 1.48.0**: under the drawing list the email is written for you and kept up to date as you add
+  drawings, change the details, or add orders and changes (these are listed in the email with the client's email as the reference).
+  The To address and what will be attached (the register PDF and the drawing PDFs, with their size) are shown. You can edit the text;
+  "Write it again" goes back to the automatic version.
 - **Email: just address and password, 1.47.0**: the Email account window now asks for the email address and password and a Connect
   button. The mail server is found by the program (provider lists, the provider's own settings, or the usual smtp.* / mail.* names)
   and the password is checked right away. For Gmail, Yahoo and iCloud, which refuse normal passwords, the window shows a button

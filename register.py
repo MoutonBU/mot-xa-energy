@@ -225,7 +225,7 @@ def guess_row(path):
             "revs": info["revs"], "status": "For information", "file": os.path.basename(path), "path": path}
 
 
-from register_ext import LogMixin, MailMixin
+from register_ext import LogMixin, MailMixin, short_date
 
 
 class RegisterPage(LogMixin, MailMixin, QWidget):
@@ -317,15 +317,30 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         for i, w in enumerate((46, 90, 230, 250, 60, 60, 45, 90, 90, 140, 360, 150, 180)):
             self.tab.setColumnWidth(i, w)
         self.tab.itemChanged.connect(self._cell)
-        v.addWidget(self.tab, 1)
+        v.addWidget(self.tab, 2)
         self.all_chk = QCheckBox("Show all details (size, scale, dates, who asked, status, file)")
         self.all_chk.toggled.connect(self._columns)
         v.addWidget(self.all_chk)
-        self.mail = QPlainTextEdit()      # the email text; built when you send, edited in the send window
-        self.mail.setVisible(False)
-        # 3  send
+        # 3  the email and send
         v.addSpacing(6)
-        v.addWidget(step("3.  Send it"))
+        v.addWidget(step("3.  Check the email and send it"))
+        head = QHBoxLayout()
+        self.to_lbl = QLabel("")
+        head.addWidget(self.to_lbl, 1)
+        rw = QPushButton("Write it again")
+        rw.setToolTip("Throws away your changes to the text and writes the email again from the list above.")
+        rw.clicked.connect(self.rewrite_mail)
+        head.addWidget(rw)
+        v.addLayout(head)
+        self.mail = QPlainTextEdit()      # written automatically from the drawings, orders and changes; you can still edit it
+        self.mail.setMinimumHeight(150)
+        self._mail_setting, self._mail_manual = False, False
+        self.mail.textChanged.connect(self._mail_edited)
+        v.addWidget(self.mail, 1)
+        self.att_lbl = QLabel("")
+        self.att_lbl.setWordWrap(True)
+        self.att_lbl.setStyleSheet("color: gray;")
+        v.addWidget(self.att_lbl)
         bar = QHBoxLayout()
         self.send_btn = QPushButton("Send to the client...")
         self.send_btn.setMinimumHeight(38)
@@ -362,6 +377,37 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         self._columns()
         self.refresh()
 
+    def _mail_edited(self):
+        if not self._mail_setting:
+            self._mail_manual = True
+
+    def rewrite_mail(self):
+        self._mail_manual = False
+        self.update_mail()
+
+    def update_mail(self):
+        """Keep the email under the list up to date: written from the drawings, orders and changes unless you have edited it yourself."""
+        if getattr(self, "_mail_setting", None) is None or not hasattr(self, "att_lbl"):
+            return
+        if not self._mail_manual:
+            self._mail_setting = True
+            try:
+                self.write_mail()
+            finally:
+                self._mail_setting = False
+        gi = self.groups_in_issue()
+        files = []
+        for _n, rows in gi:
+            for r in rows:
+                p = r.get("path")
+                if p and os.path.exists(p) and p not in files:
+                    files.append(p)
+        mb = sum(os.path.getsize(p) for p in files) / 1e6
+        self.to_lbl.setText("<b>To:</b> %s" % (self.info.get("email") or "<i>add their email above</i>"))
+        self.att_lbl.setText("Attached when you send: the drawing register (PDF)%s.%s" % (
+            (" and %d drawing PDFs (%.1f MB)" % (len(files), mb)) if files else "",
+            "  Large mail may be refused by the receiver (over about 20 MB): untick some drawings in the send window." if mb > 20 else ""))
+
     SIMPLE = ("on", "no", "title", "rev", "comment")
 
     def _columns(self, *_a):
@@ -391,6 +437,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
     def _info_edited(self, *_a):
         for k, e in self.f.items():
             self.info[k] = e.text()
+        self.update_mail()
 
     # ----- groups and rows -----
     def rows(self):
@@ -523,6 +570,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         for g in self.groups:
             for r in g["rows"]:
                 r["comment"], r["auto"], r["by"] = "", "", ""
+        self._mail_manual = False
         self.mail.setPlainText("")
         self.refresh()
         self.count.setText("Issue recorded. Add the revised PDFs (or press Re-read the PDFs) to see the changes.")
@@ -581,6 +629,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         QTimer.singleShot(0, self._counts)
 
     def _counts(self):
+        self.update_mail()
         n = sum(1 for g in self.groups for r in g["rows"] if r.get("on"))
         self.count.setText("%d drawings in this issue, %d in all" % (n, sum(len(g["rows"]) for g in self.groups)))
 
@@ -688,6 +737,18 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             lines.append("")
         elif last:
             lines += ["No drawing has changed since issue %s." % last.get("issue", ""), ""]
+        names = {n for n, _r in gi}
+        pend = [x for x in self.log if not x.get("sent_date") and x.get("group") in names]
+        if pend:
+            lines.append("ORDERS AND CHANGES COVERED BY THIS ISSUE")
+            for x in pend:
+                bit = "  - %s" % x.get("group", "")
+                bit += (" (order no. %s)" % x["order"]) if x.get("order") else ""
+                bit += ": " + (x.get("text") or ("New order" if x.get("type") == "Order" else "Change"))
+                if x.get("req_subject"):
+                    bit += " [your email: %s%s]" % (x["req_subject"], ", " + short_date(x["req_date"]) if x.get("req_date") else "")
+                lines.append(bit)
+            lines.append("")
         lines.append("THE FULL LIST" if last else "THE DRAWINGS")
         for name, rows in gi:
             lines.append(name.upper() + (" (%d drawings)" % len(rows)))
