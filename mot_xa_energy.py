@@ -2399,6 +2399,9 @@ _LIGHT_MAP = [("#16171a", "#f1f2f4"), ("#1f2125", "#ffffff"), ("#1b1d21", "#f8f9
               ("#e8e8ec", "#1c1f23"), ("#3fbf6b", "#1b7f3b"), ("#5fd38a", "#1b7f3b"), ("#ff7b8b", "#c4161c")]
 
 
+_QSS_CACHE = {}
+
+
 def _lt(txt):
     """Make colours written inside a label or style sheet readable on the light theme (white-ish -> dark-ish)."""
     if not isinstance(txt, str) or not light():
@@ -2408,6 +2411,9 @@ def _lt(txt):
     for a_, b_ in _LIGHT_MAP:
         if a_ in txt:
             txt = txt.replace(a_, b_)
+    dn_ = sys.modules.get("mot_detail_notes_app")        # the Detail Notes palette, only once that tool is loaded
+    if dn_ is not None and hasattr(dn_, "to_light"):
+        txt = dn_.to_light(txt)
     return txt
 
 
@@ -4017,14 +4023,19 @@ def wrap_long_labels(root):
 class _IconFilter(QObject):
     """Adds icons to dialogs and menus the moment they appear."""
 
+    _POLISH, _SHOW = QEvent.Type.Polish, QEvent.Type.Show
+
     def eventFilter(self, obj, ev):
-        if ev.type() == QEvent.Type.Polish and isinstance(obj, QLabel):
+        t_ = ev.type()
+        if t_ is not self._POLISH and t_ is not self._SHOW:     # nearly every event: leave at once
+            return False
+        if t_ is self._POLISH and isinstance(obj, QLabel):
             try:
                 if not obj.wordWrap() and len(obj.text()) > 60 and _nopix(obj):
                     obj.setWordWrap(True)
             except Exception:
                 pass
-        if ev.type() == QEvent.Type.Show and isinstance(obj, (QDialog, QMenu)):
+        if t_ is self._SHOW and isinstance(obj, (QDialog, QMenu)):
             try:
                 if not obj.property("_icons_done") or isinstance(obj, QMenu):
                     decorate_icons(obj)
@@ -10748,14 +10759,26 @@ class MainWindow(QMainWindow):
         _logo_pm = None
         _ICON_CACHE.clear()
         self.__dict__.pop("_thumb_cache", None)
-        app.setStyleSheet(light_qss(STUDIO_QSS).replace("@TICK@", _tick_png()) if light() else STUDIO_QSS.replace("@TICK@", _tick_png()))
+        dn_ = sys.modules.get("mot_detail_notes_app")
+        if dn_ is not None and hasattr(dn_, "LIGHT"):
+            dn_.LIGHT[0] = bool(light())
+        self.setUpdatesEnabled(False)                # one repaint at the end instead of one per widget
+        key_ = "light" if light() else "dark"
+        qc_ = _QSS_CACHE.get(key_)
+        if qc_ is None:
+            qc_ = light_qss(STUDIO_QSS) if light() else STUDIO_QSS
+            qc_ = _QSS_CACHE[key_] = qc_.replace("@TICK@", _tick_png())
+        app.setStyleSheet(qc_)
         for w_ in app.allWidgets():                 # colours written inside labels and style sheets
             try:
-                if isinstance(w_, QLabel) and getattr(w_, "_raw_txt", None) is not None:
-                    _QtW.QLabel.setText(w_, _lt(w_._raw_txt))
-                raw_ = w_.__dict__.get("_raw_ss") if hasattr(w_, "__dict__") else None
+                d_ = w_.__dict__
+                if d_.get("_raw_txt") is not None and isinstance(w_, QLabel):
+                    _QtW.QLabel.setText(w_, _lt(d_["_raw_txt"]))
+                raw_ = d_.get("_raw_ss")
                 if raw_:
-                    _orig_setSS(w_, _lt(raw_))
+                    new_ = _lt(raw_)
+                    if new_ != w_.styleSheet():          # restyling is the slow part: skip what did not change
+                        _orig_setSS(w_, new_)
             except Exception:
                 pass
         try:
@@ -10778,12 +10801,13 @@ class MainWindow(QMainWindow):
             self._xa_refresh()
         except Exception:
             pass
-        for w_ in app.allWidgets():                 # re-draw everything that paints itself
-            try:
-                w_.style().unpolish(w_); w_.style().polish(w_)
-                w_.update()
-            except Exception:
-                pass
+        try:
+            if getattr(self, "_det_win", None) is not None:
+                self._det_win.update_theme()
+        except Exception:
+            pass
+        self.setUpdatesEnabled(True)
+        self.update()
 
     def set_theme(self, name):
         if SETTINGS.get("theme", "studio") == name:
@@ -12335,8 +12359,10 @@ class MainWindow(QMainWindow):
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             import mot_detail_notes_app as dn
+            dn.LIGHT[0] = bool(light())
             w = dn.Win(embedded=True)
             w.setWindowFlags(Qt.WindowType.Widget)
+            w.make_icon, w.is_light = make_icon, light
             w.setStyleSheet(dn.QSS)
             def _xa_info():
                 z = self.xa_zone.currentText()
@@ -12359,6 +12385,10 @@ class MainWindow(QMainWindow):
             w.xa_sync_ui()
             self._det_lay.addWidget(w)
             self._det_win = w
+            try:
+                w.update_theme()
+            except Exception:
+                pass
         except Exception as ex:
             lb = QLabel("The Detail Notes tool could not start:\n%s\n\nIt needs the ezdxf and matplotlib packages." % ex)
             lb.setWordWrap(True)

@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton, QSizePo
 # main tab index -> (rail label, icon name); order of the main tabs in the window
 SUBJECTS = [(0, "Overview", "home"), (1, "Light && ventilation", "lightvent"), (2, "Energy (XA)", "bolt"),
             (3, "Coverage && FAR", "building"), (4, "Detail notes", "ruler")]
-LV_SUBS = [(0, "Windows"), (1, "Doors"), (2, "Rooms"), (3, "Results")]
+LV_SUBS = [(0, "Windows", "window"), (1, "Doors", "door"), (2, "Rooms", "room"), (3, "Results", "results")]
 
 
 def _palette(is_light):
@@ -30,7 +30,7 @@ def _qss(p):
         color:{p['text']}; font-size:13.5px; font-weight:500; }}
     QPushButton#railNav:hover {{ background:{p['hover']}; }}
     QPushButton#railNav[on="true"] {{ background:{p['sel']}; font-weight:700; border-left:3px solid {p['accent']}; border-radius:6px; }}
-    QPushButton#railSubItem {{ text-align:left; padding:0 12px 0 40px; height:32px; border-radius:8px; border:0; background:transparent;
+    QPushButton#railSubItem {{ text-align:left; padding:0 12px 0 30px; height:32px; border-radius:8px; border:0; background:transparent;
         color:{p['muted']}; font-size:13px; }}
     QPushButton#railSubItem:hover {{ background:{p['hover']}; }}
     QPushButton#railSubItem[on="true"] {{ background:{p['hover']}; color:{p['text']}; font-weight:700; }}
@@ -47,9 +47,9 @@ def _qss(p):
 
 
 class Rail(QFrame):
-    def __init__(self, win):
+    def __init__(self, win, make_icon=None, light_fn=None):
         super().__init__()
-        self.win = win
+        self.win, self.make_icon, self.light_fn = win, make_icon, light_fn
         self.setObjectName("shellRail")
         self.setFixedWidth(224)
         v = QVBoxLayout(self)
@@ -72,6 +72,8 @@ class Rail(QFrame):
             hl.setSpacing(0)
             b = QPushButton(label)
             b.setObjectName("railNav")
+            b.setProperty("iconName", _icon)
+            b.setIconSize(QSize(20, 20))
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.clicked.connect(lambda _c=False, i=idx: win.main_tabs.setCurrentIndex(i))
             bd = QLabel("")
@@ -81,9 +83,11 @@ class Rail(QFrame):
             v.addWidget(row)
             self.nav[idx], self.badge[idx] = b, bd
             if idx == 1:
-                for si, sl in LV_SUBS:
+                for si, sl, sic in LV_SUBS:
                     sb = QPushButton(sl)
                     sb.setObjectName("railSubItem")
+                    sb.setProperty("iconName", sic)
+                    sb.setIconSize(QSize(16, 16))
                     sb.setCursor(Qt.CursorShape.PointingHandCursor)
                     sb.clicked.connect(lambda _c=False, i=si: self._lv_sub(i))
                     v.addWidget(sb)
@@ -95,6 +99,15 @@ class Rail(QFrame):
         self.pack.setToolTip("Opens the project dashboard for the Detail Notes folder you last ran.")
         self.pack.clicked.connect(self._pack)
         v.addWidget(self.pack)
+
+    def icons(self):
+        if not self.make_icon:
+            return
+        col = "#1c1f24" if self.light_fn() else "#eceef0"
+        for b in self.findChildren(QPushButton):
+            n = b.property("iconName")
+            if n:
+                b.setIcon(self.make_icon(n, col, 20))
 
     def _lv_sub(self, i):
         self.win.main_tabs.setCurrentIndex(1)
@@ -211,16 +224,81 @@ class Ribbon(QFrame):
         self.pages[0] = self._page([project(), model()])
         self.pages[1] = self._page([
             ("Model", [T("Import IFC", "cube", call("import_ifc")), T("Windows", "window", go_lv(0)),
-                       T("Rooms", "room", go_lv(2))]),
+                       T("Doors", "door", go_lv(1)), T("Rooms", "room", go_lv(2))]),
             ("Check", [T("Run check", "shield", call("run_check"), hot=True), T("Results", "results", go_lv(3))]),
             ("Reports", [T("Preview PDF", "eye", call("preview_pdf_report")), T("Export PDF", "pdf", call("export_pdf_report")),
                          T("All subjects", "layers", allsub("lv"))])])
+
+        def xa_run():
+            fn = getattr(w, "_run_xa", None)
+            if fn:
+                fn()
+
+        def xa_prev():
+            if hasattr(w, "_write_xa_pdf"):
+                w.preview_pdf_report(w._write_xa_pdf, getattr(w, "_run_xa", lambda: None))
+
+        def sections(tab_index, label):
+            """A tool with a menu that scrolls the tab to one of its framed sections."""
+            from PySide6.QtWidgets import QMenu, QScrollArea, QGroupBox
+            b = self._tool(label, "layers", lambda: None)
+            m = QMenu(b)
+
+            def fill():
+                m.clear()
+                page = w.main_tabs.widget(tab_index)
+                for g in page.findChildren(QGroupBox):
+                    if not g.title() or not g.isVisibleTo(page):
+                        continue
+                    a = m.addAction(g.title().replace("&&", "&"))
+                    a.triggered.connect(lambda _c=False, gb=g: self._jump(gb))
+            m.aboutToShow.connect(fill)
+            b.setMenu(m)
+            b.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+            return b
+
         self.pages[2] = self._page([project(), model(),
-                                    ("Reports", [T("Export PDF", "pdf", call("export_xa_pdf")),
+                                    ("Check", [T("Run XA check", "shield", xa_run, hot=True),
+                                               T("Report details", "edit", call("rd_dialog")),
+                                               sections(2, "Sections")]),
+                                    ("Reports", [T("Preview", "eye", xa_prev), T("Export PDF", "pdf", call("export_xa_pdf")),
                                                  T("All subjects", "layers", allsub("xa"))])])
-        self.pages[3] = self._page([project(), ("Reports", [T("Export PDF", "pdf", call("export_cov_pdf")),
-                                                            T("Site sheets", "building", call("export_cov_sheets"))])])
-        self.pages[4] = QWidget()
+
+        def cov_prev():
+            if hasattr(w, "_write_cov_pdf"):
+                w.preview_pdf_report(w._write_cov_pdf, lambda: None)
+        self.pages[3] = self._page([project(),
+                                    ("Calculate", [T("Fill from rooms", "room", lambda: w.cov_fill_from_rooms(True), hot=True)]),
+                                    ("Reports", [T("Preview", "eye", cov_prev), T("Export PDF", "pdf", call("export_cov_pdf")),
+                                                 T("Each calculation", "layers", allsub("cov")),
+                                                 T("Site sheets", "building", call("export_cov_sheets"))])])
+
+        def det(name):
+            def f():
+                d = getattr(w, "_det_win", None)
+                if d is None:
+                    return
+                w.main_tabs.setCurrentIndex(4)
+                fn = getattr(d, name, None)
+                if fn:
+                    fn()
+            return f
+
+        def det_btn(attr):
+            def f():
+                d = getattr(w, "_det_win", None)
+                b = getattr(d, attr, None) if d is not None else None
+                w.main_tabs.setCurrentIndex(4)
+                if b is not None and b.isEnabled():
+                    b.click()
+            return f
+        self.pages[4] = self._page([
+            ("Detail", [T("Open DWG / DXF", "folder", det("pick_file"), hot=True), T("Settings", "settings", det("settings")),
+                        T("Outputs", "pdf", det("open_outputs"))]),
+            ("Notes", [T("Auto note", "play", det_btn("btn_auto")), T("Next problem", "search", det("next_problem")),
+                       T("Undo", "refresh", det("undo_user")), T("Redo", "copy", det("redo_user"))]),
+            ("Project", [T("Dashboard", "clipboard", det("show_project")), T("Batch folder", "layers", det("batch_folder")),
+                         T("Notes schedule", "pdf", det("export_schedule"))])])
         for i in sorted(self.pages):
             self.stack.addWidget(self.pages[i])
         self.icon_names()
@@ -232,9 +310,18 @@ class Ribbon(QFrame):
             if n:
                 b.setIcon(self.make_icon(n, col, 24))
 
+    def _jump(self, gb):
+        from PySide6.QtWidgets import QScrollArea
+        p = gb.parentWidget()
+        while p is not None and not isinstance(p, QScrollArea):
+            p = p.parentWidget()
+        if p is not None:
+            p.ensureWidgetVisible(gb, 0, 20)
+            p.verticalScrollBar().setValue(max(0, gb.mapTo(p.widget(), gb.rect().topLeft()).y() - 8))
+
     def show_for(self, idx):
         self.stack.setCurrentIndex(idx if idx in self.pages else 0)
-        self.setVisible(idx != 4)
+        self.setVisible(True)
 
 
 def install_shell(win, make_icon, light_fn):
@@ -248,7 +335,7 @@ def install_shell(win, make_icon, light_fn):
     hb = QHBoxLayout(body)
     hb.setContentsMargins(0, 0, 0, 0)
     hb.setSpacing(0)
-    rail = Rail(win)
+    rail = Rail(win, make_icon, light_fn)
     right = QWidget()
     rv = QVBoxLayout(right)
     rv.setContentsMargins(0, 0, 0, 0)
@@ -270,6 +357,7 @@ def install_shell(win, make_icon, light_fn):
             state["light"] = is_l
             body.setStyleSheet(_qss(_palette(is_l)))
             ribbon.icon_names()
+            rail.icons()
 
     def refresh():
         restyle()
@@ -293,6 +381,7 @@ def install_shell(win, make_icon, light_fn):
     t.timeout.connect(refresh)
     t.start(1500)
     win._shell_timer = t
+    rail.icons()
     restyle()
     refresh()
     return rail, ribbon

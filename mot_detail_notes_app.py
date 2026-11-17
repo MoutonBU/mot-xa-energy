@@ -101,6 +101,35 @@ QScrollBar::add-line, QScrollBar::sub-line {{ width:0; height:0; }}
 """
 
 
+# Light look: one pass over the dark style sheet / inline styles. The host program calls to_light() when the mode is light.
+LIGHT = [False]
+LIGHT_MAP = {
+    "background:#1d1517; color:#ffffff": "background:#fbe3e6; color:#1c1f24",
+    "background:#3a1018; border:1px solid " + RED + "; color:white": "background:#fbe3e6; border:1px solid " + RED + "; color:#1c1f24",
+    "color:white; font-weight:700; background:#232326": "color:#1c1f24; font-weight:700; background:#ffffff",
+    "background:#4a0f1c; color:white": "background:#f6c9cf; color:#1c1f24",
+    "rgba(24,24,26,": "rgba(255,255,255,", "rgba(50,20,26,230)": "rgba(251,227,230,240)",
+    "#18181a": "#f1f2f4", "#1b1b1d": "#ffffff", "#2c2c30": "#d9dde2", "#9a9aa2": "#5c636b", "#a8a8b0": "#59616b",
+    "#1d1d20": "#f3f4f6", "#34343a": "#cfd4da", "#232326": "#eceef1", "#38383d": "#c3c9d0", "#2a2a2e": "#e1e4e8",
+    "#6a6a72": "#98a0a9", "#e8e8ea": "#1c1f24", "#5a0a18": "#f6c9cf", "#222226": "#e9ebee", "#cfcfd4": "#3a4048",
+    "#151517": "#ffffff", "#4a4a52": "#a9b0b8", "#2a2a31": "#dfe2e6", "#17171b": "#f6f7f8", "#2a2a30": "#d4d7dc",
+    "#d6d6dc": "#2a2f36", "#c9f5df": "#14573a", "#26262b": "#e9ebee", "#3a3a40": "#c3c9d0", "#1f1f22": "#f6f7f8",
+    "#202024": "#f3f4f6", "#a0a0aa": "#59616b", "#9aa0a6": "#59616b", "#f2f2f4": "#1c1f24", "#cfcfd6": "#3a4048",
+    "#1f2125": "#ffffff", "#2a2a2a": "#d9dde2", "#4a0f1c": "#f6c9cf",
+}
+_LIGHT_RE = re.compile("|".join(re.escape(k) for k in sorted(LIGHT_MAP, key=len, reverse=True)))
+
+
+def to_light(txt):
+    """Dark -> light for a style sheet or label text (no-op when the text has no dark palette colours)."""
+    return _LIGHT_RE.sub(lambda m: LIGHT_MAP[m.group(0)], txt) if isinstance(txt, str) else txt
+
+
+def _col(hexs):
+    """A QColor for the current mode (for colours painted in code)."""
+    return QColor(to_light(hexs) if LIGHT[0] else hexs)
+
+
 # ---------------------------------------------------------------- settings
 def read_json(p):
     try:
@@ -1115,10 +1144,10 @@ class OptionDelegate(QStyledItemDelegate):
         sel = bool(option.state & QStyle.StateFlag.State_Selected)
         hov = bool(option.state & QStyle.StateFlag.State_MouseOver)
         if sel:
-            painter.setBrush(QColor("#4a0f1c"))
+            painter.setBrush(_col("#4a0f1c"))
             painter.setPen(QPen(QColor(RED), 1))
         elif hov:
-            painter.setBrush(QColor("#26262b"))
+            painter.setBrush(_col("#26262b"))
             painter.setPen(Qt.PenStyle.NoPen)
         else:
             painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -1128,7 +1157,7 @@ class OptionDelegate(QStyledItemDelegate):
         f.setBold(True)
         f.setPointSize(11)
         painter.setFont(f)
-        painter.setPen(QColor("#f2f2f4"))
+        painter.setPen(_col("#f2f2f4"))
         tag = index.data(Qt.ItemDataRole.UserRole + 1) or ""
         title = index.data(Qt.ItemDataRole.DisplayRole) or ""
         tr = r.adjusted(12, 6, -12, 0)
@@ -1138,10 +1167,10 @@ class OptionDelegate(QStyledItemDelegate):
         f.setPointSize(9)
         painter.setFont(f)
         if tag:
-            painter.setPen(QColor("#9aa0a6"))
+            painter.setPen(_col("#9aa0a6"))
             painter.drawText(tr, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop,
                              QFontMetrics(f).elidedText(tag, Qt.TextElideMode.ElideRight, 190))
-        painter.setPen(QColor("#9a9aa2"))
+        painter.setPen(_col("#9a9aa2"))
         note = index.data(Qt.ItemDataRole.UserRole) or ""
         br = r.adjusted(12, 28, -12, -4)
         painter.drawText(br, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
@@ -2519,6 +2548,48 @@ class Win(QMainWindow):
     _XA_NOTE = re.compile(r"min\. total R-value ([\d.]+) m\u00b2K/W for the (roof / ceiling|masonry wall|light-weight wall) "
                           r"\(SANS 10400-XA, climate zone (\w+)\)")
 
+    # ---- light / dark look and vector icons (the host program supplies make_icon / is_light when embedded)
+    _BTN_ICONS = (("Open DWG", "folder"), ("Open outputs", "folder"), ("Outputs", "folder"), ("Settings", "settings"),
+                  ("Auto note", "play"), ("Undo", "refresh"), ("Redo", "copy"), ("More tools", "layers"),
+                  ("Templates", "clipboard"), ("Stop template", "close"), ("Layout", "layers"), ("Reset note", "refresh"),
+                  ("Fit", "search"), ("Pan", "compass"), ("Next problem", "search"), ("Choose spec", "edit"),
+                  ("Remove selected", "trash"), ("Mark selected", "shield"), ("Notes schedule", "pdf"),
+                  ("Batch", "layers"), ("Project dashboard", "clipboard"), ("Save now", "save"), ("Suggest notes", "star"),
+                  ("Project schedule", "pdf"), ("Build submission", "pdf"), ("Spec", "edit"), ("In line", "ruler"),
+                  ("Delete", "trash"), ("Write it with AI", "star"), ("Use this note", "add"), ("Approve", "shield"),
+                  ("Save to My specs", "star"), ("Browse", "folder"), ("Click a part", "edit"))
+    _STEP_ICONS = ("folder", "play", "search", "pdf")
+
+    def update_theme(self):
+        """Re-draw for the current mode: icons in the right colour, the canvas and tree repainted."""
+        mk = getattr(self, "make_icon", None)
+        if mk is None:
+            return
+        col = "#1c1f24" if (self.is_light() if getattr(self, "is_light", None) else False) else "#eceef0"
+        step = 0
+        for b in self.findChildren(QPushButton):
+            if b.property("icoDone") is None:
+                t = (b.text() or "").strip()
+                name = None
+                if b.property("rail"):
+                    name = self._STEP_ICONS[min(step, len(self._STEP_ICONS) - 1)]
+                    step += 1
+                else:
+                    for pre, nm in self._BTN_ICONS:
+                        if t.startswith(pre):
+                            name = nm
+                            break
+                b.setProperty("icoDone", name or "")
+                if name:
+                    b.setProperty("icoName", name)
+            nm = b.property("icoName")
+            if nm and b.objectName() != "canvasbtn":
+                b.setIcon(mk(nm, "#ffffff" if b.objectName() in ("primary",) else col, 18))
+                b.setIconSize(QSize(18, 18))
+        for v in self.findChildren(QGraphicsView):
+            v.viewport().update()
+        self.update()
+
     def xa_resync(self):
         """insulation notes already on the detail take the R-values of the zone that is set now"""
         self.xa_sync_ui()
@@ -3522,7 +3593,7 @@ class Win(QMainWindow):
             a = self.table.item(r, 0)
             if a is not None:
                 col = {"ok": "#43a047", "verify": "#ff5a6e", "todo": "#ffb300"}.get(st.get(int(a.text())))
-                a.setForeground(QColor(col) if col else QColor("#cfcfd6"))
+                a.setForeground(QColor(col) if col else _col("#cfcfd6"))
         self.apply_filter()
         self.update_rail()
         pct = int(round(100 * sum(1 for v in st.values() if v == "ok") / tot)) if tot else 0
