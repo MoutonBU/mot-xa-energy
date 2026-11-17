@@ -694,8 +694,12 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
                    "and the next email shows only what changed after it.")
         t.setWordWrap(True)
         v.addWidget(t)
-        pick = QPushButton("Read the number and date from the register PDF or email I sent...")
+        fold = QPushButton("Use the folder of the revision I sent (the PDFs as they were)...")
+        fold.setStyleSheet("font-weight:700;")
+        v.addWidget(fold)
+        pick = QPushButton("Or read the number and date from the register PDF or email I sent...")
         v.addWidget(pick)
+        base = {}
         f = QFormLayout()
         try:
             guess = str(max(int(self.info["issue_no"] or "1") - 1, 0))
@@ -722,6 +726,30 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
                 dt.setText(dd)
             info.setText("Read: revision %s, %s." % (r_ or "?", dd or "date not found, type it in") if (r_ or dd) else "Could not read a revision or a date from that file. Type them in.")
         pick.clicked.connect(choose)
+
+        def choose_folder():
+            p = QFileDialog.getExistingDirectory(d, "The folder of the revision you sent (its drawing PDFs)")
+            if not p:
+                return
+            from PySide6.QtWidgets import QApplication
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            try:
+                got, dates = self._read_folder(p)
+            finally:
+                QApplication.restoreOverrideCursor()
+            if not got:
+                info.setText("No drawing PDFs found in that folder.")
+                return
+            base.clear()
+            base.update(got)
+            m = re.search(r"(?:rev(?:ision)?)[\s_.-]*([0-9A-Za-z]+)", os.path.basename(p.rstrip("/\\")), re.I)
+            if m and not rev.isModified():
+                rev.setText(m.group(1))
+            if dates and not dt.text().strip():
+                dt.setText(max(dates))
+            info.setText("Read %d drawings from that folder. They are counted as what was sent. Check the revision number and the date it was sent below (%s)."
+                         % (len(got), "the newest PDF there is dated " + max(dates) if dates else "type the date"))
+        fold.clicked.connect(choose_folder)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         bb.accepted.connect(d.accept)
         bb.rejected.connect(d.reject)
@@ -732,13 +760,32 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         if not date:
             QMessageBox.information(self, "Drawing register", "Type the date it was sent, like 2026-11-17.")
             return
-        n = self.rebuild_history(rev.text().strip() or "0", date)
+        n = self.rebuild_history(rev.text().strip() or "0", date, base or None)
         self.count.setText("Continuing from revision %s of %s: %d drawings are counted as sent." % (rev.text().strip() or "0", date, n))
 
-    def rebuild_history(self, issue, date):
-        """Make an earlier issue out of the drawings in the list: what each one looked like on that date, read from its revision rows."""
-        rows = {}
-        for g in self.groups:
+    def _read_folder(self, folder):
+        """The drawing PDFs of an earlier revision's folder as they were: ({key: {rev, rdate, title, no}}, [dates the PDFs were made])."""
+        rows, dates = {}, []
+        for root, _dirs, files in os.walk(folder):
+            for f in sorted(files):
+                if not f.lower().endswith(".pdf") or re.search(r"drawing register", f, re.I):
+                    continue
+                path = os.path.join(root, f)
+                try:
+                    r = guess_row(path)
+                except Exception:
+                    continue
+                revs = [tuple(str(v or "") for v in x[:3]) for x in (r.get("revs") or []) if len(x) >= 3]
+                rdate = r.get("rdate") or (max((x[1] for x in revs if x[1]), default=""))
+                rows[self.key(r)] = {"rev": r.get("rev", ""), "rdate": rdate, "title": r.get("title", ""), "no": r.get("no", ""), "comment": "", "by": ""}
+                if r.get("pdfdate"):
+                    dates.append(r["pdfdate"])
+        return rows, dates
+
+    def rebuild_history(self, issue, date, baseline=None):
+        """Make an earlier issue: from the PDFs of that revision's folder when given, otherwise out of the drawings in the list as they looked on that date (read from their revision rows)."""
+        rows = dict(baseline) if baseline else {}
+        for g in ([] if baseline else self.groups):
             for r in g["rows"]:
                 revs = [tuple(str(v or "") for v in x[:3]) for x in (r.get("revs") or []) if len(x) >= 3]
                 dated = [x for x in revs if x[1]]
