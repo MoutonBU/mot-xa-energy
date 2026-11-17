@@ -25,11 +25,12 @@ from PySide6.QtWidgets import (QStyle, QStyledItemDelegate, QTreeWidget, QTreeWi
                                QFileDialog, QFormLayout, QGraphicsEllipseItem, QGraphicsScene,
                                QGraphicsSimpleTextItem, QGraphicsView, QHBoxLayout, QHeaderView,
                                QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton, QSplitter,
-                               QListWidget, QListWidgetItem, QTextEdit, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+                               QListWidget, QListWidgetItem, QProgressBar, QScrollArea, QGridLayout, QTextEdit, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 import detail_catalog as cat
 import detail_smart as smart
 import detail_refs as refs
+import detail_project as proj
 from flow_layout import FlowLayout
 import detail_icons as icons
 import detail_to_dwg as core
@@ -70,6 +71,11 @@ QGraphicsView {{ border:1px solid #2c2c30; border-radius:8px; }}
 QSplitter::handle {{ background:#232326; border-radius:3px; margin:2px 1px; }}
 QSplitter::handle:hover {{ background:{RED}; }}
 QPushButton[compact="true"] {{ padding:6px 12px; border-radius:8px; }}
+QPushButton[rail="true"] {{ text-align:left; padding:10px 12px; border-radius:11px; background:#17171b; border:1px solid #2a2a30; color:#d6d6dc; }}
+QPushButton[rail="true"]:hover {{ border-color:#4a4a52; }}
+QPushButton[rail="true"][state="done"] {{ border-color:#1f6b49; color:#c9f5df; }}
+QPushButton[rail="true"][state="cur"] {{ border-color:{RED}; background:#1d1517; color:#ffffff; }}
+QFrame#railbar {{ background:#2a2a31; border:0; border-radius:3px; }}
 QPushButton#chip {{ background:#202024; border:1px solid #34343a; border-radius:12px; padding:4px 12px; color:#cfcfd4; }}
 QPushButton#chip:hover {{ border:1px solid {RED}; color:white; }}
 QTreeWidget {{ background:#1b1b1d; border:1px solid #2c2c30; border-radius:10px; padding:4px; outline:0; }}
@@ -1433,6 +1439,148 @@ class SpecDialog(QDialog):
             self.accept()
 
 
+
+class ProjectDialog(QDialog):
+    """one page for a whole folder of details: counts, wording check, submission checklist, submission pack"""
+
+    def __init__(self, win, data, name):
+        super().__init__(win)
+        self.win, self.data, self.name = win, data, name
+        self.setWindowTitle("Project dashboard")
+        self.resize(1180, 740)
+        findings = win.project_findings()
+        zone = None
+        if win.xa_provider:
+            try:
+                d = win.xa_provider()
+                zone = {"zone": d["zone"], "roof": d.get("roof"), "heavy": d.get("heavy"), "light": d.get("light")}
+            except Exception:
+                zone = None
+        self.items = proj.checklist(data, zone, findings)
+        root = QVBoxLayout(self)
+        t = QLabel(f"<span style='font-size:20px;font-weight:700'>{name}</span><br>"
+                   f"<span style='color:#a0a0aa'>{len(data)} details" + (f" · XA zone {zone['zone']}" if zone else "") + "</span>")
+        root.addWidget(t)
+        tt = proj.totals(data)
+        tiles = QHBoxLayout()
+        for n_, lab, col in ((tt["details"], "details", "#f2f2f4"), (tt["notes"], "notes written", "#f2f2f4"),
+                             (tt["ok"], "checked by you", "#7ee2ae"), (tt["verify"], "to verify", "#ff9aa8"),
+                             (tt["todo"], "no spec chosen", "#ffcf6b")):
+            f = QFrame()
+            f.setObjectName("pcard")
+            f.setStyleSheet("#pcard{background:#17171b;border:1px solid #2a2a30;border-radius:12px;}QLabel{border:0;background:transparent;}")
+            fl = QVBoxLayout(f)
+            fl.setContentsMargins(14, 10, 14, 10)
+            fl.addWidget(QLabel(f"<span style='font-size:28px;font-weight:700;color:{col}'>{n_}</span>"))
+            fl.addWidget(QLabel(f"<span style='color:#a0a0aa'>{lab}</span>"))
+            tiles.addWidget(f)
+        root.addLayout(tiles)
+        body = QHBoxLayout()
+        left = QVBoxLayout()
+        if findings:
+            fb = QLabel("<b style='color:#ffcf6b'>Same material, different wording</b><br>" + "<br>".join(
+                f"<b>{c}</b>: " + " | ".join(f"{w['txt'][:60]} <span style='color:#a0a0aa'>({', '.join(sorted(set(w['details'])))})</span>"
+                                             for w in v.values()) for c, v in sorted(findings.items())[:6]))
+            fb.setWordWrap(True)
+            fb.setTextFormat(Qt.TextFormat.RichText)
+            fb.setStyleSheet("QLabel{background:#221d10;border:1px solid #6b4d0e;border-radius:12px;padding:10px;}")
+            left.addWidget(fb)
+        grid = QWidget()
+        gl = QGridLayout(grid)
+        gl.setSpacing(10)
+        for i, (d, v) in enumerate(sorted(data.items())):
+            n = len(v["notes"])
+            ok = sum(1 for *_x, s_ in v["notes"] if s_ == "ok")
+            ver = sum(1 for *_x, s_ in v["notes"] if s_ == "verify")
+            td = sum(1 for *_x, s_ in v["notes"] if s_ == "todo")
+            f = QFrame()
+            f.setObjectName("pcard")
+            f.setStyleSheet("#pcard{background:#17171b;border:1px solid #2a2a30;border-radius:12px;}QLabel{border:0;background:transparent;}")
+            fl = QVBoxLayout(f)
+            fl.setContentsMargins(12, 10, 12, 10)
+            fl.addWidget(QLabel(f"<b>{d}</b> <span style='color:#a0a0aa'>{n} note{'' if n == 1 else 's'}</span>"))
+            bar = QProgressBar()
+            bar.setRange(0, max(n, 1))
+            bar.setValue(ok)
+            bar.setTextVisible(False)
+            bar.setFixedHeight(6)
+            bar.setStyleSheet("QProgressBar{background:#2a2a31;border:0;border-radius:3px;}QProgressBar::chunk{background:#4cc38a;border-radius:3px;}")
+            fl.addWidget(bar)
+            fl.addWidget(QLabel(f"<span style='color:#7ee2ae'>{ok} checked</span>  <span style='color:#ff9aa8'>{ver} verify</span>  "
+                                f"<span style='color:#ffcf6b'>{td} open</span>"))
+            gl.addWidget(f, i // 2, i % 2)
+        gl.setRowStretch(len(data) // 2 + 1, 1)
+        sc = QScrollArea()
+        sc.setWidgetResizable(True)
+        sc.setWidget(grid)
+        sc.setFrameShape(QFrame.Shape.NoFrame)
+        left.addWidget(sc, 1)
+        body.addLayout(left, 3)
+        right = QVBoxLayout()
+        ck = QLabel(self.checklist_rich())
+        ck.setWordWrap(True)
+        ck.setTextFormat(Qt.TextFormat.RichText)
+        ck.setAlignment(Qt.AlignmentFlag.AlignTop)
+        ck.setStyleSheet("QLabel{background:#17171b;border:0;border-radius:12px;padding:14px;}")
+        ks = QScrollArea()
+        ks.setWidgetResizable(True)
+        ks.setWidget(ck)
+        ks.setFrameShape(QFrame.Shape.NoFrame)
+        right.addWidget(ks, 1)
+        nt = QLabel("The checklist only reads what the notes say. You still approve each note, and the engineer's design and the local authority's own requirements apply.")
+        nt.setWordWrap(True)
+        nt.setObjectName("muted")
+        right.addWidget(nt)
+        body.addLayout(right, 2)
+        root.addLayout(body, 1)
+        bb = QHBoxLayout()
+        b1 = QPushButton("Project schedule (PDF)")
+        b1.clicked.connect(self.open_schedule)
+        b2 = QPushButton("Build submission pack")
+        b2.setObjectName("primary")
+        b2.clicked.connect(self.make_pack)
+        b3 = QPushButton("Close")
+        b3.clicked.connect(self.accept)
+        bb.addWidget(b1)
+        bb.addStretch()
+        bb.addWidget(b2)
+        bb.addWidget(b3)
+        root.addLayout(bb)
+
+    def checklist_rich(self):
+        col = {"y": "#4cc38a", "w": "#ffb300", "n": "#ff6b7d"}
+        sym = {"y": "✓", "w": "!", "n": "✕"}
+        h = ["<div style='font-size:16px;font-weight:700'>Submission checklist</div><br>"]
+        for s_, t, x in self.items:
+            h.append(f"<div><span style='color:{col[s_]};font-weight:700'>{sym[s_]}</span> <b>{t}</b><br>"
+                     f"<span style='color:#a0a0aa'>{x}</span></div><br>")
+        return "".join(h)
+
+    def _pdf(self, path, html):
+        from PySide6.QtGui import QPageSize, QPdfWriter, QTextDocument
+        from PySide6.QtCore import QMarginsF
+        w = QPdfWriter(str(path))
+        w.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
+        w.setPageMargins(QMarginsF(15, 15, 15, 15))
+        doc = QTextDocument()
+        doc.setHtml("<body style='font-family:Arial;font-size:10pt'>" + html + "</body>")
+        doc.print_(w)
+
+    def open_schedule(self):
+        p = self.win.project_report(self.name, quiet=True)
+        if p:
+            self.win.say(f"Project schedule saved: {p}")
+
+    def make_pack(self):
+        sched = self.win.project_report(self.name, quiet=True)
+        ckpdf = OUT_DIR / (self.name + "_submission_checklist.pdf")
+        self._pdf(ckpdf, proj.checklist_html(self.items, self.name))
+        pack, copied = proj.build_pack(self.name, OUT_DIR, self.data, sched, ckpdf)
+        self.win.say(f"Submission pack ready: {pack} ({len(copied)} files).")
+        QMessageBox.information(self, "Submission pack", f"{len(copied)} files copied to:\n{pack}\n\n"
+                                "The notes are standard wording. Check each one before it goes to the council or NHBRC.")
+
+
 class Win(QMainWindow):
     def __init__(self, embedded=False):
         super().__init__()
@@ -1756,6 +1904,7 @@ class Win(QMainWindow):
         self.view.note_moved.connect(self.on_note_moved)
         self.view.target_moved.connect(self.on_target_moved)
         QTimer.singleShot(0, self._wrap_labels)
+        QTimer.singleShot(0, self.update_rail)
         self.note_pos, self.note_tgt = {}, {}
         self.ptr_default, self.note_ptr = "dot", {}
         self.note_wd = {}                     # note key -> width in mm on paper, for notes you resized
@@ -1770,6 +1919,11 @@ class Win(QMainWindow):
         self.table.setHorizontalHeaderLabels(["#", "Note (edit freely)", "Check", "Material", "Reference"])
         h = self.table.horizontalHeader()
         h.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        h.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        for c_, w_ in ((2, 60), (3, 88), (4, 96)):          # keep the note text column the widest
+            h.setSectionResizeMode(c_, QHeaderView.ResizeMode.Interactive)
+            self.table.setColumnWidth(c_, w_)
+        self.table.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.table.setWordWrap(True)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -1799,7 +1953,8 @@ class Win(QMainWindow):
         sl.addLayout(fl)
         sl.addWidget(self.table, 1)
         split.addWidget(side)
-        split.setSizes([800, 560])
+        side.setMinimumWidth(460)
+        split.setSizes([540, 820])
         split.setHandleWidth(8)
         split.setChildrenCollapsible(False)
         self.table.setAlternatingRowColors(True)
@@ -1830,6 +1985,9 @@ class Win(QMainWindow):
         self.btn_approve = QPushButton("Mark selected as checked")
         self.btn_approve.setToolTip("You have checked these notes against SANS 10400 / the NHBRC manual: they get a green tick")
         self.btn_approve.clicked.connect(self.approve_selected)
+        self.btn_proj = QPushButton("Project dashboard...")
+        self.btn_proj.setToolTip("Totals, wording check and submission checklist for the folder you last ran in batch")
+        self.btn_proj.clicked.connect(self.show_project)
         self.btn_batch = QPushButton("Batch: whole folder...")
         self.btn_batch.setToolTip("Write standard notes for every detail in a folder, and a notes schedule for each. Details you already worked on keep your notes.")
         self.btn_batch.clicked.connect(lambda: self.batch_folder())
@@ -1841,13 +1999,46 @@ class Win(QMainWindow):
         br.addWidget(self.btn_approve)
         br.addWidget(self.btn_sched)
         br.addWidget(self.btn_batch)
+        br.addWidget(self.btn_proj)
         br.addStretch()
         self.btn_gen.setVisible(False)
         br.addWidget(self.btn_apply)
         nl.addLayout(br)
         for b_ in nt.findChildren(QPushButton):
             b_.setProperty("compact", True)
-        self.tabs.addTab(nt, "Detail")
+        # left workflow rail: where you are and what is next
+        wrap = QWidget()
+        wl = QHBoxLayout(wrap)
+        wl.setContentsMargins(0, 0, 0, 0)
+        wl.setSpacing(12)
+        self.rail = QWidget()
+        self.rail.setFixedWidth(196)
+        rl = QVBoxLayout(self.rail)
+        rl.setContentsMargins(0, 14, 0, 0)
+        rl.setSpacing(8)
+        cap = QLabel("WORKFLOW")
+        cap.setObjectName("muted")
+        rl.addWidget(cap)
+        self.rail_btns = []
+        for fn in (self.pick_file, self.auto_all, self.next_problem, self.export_schedule):
+            b = QPushButton("")
+            b.setProperty("rail", True)
+            b.setMinimumHeight(64)
+            b.clicked.connect(lambda _c=False, f=fn: f())
+            rl.addWidget(b)
+            self.rail_btns.append(b)
+        self.rail_prog = QLabel("")
+        self.rail_prog.setObjectName("muted")
+        rl.addSpacing(6)
+        rl.addWidget(self.rail_prog)
+        self.rail_bar = QFrame()
+        self.rail_bar.setObjectName("railbar")
+        self.rail_bar.setFixedHeight(6)
+        rl.addWidget(self.rail_bar)
+        rl.addStretch()
+        wl.addWidget(self.rail)
+        wl.addWidget(nt, 1)
+        self.tabs.addTab(wrap, "Detail")
         self.tabs.tabBar().moveTab(1, 0)          # the workspace comes first, the settings second
         self.tabs.setCurrentIndex(0)
 
@@ -2529,6 +2720,7 @@ class Win(QMainWindow):
         prog.setWindowModality(Qt.WindowModality.WindowModal)
         done, failed = [], []
         self.proj_rows = []
+        self.proj_data = {}
         for n, f in enumerate(files):
             prog.setValue(n)
             prog.setLabelText(f"{f.name}  ({n + 1} of {len(files)})")
@@ -2557,10 +2749,23 @@ class Win(QMainWindow):
         self.say(msg)
         QMessageBox.information(self, "Batch finished", msg + "\n\nOpen each detail to check the notes: they are the standard wording and still need your approval.")
         if done:
-            self.project_report(folder)
+            self.project_report(folder, quiet=True)
+            self.project_folder = Path(folder).name
+            self.show_project()
+
+    def show_project(self):
+        data = getattr(self, "proj_data", None)
+        if not data:
+            self.say("Run \u201cBatch: whole folder...\u201d first: the project dashboard is built from it.")
+            return
+        ProjectDialog(self, data, getattr(self, "project_folder", "Project")).exec()
 
     def collect_project_rows(self, detail):
         by_id = {i["id"]: i for i in self.items}
+        st = self.note_status()
+        if not hasattr(self, "proj_data"):
+            self.proj_data = {}
+        self.proj_data[detail] = {"notes": []}
         for r in range(self.table.rowCount()):
             it = by_id.get(int(self.table.item(r, 0).text()))
             txt = " ".join(self.table.item(r, 1).text().split())
@@ -2568,6 +2773,7 @@ class Win(QMainWindow):
                 continue
             c = cat.guess_category(it["layer"], it["pattern"]) or "Other"
             self.proj_rows.append((detail, c, core.clean_name(it["pattern"]) or it["layer"], txt))
+            self.proj_data[detail]["notes"].append((c, core.clean_name(it["pattern"]) or it["layer"], txt, st.get(it["id"], "none")))
 
     @staticmethod
     def _wording_key(txt):
@@ -2591,7 +2797,7 @@ class Win(QMainWindow):
     def project_unfinished(self):
         return [(d, nm, txt) for d, c, nm, txt in self.proj_rows if self.is_unfinished(txt)]
 
-    def project_report(self, folder):
+    def project_report(self, folder, quiet=False):
         """one schedule for the whole folder + the places where the same kind of element is worded differently"""
         import datetime
         from PySide6.QtGui import QPageSize, QPdfWriter, QTextDocument
@@ -2631,7 +2837,7 @@ class Win(QMainWindow):
         msg = (f"Project check: {len(diff)} kind(s) of element are worded differently on different details. " if diff
                else "Project check: wording is consistent across all details. ") + f"Project schedule saved: {path}"
         self.say(msg)
-        if diff or todo:
+        if (diff or todo) and not quiet:
             lines = [f"{c}: " + " | ".join(f"{w['txt'][:70]} ({', '.join(sorted(set(w['details'])))})" for w in v.values())
                      for c, v in sorted(diff.items())]
             txt = ""
@@ -3222,6 +3428,49 @@ class Win(QMainWindow):
                 st[iid] = "ok"
         return st
 
+    def update_rail(self):
+        """the four workflow cards: Open, Auto note, Review, Export"""
+        if not hasattr(self, "rail_btns"):
+            return
+        st = self.note_status()
+        tot = self.table.rowCount()
+        ok = sum(1 for v in st.values() if v == "ok")
+        bad = sum(1 for v in st.values() if v == "verify")
+        todo = sum(1 for v in st.values() if v == "todo")
+        opened = getattr(self, "src", None) is not None and bool(self.items)
+        rev_done = tot > 0 and ok == tot
+        if not opened:
+            cur = 0
+        elif tot == 0:
+            cur = 1
+        elif not rev_done:
+            cur = 2
+        else:
+            cur = 3
+        txt = [
+            ("Open detail", (self.src.name if opened else "DWG or DXF")),
+            ("Auto note", (f"{tot} notes written" if tot else "write all notes at once")),
+            ("Review", ("everything checked" if rev_done else (f"{bad} to verify, {todo} unfinished" if tot else "check each note"))),
+            ("Export", "notes schedule PDF"),
+        ]
+        done = [opened, tot > 0, rev_done, False]
+        for i, (b, (t, sub)) in enumerate(zip(self.rail_btns, txt)):
+            mark = "\u2713" if done[i] else str(i + 1)
+            b.setText(f"{mark}   {t}\n      {sub}")
+            b.setProperty("state", "done" if done[i] else ("cur" if i == cur else "todo"))
+            b.style().unpolish(b)
+            b.style().polish(b)
+        pct = int(round(100 * ok / tot)) if tot else 0
+        self.rail_prog.setText(f"{ok} of {tot} checked" if tot else "no notes yet")
+        self.rail_bar.setStyleSheet(f"QFrame#railbar {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #4cc38a, "
+                                    f"stop:{max(pct / 100, 0.001):.3f} #4cc38a, stop:{min(pct / 100 + 0.001, 1):.3f} #2a2a31, stop:1 #2a2a31); "
+                                    f"border:0; border-radius:3px; }}")
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if hasattr(self, "rail"):
+            self.rail.setVisible(self.width() >= 1250)          # a narrow window keeps all its room for the drawing
+
     def set_filter(self, key):
         self.filter_key = key
         self.apply_filter()
@@ -3275,6 +3524,7 @@ class Win(QMainWindow):
                 col = {"ok": "#43a047", "verify": "#ff5a6e", "todo": "#ffb300"}.get(st.get(int(a.text())))
                 a.setForeground(QColor(col) if col else QColor("#cfcfd6"))
         self.apply_filter()
+        self.update_rail()
         pct = int(round(100 * sum(1 for v in st.values() if v == "ok") / tot)) if tot else 0
         txt = (f"{tot} notes ({pct}% checked)  |  {sum(1 for v in st.values() if v == 'ok')} checked  |  "
                f"{sum(1 for v in st.values() if v == 'verify')} to verify  |  {sum(1 for v in st.values() if v == 'todo')} unfinished")
