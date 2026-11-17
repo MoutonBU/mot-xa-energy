@@ -568,24 +568,35 @@ class MaterialsPage(QWidget):
                                     "(the button at the top right, or Tools > Online mode).")
             return
         from costing import ai_search
-        items = "\n".join('- key "%s": %s, per %s' % (k, d, u) for k, (d, u, _r, _s) in RATES.items())
-        prompt = ("You are helping a South African builder update his material prices. Use web search to find current retail or merchant prices in "
-                  "rand, including VAT, from South African suppliers (Builders Warehouse, Cashbuild, Buco, Italtile, BUCO, local brickyards, "
-                  "roof and ceiling suppliers). Items:\n" + items +
-                  '\nReturn ONLY JSON: {"prices": [{"key": "brick", "price_zar": 2.4, "source": "shop name and page URL"}]}. '
-                  "One entry per key you found a real price for, in the unit given. Never guess: leave a key out if you found nothing. "
-                  "For labour-inclusive items (roof covering laid, windows fitted) give a typical supplied-and-fitted rate only if you found one.")
-        self.note.setText("Searching for prices... this takes a minute or two.")
+        keys = list(RATES)
+        chunks = [keys[i:i + 5] for i in range(0, len(keys), 5)]       # a few items per search: more reliable than all at once
+
+        def prompt_for(ks):
+            items = "\n".join('- key "%s": %s, per %s' % (k, RATES[k][0], RATES[k][1]) for k in ks)
+            return ("You are helping a South African builder update his material prices. Use web search to find current retail or merchant "
+                    "prices in rand, including VAT, from South African suppliers (Builders Warehouse, Cashbuild, Buco, brickyards, roof and "
+                    "ceiling suppliers, Italtile). Items:\n" + items +
+                    '\nReturn ONLY JSON, with no other text: {"prices": [{"key": "brick", "price_zar": 2.4, "source": "shop name and page URL"}]}. '
+                    "One entry per key you found a real price for, in the unit given. Never guess: leave a key out if you found nothing. "
+                    "For items that include fitting (roof covering laid, windows fitted) give a rate only if you found one.")
+        self.note.setText("Searching for prices... this takes a few minutes.")
 
         def work():
-            try:
-                text, _urls = ai_search(M, prompt, (), max_uses=10, max_tokens=4000)
-                t = text.strip()
-                a, b = t.find("{"), t.rfind("}")
-                d = json.loads(t[a:b + 1])
-                self.price_found.emit(d.get("prices", []), "")
-            except Exception as e:
-                self.price_found.emit([], str(e))
+            found, errs = [], []
+            for ks in chunks:
+                try:
+                    text, _urls = ai_search(M, prompt_for(ks), (), max_uses=6, max_tokens=3000)
+                    t = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.M).strip()
+                    a, b = t.find("{"), t.rfind("}")
+                    if a < 0 or b <= a:
+                        errs.append("no list returned (" + (text.strip()[:120] or "empty reply") + ")")
+                        continue
+                    found += json.loads(t[a:b + 1]).get("prices", [])
+                except Exception as e:
+                    errs.append(str(e)[:160])
+                    if "Claude said" in str(e) or "No internet" in str(e):
+                        break                           # a key or connection problem: the next searches would fail the same way
+            self.price_found.emit(found, "; ".join(errs) if not found else "")
         if not getattr(self, "_pf_wired", False):
             self.price_found.connect(self._prices_back)
             self._pf_wired = True

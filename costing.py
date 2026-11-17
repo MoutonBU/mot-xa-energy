@@ -1392,8 +1392,8 @@ def ai_search(M, prompt, images_b64=(), max_uses=8, max_tokens=6000):
     tool = {"type": "web_search_20250305", "name": "web_search", "max_uses": max_uses,
             "user_location": {"type": "approximate", "country": "ZA"}}
     urls, text = set(), ""
-    for _ in range(4):                                   # a long search can pause; carry on up to four times
-        body = {"model": model, "max_tokens": max_tokens, "messages": msgs, "tools": [tool]}
+
+    def post(body):
         req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=json.dumps(body).encode(), headers=headers, method="POST")
         try:
             with urllib.request.urlopen(req, timeout=240) as resp:
@@ -1409,13 +1409,29 @@ def ai_search(M, prompt, images_b64=(), max_uses=8, max_tokens=6000):
             raise RuntimeError("No internet connection (%s)" % e.reason)
         if hasattr(M, "ai_track"):
             M.ai_track(data.get("usage"), "Claude", model)
+        return data
+
+    def texts(blocks):
+        return "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+    stop = ""
+    for _ in range(6):                                   # a long search can pause; carry on
+        data = post({"model": model, "max_tokens": max_tokens, "messages": msgs, "tools": [tool]})
         blocks = data.get("content", [])
         urls |= _walk_urls(blocks)
-        text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
-        if data.get("stop_reason") == "pause_turn":
+        text = texts(blocks)
+        stop = data.get("stop_reason")
+        if stop == "pause_turn":
             msgs.append({"role": "assistant", "content": blocks})
             continue
         break
+    if "{" not in text or stop in ("max_tokens", "pause_turn"):
+        # the model searched but did not give the list (or ran out of room): ask for it now, without more searching
+        msgs.append({"role": "assistant", "content": blocks or [{"type": "text", "text": "..."}]})
+        msgs.append({"role": "user", "content": [{"type": "text", "text": "Now give the result as the JSON only, from what you have found so far. "
+                                                  "No other text. If you found nothing for an item, leave it out."}]})
+        data = post({"model": model, "max_tokens": max_tokens, "messages": msgs, "tools": [tool], "tool_choice": {"type": "none"}})
+        urls |= _walk_urls(data.get("content", []))
+        text = texts(data.get("content", [])) or text
     return text, urls
 
 
