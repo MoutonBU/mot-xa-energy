@@ -623,9 +623,9 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         if not keep_c:
             old["comment"] = new["comment"]
             try:       # what changed = every revision row newer than the last issue sent
-                items = self.rev_items(old)
+                items = self.change_items(old)
                 if items:
-                    old["comment"] = "; ".join("Rev %s - %s" % (rv, ds) for rv, _dt, ds in items)
+                    old["comment"] = "; ".join("%s (Rev %s)" % (d, rv) if rv else d for d, rv in items)
                     old["auto"] = old["comment"]
             except Exception:
                 pass
@@ -1098,15 +1098,28 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             out.append((rv, dt, ds))
         return out
 
-    def _what(self, r):
-        """What changed on a drawing, read from the title block's revision column; falls back to the typed comment."""
+    @staticmethod
+    def _clean_desc(ds):
+        """A revision description without the codes that sometimes lead it ("01 ", "Rev B - ", "A: ")."""
+        t = (ds or "").strip()
+        c = re.sub(r"^\s*(?:rev(?:ision)?\.?\s*)?[A-Za-z]?\d{0,3}\s*[-:.)]\s+", "", t, flags=re.I)
+        c = re.sub(r"^\s*(?:rev(?:ision)?\.?\s*)?\d{1,3}\s+(?=[A-Za-z])", "", c, flags=re.I)
+        return (c or t).strip(" -:")
+
+    def change_items(self, r):
+        """What changed on one drawing, one entry per revision row newer than the last issue: [(description, rev)], described rows only."""
         try:
             items = self.rev_items(r)
         except Exception:
             items = []
+        return [(self._clean_desc(ds), rv) for rv, _dt, ds in items if (ds or "").strip()]
+
+    def _what(self, r):
+        """What changed on a drawing, read from the title block's revision column: 'Kitchen moved (Rev 02); Bedroom 2 enlarged (Rev 03)'. Falls back to the typed comment."""
+        its = self.change_items(r)
         by = r.get("by") or ""
-        if items:
-            return (by + ": " if by else "") + "; ".join("Rev %s - %s" % (rv, ds) for rv, _dt, ds in items)
+        if its:
+            return (by + ": " if by else "") + "; ".join("%s (Rev %s)" % (d, rv) if rv else d for d, rv in its)
         return self._why(r)
 
     def _why(self, r):
@@ -1125,10 +1138,16 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         if last and (rev or new):
             lines.append("WHAT CHANGED SINCE REVISION %s (%s)" % (last.get("issue", ""), last.get("date", "")))
             for r in rev:
-                _k, t = self.change_of(r)
-                lines.append("  - %s  %s  %s (%s): %s" % (r.get("no") or "-", r.get("title", ""), t.replace("Revised: ", ""), r.get("rdate") or r.get("pdfdate", ""), self._what(r)))
+                lines.append("%s  %s" % (r.get("no") or "-", (r.get("title", "") or "").upper()))
+                its = self.change_items(r)
+                if its:
+                    for d, rv in its:
+                        lines.append("  - %s%s" % (d, (" (Rev %s)" % rv) if rv else ""))
+                else:
+                    lines.append("  - " + self._why(r))
             for r in new:
-                lines.append("  - %s  %s  NEW: %s" % (r.get("no") or "-", r.get("title", ""), r.get("about", "")))
+                lines.append("%s  %s" % (r.get("no") or "-", (r.get("title", "") or "").upper()))
+                lines.append("  - New drawing: %s" % (r.get("about", "") or "added to the set"))
             lines.append("")
         elif last:
             lines += ["No drawing has changed since revision %s." % last.get("issue", ""), ""]
@@ -1139,7 +1158,10 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             for x in pend:
                 bit = "  - %s" % x.get("group", "")
                 bit += (" (order no. %s)" % x["order"]) if x.get("order") else ""
-                bit += ": " + (x.get("text") or ("New order" if x.get("type") == "Order" else "Change"))
+                if x.get("auto_text") and x.get("text") == x.get("auto_text"):
+                    bit += ": the changes listed above"            # made from the drawings: not repeated here, only its kind of change
+                else:
+                    bit += ": " + (x.get("text") or ("New order" if x.get("type") == "Order" else "Change")).replace("\n", "  /  ")
                 if x.get("kinds"):
                     bit += " [%s]" % x["kinds"]
                 if x.get("by_name") or x.get("by_email"):

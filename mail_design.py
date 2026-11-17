@@ -148,7 +148,7 @@ def parse(body):
         elif s.lower().startswith("status of this revision"):
             blocks.append(("status", s))
         elif _caps(s) and len(s) < 90:
-            kind = "sub" if (blocks and blocks[-1][0] in ("h", "sub")) or re.search(r"\(\d+ drawings?\)", s) else "h"
+            kind = "sub" if (blocks and blocks[-1][0] in ("h", "sub")) or re.search(r"\(\d+ drawings?\)", s) or re.match(r"^[A-Z]?[\d-]+\s{2,}", s) else "h"
             blocks.append((kind, s))
         else:
             para.append(s)

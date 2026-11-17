@@ -878,8 +878,8 @@ class LogMixin:
                     self.log.remove(line)
                 continue
             parts = ["%s %s: %s" % (r.get("no") or "-", r.get("title", ""), self._what(r)) for r in rev]
-            parts += ["%s %s: %s (new drawing)" % (r.get("no") or "-", r.get("title", ""), self._what(r)) for r in new]
-            text = "; ".join(parts)
+            parts += ["%s %s: NEW drawing, %s" % (r.get("no") or "-", r.get("title", ""), self._what(r)) for r in new]
+            text = "\n".join(parts)          # one drawing per line
             kinds = ", ".join(self.guess_kinds(rev, new, name))
             if line is None:
                 line = {k: "" for k in LOGK}
