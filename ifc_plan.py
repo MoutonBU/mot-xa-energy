@@ -494,8 +494,9 @@ def assign_results(storey, results, combined=None):
                     pa = float(str(pt.get("area", 0)).replace(",", ".") or 0)
                 except ValueError:
                     pa = 0.0
-                rows.append(([r, pt.get("name")], _norm(pt.get("floor") or r.get("floor")),
-                             (_norm(pt.get("unit") or r.get("unit")) or u).lower(), n, _norm(pt.get("name")), pa))
+                # the result row decides the level and unit: two units may have combined rooms of the same name
+                rows.append(([r, pt.get("name")], _norm(r.get("floor") or pt.get("floor")),
+                             (_norm(r.get("unit") or pt.get("unit")) or u).lower(), n, _norm(pt.get("name")), pa))
             continue
         u, n = _split_unit(r.get("room"))
         ru = _norm(r.get("unit")) or u
@@ -510,7 +511,9 @@ def assign_results(storey, results, combined=None):
         ar = _poly_area(sp)
         cand = [x for x in rows if id(x[0]) not in used and (x[3] == sn or x[4] == full or (sn and x[3] and (x[3].endswith(sn) or sn.endswith(x[3]))))]
         c2 = [x for x in cand if x[1] == fl]
-        cand = c2 or [x for x in cand if x[1] in ("", fl)] or []
+        cand = c2 or [x for x in cand if x[1] in ("", fl)]
+        if not cand:                    # the results name the level differently from the model: go by unit, name and area
+            cand = [x for x in rows if id(x[0]) not in used and (x[3] == sn or x[4] == full)]
         c3 = [x for x in cand if su and x[2] == su]
         cand = c3 or [x for x in cand if not su or not x[2]] or cand
         if cand:
@@ -519,6 +522,26 @@ def assign_results(storey, results, combined=None):
             out[id(sp)] = best[0][0]
             if best[0][1]:
                 sp["_part_of"] = best[0][0].get("room")
+    # second pass: a combined room whose parts could not be matched above (renamed, or the same name used twice):
+    # its name lists the parts ("Kitchen / Lounge"), so give every still-unmatched room of that unit and level its result
+    done = {id(v) for v in out.values()}
+    left = [sp for sp in storey["spaces"] if id(sp) not in out]
+    for r in results or []:
+        nm = str(r.get("room") or "")
+        if id(r) in done or not left or not re.search(r"[/+&,]| and ", nm, re.I):
+            continue
+        rf = _norm(r.get("floor"))
+        if rf and rf != fl:
+            continue
+        toks = [_split_unit(t)[1] for t in re.split(r"[/+&,]| and ", nm, flags=re.I) if t.strip()]
+        ru = (_norm(r.get("unit")) or _split_unit(nm)[0]).lower()
+        hit = [sp for sp in left if _split_unit(sp["name"])[1] in toks and (not ru or not _split_unit(sp["name"])[0]
+                                                                          or _split_unit(sp["name"])[0] == ru)]
+        if len(hit) >= 2:
+            for sp in hit:
+                out[id(sp)] = r
+                sp["_part_of"] = nm
+            left = [sp for sp in left if id(sp) not in out]
     return out
 
 
@@ -701,7 +724,7 @@ class PlanPage(QWidget):
             self.combo.blockSignals(True)
             self.combo.clear()
             for s in self._plan["storeys"]:
-                self.combo.addItem(s["name"])
+                self.combo.addItem(s["name"] + ("" if s["spaces"] else "  (no rooms)"))
             i = self.combo.findText(cur)
             if i < 0:                                   # first level that has rooms
                 i = next((k for k, s in enumerate(self._plan["storeys"]) if s["spaces"]), 0)
