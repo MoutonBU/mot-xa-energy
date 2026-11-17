@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.61.1**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.61.2**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Quicker build, 1.61.2**: no change to the program. The installer build installs only the Qt parts the program uses and no longer collects every submodule of matplotlib and ezdxf, so it installs and packages faster.
 - **Get changes from the drawings, 1.61.1**: in Orders and changes, a new button reads the revision rows of the drawings that changed since the last issue and makes one change line per house or block ("001 Ground floor: Rev 02 - Kitchen moved; 003 Roof: NEW drawing"). It ticks the kind of change as a suggestion: Major for new or reworked rooms and walls (or four or more drawings changed), Minor for dimensions and notes, Masters for new drawings, Final plans and SDP when the drawings say so. You can change the ticks. Pressing it again refreshes those lines and does not make copies.
 - **Continue from an earlier issue, 1.61.0**: in the drawing register, More > "Continue from an earlier issue I already sent...". If the program closed before the last register was recorded, or the project was sent before it was kept here, give the revision you last sent and the date (or pick the sent register PDF or email and it reads them). The register then counts every title-block revision dated on or before that day as already sent. The next revision starts after it and the email lists only what changed since.
 - **Faster build, 1.60.3**: no change to the program. The installer build is quicker: virus scanning is off on the build machine, the packaging work is cached between builds, test files and sample data are left out of the package, and a newer push replaces a build that is still running.
