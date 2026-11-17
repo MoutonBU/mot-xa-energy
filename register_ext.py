@@ -145,7 +145,7 @@ class EmailPreviewDialog(QDialog):
         to, cc, sub, body = self.values()
         if self.design_chk.isChecked():
             try:
-                self.view.setHtml(self.page.design_html(sub, body, attached=self.attached))
+                self.page.show_corners(self.view, self.page.design_html(sub, body, attached=self.attached, preview=True))
                 return
             except Exception:
                 pass
@@ -1019,9 +1019,18 @@ class MailMixin:
         im.save(buf, "PNG")
         return bytes(buf.data())
 
-    def design_html(self, subject, body, src="cid:mcplogo", attached="", both=False):
+    def show_corners(self, view, html_text):
+        """Show the preview in a QTextBrowser, adding the little corner pictures that make the cards rounded."""
         import mail_design
-        return mail_design.build(subject, body, logo_src=src, logo_light_src=("cid:mcplogol" if both else ""), attached=attached, company=self._M().SETTINGS.get("sig_company") or "MCP Architecture & Interiors")
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QImage, QTextDocument
+        for name, png in mail_design.preview_resources():
+            view.document().addResource(QTextDocument.ResourceType.ImageResource, QUrl(name), QImage.fromData(png))
+        view.setHtml(html_text)
+
+    def design_html(self, subject, body, src="cid:mcplogo", attached="", both=False, preview=False):
+        import mail_design
+        return mail_design.build(subject, body, logo_src=src, logo_light_src=("cid:mcplogol" if both else ""), preview=preview, attached=attached, company=self._M().SETTINGS.get("sig_company") or "MCP Architecture & Interiors")
 
     def designed_on(self):
         try:
@@ -1041,9 +1050,9 @@ class MailMixin:
         tb = QTextBrowser()
         img = QImage.fromData(self.design_png())
         tb.document().addResource(QTextDocument.ResourceType.ImageResource, QUrl("cid:mcplogo"), img)
-        tb.setHtml(self.design_html(subject, body, attached=attached))
+        self.show_corners(tb, self.design_html(subject, body, attached=attached, preview=True))
         v.addWidget(tb, 1)
-        v.addWidget(QLabel("This is a simple preview. Email programs show it a little more smoothly, with rounded corners."))
+        v.addWidget(QLabel("This is a preview. The email arrives in light or dark mode to match the person's mail program."))
         b = QPushButton("Close")
         b.clicked.connect(d.accept)
         v.addWidget(b)
