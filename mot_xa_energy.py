@@ -8680,6 +8680,12 @@ class MainWindow(QMainWindow):
             self.main_tabs.addTab(self.costing_page, "Costing")
         except Exception:
             self.costing_page = None
+        try:
+            import register
+            self.register_page = register.RegisterPage(self)
+            self.main_tabs.addTab(self.register_page, "Drawing register")
+        except Exception:
+            self.register_page = None
         self._build_home()
 
         self.assign_table = QTableWidget(0, 8)
@@ -10075,6 +10081,8 @@ class MainWindow(QMainWindow):
         self.cov_load({})
         if getattr(self, "costing_page", None):
             self.costing_page.set_state({})
+        if getattr(self, "register_page", None):
+            self.register_page.set_state({})
         self._rd_to_widgets()
         self._xa_refresh()
         self.current_file = None
@@ -10103,6 +10111,7 @@ class MainWindow(QMainWindow):
             "rd": self.rd,
             "cov": self.cov_state(),
             "costing": (self.costing_page.state() if getattr(self, "costing_page", None) else None),
+            "register": (self.register_page.state() if getattr(self, "register_page", None) else None),
             "ifc": getattr(self, "ifc_data", None),
             "unit_mode": UNIT_MODE[0],
             "panes": self.sched_panes,
@@ -10596,6 +10605,8 @@ class MainWindow(QMainWindow):
         self._set_units_mode(bool(data.get("unit_mode", False)))
         if getattr(self, "costing_page", None):
             self.costing_page.set_state(data.get("costing"))
+        if getattr(self, "register_page", None):
+            self.register_page.set_state(data.get("register"))
         self.sched_panes = {k: [tuple(p) for p in v] for k, v in (data.get("panes") or {}).items()}
         self.sched_geom = {k: {"aspect": v.get("aspect", 1.0), "panes": [tuple(q) for q in v.get("panes", [])]}
                            for k, v in (data.get("geom") or {}).items() if isinstance(v, dict)}

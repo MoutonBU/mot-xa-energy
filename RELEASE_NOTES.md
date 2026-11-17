@@ -1,11 +1,16 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.40.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.41.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Drawing register, 1.41.0**: a new subject under Overview. Add the drawing PDFs (or a whole folder) per block or house; the
+  drawing number, title, revision, paper size, sheets and scale are read from the file name and the PDF, and each drawing gets a
+  plain-language line on what it shows. Everything can be edited; a tick decides what is in the issue. Status per drawing,
+  issue number, client and recipient. Prints as a landscape A4 register (PDF or CSV) and writes the issue email
+  (copy it, or open it in your email program). Saved with the project.
 - **Whole-building costing, 1.40.0**: every item in Building materials now carries a material rate and a labour rate (bricklaying,
   plastering, tiling, painting, roofing, electrical, plumbing, installing sanitary ware, cupboards and so on). The model's
   quantities now also give site clearing, excavation, hardcore, waterproofing, skirting, gutters, ceilings, painting, light

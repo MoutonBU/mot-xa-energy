@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton, QSizePo
                                QVBoxLayout, QWidget)
 
 # main tab index -> (rail label, icon name); order of the main tabs in the window
-SUBJECTS = [(0, "Overview", "home"), (1, "Light && ventilation", "lightvent"), (2, "Energy (XA)", "bolt"),
+SUBJECTS = [(0, "Overview", "home"), (6, "Drawing register", "clipboard"), (1, "Light && ventilation", "lightvent"), (2, "Energy (XA)", "bolt"),
             (3, "Coverage && FAR", "building"), (4, "Detail notes", "ruler"), (5, "Costing", "tag")]
 LV_SUBS = [(0, "Windows", "window"), (1, "Doors", "door"), (2, "Rooms", "room"), (3, "Results", "results"), (4, "Plan", "plan")]
 
@@ -313,6 +313,19 @@ class Ribbon(QFrame):
                           T("Find product", "search", cost("find_ai"), hot=True)]),
             ("Building materials", [T("Read IFC", "cube", cost("mat_read")), T("Preview", "eye", cost("mat_preview")), T("Export", "pdf", cost("mat_export"))]),
             ("Reports", [T("Preview PDF", "eye", cost("preview_pdf")), T("Export PDF", "pdf", cost("export_pdf")), T("Export CSV", "export", cost("export_csv"))])])
+        def reg(name, *a):
+            def f():
+                c = getattr(w, "register_page", None)
+                if c is None:
+                    return
+                w.main_tabs.setCurrentIndex(6)
+                getattr(c, name)(*a)
+            return f
+        self.pages[6] = self._page([
+            ("Drawings", [T("Add PDFs", "add", reg("add_pdfs"), hot=True), T("Add folder", "folder", reg("add_folder")), T("New group", "layers", reg("add_group")),
+                          T("Remove", "trash", reg("remove_row"))]),
+            ("Email", [T("Write email", "edit", reg("write_mail"), hot=True), T("Copy", "copy", reg("copy_mail")), T("Open in email", "export", reg("open_mail"))]),
+            ("Register", [T("Preview PDF", "eye", reg("preview_pdf")), T("Export PDF", "pdf", reg("export_pdf")), T("Export CSV", "export", reg("export_csv"))])])
         for i in sorted(self.pages):
             self.stack.addWidget(self.pages[i])
         self.icon_names()
