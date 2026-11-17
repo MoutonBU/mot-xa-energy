@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton, QSizePo
 
 # main tab index -> (rail label, icon name); order of the main tabs in the window
 SUBJECTS = [(0, "Overview", "home"), (1, "Light && ventilation", "lightvent"), (2, "Energy (XA)", "bolt"),
-            (3, "Coverage && FAR", "building"), (4, "Detail notes", "ruler")]
+            (3, "Coverage && FAR", "building"), (4, "Detail notes", "ruler"), (5, "Costing", "tag")]
 LV_SUBS = [(0, "Windows", "window"), (1, "Doors", "door"), (2, "Rooms", "room"), (3, "Results", "results"), (4, "Plan", "plan")]
 
 
@@ -299,6 +299,19 @@ class Ribbon(QFrame):
                        T("Undo", "refresh", det("undo_user")), T("Redo", "copy", det("redo_user"))]),
             ("Project", [T("Dashboard", "clipboard", det("show_project")), T("Batch folder", "layers", det("batch_folder")),
                          T("Notes schedule", "pdf", det("export_schedule"))])])
+        def cost(name, *a):
+            def f():
+                c = getattr(w, "costing_page", None)
+                if c is None:
+                    return
+                w.main_tabs.setCurrentIndex(5)
+                getattr(c, name)(*a)
+            return f
+        self.pages[5] = self._page([
+            ("Schedule", [T("Build from rooms", "room", cost("build_from_rooms"), hot=True), T("Add line", "add", cost("add_line"))]),
+            ("Products", [T("From link", "import", cost("add_from_link")), T("Manual", "edit", cost("add_product")),
+                          T("Find online", "search", cost("find_online"))]),
+            ("Reports", [T("Export PDF", "pdf", cost("export_pdf")), T("Export CSV", "export", cost("export_csv"))])])
         for i in sorted(self.pages):
             self.stack.addWidget(self.pages[i])
         self.icon_names()

@@ -3892,6 +3892,7 @@ ICON_SVG = {
     "globe": '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/>',
     "lightvent": '<rect x="3.5" y="9" width="12" height="12" rx="1.6"/><path d="M9.5 9v12M3.5 15h12"/><circle cx="18" cy="6" r="2.6"/><path d="M18 1.5v1M18 9.5v1M22.5 6h-1M13.5 6h1M21 3l-.7.7M15.7 8.3 15 9M21 9l-.7-.7M15.7 3.7 15 3"/>',
     "copy": '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
+    "tag": '<path d="M3.5 12.2V4.5a1 1 0 0 1 1-1h7.7l8.3 8.3a1.4 1.4 0 0 1 0 2l-6.2 6.2a1.4 1.4 0 0 1-2 0z"/><circle cx="8.3" cy="8.3" r="1.3"/>',
     "ruler": '<path d="m3.5 16.5 13-13 4 4-13 13z"/><path d="m7 13 2 2M10 10l1.5 1.5M13 7l2 2"/>',
     "close": '<path d="M6 6l12 12M18 6 6 18"/>',
     "user": '<circle cx="12" cy="8" r="3.5"/><path d="M5 20.5c.8-4 3.6-6 7-6s6.2 2 7 6"/>',
@@ -8635,6 +8636,12 @@ class MainWindow(QMainWindow):
         self._build_xa_tab()
         self._build_cov_tab()
         self._build_detail_tab()
+        try:
+            import costing
+            self.costing_page = costing.CostingPage(self)
+            self.main_tabs.addTab(self.costing_page, "Costing")
+        except Exception:
+            self.costing_page = None
         self._build_home()
 
         self.assign_table = QTableWidget(0, 8)
@@ -10028,6 +10035,8 @@ class MainWindow(QMainWindow):
         self.xa_glass = {}
         self.rd = dict(RD_DEFAULTS)
         self.cov_load({})
+        if getattr(self, "costing_page", None):
+            self.costing_page.set_state({})
         self._rd_to_widgets()
         self._xa_refresh()
         self.current_file = None
@@ -10055,6 +10064,7 @@ class MainWindow(QMainWindow):
                    "elements": self.xa_elements, "glass": self.xa_glass, "air": self.air_state(), "hw": self.hw_state(), "lt": self.lt_state()},
             "rd": self.rd,
             "cov": self.cov_state(),
+            "costing": (self.costing_page.state() if getattr(self, "costing_page", None) else None),
             "ifc": getattr(self, "ifc_data", None),
             "unit_mode": UNIT_MODE[0],
             "panes": self.sched_panes,
@@ -10546,6 +10556,8 @@ class MainWindow(QMainWindow):
                          if self.ifc_data else "")
         self._rd_to_widgets()
         self._set_units_mode(bool(data.get("unit_mode", False)))
+        if getattr(self, "costing_page", None):
+            self.costing_page.set_state(data.get("costing"))
         self.sched_panes = {k: [tuple(p) for p in v] for k, v in (data.get("panes") or {}).items()}
         self.sched_geom = {k: {"aspect": v.get("aspect", 1.0), "panes": [tuple(q) for q in v.get("panes", [])]}
                            for k, v in (data.get("geom") or {}).items() if isinstance(v, dict)}
