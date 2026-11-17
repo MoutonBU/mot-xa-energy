@@ -108,11 +108,17 @@ class AccountDialog(QDialog):
         self.gbtn = QPushButton("Open Google's page to make the app password")
         self.gbtn.clicked.connect(self.open_app_pw)
         v.addWidget(self.gbtn)
+        self._pw_mode = False
         self.connect_b = QPushButton("Connect")
         self.connect_b.setMinimumHeight(40)
         self.connect_b.setStyleSheet("font-weight:700;")
         self.connect_b.clicked.connect(self.connect_now)
         v.addWidget(self.connect_b)
+        self.pwlink = QPushButton("")
+        self.pwlink.setFlat(True)
+        self.pwlink.setStyleSheet("color: gray; text-decoration: underline; border: none;")
+        self.pwlink.clicked.connect(self._toggle_pw)
+        v.addWidget(self.pwlink)
         self.status = QLabel("")
         self.status.setWordWrap(True)
         v.addWidget(self.status)
@@ -202,8 +208,17 @@ class AccountDialog(QDialog):
         import mail_autoconfig as ac
         d = self._domain()
         link = ac.APP_PASSWORD_DOMAINS.get(d)
-        self.gbtn.setVisible(bool(link))
-        if link:
+        self.easy = d in ("gmail.com", "googlemail.com") and self.mo.configured(self.S, "gmail") and not self._pw_mode
+        self.pwlink.setVisible(d in ("gmail.com", "googlemail.com") and self.mo.configured(self.S, "gmail"))
+        self.pwlink.setText("Use an app password instead" if self.easy else "Back: sign in with Google instead")
+        self.pw_lbl.setVisible(not self.easy)
+        self.pw.setVisible(not self.easy)
+        self.connect_b.setText("Sign in with Google" if self.easy else "Connect")
+        self.gbtn.setVisible(bool(link) and not self.easy)
+        if self.easy:
+            self.hint.setText("Press the button. Google's own window opens: choose your account, type your password there and press Allow. "
+                              "The first time Google may say the app is not verified: press Advanced, then Continue.")
+        elif link:
             self.pw_lbl.setText("<b>App password</b> (not your normal password)")
             self.hint.setText("%s does not accept your normal password in other programs. Press the button below, sign in, make an app password "
                               "(Google asks for 2-step verification once) and paste the 16 letters here." % d.split(".")[0].title())
@@ -238,9 +253,20 @@ class AccountDialog(QDialog):
         import mail_autoconfig as ac
         webbrowser.open(ac.APP_PASSWORD_DOMAINS.get(self._domain(), "https://myaccount.google.com/apppasswords"))
 
+    def _toggle_pw(self):
+        self._pw_mode = not self._pw_mode
+        self.refresh()
+
     def connect_now(self):
         import mail_autoconfig as ac
         addr, pw = self.addr.text().strip(), self.pw.text()
+        if self.easy:
+            if "@" not in addr:
+                self.status.setText("Type your Gmail address first.")
+                return
+            self.prov.setCurrentIndex(0)
+            self.sign_in()
+            return
         if not addr or not pw:
             self.status.setText("Type your email address and password first.")
             return
