@@ -3855,6 +3855,7 @@ ICON_SVG = {
     "window": '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M12 3v18M4 12h16"/>',
     "window_open": '<path d="M12 3v18"/><path d="M12 3 4 6v12l8 3"/><path d="M12 3h6a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-6"/>',
     "door": '<path d="M6 21V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v17"/><path d="M3 21h18"/><circle cx="15" cy="12.5" r=".9" fill="currentColor"/>',
+    "plan": '<path d="M3.5 3.5h17v17h-17zM3.5 10h7M14 10h6.5M10.5 10v10.5M14 3.5v6.5"/><path d="M10.5 15.5h3" stroke-dasharray="1.5 1.5"/>',
     "room": '<rect x="3.5" y="3.5" width="17" height="17" rx="2"/><path d="M3.5 12h7M14 12h6.5M10.5 12v8.5"/>',
     "check_circle": '<circle cx="12" cy="12" r="9"/><path d="m8 12.3 2.8 2.8 5.5-5.6"/>',
     "x_circle": '<circle cx="12" cy="12" r="9"/><path d="m9 9 6 6M15 9l-6 6"/>',
@@ -4055,7 +4056,7 @@ def apply_icons(win, force=False):
         mt.setIconSize(QSize(18, 18))
     st = getattr(win, "tabs", None)
     if st is not None:
-        for i, n in enumerate(("window", "door", "room", "results")):
+        for i, n in enumerate(("window", "door", "room", "results", "plan")):
             if i < st.count():
                 st.setTabIcon(i, make_icon(n, "#eceef0", 17))
         st.setIconSize(QSize(17, 17))
@@ -8619,6 +8620,13 @@ class MainWindow(QMainWindow):
         self.summary = QLabel("")
         rl.addWidget(self.summary)
         self.tabs.addTab(res_widget, "4  Results")
+        try:
+            import ifc_plan
+            self.plan_page = ifc_plan.PlanPage(self)
+            self.tabs.addTab(self.plan_page, "5  Plan")
+            self.tabs.currentChanged.connect(lambda i: self.plan_page.activate() if self.tabs.widget(i) is self.plan_page else None)
+        except Exception:
+            self.plan_page = None
         self._build_xa_tab()
         self._build_cov_tab()
         self._build_detail_tab()
@@ -10749,6 +10757,9 @@ class MainWindow(QMainWindow):
         acc_forget()
         QMessageBox.information(self, APP_NAME, "You are signed out. The password is asked for the next time the program starts.")
 
+    def shell_is_light(self):
+        return light()
+
     def toggle_mode(self):
         """Swap the dark and light look on the spot: no restart, nothing is reloaded."""
         global _logo_pm
@@ -10802,6 +10813,8 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         try:
+            if getattr(self, "plan_page", None) is not None:
+                self.plan_page.refresh()
             if getattr(self, "_det_win", None) is not None:
                 self._det_win.update_theme()
         except Exception:

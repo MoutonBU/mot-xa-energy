@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton, QSizePo
 # main tab index -> (rail label, icon name); order of the main tabs in the window
 SUBJECTS = [(0, "Overview", "home"), (1, "Light && ventilation", "lightvent"), (2, "Energy (XA)", "bolt"),
             (3, "Coverage && FAR", "building"), (4, "Detail notes", "ruler")]
-LV_SUBS = [(0, "Windows", "window"), (1, "Doors", "door"), (2, "Rooms", "room"), (3, "Results", "results")]
+LV_SUBS = [(0, "Windows", "window"), (1, "Doors", "door"), (2, "Rooms", "room"), (3, "Results", "results"), (4, "Plan", "plan")]
 
 
 def _palette(is_light):
@@ -224,7 +224,7 @@ class Ribbon(QFrame):
         self.pages[0] = self._page([project(), model()])
         self.pages[1] = self._page([
             ("Model", [T("Import IFC", "cube", call("import_ifc")), T("Windows", "window", go_lv(0)),
-                       T("Doors", "door", go_lv(1)), T("Rooms", "room", go_lv(2))]),
+                       T("Doors", "door", go_lv(1)), T("Rooms", "room", go_lv(2)), T("Plan", "plan", go_lv(4))]),
             ("Check", [T("Run check", "shield", call("run_check"), hot=True), T("Results", "results", go_lv(3))]),
             ("Reports", [T("Preview PDF", "eye", call("preview_pdf_report")), T("Export PDF", "pdf", call("export_pdf_report")),
                          T("All subjects", "layers", allsub("lv"))])])
