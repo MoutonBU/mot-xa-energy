@@ -2444,7 +2444,12 @@ def save_settings():
         return False
 
 
-def ai_track(usage, prov=""):
+# (model id, label, $ per million tokens in, out). Prices are from a third-party price page and can change: check console.anthropic.com.
+MODEL_CHOICES = [("claude-haiku-5-5", "Haiku 5.5 - cheapest", 0.10, 0.50), ("claude-haiku-4-5", "Haiku 4.5 - cheap", 1.00, 5.00),
+                 ("claude-sonnet-5-5", "Sonnet 5.5 - balanced", 2.00, 10.00), ("claude-opus-5-5", "Opus 5.5 - most capable", 4.00, 20.00)]
+
+
+def ai_track(usage, prov="", model=""):
     """Add the cost of one reply to the running total kept in the settings. Anthropic does not let a key read its balance,
     so the program counts what it spends itself (tokens and web searches at the rates in the settings)."""
     try:
@@ -2456,6 +2461,9 @@ def ai_track(usage, prov=""):
         n_search = float((u.get("server_tool_use") or {}).get("web_search_requests", 0) or 0)
         r_in = float(SETTINGS.get("rate_in", 3.0 if claude else 2.5) or 0)
         r_out = float(SETTINGS.get("rate_out", 15.0 if claude else 10.0) or 0)
+        for mid, _lab, pi, po in MODEL_CHOICES:
+            if claude and model == mid:
+                r_in, r_out = pi, po
         cost = tin / 1e6 * r_in + tout / 1e6 * r_out + n_search * 0.01
         SETTINGS["ai_spent"] = round(float(SETTINGS.get("ai_spent", 0) or 0) + cost, 6)
         SETTINGS["ai_calls"] = int(SETTINGS.get("ai_calls", 0) or 0) + 1
@@ -2527,7 +2535,7 @@ def ai_request(prompt, images_b64=(), max_tokens=4096):
         raise RuntimeError(f"{prov} said: {msg or e.reason} (code {e.code})")
     except urllib.error.URLError as e:
         raise RuntimeError(f"No internet connection to {prov} ({e.reason})")
-    ai_track(data.get("usage"), prov)
+    ai_track(data.get("usage"), prov, model)
     if prov.startswith("Claude"):
         return "".join(p.get("text", "") for p in data.get("content", []))
     return data["choices"][0]["message"]["content"]
@@ -11775,6 +11783,13 @@ class MainWindow(QMainWindow):
             grid.addWidget(QLabel(lab), i, 0)
             grid.addWidget(w, i, 1)
         lay.addLayout(grid)
+        sm = QComboBox()
+        for mid, lab, pi, po in MODEL_CHOICES:
+            sm.addItem("%s  ($%.2f in / $%.2f out per million)" % (lab, pi, po), mid)
+        k_ = sm.findData(SETTINGS.get("search_model") or "claude-haiku-5-5")
+        sm.setCurrentIndex(max(0, k_))
+        sm.setToolTip("The model used by Find product and Update prices. Haiku is the cheapest and is enough to read shop pages; "
+                      "pick Sonnet if its matches look poor. The web search itself costs the same on every model.")
         cred = QDoubleSpinBox()
         cred.setRange(0, 100000)
         cred.setPrefix("$ ")
@@ -11801,7 +11816,7 @@ class MainWindow(QMainWindow):
         reset.clicked.connect(do_reset)
         show_spent()
         g2 = QGridLayout()
-        for i_, (lab_, w_) in enumerate([("Credit loaded", cred), ("Price in (tokens)", rin), ("Price out (tokens)", rout)]):
+        for i_, (lab_, w_) in enumerate([("Model for product search", sm), ("Credit loaded", cred), ("Price in (tokens)", rin), ("Price out (tokens)", rout)]):
             g2.addWidget(QLabel(lab_), i_, 0)
             g2.addWidget(w_, i_, 1)
         lay.addLayout(g2)
@@ -11831,7 +11846,7 @@ class MainWindow(QMainWindow):
         def apply_fields():
             SETTINGS.update({"online": on.isChecked(), "provider": prov.currentText(),
                              "api_key": key.text().strip(), "model": model.text().strip(),
-                             "ai_credit": cred.value(), "rate_in": rin.value(), "rate_out": rout.value()})
+                             "ai_credit": cred.value(), "search_model": sm.currentData(), "rate_in": rin.value(), "rate_out": rout.value()})
 
         def do_test():
             old = dict(SETTINGS)
@@ -17368,7 +17383,8 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
         from PySide6.QtGui import QPixmap
         kind_name = ("SANS 10400-XA Energy Report" if writer == self._write_xa_pdf else
                      "Rational Design Report" if writer == self._write_rd_pdf else
-                     "Fixture Schedule" if getattr(getattr(writer, "__self__", None), "is_costing", False) else
+                     getattr(getattr(writer, "__self__", None), "report_title", "Fixture Schedule")
+                     if getattr(getattr(writer, "__self__", None), "is_costing", False) else
                      "Light and Ventilation Report")
         d = QDialog(self)
         d.setWindowTitle("PDF report preview")

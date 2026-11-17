@@ -311,6 +311,7 @@ class Ribbon(QFrame):
             ("Schedule", [T("Build from rooms", "room", cost("build_from_rooms"), hot=True), T("Add line", "add", cost("add_line"))]),
             ("Products", [T("From link", "import", cost("add_from_link")), T("Manual", "edit", cost("add_product")),
                           T("Find product", "search", cost("find_ai"), hot=True)]),
+            ("Building materials", [T("Read IFC", "cube", cost("mat_read")), T("Preview", "eye", cost("mat_preview")), T("Export", "pdf", cost("mat_export"))]),
             ("Reports", [T("Preview PDF", "eye", cost("preview_pdf")), T("Export PDF", "pdf", cost("export_pdf")), T("Export CSV", "export", cost("export_csv"))])])
         for i in sorted(self.pages):
             self.stack.addWidget(self.pages[i])

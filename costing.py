@@ -362,8 +362,17 @@ class CostingPage(QWidget):
         self._busy = False
         v = QVBoxLayout(self)
         v.setContentsMargins(8, 8, 8, 8)
+        from PySide6.QtWidgets import QTabWidget
+        self.main = QTabWidget()
+        v.addWidget(self.main, 1)
         sp = QSplitter(Qt.Orientation.Vertical)
-        v.addWidget(sp, 1)
+        self.main.addTab(sp, "Fixtures and sanitary ware")
+        try:
+            import materials
+            self.materials = materials.MaterialsPage(self)
+            self.main.addTab(self.materials, "Building materials")
+        except Exception:
+            self.materials = None
 
         # products
         gp = QGroupBox("Products")
@@ -478,7 +487,8 @@ class CostingPage(QWidget):
     # ----- state -----
     def state(self):
         return {"products": self.products, "defaults": self.defaults, "lines": self.lines,
-                "contingency": self.contingency, "vat": self.vat}
+                "contingency": self.contingency, "vat": self.vat,
+                "materials": self.materials.state() if getattr(self, "materials", None) else None}
 
     def set_state(self, d):
         d = d or {}
@@ -487,6 +497,8 @@ class CostingPage(QWidget):
         self.lines = [dict(x) for x in d.get("lines", []) if isinstance(x, dict)]
         self.contingency = float(d.get("contingency", 0) or 0)
         self.vat = bool(d.get("vat", False))
+        if getattr(self, "materials", None):
+            self.materials.set_state(d.get("materials"))
         self.refresh()
 
     def _dirty(self):
@@ -927,6 +939,25 @@ class CostingPage(QWidget):
         d.setHtml('<html><body style="font-family:Arial;color:#111;">' + self.report_html(d) + "</body></html>")
         d.print_(w)
 
+    # ----- building materials (the ribbon calls these) -----
+    def mat_show(self):
+        self.main.setCurrentIndex(1)
+
+    def mat_read(self):
+        self.mat_show()
+        if self.materials:
+            self.materials.add_current() if not self.materials.blocks else self.materials.read_all()
+
+    def mat_preview(self):
+        self.mat_show()
+        if self.materials:
+            self.materials.preview_pdf()
+
+    def mat_export(self):
+        self.mat_show()
+        if self.materials:
+            self.materials.export_pdf()
+
     def preview_pdf(self):
         try:
             self.win.preview_pdf_report(self.write_pdf, lambda: None)
@@ -1112,7 +1143,7 @@ def ai_search(M, prompt, images_b64=(), max_uses=8, max_tokens=6000):
         raise RuntimeError("Product search needs the Claude (Anthropic) provider, which has web search. "
                            "Change the provider in Online mode.")
     key = st.get("api_key", "").strip()
-    model = (st.get("model") or "").strip() or M.PROVIDERS.get("Claude (Anthropic)", "")
+    model = (st.get("search_model") or "").strip() or "claude-haiku-5-5"
     headers = {"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"}
     content = [{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": b}} for b in images_b64]
     content.append({"type": "text", "text": prompt})
@@ -1136,7 +1167,7 @@ def ai_search(M, prompt, images_b64=(), max_uses=8, max_tokens=6000):
         except urllib.error.URLError as e:
             raise RuntimeError("No internet connection (%s)" % e.reason)
         if hasattr(M, "ai_track"):
-            M.ai_track(data.get("usage"), "Claude")
+            M.ai_track(data.get("usage"), "Claude", model)
         blocks = data.get("content", [])
         urls |= _walk_urls(blocks)
         text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
