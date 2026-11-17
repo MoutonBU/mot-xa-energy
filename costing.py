@@ -373,6 +373,9 @@ class CostingPage(QWidget):
             self.main.addTab(self.materials, "Building materials")
         except Exception:
             self.materials = None
+        self.summary_page = SummaryPage(self)
+        self.main.addTab(self.summary_page, "Whole building and budget")
+        self.main.currentChanged.connect(lambda i: self.summary_page.refresh() if self.main.widget(i) is self.summary_page else None)
 
         # products
         gp = QGroupBox("Products")
@@ -488,7 +491,8 @@ class CostingPage(QWidget):
     def state(self):
         return {"products": self.products, "defaults": self.defaults, "lines": self.lines,
                 "contingency": self.contingency, "vat": self.vat,
-                "materials": self.materials.state() if getattr(self, "materials", None) else None}
+                "materials": self.materials.state() if getattr(self, "materials", None) else None,
+                "budget": self.summary_page.state() if getattr(self, "summary_page", None) else None}
 
     def set_state(self, d):
         d = d or {}
@@ -499,6 +503,8 @@ class CostingPage(QWidget):
         self.vat = bool(d.get("vat", False))
         if getattr(self, "materials", None):
             self.materials.set_state(d.get("materials"))
+        if getattr(self, "summary_page", None):
+            self.summary_page.set_state(d.get("budget"))
         self.refresh()
 
     def _dirty(self):
@@ -650,6 +656,8 @@ class CostingPage(QWidget):
             if miss:
                 txt += "     (%d lines have no product yet)" % miss
             self.total_lbl.setText(txt)
+            if getattr(self, "summary_page", None):
+                self.summary_page.refresh()
         finally:
             self._busy = False
 
@@ -756,7 +764,14 @@ class CostingPage(QWidget):
         self.refresh()
 
     def find_ai(self):
-        FinderDialog(self, self.find_cat.currentText()).exec()
+        d = FinderDialog(self, self.find_cat.currentText())
+        sp = getattr(self, "summary_page", None)
+        if sp is not None:
+            mx = sp.max_price(self.find_cat.currentText())
+            if mx > 0:
+                d.budget.setValue(round(mx, -1))
+                d.status.setText("Price limit set from your target cost per m2 (the most each %s can cost). Change it if you like." % self.find_cat.currentText())
+        d.exec()
 
     def find_online(self):
         cat = self.find_cat.currentText().replace(" (WC)", "").lower()
@@ -1103,6 +1118,232 @@ def schedule_lines(ifc_items, rooms):
                           "source": "Room name"})
     lines.sort(key=lambda l: (l.get("floor", ""), l.get("unit", ""), l.get("room", ""), CATEGORIES.index(l["category"]) if l["category"] in CATEGORIES else 99))
     return lines
+
+
+# ---------------- whole building and budget ----------------
+# relative cost of one of each fixture, used to share the sanitary-ware budget out when no products are chosen yet
+try:
+    from materials import NON_CEILING
+except Exception:
+    NON_CEILING = re.compile(r'stoep|patio|carport|balcon|veranda|terrace|garage|roof', re.I)
+DEFAULT_W = {"Toilet (WC)": 1.0, "Basin": 0.6, "Basin mixer": 0.3, "Shower": 1.8, "Shower head": 0.3, "Shower mixer": 0.5, "Bath": 1.5,
+             "Bath mixer": 0.4, "Kitchen sink": 1.0, "Kitchen mixer": 0.35, "Laundry tub": 0.6, "Urinal": 0.8, "Vanity cabinet": 1.0,
+             "Mirror": 0.2, "Towel rail": 0.2, "Other": 0.3}
+AREA_BASES = ["Floor slabs of the IFC (gross)", "Rooms list (net, this project's block)", "Typed in"]
+
+
+def mon0(x):
+    try:
+        return "R " + "{:,.0f}".format(float(x)).replace(",", " ")
+    except Exception:
+        return "R 0"
+
+
+class SummaryPage(QWidget):
+    """Fixtures and building materials together: cost, cost per m2, and a budget worked backwards from a target rand per m2."""
+
+    def __init__(self, host):
+        super().__init__()
+        self.host = host
+        self.basis, self.manual, self.target, self.fx_share = 0, 0.0, 0.0, 8.0
+        self._busy = False
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 6, 0, 0)
+        top = QFormLayout()
+        self.basis_box = QComboBox()
+        self.basis_box.addItems(AREA_BASES)
+        self.manual_spin = QDoubleSpinBox()
+        self.manual_spin.setRange(0, 10_000_000)
+        self.manual_spin.setSuffix(" m2")
+        self.manual_spin.setDecimals(1)
+        self.target_spin = QDoubleSpinBox()
+        self.target_spin.setRange(0, 1_000_000)
+        self.target_spin.setPrefix("R ")
+        self.target_spin.setSuffix(" per m2")
+        self.target_spin.setDecimals(0)
+        self.target_spin.setSpecialValueText("no target")
+        self.target_spin.setToolTip("The cost per square metre you want the building built for. The budget for every part is worked from it.")
+        self.share_spin = QDoubleSpinBox()
+        self.share_spin.setRange(0, 60)
+        self.share_spin.setSuffix(" % of the budget")
+        self.share_spin.setToolTip("How much of the budget goes to sanitary ware. An assumption of mine (around 5 to 10 % for a house): change it.")
+        ar = QHBoxLayout()
+        ar.addWidget(self.basis_box, 1)
+        ar.addWidget(self.manual_spin)
+        top.addRow("Floor area used", ar)
+        top.addRow("Target cost", self.target_spin)
+        top.addRow("Sanitary ware share", self.share_spin)
+        v.addLayout(top)
+        self.big = QLabel("")
+        self.big.setStyleSheet("font-weight:700; font-size:16px; padding:6px 0;")
+        self.big.setWordWrap(True)
+        v.addWidget(self.big)
+        self.ctab = QTableWidget(0, 6)
+        self.ctab.setHorizontalHeaderLabels(["Part of the cost", "Estimate", "R per m2", "Share", "Budget at the target", "Over (+) / under (-)"])
+        self.ftab = QTableWidget(0, 6)
+        self.ftab.setHorizontalHeaderLabels(["Fixture", "Number", "Budget for the item", "Most to pay each", "Product chosen costs", "Check"])
+        for t in (self.ctab, self.ftab):
+            t.verticalHeader().setVisible(False)
+            t.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+            t.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        v.addWidget(self.ctab, 3)
+        lab = QLabel("Sanitary ware, worked from the budget (use these as the price limit when you search for products):")
+        v.addWidget(lab)
+        v.addWidget(self.ftab, 3)
+        self.note = QLabel("")
+        self.note.setWordWrap(True)
+        self.note.setStyleSheet("color: gray; font-size: 11px;")
+        v.addWidget(self.note)
+        for w_, sig in ((self.basis_box, "currentIndexChanged"), (self.manual_spin, "valueChanged"), (self.target_spin, "valueChanged"),
+                        (self.share_spin, "valueChanged")):
+            getattr(w_, sig).connect(self._edited)
+        self.refresh()
+
+    def state(self):
+        return {"basis": self.basis, "manual": self.manual, "target": self.target, "fx_share": self.fx_share}
+
+    def set_state(self, d):
+        d = d or {}
+        self.basis, self.manual = int(d.get("basis", 0) or 0), float(d.get("manual", 0) or 0)
+        self.target, self.fx_share = float(d.get("target", 0) or 0), float(d.get("fx_share", 8.0) or 0)
+        self.refresh()
+
+    def _edited(self, *_a):
+        if self._busy:
+            return
+        self.basis, self.manual = self.basis_box.currentIndex(), self.manual_spin.value()
+        self.target, self.fx_share = self.target_spin.value(), self.share_spin.value()
+        self.refresh()
+
+    # ----- numbers -----
+    def area(self):
+        m = getattr(self.host, "materials", None)
+        if self.basis == 2:
+            return self.manual
+        if not m:
+            return 0.0
+        tot = 0.0
+        proj = m._project_ifc()
+        for b in m.blocks:
+            n = max(1, int(b.get("repeat", 1)))
+            if self.basis == 1 and b.get("path") == proj:
+                tot += sum(a for nm, a, fl in m.rooms() if not NON_CEILING.search(nm or "")) * n
+            elif b.get("q"):
+                tot += float(b["q"].get("slab_area", 0)) * n
+        return tot
+
+    def fx_mult(self):
+        m = getattr(self.host, "materials", None)
+        if not m:
+            return 1
+        proj = m._project_ifc()
+        for b in m.blocks:
+            if b.get("path") == proj:
+                return max(1, int(b.get("repeat", 1)))
+        return 1
+
+    def components(self):
+        """[(name, cost)] and the total."""
+        m = getattr(self.host, "materials", None)
+        mat = lab = pre = con = 0.0
+        if m and m.blocks:
+            mat, lab, pre, con, _t = m.grand()
+        fx = self.host.totals()[3] * self.fx_mult()
+        rows = [("Building materials", mat), ("Labour and plant", lab), ("Overheads and profit", pre), ("Contingency on the building", con),
+                ("Sanitary ware and fixtures", fx)]
+        return rows, sum(c for _n, c in rows)
+
+    def fixture_budget(self):
+        """{category: (number, budget, most each)} when a target is set."""
+        area = self.area()
+        if not (self.target > 0 and area > 0):
+            return {}
+        budget = self.target * area * self.fx_share / 100.0
+        mult = self.fx_mult()
+        qty = {}
+        for l in self.host.lines:
+            qty[l.get("category", "")] = qty.get(l.get("category", ""), 0) + l.get("qty", 0) * mult
+        wsum = sum(DEFAULT_W.get(c, 0.3) * n for c, n in qty.items())
+        out = {}
+        for c, n in qty.items():
+            if n and wsum:
+                b = budget * DEFAULT_W.get(c, 0.3) * n / wsum
+                out[c] = (n, b, b / n)
+        return out
+
+    def max_price(self, category):
+        r = self.fixture_budget().get(category)
+        return r[2] if r else 0.0
+
+    def refresh(self):
+        self._busy = True
+        try:
+            self.basis_box.setCurrentIndex(self.basis)
+            self.manual_spin.setValue(self.manual)
+            self.manual_spin.setEnabled(self.basis == 2)
+            self.target_spin.setValue(self.target)
+            self.share_spin.setValue(self.fx_share)
+            area = self.area()
+            rows, total = self.components()
+            budget = self.target * area if self.target > 0 and area > 0 else 0.0
+            per = (total / area) if area > 0 else 0.0
+            txt = "Whole building: %s" % mon0(total)
+            if area > 0:
+                txt += "   on %s m2   =   %s per m2" % ("{:,.0f}".format(area).replace(",", " "), mon0(per))
+            else:
+                txt += "   (read the quantities on the Building materials tab to get the floor area)"
+            if budget:
+                diff = total - budget
+                txt += "\nBudget at %s per m2: %s   |   the estimate is %s %s the budget" % (mon0(self.target), mon0(budget), mon0(abs(diff)), "over" if diff > 0 else "under")
+            self.big.setText(txt)
+            t = self.ctab
+            t.setRowCount(len(rows) + 1)
+            for r, (name, c) in enumerate(rows + [("Total", total)]):
+                if budget and name == "Total":
+                    bud = budget
+                elif budget and name.startswith("Sanitary"):
+                    bud = budget * self.fx_share / 100.0
+                elif budget:
+                    others = sum(c2 for n2, c2 in rows if not n2.startswith("Sanitary"))
+                    bud = budget * (100.0 - self.fx_share) / 100.0 * c / others if others else 0.0
+                else:
+                    bud = 0.0
+                vals = (name, mon0(c), mon0(c / area) if area else "", "%.1f %%" % (100.0 * c / total) if total else "",
+                        mon0(bud) if budget else "", mon0(c - bud) if budget else "")
+                for ci, tx in enumerate(vals):
+                    it = QTableWidgetItem(tx)
+                    if ci:
+                        it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    if name == "Total":
+                        f_ = it.font()
+                        f_.setBold(True)
+                        it.setFont(f_)
+                    t.setItem(r, ci, it)
+            fb = self.fixture_budget()
+            ft = self.ftab
+            cats = sorted(fb, key=lambda c: CATEGORIES.index(c) if c in CATEGORIES else 99)
+            ft.setRowCount(len(cats))
+            mult = self.fx_mult()
+            for r, c in enumerate(cats):
+                n, b, each = fb[c]
+                p = None
+                for l in self.host.lines:
+                    if l.get("category") == c:
+                        p = self.host.line_product(l)
+                        break
+                price = (p or {}).get("price", 0)
+                chk = "no product yet" if not p else ("over by %s each" % mon0(price - each) if price > each else "within")
+                for ci, tx in enumerate((c, str(n), mon0(b), mon0(each), mon0(price) if p else "", chk)):
+                    it = QTableWidgetItem(tx)
+                    if ci in (1, 2, 3, 4):
+                        it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    ft.setItem(r, ci, it)
+            self.note.setText(("Fixtures are counted %d time%s (the repeats of this project's block). " % (mult, "" if mult == 1 else "s")) +
+                              "Sanitary ware gets the share of the budget set above; the rest is split between the building parts in the proportions of the "
+                              "current estimate. The fixture budget is shared by typical relative cost: a guide, not a quotation." if budget else
+                              "Type a target cost per m2 above to see the budget for each part and the most you can pay for each fixture.")
+        finally:
+            self._busy = False
 
 
 # ---------------- AI product finder ----------------
