@@ -2444,6 +2444,35 @@ def save_settings():
         return False
 
 
+def ai_track(usage, prov=""):
+    """Add the cost of one reply to the running total kept in the settings. Anthropic does not let a key read its balance,
+    so the program counts what it spends itself (tokens and web searches at the rates in the settings)."""
+    try:
+        u = usage or {}
+        prov = prov or SETTINGS.get("provider", "")
+        claude = str(prov).startswith("Claude")
+        tin = float(u.get("input_tokens", u.get("prompt_tokens", 0)) or 0) + float(u.get("cache_creation_input_tokens", 0) or 0)
+        tout = float(u.get("output_tokens", u.get("completion_tokens", 0)) or 0)
+        n_search = float((u.get("server_tool_use") or {}).get("web_search_requests", 0) or 0)
+        r_in = float(SETTINGS.get("rate_in", 3.0 if claude else 2.5) or 0)
+        r_out = float(SETTINGS.get("rate_out", 15.0 if claude else 10.0) or 0)
+        cost = tin / 1e6 * r_in + tout / 1e6 * r_out + n_search * 0.01
+        SETTINGS["ai_spent"] = round(float(SETTINGS.get("ai_spent", 0) or 0) + cost, 6)
+        SETTINGS["ai_calls"] = int(SETTINGS.get("ai_calls", 0) or 0) + 1
+        save_settings()
+    except Exception:
+        pass
+
+
+def ai_balance_text():
+    """'$12.40 left' (when a top-up amount is set) or '$0.35 used'."""
+    spent = float(SETTINGS.get("ai_spent", 0) or 0)
+    start = float(SETTINGS.get("ai_credit", 0) or 0)
+    if start > 0:
+        return "$%.2f left" % max(0.0, start - spent)
+    return "$%.2f used" % spent
+
+
 def online_ready():
     return bool(SETTINGS.get("online") and SETTINGS.get("api_key", "").strip())
 
@@ -2498,6 +2527,7 @@ def ai_request(prompt, images_b64=(), max_tokens=4096):
         raise RuntimeError(f"{prov} said: {msg or e.reason} (code {e.code})")
     except urllib.error.URLError as e:
         raise RuntimeError(f"No internet connection to {prov} ({e.reason})")
+    ai_track(data.get("usage"), prov)
     if prov.startswith("Claude"):
         return "".join(p.get("text", "") for p in data.get("content", []))
     return data["choices"][0]["message"]["content"]
@@ -11705,7 +11735,7 @@ class MainWindow(QMainWindow):
         if pill is None:
             return
         if online_ready():
-            pill.setText("Online AI")
+            pill.setText("Online AI  \u00b7  " + ai_balance_text())
             pill.setStyleSheet("background: rgba(255,50,64,90); border: 1px solid rgba(255,150,158,200);"
                                "border-radius: 11px; padding: 3px 10px; color: #ffffff; font-weight: 600;")
             if studio():
@@ -11745,6 +11775,44 @@ class MainWindow(QMainWindow):
             grid.addWidget(QLabel(lab), i, 0)
             grid.addWidget(w, i, 1)
         lay.addLayout(grid)
+        cred = QDoubleSpinBox()
+        cred.setRange(0, 100000)
+        cred.setPrefix("$ ")
+        cred.setDecimals(2)
+        cred.setValue(float(SETTINGS.get("ai_credit", 0) or 0))
+        cred.setToolTip("The credit you loaded on your Anthropic account. The button then shows what is left after what this program spends.")
+        spent = QLabel("")
+        rin = QDoubleSpinBox()
+        rout = QDoubleSpinBox()
+        for sp_, k_, d_ in ((rin, "rate_in", 3.0), (rout, "rate_out", 15.0)):
+            sp_.setRange(0, 1000)
+            sp_.setPrefix("$ ")
+            sp_.setSuffix(" per million")
+            sp_.setValue(float(SETTINGS.get(k_, d_) or d_))
+        reset = QPushButton("Reset the spend counter")
+
+        def show_spent():
+            spent.setText("Spent by this program so far: $%.2f in %d requests (an estimate)." %
+                          (float(SETTINGS.get("ai_spent", 0) or 0), int(SETTINGS.get("ai_calls", 0) or 0)))
+
+        def do_reset():
+            SETTINGS["ai_spent"], SETTINGS["ai_calls"] = 0.0, 0
+            show_spent()
+        reset.clicked.connect(do_reset)
+        show_spent()
+        g2 = QGridLayout()
+        for i_, (lab_, w_) in enumerate([("Credit loaded", cred), ("Price in (tokens)", rin), ("Price out (tokens)", rout)]):
+            g2.addWidget(QLabel(lab_), i_, 0)
+            g2.addWidget(w_, i_, 1)
+        lay.addLayout(g2)
+        lay.addWidget(spent)
+        lay.addWidget(reset)
+        note = QLabel("Anthropic does not let a program read an account's balance, so this counts what the program itself spends "
+                      "(tokens and web searches) and subtracts it from the credit you enter. The true balance is under Billing at "
+                      "console.anthropic.com. Searches by other tools on the same key are not counted.")
+        note.setWordWrap(True)
+        note.setStyleSheet("color: rgba(255,255,255,150); font-size: 12px;")
+        lay.addWidget(note)
         warn = QLabel("When this is on, the screenshot you import is sent over the internet to the "
                       "provider you pick. Your key is saved only on this computer, as plain text in "
                       f"{SETTINGS_PATH}. If a call fails, the offline reader is used instead.")
@@ -11762,7 +11830,8 @@ class MainWindow(QMainWindow):
 
         def apply_fields():
             SETTINGS.update({"online": on.isChecked(), "provider": prov.currentText(),
-                             "api_key": key.text().strip(), "model": model.text().strip()})
+                             "api_key": key.text().strip(), "model": model.text().strip(),
+                             "ai_credit": cred.value(), "rate_in": rin.value(), "rate_out": rout.value()})
 
         def do_test():
             old = dict(SETTINGS)
@@ -11793,7 +11862,7 @@ class MainWindow(QMainWindow):
         row.addWidget(cancel)
         row.addWidget(save)
         lay.addLayout(row)
-        dlg.resize(560, 360)
+        dlg.resize(600, 560)
         dlg.exec()
 
     def show_overlay(self):
@@ -18000,7 +18069,7 @@ def apply_glass_theme(app, win):
     pill.setToolTip("Online mode: click to enter your API key and switch online AI on or off")
     pill.mousePressEvent = lambda _e, w_=win: w_.online_settings()
     pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    pill.setFixedWidth(96)
+    pill.setFixedWidth(210)
     pill.setStyleSheet("background: rgba(255,255,255,26); border: 1px solid rgba(255,255,255,90);"
                        "border-radius: 11px; padding: 3px 10px; color: #ffffff; font-weight: 600;")
     if studio():
@@ -18037,6 +18106,9 @@ def apply_glass_theme(app, win):
     head.addWidget(pill, 0, Qt.AlignmentFlag.AlignTop)
     lay.addLayout(head)
     win.refresh_mode_pill()
+    win._pill_timer = QTimer(win)                    # searches run in the background: keep the balance on the button up to date
+    win._pill_timer.timeout.connect(win.refresh_mode_pill)
+    win._pill_timer.start(2000)
     card = GlassCard()
     cl = QVBoxLayout(card)
     cl.setContentsMargins(20, 18, 20, 16)

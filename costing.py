@@ -1135,6 +1135,8 @@ def ai_search(M, prompt, images_b64=(), max_uses=8, max_tokens=6000):
                                "Anthropic console." % (msg or e.reason, e.code))
         except urllib.error.URLError as e:
             raise RuntimeError("No internet connection (%s)" % e.reason)
+        if hasattr(M, "ai_track"):
+            M.ai_track(data.get("usage"), "Claude")
         blocks = data.get("content", [])
         urls |= _walk_urls(blocks)
         text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
