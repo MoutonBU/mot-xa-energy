@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.60.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.60.2**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Fix, 1.60.2**: opening a saved project that has revision rows no longer crashes ("not enough arguments for format string"). This crash came in with 1.60.1.
+- **Revision history table is read, 1.60.1**: the register now finds the title block's "Revision History" table (Rev ID, Change Name, Date) by its heading and reads each row by position, so other text on the same line no longer hides it. The date can be in any column. "What changed" fills with every revision row newer than the last issue. Press "Re-read the PDFs" on a set that is already loaded.
 - **Email is light by default, 1.60.0**: Gmail and most programs now show the email in the light look (white page, grey cards, black and red logo, as on the PDF). It switches itself to the dark look, with the white and red logo, in programs that are in dark mode. The "STATUS OF THIS REVISION" label and the status pill have more space around them.
 - **Full company name under the logo, 1.59.3**: the email always shows MCP ARCHITECTURE & INTERIORS under the logo and at the bottom, even when the signature company is set to just "MCP".
 - **Rounded preview and bold company name, 1.59.2**: the "How it will look" tab now shows rounded corners on the title card, the red bar, the change lines, the drawing tables, the status pill and the signature. Under the logo the company name is now MCP ARCHITECTURE & INTERIORS in the same bold, spaced letters as the program's header.

@@ -89,6 +89,11 @@ def parse_titleblock(lines):
         if m and norm_date(m.group(1)):
             out["revs"].append((m.group(2).upper(), norm_date(m.group(1)), m.group(3).strip(" -:")))
     if not out["revs"]:
+        for l in lines:        # Rev ID, Change Name, Date  (the date last)
+            m = re.match(r"^\s*(?:rev\.?\s*)?([A-Z]\d?|\d{1,3})\s+(.+?)\s+" + DATE_RE + r"\s*$", l, re.I)
+            if m and norm_date(m.group(3)):
+                out["revs"].append((m.group(1).upper(), norm_date(m.group(3)), m.group(2).strip(" -:")))
+    if not out["revs"]:
         # the revision letter is sometimes lost (drawn text read by OCR): number the dated rows A, B, C ... in the order they appear
         rows = []
         for l in lines:
@@ -109,6 +114,80 @@ def parse_titleblock(lines):
         cur = max(out["revs"], key=key)
         out["rev"], out["rdate"], out["rdesc"] = cur
     return out
+
+
+def _revision_table(page):
+    """Rows of the title block's revision history table: [(rev, date, description)].
+    Found by its heading (Rev / ID / Change / Name / Date, or Revision History), then read by position so other text on the same line is ignored.
+    The rows may run down or up from the heading; each row has a rev, a date and a description in any column order."""
+    words = page.get_text("words") or []
+    if not words:
+        return []
+    W, H = page.rect.width, page.rect.height
+    cand = [w for w in words if w[0] > W * 0.4 and w[1] > H * 0.3]
+    head = None
+    for w in cand:
+        if w[4].lower() == "rev":
+            near = [v for v in cand if abs(v[1] - w[1]) < 6 and v[0] >= w[0] and v[0] - w[0] < 400]
+            txt = " ".join(v[4].lower() for v in sorted(near, key=lambda v: v[0]))
+            if re.search(r"\bid\b|\bchange\b|\bdate\b|\bdescription\b|\bdetails?\b", txt):
+                head = (w, near)
+                break
+    if head is None:
+        return []
+    w0, near = head
+    x0 = w0[0] - 8
+    x1 = max(v[2] for v in near) + 60
+    hy0, hy1 = min(v[1] for v in near), max(v[3] for v in near)
+    band = [v for v in words if v[0] >= x0 - 2 and v[2] <= x1 + 200]
+
+    def rows_in(sel):
+        rows = {}
+        for v in sel:
+            rows.setdefault(round((v[1] + v[3]) / 2 / 3), []).append(v)
+        return [sorted(r, key=lambda v: v[0]) for _k, r in sorted(rows.items())]
+
+    def parse(rws):
+        out = []
+        for r in rws:
+            toks = [v[4] for v in r]
+            di = next((i for i, t in enumerate(toks) if norm_date(t)), None)
+            if di is None:
+                if out and toks and not re.match(r"^([A-Z]\d?|\d{1,3})$", toks[0]):
+                    out[-1] = (out[-1][0], out[-1][1], (out[-1][2] + " " + " ".join(toks)).strip())
+                continue
+            dt = norm_date(toks[di])
+            rest = toks[:di] + toks[di + 1:]
+            rv = ""
+            if rest and re.match(r"^(?:rev\.?)?([A-Z]\d?|\d{1,3})$", rest[0], re.I):
+                rv = re.sub(r"^rev\.?", "", rest[0], flags=re.I).upper()
+                rest = rest[1:]
+            elif rest and re.match(r"^(?:rev\.?)?([A-Z]\d?|\d{1,3})$", rest[-1], re.I):
+                rv = re.sub(r"^rev\.?", "", rest[-1], flags=re.I).upper()
+                rest = rest[:-1]
+            out.append((rv, dt, " ".join(rest).strip(" -:")))
+        return out
+
+    # below the heading, down to the first big empty gap; if nothing is there, the rows are above it
+    below = sorted([v for v in band if v[1] > hy1 - 1 and v[1] < hy1 + 260], key=lambda v: v[1])
+    keep, last = [], hy1
+    for v in below:
+        if v[1] - last > 40:
+            break
+        keep.append(v)
+        last = max(last, v[3])
+    res = parse(rows_in(keep))
+    if not res:
+        above = sorted([v for v in band if v[3] < hy0 + 1 and v[3] > hy0 - 260], key=lambda v: -v[3])
+        keep, last = [], hy0
+        for v in above:
+            if last - v[3] > 40:
+                break
+            keep.append(v)
+            last = min(last, v[1])
+        res = parse(rows_in(keep))
+    # give rows without a rev the next number in order
+    return [((rv or str(i)), dt, ds) for i, (rv, dt, ds) in enumerate(res)]
 
 
 def pdf_date(meta):
@@ -168,6 +247,10 @@ def read_pdf(path):
             if m:
                 out["scale"] = re.sub(r"\s+", "", m.group(1))
             tb = None
+            try:
+                rt = _revision_table(pg)
+            except Exception:
+                rt = []
             for fx, fy in ((0.55, 0.62), (0.35, 0.40), (0.0, 0.0)):
                 clip = fitz.Rect(r.x0 + r.width * fx, r.y0 + r.height * fy, r.x1, r.y1)
                 cand = parse_titleblock(_lines_from_page(pg, clip))
@@ -177,6 +260,9 @@ def read_pdf(path):
                         break
             if tb:
                 out.update({k: tb[k] for k in ("no", "title", "revs", "rev", "rdate", "rdesc")})
+            if rt:      # the revision history table, read by position, is the most reliable
+                cur = max(rt, key=lambda x: (x[1], x[0]))
+                out.update({"revs": rt, "rev": cur[0], "rdate": cur[1], "rdesc": cur[2]})
             if not out["scale"] and tb is None:
                 pass
         d.close()
@@ -439,7 +525,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
 
     def set_state(self, d):
         d = d or {}
-        self.groups = [dict(name=g.get("name", "Group"), rows=[dict(r) for r in g.get("rows", [])]) for g in d.get("groups", []) if isinstance(g, dict)]
+        self.groups = [dict(name=g.get("name", "Group"), rows=[dict(r, revs=[tuple(x) for x in (r.get("revs") or []) if isinstance(x, (list, tuple))]) for r in g.get("rows", [])]) for g in d.get("groups", []) if isinstance(g, dict)]
         if not self.groups:
             self.groups = [{"name": "House / Block 1", "rows": []}]
         self.info.update({k: str(v) for k, v in (d.get("info") or {}).items() if k in self.info})
@@ -536,6 +622,13 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
                 old[k] = new[k]
         if not keep_c:
             old["comment"] = new["comment"]
+            try:       # what changed = every revision row newer than the last issue sent
+                items = self.rev_items(old)
+                if items:
+                    old["comment"] = "; ".join("Rev %s - %s" % (rv, ds) for rv, _dt, ds in items)
+                    old["auto"] = old["comment"]
+            except Exception:
+                pass
         if not keep_b:
             old["by"] = new["by"]
 
@@ -679,7 +772,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
                         if k == "title" and kind in ("new", "revised"):
                             it.setToolTip(_t)
                         if k == "rev" and r.get("revs"):
-                            it.setToolTip("\n".join("Rev %s  %s  %s" % x for x in r["revs"]))
+                            it.setToolTip("\n".join("Rev %s  %s  %s" % tuple((list(x) + ["", "", ""])[:3]) for x in r["revs"]))
                     if kind in ("new", "revised"):
                         it.setBackground(QColor(120, 90, 20, 110) if kind == "revised" else QColor(30, 110, 60, 110))
                     self.tab.setItem(i, c, it)
