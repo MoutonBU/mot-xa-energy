@@ -71,6 +71,35 @@ def _rect_from_element(v, mat, sc, width):
         return None
 
 
+def _footprint(v, f):
+    """The outline of a room (IfcSpace) seen from above: its flat faces joined up. Works for rooms drawn full height and for
+    passages, verandas and patios that the model keeps as a thin sheet near the ceiling."""
+    import numpy as np
+    from shapely.geometry import MultiPolygon, Polygon
+    from shapely.ops import unary_union
+    tri = []
+    for a, b, c in f:
+        p0, p1, p2 = v[a], v[b], v[c]
+        n = np.cross(p1 - p0, p2 - p0)
+        ln = float(np.linalg.norm(n))
+        if ln > 1e-9 and abs(n[2]) / ln > 0.9:
+            try:
+                g = Polygon([p0[:2], p1[:2], p2[:2]])
+                if g.area > 1e-9:
+                    tri.append(g.buffer(0))
+            except Exception:
+                pass
+    if not tri:
+        return []
+    u = unary_union([t.buffer(0.003) for t in tri]).buffer(-0.003)
+    out = []
+    for g in (u.geoms if isinstance(u, MultiPolygon) else [u]):
+        if g.is_empty or g.geom_type != "Polygon" or g.area < 0.3:
+            continue
+        out.append(([tuple(c) for c in g.exterior.coords], [[tuple(c) for c in h.coords] for h in g.interiors]))
+    return out
+
+
 def _opening(polys):
     """A window or door as a bar at least as thick as a wall, so it fills its gap in the wall on the plan."""
     from shapely.geometry import Polygon
@@ -174,6 +203,10 @@ def build_plan(path):
         layers, spaces, tags = {}, [], []
         for kind, v, f, nm, extra in s["items"]:
             lo, hi = float(v[:, 2].min()), float(v[:, 2].max())
+            if kind == "space":                      # every room, whatever height its shape sits at
+                for p_ in _footprint(v, f):
+                    spaces.append({"name": nm, "poly": p_})
+                continue
             zc = z
             if kind in ("window", "door") and (lo > z or hi < z):
                 # high-level windows (bathrooms) do not reach 1.1 m: cut them through the middle of their own height
@@ -194,6 +227,10 @@ def build_plan(path):
                     spaces.append({"name": nm, "poly": p})
             else:
                 layers.setdefault(kind, []).extend(ps)
+        def _area(sp_):
+            o_ = sp_["poly"][0]
+            return abs(sum(o_[i][0] * o_[i + 1][1] - o_[i + 1][0] * o_[i][1] for i in range(len(o_) - 1))) / 2.0
+        spaces.sort(key=_area, reverse=True)          # small rooms (passages) are drawn on top of large ones
         if layers or spaces:
             out.append({"name": s["name"], "elev": s["elev"], "layers": layers, "spaces": spaces, "tags": tags})
     return {"storeys": out}
@@ -217,7 +254,7 @@ def _norm(s):
 
 
 class PlanView(QGraphicsView):
-    room_clicked = Signal(str, str)         # storey name, room name
+    room_clicked = Signal(object)           # the room (its dict)
 
     def __init__(self):
         super().__init__()
@@ -252,12 +289,12 @@ class PlanView(QGraphicsView):
             while it is not None and it not in self.rooms:
                 it = it.parentItem()
             if it in self.rooms:
-                self.room_clicked.emit(*self.rooms[it])
+                self.room_clicked.emit(self.rooms[it])
 
     def highlight(self, name):
         """Outline one room (by name) and bring it to the front; clear with None."""
-        for it, (_st, nm) in self.rooms.items():
-            on = name is not None and nm == name
+        for it, sp_ in self.rooms.items():
+            on = name is not None and sp_ is name
             pen = QPen(QColor(self._hl if on else self._line), 3.0 if on else 0.0)
             pen.setCosmetic(True)
             it.setPen(pen)
@@ -294,7 +331,7 @@ class PlanView(QGraphicsView):
         self.setBackgroundBrush(QBrush(QColor(pal["bg"])))
         pen0 = QPen(Qt.PenStyle.NoPen)
         for sp in storey["spaces"]:
-            st = status.get(_norm(sp["name"]))
+            st = status.get(id(sp))
             fill = QColor(pal.get(st or "space"))
             it = QGraphicsPathItem(self._path(sp["poly"]))
             it.setBrush(QBrush(fill))
@@ -304,7 +341,7 @@ class PlanView(QGraphicsView):
             it.setZValue(1)
             it.setToolTip(sp["name"] or "Room")
             sc.addItem(it)
-            self.rooms[it] = (storey["name"], sp["name"])
+            self.rooms[it] = sp
         order = (("stair", pal["stair"], 2), ("wall", pal["wall"], 3), ("door", pal["door"], 4), ("window", pal["window"], 4))
         for kind, col, z in order:
             for poly in storey["layers"].get(kind, []):
@@ -405,6 +442,50 @@ def _palette(is_light):
                 stair="#6b727b", edge="#101114", label="#eceef0", hl="#ffd23f", glassline="#dff0ff", ok="#2a7a4e", check="#8a6c1c", fail="#9a2e3c")
 
 
+_UNIT_RE = re.compile(r"^\W*[A-Za-z]{0,2}\s*(\d{1,2})\s*[-_.:]\s*(?=[A-Za-z])")
+
+
+def _split_unit(name):
+    """'U3-Kitchen' -> ('u3', 'kitchen'): the unit and the bare room name, both normalised."""
+    name = (name or "").strip()
+    m = _UNIT_RE.match(name)
+    if m:
+        return "u" + m.group(1), _norm(name[m.end():])
+    return "", _norm(name)
+
+
+def _poly_area(sp):
+    o = sp["poly"][0]
+    return abs(sum(o[i][0] * o[i + 1][1] - o[i + 1][0] * o[i][1] for i in range(len(o) - 1))) / 2.0
+
+
+def assign_results(storey, results):
+    """Match every room of a level with a row of the results: {id(room): result row}.
+    The program drops the unit prefix from room names (U3-Kitchen becomes Kitchen in unit U3), so rooms are matched
+    on level, unit and bare name, then by closest area when a name repeats (several passages)."""
+    rows = []
+    for r in results or []:
+        u, n = _split_unit(r.get("room"))
+        ru = _norm(r.get("unit")) or u
+        rows.append((r, _norm(r.get("floor")), ru.lower(), n, _norm(r.get("room")), float(r.get("area") or 0)))
+    used, out = set(), {}
+    fl = _norm(storey["name"])
+    for sp in sorted(storey["spaces"], key=_poly_area, reverse=True):
+        su, sn = _split_unit(sp["name"])
+        full = _norm(sp["name"])
+        ar = _poly_area(sp)
+        cand = [x for x in rows if id(x[0]) not in used and (x[3] == sn or x[4] == full or (sn and x[3] and (x[3].endswith(sn) or sn.endswith(x[3]))))]
+        c2 = [x for x in cand if x[1] == fl]
+        cand = c2 or [x for x in cand if x[1] in ("", fl)] or []
+        c3 = [x for x in cand if su and x[2] == su]
+        cand = c3 or [x for x in cand if not su or not x[2]] or cand
+        if cand:
+            best = min(cand, key=lambda x: abs(x[5] - ar) if x[5] and ar else 0)
+            used.add(id(best[0]))
+            out[id(sp)] = best[0]
+    return out
+
+
 def print_palette():
     p = _palette(True)
     p.update(bg="#ffffff", space="#f1f3f5", ok="#b9e3c6", check="#fbe3a1", fail="#f4a9b1")
@@ -425,7 +506,7 @@ def render_levels(plan, status, width=1100, max_h=900, only_with_rooms=True):
             continue
         v = PlanView()
         v.rot = ang
-        v.show_storey(st, print_palette(), status)
+        v.show_storey(st, print_palette(), {k: room_status(r) for k, r in assign_results(st, status).items()})
         r = v.scene().itemsBoundingRect().adjusted(-0.6, -0.6, 0.6, 0.6)
         if r.isEmpty():
             continue
@@ -507,7 +588,7 @@ class PlanPage(QWidget):
         top.addStretch(1)
         left.addLayout(top)
         self.view = PlanView()
-        self.view.room_clicked.connect(lambda _st, nm: self._select(nm))
+        self.view.room_clicked.connect(lambda sp: self._select(sp))
         left.addWidget(self.view, 1)
         self.msg = QLabel("")
         self.msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -604,11 +685,8 @@ class PlanPage(QWidget):
         self.side.setVisible(False)
 
     # --- drawing
-    def _results(self):
-        return {_norm(r.get("room")): r for r in (getattr(self.win, "results", None) or [])}
-
-    def _status(self):
-        return {k: room_status(r) for k, r in self._results().items()}
+    def _assigned(self, st):
+        return assign_results(st, getattr(self.win, "results", None) or [])
 
     def _draw(self, *_):
         if not self._plan:
@@ -621,8 +699,8 @@ class PlanPage(QWidget):
         is_l = bool(self.win.shell_is_light()) if hasattr(self.win, "shell_is_light") else False
         pal = _palette(is_l)
         self.view.rot = square_angle(self._plan) if self.straight.isChecked() else 0.0
-        stat = self._status()
-        self.view.show_storey(st, pal, stat)
+        self._asg = self._assigned(st)
+        self.view.show_storey(st, pal, {k: room_status(r) for k, r in self._asg.items()})
         fg, bg = ("#1c1f24", "#ffffff") if is_l else ("#eceef0", "#17171b")
         self.list.setStyleSheet("QListWidget{background:%s;color:%s;border:1px solid %s;border-radius:8px;} "
                                 "QListWidget::item{padding:3px 4px;} QListWidget::item:selected{background:%s;color:%s;}"
@@ -639,11 +717,11 @@ class PlanPage(QWidget):
         self._rows = []
         self.list.blockSignals(True)
         self.list.clear()
-        res = self._results()
+        res = self._asg
         n = {"ok": 0, "check": 0, "fail": 0, "none": 0}
         from PySide6.QtGui import QIcon, QPixmap
         for sp in sorted(st["spaces"], key=lambda q: q["name"] or ""):
-            r = res.get(_norm(sp["name"]))
+            r = res.get(id(sp))
             k = room_status(r) if r else "none"
             n[k] += 1
             col = pal.get(k if k != "none" else "space")
@@ -655,7 +733,7 @@ class PlanPage(QWidget):
             from PySide6.QtWidgets import QListWidgetItem
             it = QListWidgetItem(QIcon(pm), txt)
             self.list.addItem(it)
-            self._rows.append(sp["name"])
+            self._rows.append(sp)
         self.list.blockSignals(False)
         self.count.setText("<b>%s</b>: %d rooms. <b>%d</b> pass, <b>%d</b> check, <b>%d</b> fail%s." % (
             st["name"], len(st["spaces"]), n["ok"], n["check"], n["fail"], (", %d without a result" % n["none"]) if n["none"] else ""))
@@ -671,13 +749,14 @@ class PlanPage(QWidget):
         if 0 <= i < len(self._rows):
             self._select(self._rows[i], from_list=True)
 
-    def _select(self, name, from_list=False):
-        self.view.highlight(name)
-        if not from_list and name in self._rows:
+    def _select(self, sp, from_list=False):
+        self.view.highlight(sp)
+        if not from_list and sp in self._rows:
             self.list.blockSignals(True)
-            self.list.setCurrentRow(self._rows.index(name))
+            self.list.setCurrentRow(self._rows.index(sp))
             self.list.blockSignals(False)
-        r = self._results().get(_norm(name))
+        name = sp["name"]
+        r = self._asg.get(id(sp))
         if not r:
             self.note.setText("<b>%s</b>: no result yet. Run the check to colour the rooms." % (name or "Room"))
             return
