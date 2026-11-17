@@ -244,6 +244,10 @@ class AccountDialog(QDialog):
         if not addr or not pw:
             self.status.setText("Type your email address and password first.")
             return
+        if self._domain() in ("gmail.com", "googlemail.com") and len(pw.replace(" ", "")) != 16:
+            self.status.setText("That is not an app password. Gmail app passwords are 16 letters (shown in groups of four). Press the button above, "
+                                "make one in your Google account, and paste it here instead of your normal password.")
+            return
         self.connect_b.setEnabled(False)
         self.status.setText("Connecting...")
 

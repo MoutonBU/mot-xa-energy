@@ -51,6 +51,8 @@ def candidates(email):
     if dom in KNOWN:
         h, p, s = KNOWN[dom]
         c.append((h, p, s, email))
+        if h == "smtp.gmail.com":
+            c.append((h, 587, "STARTTLS", email))
     for url in ("https://autoconfig.%s/mail/config-v1.1.xml" % dom, "https://%s/.well-known/autoconfig/mail/config-v1.1.xml" % dom,
                 "https://autoconfig.thunderbird.net/v1.1/%s" % dom):
         c += parse_autoconfig(fetch(url), email)
@@ -67,8 +69,8 @@ def candidates(email):
     return out
 
 
-def try_login(host, port, sec, user, password, timeout=8):
-    """'ok' | 'auth' (server found, login refused) | 'down' (cannot connect)."""
+def try_login(host, port, sec, user, password, timeout=12):
+    """('ok' | 'auth' | 'down', detail). 'auth' = server found but the login was refused; 'down' = could not reach or talk to it."""
     try:
         ctx = ssl.create_default_context()
         s = smtplib.SMTP_SSL(host, port, context=ctx, timeout=timeout) if sec == "SSL" else smtplib.SMTP(host, port, timeout=timeout)
@@ -79,16 +81,20 @@ def try_login(host, port, sec, user, password, timeout=8):
                     s.starttls(context=ctx)
                     s.ehlo()
             s.login(user, password)
-            return "ok"
+            return "ok", ""
         finally:
             try:
                 s.quit()
             except Exception:
                 pass
-    except smtplib.SMTPAuthenticationError:
-        return "auth"
-    except (OSError, smtplib.SMTPException, socket.timeout):
-        return "down"
+    except smtplib.SMTPAuthenticationError as e:
+        return "auth", (e.smtp_error.decode("utf-8", "replace") if isinstance(e.smtp_error, bytes) else str(e))[:160]
+    except socket.timeout:
+        return "down", "no answer (timed out): a firewall, antivirus or the network may be blocking mail"
+    except ssl.SSLError as e:
+        return "down", "secure connection failed: %s" % (getattr(e, "reason", None) or e)
+    except (OSError, smtplib.SMTPException) as e:
+        return "down", "%s: %s" % (type(e).__name__, e)
 
 
 def detect(email, password, progress=None):
@@ -96,13 +102,17 @@ def detect(email, password, progress=None):
     email = email.strip()
     if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
         raise RuntimeError("that does not look like an email address")
-    refused = None
+    refused, first_err = None, ""
     for host, port, sec, user in candidates(email):
         if progress:
             progress("Trying %s ..." % host)
         users = [user] + ([email.split("@")[0]] if user == email else [])
         for u in users:
-            r = try_login(host, port, sec, u, password)
+            r, why = try_login(host, port, sec, u, password)
+            if r == "down" and not first_err:
+                first_err = "%s port %d: %s" % (host, port, why)
+            if r == "auth":
+                refused_why = why
             if r == "ok":
                 return {"smtp_host": host, "smtp_port": port, "smtp_security": sec, "smtp_user": u}
             if r == "auth":
@@ -116,4 +126,6 @@ def detect(email, password, progress=None):
         if dom in APP_PASSWORD_DOMAINS:
             raise RuntimeError("%s refused the password. %s needs a special app password instead of your normal one." % (refused, dom.split(".")[0].title()))
         raise RuntimeError("%s found your mail account but refused the email or password. Check them and try again." % refused)
+    if dom in KNOWN and first_err:
+        raise RuntimeError("could not reach %s. %s" % (KNOWN[dom][0], first_err))
     raise RuntimeError("could not find the mail server for %s. Tick \"Other ways to connect\" and type the outgoing (SMTP) server, which your email provider can tell you." % dom)
