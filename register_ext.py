@@ -797,7 +797,7 @@ class LogMixin:
         self.ltab.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.ltab.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.ltab.horizontalHeader().setStretchLastSection(True)
-        for i, wd in enumerate((150, 70, 40, 85, 110, 360, 560, 130, 300, 85, 170, 85, 200, 80, 150, 200, 320)):
+        for i, wd in enumerate((150, 70, 40, 85, 110, 360, 660, 130, 300, 85, 170, 85, 200, 80, 150, 200, 320)):
             self.ltab.setColumnWidth(i, wd)
         self.ltab.itemChanged.connect(self._log_cell)
         self.ltab.cellDoubleClicked.connect(lambda r, c: self.open_sent() if LOGK[c] == "sent_subject" else self.open_ref() if LOGK[c] == "req_subject" else None)
@@ -860,19 +860,27 @@ class LogMixin:
         for name, rows in self.groups_in_issue():
             rev, new = [], []
             for r in rows:
+                try:
+                    labelled = [it for it in self.rev_items(r) if it[2].strip()]
+                except Exception:
+                    labelled = []
+                if not labelled:
+                    continue          # only drawings whose revision column says what changed
                 kind, _t = self.change_of(r)
                 if kind == "revised":
                     rev.append(r)
                 elif kind == "new":
                     new.append(r)
-            if not (rev or new):
-                continue
-            parts = ["%s %s: %s" % (r.get("no") or "-", r.get("title", ""), self._what(r)) for r in rev]
-            parts += ["%s %s: NEW drawing" % (r.get("no") or "-", r.get("title", "")) for r in new]
-            text = "; ".join(parts)
-            kinds = ", ".join(self.guess_kinds(rev, new, name))
             line = next((e for e in self.log if e.get("group") == name and not e.get("sent_date") and e.get("auto_text") is not None
                          and e.get("text") in ("", e.get("auto_text"))), None)
+            if not (rev or new):
+                if line is not None:      # an earlier automatic line that no longer has anything behind it
+                    self.log.remove(line)
+                continue
+            parts = ["%s %s: %s" % (r.get("no") or "-", r.get("title", ""), self._what(r)) for r in rev]
+            parts += ["%s %s: %s (new drawing)" % (r.get("no") or "-", r.get("title", ""), self._what(r)) for r in new]
+            text = "; ".join(parts)
+            kinds = ", ".join(self.guess_kinds(rev, new, name))
             if line is None:
                 line = {k: "" for k in LOGK}
                 line.update({"group": name, "type": "Change", "date": datetime.date.today().isoformat(), "status": "Draft", "req_path": "", "sent_path": "", "drawings": "",
@@ -889,7 +897,7 @@ class LogMixin:
                                     "The kind of change is ticked as a suggestion: Major for new or reworked rooms and walls, Minor for dimensions and notes, Masters for new drawings, "
                                     "Final plans and SDP when the drawings say so. Change any of them." % (made, "" if made == 1 else "s"))
         else:
-            QMessageBox.information(self, "Drawing register", "No drawing has changed since the last issue. Add the revised PDFs or press Re-read the PDFs first.")
+            QMessageBox.information(self, "Drawing register", "No drawing has a described change in its revision column since the last issue. Add the revised PDFs or press Re-read the PDFs first.")
 
     def add_log(self, typ):
         e = {k: "" for k in LOGK}
@@ -961,7 +969,9 @@ class LogMixin:
             t.setRowCount(len(self.log))
             for i, e in enumerate(self.log):
                 for c, k in enumerate(LOGK):
-                    it = QTableWidgetItem(str(e.get(k, "")))
+                    it = QTableWidgetItem("" if k == "kinds" else str(e.get(k, "")))
+                    if k == "kinds":
+                        it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
                     if k in ("req_subject",) and e.get("req_path"):
                         it.setToolTip(e["req_path"])
                     if e.get("status") == "Draft":

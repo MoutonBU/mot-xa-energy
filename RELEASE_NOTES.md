@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.62.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.62.1**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Only described changes, 1.62.1**: "Get changes from the drawings" now brings in only drawings whose revision column has a description of what changed. Drawings that changed without a described revision row are left out. A line made earlier that has nothing behind it any more is removed. Also fixed: the old text showing through behind the kind-of-change tick boxes, and the tick boxes being cut off (the column is wider).
 - **Continue from the folder of an earlier revision, 1.62.0**: More > "Continue from an earlier issue I already sent..." now has "Use the folder of the revision I sent". Point it at the folder holding that revision's PDFs (for example the Revision 1 folder) and it reads each drawing as it was: its revision and the date of its last revision row. That folder counts as what was sent. The drawings now in the list are compared with it, so the next email and the "Get changes from the drawings" button show exactly what changed since. The revision number is taken from the folder name when it has one, and the date comes from the newest PDF there; both can be corrected before you press OK. Run it again with other folders to list the earlier revisions too.
 - **Quicker build, 1.61.2**: no change to the program. The installer build installs only the Qt parts the program uses and no longer collects every submodule of matplotlib and ezdxf, so it installs and packages faster.
 - **Get changes from the drawings, 1.61.1**: in Orders and changes, a new button reads the revision rows of the drawings that changed since the last issue and makes one change line per house or block ("001 Ground floor: Rev 02 - Kitchen moved; 003 Roof: NEW drawing"). It ticks the kind of change as a suggestion: Major for new or reworked rooms and walls (or four or more drawings changed), Minor for dimensions and notes, Masters for new drawings, Final plans and SDP when the drawings say so. You can change the ticks. Pressing it again refreshes those lines and does not make copies.
