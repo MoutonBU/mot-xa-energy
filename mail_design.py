@@ -17,6 +17,7 @@ TXT = "#D7D9DE"        # class tx
 STRONG = "#FFFFFF"     # class st
 MUTED = "#9DA1AA"      # class mu
 FONT = "'Segoe UI',Helvetica,Arial,sans-serif"
+BRAND = "MCP Architecture & Interiors"     # always the full name under the logo, whatever the signature company says
 
 # the same look in light, for mail programs that are in light mode
 LIGHT_CSS = """
@@ -305,6 +306,6 @@ def build(subject, body, logo_src="cid:mcplogo", attached="", logo_light_src="",
             '<tr><td align="center" class="mu" style="padding:22px 0 4px 0;font-family:%(font)s;font-size:11px;letter-spacing:3px;color:%(muted)s;">%(company_caps)s</td></tr>'
             '</table></td></tr></table></body></html>') % {
         "title": _e(project), "css": LIGHT_CSS, "page": PAGE, "head": HEAD, "card": CARD, "line": LINE, "tx": TXT, "st": STRONG, "muted": MUTED,
-        "logo": logo_src, "logo_light": ('<img class="lgl" src="%s" width="150" alt="MCP" style="display:none;max-height:0;overflow:hidden;mso-hide:all;border:0;margin:0 auto;">' % logo_light_src) if logo_light_src else "", "font": FONT, "sub": sub_line, "project": _e(project), "company": _e(company), "company_caps": _e(company.upper()),
+        "logo": logo_src, "logo_light": ('<img class="lgl" src="%s" width="150" alt="MCP" style="display:none;max-height:0;overflow:hidden;mso-hide:all;border:0;margin:0 auto;">' % logo_light_src) if logo_light_src else "", "font": FONT, "sub": sub_line, "project": _e(project), "company": _e(BRAND), "company_caps": _e(BRAND.upper()),
         "title_card": title_card, "intro_card": intro_card, "bar": _bar(None, 12, "left", "0"), "greet": _e(greet), "intro": intro, "attached": attached_html,
         "sections_wrap": ('<tr><td style="padding-top:6px;"><table width="100%%" cellpadding="0" cellspacing="0" border="0">%s</table></td></tr>' % sections) if sections else ""}

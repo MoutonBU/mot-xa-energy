@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.59.2**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.59.3**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Full company name under the logo, 1.59.3**: the email always shows MCP ARCHITECTURE & INTERIORS under the logo and at the bottom, even when the signature company is set to just "MCP".
 - **Rounded preview and bold company name, 1.59.2**: the "How it will look" tab now shows rounded corners on the title card, the red bar, the change lines, the drawing tables, the status pill and the signature. Under the logo the company name is now MCP ARCHITECTURE & INTERIORS in the same bold, spaced letters as the program's header.
 - **Logo follows light and dark mode, 1.59.1**: the email logo is white and red in dark mode and black and red in light mode, with no tile behind it. Both logos travel inside the email.
 - **Email redesign, 1.59.0**: the designed email now starts with the MCP logo (black and red, on a rounded white tile) with the company name under it, then a rounded DRAWING REGISTER title card ("Revision 2 | date" and the project name) with the red rounded bar, as on the PDF. All the cards, lists, tables and the signature have rounded corners.
