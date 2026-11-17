@@ -76,6 +76,9 @@ def short_date(iso):
         return iso or ""
 
 
+_KEEP = []
+
+
 class AccountDialog(QDialog):
     """Type the email address and password, press Connect. The mail server is found by the program.
     Gmail needs an app password (the program shows where to get it) or the Sign in with Google button."""
@@ -109,6 +112,8 @@ class AccountDialog(QDialog):
         self.gbtn.clicked.connect(self.open_app_pw)
         v.addWidget(self.gbtn)
         self._pw_mode = False
+        self._closed = False
+        self.finished.connect(lambda *_: setattr(self, "_closed", True))
         self.connect_b = QPushButton("Connect")
         self.connect_b.setMinimumHeight(40)
         self.connect_b.setStyleSheet("font-weight:700;")
@@ -179,7 +184,7 @@ class AccountDialog(QDialog):
         ok = QPushButton("Done")
         self.test_b.clicked.connect(self.test)
         self.out_b.clicked.connect(self.sign_out)
-        ok.clicked.connect(self.done)
+        ok.clicked.connect(self.finish_up)
         for b in (self.test_b, self.out_b):
             bar.addWidget(b)
         bar.addStretch(1)
@@ -253,6 +258,15 @@ class AccountDialog(QDialog):
         import mail_autoconfig as ac
         webbrowser.open(ac.APP_PASSWORD_DOMAINS.get(self._domain(), "https://myaccount.google.com/apppasswords"))
 
+    def _safe(self, sig, *a):
+        try:
+            if not self._closed:
+                sig.emit(*a)
+            elif sig is self.signed and a and a[0]:
+                self.M.save_settings()      # signed in after the window was closed: still keep the link
+        except RuntimeError:
+            pass
+
     def _toggle_pw(self):
         self._pw_mode = not self._pw_mode
         self.refresh()
@@ -279,10 +293,10 @@ class AccountDialog(QDialog):
 
         def work():
             try:
-                cfg = ac.detect(addr, pw.replace(" ", "") if self._domain() in ac.APP_PASSWORD_DOMAINS else pw, progress=lambda t: self.prog.emit(t))
-                self.conn.emit(True, "", cfg)
+                cfg = ac.detect(addr, pw.replace(" ", "") if self._domain() in ac.APP_PASSWORD_DOMAINS else pw, progress=lambda t: self._safe(self.prog, t))
+                self._safe(self.conn, True, "", cfg)
             except Exception as e:
-                self.conn.emit(False, str(e), None)
+                self._safe(self.conn, False, str(e), None)
         threading.Thread(target=work, daemon=True).start()
 
     def _connected(self, ok, msg, cfg):
@@ -322,7 +336,7 @@ class AccountDialog(QDialog):
         self.S["mail_provider"], self.S["mail_address"] = k, self.addr.text().strip()
         self.signbtn.setEnabled(False)
         self.status.setText("Your browser has opened. Sign in there, then come back here...")
-        self.mo.sign_in_thread(self.S, k, self.addr.text().strip(), lambda ok, m: self.signed.emit(ok, m))
+        self.mo.sign_in_thread(self.S, k, self.addr.text().strip(), lambda ok, m: self._safe(self.signed, ok, m))
 
     def _signed(self, ok, msg):
         self.signbtn.setEnabled(True)
@@ -353,7 +367,7 @@ class AccountDialog(QDialog):
                            "smtp_pass": self.pw.text(), "smtp_from": self.addr.text().strip()})
         self.M.save_settings()
 
-    def done(self):
+    def finish_up(self):
         self._commit()
         self.accept()
 
@@ -761,7 +775,10 @@ class MailMixin:
         M = self._M()
         if not hasattr(M, "SETTINGS"):
             return None
-        return AccountDialog(M, self).exec()
+        d = AccountDialog(M, self)
+        _KEEP.append(d)          # a sign-in thread may still answer after the window is closed: never let the window be deleted under it
+        del _KEEP[:-3]
+        return d.exec()
 
     def send_mail(self):
         gi = self.groups_in_issue()

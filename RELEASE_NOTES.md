@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.52.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.52.1**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Fix: program closed when pressing Done in Email account, 1.52.1**: the Done button's handler clashed with a built-in window function and crashed the
+  program. It is renamed, and a Google sign-in that is still open when the window closes can no longer crash the program.
 - **Gmail: one button, 1.52.0**: for a Gmail address the Email account window now shows only the address and one "Sign in with Google" button
   (no password box). The password is typed in Google's own window. "Use an app password instead" is still there as a fallback.
 - **Sign in with Google works out of the box, 1.51.0**: the program now carries its own Google registration, so a user only types their
