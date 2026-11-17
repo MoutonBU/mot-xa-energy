@@ -568,35 +568,60 @@ class MaterialsPage(QWidget):
                                     "(the button at the top right, or Tools > Online mode).")
             return
         from costing import ai_search
-        keys = list(RATES)
-        chunks = [keys[i:i + 5] for i in range(0, len(keys), 5)]       # a few items per search: more reliable than all at once
-
-        def prompt_for(ks):
-            items = "\n".join('- key "%s": %s, per %s' % (k, RATES[k][0], RATES[k][1]) for k in ks)
-            return ("You are helping a South African builder update his material prices. Use web search to find current retail or merchant "
-                    "prices in rand, including VAT, from South African suppliers (Builders Warehouse, Cashbuild, Buco, brickyards, roof and "
-                    "ceiling suppliers, Italtile). Items:\n" + items +
-                    '\nReturn ONLY JSON, with no other text: {"prices": [{"key": "brick", "price_zar": 2.4, "source": "shop name and page URL"}]}. '
-                    "One entry per key you found a real price for, in the unit given. Never guess: leave a key out if you found nothing. "
-                    "For items that include fitting (roof covering laid, windows fitted) give a rate only if you found one.")
-        self.note.setText("Searching for prices... this takes a few minutes.")
+        # choose what to search for: every search costs money, so only the items that need a price are searched
+        import datetime
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Update prices with AI")
+        dlg.resize(620, 560)
+        lay = QVBoxLayout(dlg)
+        uses = int(M.SETTINGS.get("search_uses") or 5)
+        lay.addWidget(QLabel("Tick the materials to look up. One request is made for all of them, with at most %d web searches (about %d cents "
+                             "plus a few thousand tokens on the model you chose). Items priced by AI in the last 14 days are left unticked." % (uses, uses)))
+        pt = QTableWidget(len(RATES), 3)
+        pt.setHorizontalHeaderLabels(["Look up", "Material", "Price now"])
+        pt.verticalHeader().setVisible(False)
+        pt.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        today = datetime.date.today()
+        for r, (k, (d, u, rate, src)) in enumerate(RATES.items()):
+            o = self.rates.get(k)
+            fresh = False
+            if o and str(o.get("source", "")).startswith("AI search"):
+                try:
+                    fresh = (today - datetime.date.fromisoformat(o["source"][10:20])).days < 14
+                except ValueError:
+                    pass
+            c = QTableWidgetItem("")
+            c.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+            c.setCheckState(Qt.CheckState.Unchecked if fresh else Qt.CheckState.Checked)
+            pt.setItem(r, 0, c)
+            pt.setItem(r, 1, QTableWidgetItem("%s (per %s)" % (d, u)))
+            pt.setItem(r, 2, QTableWidgetItem("%.2f  %s" % (o["rate"] if o else rate, "(AI, recent)" if fresh else "")))
+        lay.addWidget(pt)
+        go = QPushButton("Search")
+        go.clicked.connect(dlg.accept)
+        lay.addWidget(go)
+        if not dlg.exec():
+            return
+        keys = [k for r, k in enumerate(RATES) if pt.item(r, 0).checkState() == Qt.CheckState.Checked]
+        if not keys:
+            return
+        items = "\n".join('- key "%s": %s, per %s' % (k, RATES[k][0], RATES[k][1]) for k in keys)
+        prompt = ("Find current South African retail prices in rand incl. VAT for these building materials. Search efficiently: one search can "
+                  "cover several items. Items:\n" + items +
+                  '\nReply with ONLY this JSON, no other text: {"prices": [{"key": "brick", "price_zar": 2.4, "source": "shop and URL"}]}. '
+                  "Include a key only if you found a real price in the unit given. Never guess.")
+        self.note.setText("Searching for prices... this takes a minute or two.")
 
         def work():
-            found, errs = [], []
-            for ks in chunks:
-                try:
-                    text, _urls = ai_search(M, prompt_for(ks), (), max_uses=6, max_tokens=3000)
-                    t = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.M).strip()
-                    a, b = t.find("{"), t.rfind("}")
-                    if a < 0 or b <= a:
-                        errs.append("no list returned (" + (text.strip()[:120] or "empty reply") + ")")
-                        continue
-                    found += json.loads(t[a:b + 1]).get("prices", [])
-                except Exception as e:
-                    errs.append(str(e)[:160])
-                    if "Claude said" in str(e) or "No internet" in str(e):
-                        break                           # a key or connection problem: the next searches would fail the same way
-            self.price_found.emit(found, "; ".join(errs) if not found else "")
+            try:
+                text, _urls = ai_search(M, prompt, (), max_tokens=1800)
+                t = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.M).strip()
+                a, b = t.find("{"), t.rfind("}")
+                if a < 0 or b <= a:
+                    raise RuntimeError("The AI did not return a price list. It said: " + (text.strip()[:300] or "(nothing)"))
+                self.price_found.emit(json.loads(t[a:b + 1]).get("prices", []), "")
+            except Exception as e:
+                self.price_found.emit([], str(e)[:400])
         if not getattr(self, "_pf_wired", False):
             self.price_found.connect(self._prices_back)
             self._pf_wired = True

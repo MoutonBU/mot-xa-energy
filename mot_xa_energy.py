@@ -11790,6 +11790,14 @@ class MainWindow(QMainWindow):
         sm.setCurrentIndex(max(0, k_))
         sm.setToolTip("The model used by Find product and Update prices. Haiku is the cheapest and is enough to read shop pages; "
                       "pick Sonnet if its matches look poor. The web search itself costs the same on every model.")
+        uses_spin = QSpinBox()
+        uses_spin.setRange(1, 20)
+        uses_spin.setValue(int(SETTINGS.get("search_uses") or 5))
+        uses_spin.setSuffix(" searches")
+        uses_spin.setToolTip("The most web searches one product or price request may use. Each costs 1 cent and its results are read as tokens, "
+                             "so fewer is cheaper. One search can cover several items.")
+        za_chk = QCheckBox("Only search South African shops (cheaper and cleaner results)")
+        za_chk.setChecked(bool(SETTINGS.get("search_za_only", True)))
         cred = QDoubleSpinBox()
         cred.setRange(0, 100000)
         cred.setPrefix("$ ")
@@ -11816,7 +11824,7 @@ class MainWindow(QMainWindow):
         reset.clicked.connect(do_reset)
         show_spent()
         g2 = QGridLayout()
-        for i_, (lab_, w_) in enumerate([("Model for product search", sm), ("Credit loaded", cred), ("Price in (tokens)", rin), ("Price out (tokens)", rout)]):
+        for i_, (lab_, w_) in enumerate([("Model for product search", sm), ("Searches per request", uses_spin), ("", za_chk), ("Credit loaded", cred), ("Price in (tokens)", rin), ("Price out (tokens)", rout)]):
             g2.addWidget(QLabel(lab_), i_, 0)
             g2.addWidget(w_, i_, 1)
         lay.addLayout(g2)
@@ -11846,7 +11854,7 @@ class MainWindow(QMainWindow):
         def apply_fields():
             SETTINGS.update({"online": on.isChecked(), "provider": prov.currentText(),
                              "api_key": key.text().strip(), "model": model.text().strip(),
-                             "ai_credit": cred.value(), "search_model": sm.currentData(), "rate_in": rin.value(), "rate_out": rout.value()})
+                             "ai_credit": cred.value(), "search_model": sm.currentData(), "search_uses": uses_spin.value(), "search_za_only": za_chk.isChecked(), "rate_in": rin.value(), "rate_out": rout.value()})
 
         def do_test():
             old = dict(SETTINGS)

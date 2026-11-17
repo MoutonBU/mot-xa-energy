@@ -1376,7 +1376,11 @@ def _walk_urls(blocks):
     return out
 
 
-def ai_search(M, prompt, images_b64=(), max_uses=8, max_tokens=6000):
+ZA_SHOPS = ["italtile.com", "builders.co.za", "buco.co.za", "cashbuild.co.za", "takealot.com", "plumblink.co.za", "pricecheck.co.za",
+            "leroymerlin.co.za", "bathroomwarehouse.co.za", "tileafrica.co.za", "ctm.co.za", "agrimark.co.za"]
+
+
+def ai_search(M, prompt, images_b64=(), max_uses=None, max_tokens=2500, domains=None):
     """Ask Claude with live web search. Returns (reply text, set of URLs that the search returned).
     M is the program's main module (settings and the plain request live there)."""
     st = M.SETTINGS
@@ -1389,8 +1393,14 @@ def ai_search(M, prompt, images_b64=(), max_uses=8, max_tokens=6000):
     content = [{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": b}} for b in images_b64]
     content.append({"type": "text", "text": prompt})
     msgs = [{"role": "user", "content": content}]
-    tool = {"type": "web_search_20250305", "name": "web_search", "max_uses": max_uses,
+    # every search costs 1 cent and its results are read as tokens, so the number of searches and the sites searched are kept small
+    uses = int(max_uses or st.get("search_uses") or 5)
+    tool = {"type": "web_search_20250305", "name": "web_search", "max_uses": max(1, min(20, uses)),
             "user_location": {"type": "approximate", "country": "ZA"}}
+    if domains is None and st.get("search_za_only", True):
+        domains = ZA_SHOPS
+    if domains:
+        tool["allowed_domains"] = list(domains)
     urls, text = set(), ""
 
     def post(body):
@@ -1662,7 +1672,8 @@ class FinderDialog(QDialog):
 
         def work():
             try:
-                text, urls = ai_search(M, prompt, imgs)
+                site = dict(RETAILERS).get(self.shop.currentText())
+                text, urls = ai_search(M, prompt, imgs, max_tokens=3500, domains=[site] if site else None)
                 looks, prods = parse_finder_json(text)
                 if not prods:
                     self.done.emit([], "", "The search found no matching products. Try a simpler description or another shop.")
