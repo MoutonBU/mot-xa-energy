@@ -100,6 +100,71 @@ def _footprint(v, f):
     return out
 
 
+def _snap_openings(layers, tags):
+    """Centre every window, door and gate in the wall it sits in and give it the wall's thickness.
+    Each opening is a rectangle (corners c0..c3); a short probe across it finds the wall there."""
+    try:
+        from shapely.geometry import LineString, Polygon
+        from shapely.ops import unary_union
+        walls = [Polygon(p[0]).buffer(0) for p in layers.get("wall", []) if len(p[0]) > 3]
+        if not walls:
+            return {}
+        wu = unary_union(walls)
+    except Exception:
+        return {}
+    new_tags = {}
+    for kind in ("window", "door", "gate"):
+        out = []
+        for poly in layers.get(kind, []):
+            c = poly[0]
+            if len(c) < 5:
+                out.append(poly)
+                continue
+            try:
+                x0, y0 = c[0]
+                ux, uy = c[1][0] - x0, c[1][1] - y0
+                vx, vy = c[3][0] - x0, c[3][1] - y0
+                lu, lv = math.hypot(ux, uy), math.hypot(vx, vy)
+                if lu < 1e-6 or lv < 1e-6:
+                    out.append(poly)
+                    continue
+                ux, uy, vx, vy = ux / lu, uy / lu, vx / lv, vy / lv
+                mx = (c[0][0] + c[2][0]) / 2
+                my = (c[0][1] + c[2][1]) / 2
+                best = None
+                for off in (0.0, -0.3 * lu, 0.3 * lu):          # probe across the middle, then either side
+                    px, py = mx + ux * off, my + uy * off
+                    cut = wu.intersection(LineString([(px - vx * 0.7, py - vy * 0.7), (px + vx * 0.7, py + vy * 0.7)]))
+                    segs = [cut] if cut.geom_type == "LineString" else [g for g in getattr(cut, "geoms", []) if g.geom_type == "LineString"]
+                    for g in segs:
+                        if g.is_empty:
+                            continue
+                        ts = sorted(((q[0] - px) * vx + (q[1] - py) * vy) for q in g.coords)
+                        a, b = ts[0], ts[-1]
+                        if a <= 0.05 and b >= -0.05 and 0.06 < b - a < 0.6:
+                            if best is None or (b - a) > (best[1] - best[0]):
+                                best = (a, b)
+                    if best:
+                        break
+                if not best:
+                    out.append(poly)
+                    continue
+                t0 = (best[0] + best[1]) / 2 - (best[1] - best[0]) / 2 - 0.03
+                t1 = (best[0] + best[1]) / 2 + (best[1] - best[0]) / 2 + 0.03
+                # corners: along the opening from its start to its end, across the wall from t0 to t1
+                ax, ay = mx - ux * lu / 2, my - uy * lu / 2
+                bx, by = mx + ux * lu / 2, my + uy * lu / 2
+                pts = [(ax + vx * t0, ay + vy * t0), (bx + vx * t0, by + vy * t0), (bx + vx * t1, by + vy * t1),
+                       (ax + vx * t1, ay + vy * t1)]
+                pts.append(pts[0])
+                out.append((pts, []))
+                new_tags[id(c)] = pts
+            except Exception:
+                out.append(poly)
+        layers[kind] = out
+    return new_tags
+
+
 def _opening(polys):
     """A window or door as a bar at least as thick as a wall, so it fills its gap in the wall on the plan."""
     from shapely.geometry import Polygon
@@ -247,6 +312,8 @@ def build_plan(path):
         def _area(sp_):
             o_ = sp_["poly"][0]
             return abs(sum(o_[i][0] * o_[i + 1][1] - o_[i + 1][0] * o_[i][1] for i in range(len(o_) - 1))) / 2.0
+        _nt = _snap_openings(layers, tags) or {}
+        tags[:] = [(k, t, _nt.get(id(r), r)) for (k, t, r) in tags]
         spaces.sort(key=_area, reverse=True)          # small rooms (passages) are drawn on top of large ones
         if layers or spaces:
             out.append({"name": s["name"], "elev": s["elev"], "layers": layers, "spaces": spaces, "tags": tags})
@@ -512,6 +579,7 @@ class PlanView(QGraphicsView):
                     lp.setCosmetic(True)
                     ln = sc.addLine(a.x(), a.y(), b.x(), b.y(), lp)
                     ln.setZValue(5)
+        chips = []
         if self.show_tags:
             from PySide6.QtWidgets import QGraphicsRectItem
             for kind, text, ring in storey.get("tags", []):
@@ -534,12 +602,13 @@ class PlanView(QGraphicsView):
                 chip = QGraphicsRectItem(cx - w_ / 2 - 0.04, cy - h_ / 2 - 0.02, w_ + 0.08, h_ + 0.04)
                 chip.setBrush(QBrush(QColor(pal["window"] if kind == "window" else pal["gatechip"] if kind == "gate" else pal["doorchip"])))
                 chip.setPen(QPen(Qt.PenStyle.NoPen))
+                chips.append(QRectF(cx - w_ / 2 - 0.08, cy - h_ / 2 - 0.06, w_ + 0.16, h_ + 0.12))
                 chip.setZValue(7)
                 t.setPos(cx - w_ / 2, cy + h_ / 2)
                 t.setZValue(8)
                 sc.addItem(chip)
                 sc.addItem(t)
-        placed = []
+        placed = list(chips)                           # door and window chips keep their place; room names move round them
         todo = sorted((q for q in storey["spaces"] if q["name"]), key=lambda q: (id(q) not in status, -_poly_area(q)))
         for sp in todo:
             pts = [self._pt(*q) for q in sp["poly"][0]]
@@ -572,9 +641,24 @@ class PlanView(QGraphicsView):
                 continue
             lh = 1.35 * k0
             widest = max((0.85 * w / ks[n]) * k0 for n in range(len(lines)))
-            box = QRectF(cx - widest / 2 - 0.05, cy - len(lines) * lh / 2 - 0.03, widest + 0.1, len(lines) * lh + 0.06)
-            if any(box.intersects(b) for b in placed):  # never write one label on top of another
+            from PySide6.QtGui import QPolygonF
+            outline = QPolygonF(pts)
+            bw, bh = widest + 0.1, len(lines) * lh + 0.06
+            spot = None
+            for dx, dy in ((0, 0), (0, 0.3), (0, -0.3), (0.3, 0), (-0.3, 0), (0, 0.5), (0, -0.5), (0.5, 0), (-0.5, 0),
+                           (0.3, 0.3), (-0.3, 0.3), (0.3, -0.3), (-0.3, -0.3)):
+                px, py = cx + dx, cy + dy
+                if (dx or dy) and not outline.containsPoint(QPointF(px, py), Qt.FillRule.OddEvenFill):
+                    continue
+                if (dx or dy) and (px - bw / 2 < min(xs) or px + bw / 2 > max(xs) or py - bh / 2 < min(ys) or py + bh / 2 > max(ys)):
+                    continue
+                b_ = QRectF(px - bw / 2, py - bh / 2, bw, bh)
+                if not any(b_.intersects(q) for q in placed):
+                    spot = (px, py, b_)
+                    break
+            if spot is None:                           # nowhere clear: leave it to the list and the tooltip
                 continue
+            cx, cy, box = spot
             placed.append(box)
             for n_, ln_ in enumerate(lines):
                 t = QGraphicsSimpleTextItem(ln_)
