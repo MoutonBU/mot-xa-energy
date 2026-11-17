@@ -6,35 +6,38 @@ Email programs only understand old-style HTML, so everything is tables with inli
 import html
 import re
 
-RED = "#E4203A"
-PAGE = "#0E0F12"       # class pg
-HEAD = "#2A2D34"       # class hd   (the title card)
-CARD = "#23262D"       # class cd
-ROW1 = "#1A1C21"       # class r1
-ROW2 = "#202329"       # class r2
-LINE = "#383C45"       # class bd
-TXT = "#D7D9DE"        # class tx
-STRONG = "#FFFFFF"     # class st
-MUTED = "#9DA1AA"      # class mu
+RED = "#C8102E"
+PAGE = "#FFFFFF"       # class pg
+HEAD = "#DCDCDC"       # class hd   (the grey title card, as on the PDF)
+CARD = "#F3F3F3"       # class cd
+ROW1 = "#FFFFFF"       # class r1
+ROW2 = "#F6F6F6"       # class r2
+LINE = "#CFCFCF"       # class bd
+TXT = "#2B2B2B"        # class tx
+STRONG = "#111111"     # class st
+MUTED = "#6B6B6B"      # class mu
 FONT = "'Segoe UI',Helvetica,Arial,sans-serif"
 BRAND = "MCP Architecture & Interiors"     # always the full name under the logo, whatever the signature company says
 
-# the same look in light, for mail programs that are in light mode
-LIGHT_CSS = """
+# The email is LIGHT by default (that is what Gmail and most programs show) and switches itself to dark in programs that are in dark mode
+DARK_CSS = """
 :root{color-scheme:light dark;supported-color-schemes:light dark;}
-@media (prefers-color-scheme: light){
- .pg{background-color:#FFFFFF !important;}
- .lgd{display:none !important;max-height:0 !important;}
- .lgl{display:block !important;max-height:none !important;overflow:visible !important;}
- .hd{background-color:#DCDCDC !important;border-color:#C9C9C9 !important;}
- .cd{background-color:#F3F3F3 !important;border-color:#CFCFCF !important;}
- .r1{background-color:#FFFFFF !important;}
- .r2{background-color:#F6F6F6 !important;}
- .bd{border-color:#CFCFCF !important;}
- .tx{color:#2B2B2B !important;}
- .st{color:#111111 !important;}
- .mu{color:#6B6B6B !important;}
+@media (prefers-color-scheme: dark){
+ .pg{background-color:#0E0F12 !important;}
+ .hd{background-color:#2A2D34 !important;border-color:#454953 !important;}
+ .cd{background-color:#23262D !important;border-color:#383C45 !important;}
+ .r1{background-color:#1A1C21 !important;}
+ .r2{background-color:#202329 !important;}
+ .bd{border-color:#383C45 !important;}
+ .tx{color:#D7D9DE !important;}
+ .st{color:#FFFFFF !important;}
+ .mu{color:#9DA1AA !important;}
+ .lgl{display:none !important;max-height:0 !important;}
+ .lgd{display:block !important;max-height:none !important;overflow:visible !important;}
 }
+[data-ogsc] .pg{background-color:#0E0F12 !important;} [data-ogsc] .hd{background-color:#2A2D34 !important;} [data-ogsc] .cd{background-color:#23262D !important;}
+[data-ogsc] .r1{background-color:#1A1C21 !important;} [data-ogsc] .r2{background-color:#202329 !important;}
+[data-ogsc] .tx{color:#D7D9DE !important;} [data-ogsc] .st{color:#FFFFFF !important;} [data-ogsc] .mu{color:#9DA1AA !important;}
 """
 
 DRAWING = re.compile(r"^(\S+)\s{2,}(.*?)\s{2,}Rev (\S+)\s+\(([^)]*)\):?\s*(.*)$")
@@ -205,7 +208,7 @@ def _title_parts(subject):
     return (subject or "Drawing register").strip(), ""
 
 
-def build(subject, body, logo_src="cid:mcplogo", attached="", logo_light_src="", company="MCP Architecture & Interiors", preview=False):
+def build(subject, body, logo_src="cid:mcplogo", attached="", logo_dark_src="", company="MCP Architecture & Interiors", preview=False):
     _pv["on"] = bool(preview)
     _pv["res"] = {}
     project, strip = _title_parts(subject)
@@ -250,12 +253,12 @@ def build(subject, body, logo_src="cid:mcplogo", attached="", logo_light_src="",
             sections += '<tr><td style="padding:0 0 8px 0;">%s</td></tr>' % _list(r[1])
         elif r[0] == "S":
             if _pv["on"]:
-                pill = ('<tr><td align="center" style="padding:0 0 10px 0;">%s</td></tr>' %
+                pill = ('<tr><td align="center" style="padding:0 0 22px 0;">%s</td></tr>' %
                         _wrap('<span style="font-family:%s;font-size:16px;font-weight:700;color:#FFFFFF;">&nbsp;%s&nbsp;</span>' % (FONT, _e(r[1])), RED, 12, width=""))
             else:
-                pill = ('<tr><td align="center" style="padding:0 0 10px 0;"><span style="font-family:%s;font-size:16px;font-weight:700;color:#FFFFFF;background-color:%s;border-radius:18px;padding:7px 22px;" bgcolor="%s">%s</span></td></tr>'
+                pill = ('<tr><td align="center" style="padding:0 0 22px 0;"><span style="font-family:%s;font-size:16px;font-weight:700;color:#FFFFFF;background-color:%s;border-radius:18px;padding:7px 22px;" bgcolor="%s">%s</span></td></tr>'
                         % (FONT, RED, RED, _e(r[1])))
-            sections += ('<tr><td align="center" class="mu" style="padding:20px 0 6px 0;font-family:%s;font-size:12px;letter-spacing:3px;color:%s;">STATUS OF THIS REVISION</td></tr>' % (FONT, MUTED)) + pill
+            sections += ('<tr><td align="center" class="mu" style="padding:28px 0 16px 0;font-family:%s;font-size:12px;letter-spacing:3px;color:%s;">STATUS OF THIS REVISION</td></tr>' % (FONT, MUTED)) + pill
         elif r[0] == "G":
             sig = r[1]
             name = sig[0] if sig else ""
@@ -283,7 +286,7 @@ def build(subject, body, logo_src="cid:mcplogo", attached="", logo_light_src="",
         title_card = '<tr><td>%s</td></tr>' % _wrap('<div style="padding:12px 14px;">%s</div>' % title_inner, HEAD, 16)
         intro_card = '<tr><td>%s</td></tr>' % _wrap('<div style="padding:14px 16px;">%s</div>' % intro_inner, CARD, 16)
     else:
-        title_card = ('<tr><td class="hd" bgcolor="%s" style="background-color:%s;border:1px solid #454953;border-radius:18px;padding:22px 26px 20px 26px;">%s</td></tr>' % (HEAD, HEAD, title_inner))
+        title_card = ('<tr><td class="hd" bgcolor="%s" style="background-color:%s;border:1px solid #C9C9C9;border-radius:18px;padding:22px 26px 20px 26px;">%s</td></tr>' % (HEAD, HEAD, title_inner))
         intro_card = ('<tr><td class="cd" style="background-color:%s;border:1px solid %s;border-radius:22px;" bgcolor="%s">'
                       '<table width="100%%" cellpadding="0" cellspacing="0" border="0"><tr><td style="padding:26px 30px 14px 30px;">%s</td></tr></table></td></tr>' % (CARD, LINE, CARD, intro_inner))
     return ('<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
@@ -294,7 +297,7 @@ def build(subject, body, logo_src="cid:mcplogo", attached="", logo_light_src="",
             '<table width="640" cellpadding="0" cellspacing="0" border="0" style="width:100%%;max-width:640px;">'
             # the logo: white and red for dark mode (the default), black and red for light mode
             '<tr><td align="center" style="padding:10px 0 0 0;">'
-            '<img class="lgd" src="%(logo)s" width="150" alt="MCP" style="display:block;border:0;margin:0 auto;">'
+            '<img class="lgl" src="%(logo)s" width="150" alt="MCP" style="display:block;border:0;margin:0 auto;">'
             '%(logo_light)s</td></tr>'
             '<tr><td align="center" class="st" style="padding:14px 0 22px 0;font-family:%(font)s;font-size:19px;font-weight:700;letter-spacing:2px;color:%(st)s;">%(company_caps)s</td></tr>'
             # grey rounded title card + red rounded bar, as on the PDF
@@ -305,7 +308,7 @@ def build(subject, body, logo_src="cid:mcplogo", attached="", logo_light_src="",
             '%(attached)s'
             '<tr><td align="center" class="mu" style="padding:22px 0 4px 0;font-family:%(font)s;font-size:11px;letter-spacing:3px;color:%(muted)s;">%(company_caps)s</td></tr>'
             '</table></td></tr></table></body></html>') % {
-        "title": _e(project), "css": LIGHT_CSS, "page": PAGE, "head": HEAD, "card": CARD, "line": LINE, "tx": TXT, "st": STRONG, "muted": MUTED,
-        "logo": logo_src, "logo_light": ('<img class="lgl" src="%s" width="150" alt="MCP" style="display:none;max-height:0;overflow:hidden;mso-hide:all;border:0;margin:0 auto;">' % logo_light_src) if logo_light_src else "", "font": FONT, "sub": sub_line, "project": _e(project), "company": _e(BRAND), "company_caps": _e(BRAND.upper()),
+        "title": _e(project), "css": DARK_CSS, "page": PAGE, "head": HEAD, "card": CARD, "line": LINE, "tx": TXT, "st": STRONG, "muted": MUTED,
+        "logo": logo_src, "logo_light": ('<img class="lgd" src="%s" width="150" alt="MCP" style="display:none;max-height:0;overflow:hidden;mso-hide:all;border:0;margin:0 auto;">' % logo_dark_src) if logo_dark_src else "", "font": FONT, "sub": sub_line, "project": _e(project), "company": _e(BRAND), "company_caps": _e(BRAND.upper()),
         "title_card": title_card, "intro_card": intro_card, "bar": _bar(None, 12, "left", "0"), "greet": _e(greet), "intro": intro, "attached": attached_html,
         "sections_wrap": ('<tr><td style="padding-top:6px;"><table width="100%%" cellpadding="0" cellspacing="0" border="0">%s</table></td></tr>' % sections) if sections else ""}

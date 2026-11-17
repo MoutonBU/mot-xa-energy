@@ -999,12 +999,12 @@ class MailMixin:
     def _M(self):
         return sys.modules[type(self.host).__module__]
 
-    def design_png(self, light=False):
-        """The MCP logo as PNG bytes with a transparent background: white and red for dark mode, or black and red (light=True) for light mode."""
+    def design_png(self, dark=False):
+        """The MCP logo as PNG bytes with a transparent background: black and red (for light mode, the default) or white and red (dark=True)."""
         import base64
         M = self._M()
         raw = base64.b64decode(M.LOGO_B64)
-        if not light:
+        if dark:
             return raw
         from PySide6.QtCore import QBuffer, QIODevice
         from PySide6.QtGui import QColor, QImage
@@ -1030,7 +1030,7 @@ class MailMixin:
 
     def design_html(self, subject, body, src="cid:mcplogo", attached="", both=False, preview=False):
         import mail_design
-        return mail_design.build(subject, body, logo_src=src, logo_light_src=("cid:mcplogol" if both else ""), preview=preview, attached=attached, company=self._M().SETTINGS.get("sig_company") or "MCP Architecture & Interiors")
+        return mail_design.build(subject, body, logo_src=src, logo_dark_src=("cid:mcplogod" if both else ""), preview=preview, attached=attached, company=self._M().SETTINGS.get("sig_company") or "MCP Architecture & Interiors")
 
     def designed_on(self):
         try:
@@ -1156,7 +1156,7 @@ class MailMixin:
                     note = ("This issue is sent in %d emails because of the size. This is part 1." % n) if n > 1 else ""
                     m.add_alternative(self.design_html(dlg.sub.text().strip(), dlg.body.toPlainText(), attached=note, both=True), subtype="html")
                     m.get_payload()[1].add_related(self.design_png(), maintype="image", subtype="png", cid="<mcplogo>", filename="mcp-logo.png", disposition="inline")
-                    m.get_payload()[1].add_related(self.design_png(True), maintype="image", subtype="png", cid="<mcplogol>", filename="mcp-logo-light.png", disposition="inline")
+                    m.get_payload()[1].add_related(self.design_png(True), maintype="image", subtype="png", cid="<mcplogod>", filename="mcp-logo-dark.png", disposition="inline")
                 except Exception:
                     pass
             for p in files:
