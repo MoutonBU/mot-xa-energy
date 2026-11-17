@@ -1,11 +1,19 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.39.2**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.40.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Whole-building costing, 1.40.0**: every item in Building materials now carries a material rate and a labour rate (bricklaying,
+  plastering, tiling, painting, roofing, electrical, plumbing, installing sanitary ware, cupboards and so on). The model's
+  quantities now also give site clearing, excavation, hardcore, waterproofing, skirting, gutters, ceilings, painting, light
+  points and fittings, sockets, switches, DB board and COC, plumbing points, geyser, kitchen units, built-in cupboards,
+  countertops and accessories. Sanitary ware from the Fixtures tab is included (supply plus installation).
+  A Price build-up tab adds breakage, preliminaries, the builder's overheads and profit (10 %), contingency, fees and VAT.
+  Extra items tab for anything the model does not hold. Cost per m2 and the target budget use the all-in price.
+  AI price update covers material prices (labour rates are yours to set). All new rates and allowances are starting estimates.
 - **Coverage & FAR tab** (beside Energy XA): stand area, blocks, carport roofs; coverage % and floor area ratio for
   one block, all blocks, and all blocks with carport roofs; PASS/FAIL against the limits you enter; areas filled from
   the Rooms list (storeys and floor areas per level from the IFC); choice of net rooms + walls, IFC gross, or the gross

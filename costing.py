@@ -1227,7 +1227,7 @@ class SummaryPage(QWidget):
         for b in m.blocks:
             n = max(1, int(b.get("repeat", 1)))
             if self.basis == 1 and b.get("path") == proj:
-                tot += sum(a for nm, a, fl in m.rooms() if not NON_CEILING.search(nm or "")) * n
+                tot += sum(r[1] for r in m.rooms_full() if not NON_CEILING.search(r[0] or "")) * n
             elif b.get("q"):
                 tot += float(b["q"].get("slab_area", 0)) * n
         return tot
@@ -1243,14 +1243,9 @@ class SummaryPage(QWidget):
         return 1
 
     def components(self):
-        """[(name, cost)] and the total."""
+        """[(group, all-in cost)] (breakage, preliminaries, profit, contingency, fees and VAT spread over the groups) and the total."""
         m = getattr(self.host, "materials", None)
-        mat = lab = pre = con = 0.0
-        if m and m.blocks:
-            mat, lab, pre, con, _t = m.grand()
-        fx = self.host.totals()[3] * self.fx_mult()
-        rows = [("Building materials", mat), ("Labour and plant", lab), ("Overheads and profit", pre), ("Contingency on the building", con),
-                ("Sanitary ware and fixtures", fx)]
+        rows = m.group_costs() if m and m.blocks else []
         return rows, sum(c for _n, c in rows)
 
     def fixture_budget(self):
