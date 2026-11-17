@@ -676,7 +676,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         subj, body = self._mail_parts()
         QDesktopServices.openUrl(QUrl("mailto:%s?subject=%s&body=%s" % (self.info["email"].strip(), quote(subj), quote(body))))
 
-    def report_html(self):
+    def report_parts(self):
         e = lambda x: _html.escape(str(x))
         RED, DARK = "#C8102E", "#DCDCDC"
         th = lambda t, w: '<th bgcolor="%s" align="left" width="%s%%" style="padding:3px;">%s</th>' % (DARK, w, t)
@@ -685,19 +685,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         n = sum(len(r) for _g, r in gi)
         last = self.last_issue()
         new, rev = self.changes()
-        lg = self.logos()
-        head = ""
-        if lg:
-            head = ('<table width="100%%" border="0" cellspacing="0"><tr><td align="left">%s</td><td align="right">%s</td></tr></table>' %
-                    ('<img src="mcp_logo" height="70">' if "mcp_logo" in lg else "", '<img src="client_logo" height="60">' if "client_logo" in lg else ""))
-        out = [head, '<h1 style="color:%s;margin-bottom:2px;">Drawing register</h1>' % RED,
-               '<table width="100%%" border="0" cellspacing="0" cellpadding="3" style="font-size:9.5pt;">'
-               '<tr><td width="50%%"><b>Project:</b> %s</td><td><b>Issue no.:</b> %s</td></tr>'
-               '<tr><td><b>Client:</b> %s</td><td><b>Date:</b> %s</td></tr>'
-               '<tr><td><b>Issued by:</b> %s</td><td><b>Issued to:</b> %s</td></tr></table>' %
-               (e(self.project_name()), e(self.info["issue_no"] or "1"), e(self.info["client"]), e(self.issue_date()),
-                e(self.info["issued_by"] or "MCP Architecture & Interiors"), e(self.info["to"])),
-               '<p style="font-size:9pt;color:#444;">%d drawings in this issue.%s</p>' %
+        out = ['<p style="font-size:9pt;color:#444;">%d drawings in this issue.%s</p>' %
                (n, (" %d revised and %d new since issue %s." % (len(rev), len(new), e(last.get("issue", "")))) if last else "")]
         out.append(self.log_html(e, td, th, RED))
         if last and (rev or new):
@@ -734,19 +722,107 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             out.append('<p style="font-size:7.5pt;color:#666;">Earlier issues: %s.</p>' % e("; ".join("issue %s, %s (%d drawings)" % (h.get("issue", ""), h.get("date", ""), len(h.get("rows", {}))) for h in self.history)))
         out.append('<p style="font-size:7.5pt;color:#666;">Revision, revision date and drawing number are read from the title block of each drawing; PDF\'d is the date the PDF was made. '
                    'Shaded rows are new or revised since the last issue. Use the latest revision of every drawing; earlier revisions are superseded.</p>')
-        return "".join(out)
+        return [x for x in out if x]
+
+    def report_html(self):
+        return "".join(self.report_parts())
+
+    def cover_html(self):
+        e = lambda x: _html.escape(str(x))
+        rd = getattr(self.host, "rd", {}) or {}
+        RED, DARK = "#C8102E", "#DCDCDC"
+        company = rd.get("company") or "MCP Architecture & Interiors"
+        client_logo = '<img src="client_logo" height="55">' if "client_logo" in self.logos() else ""
+        h = ('<p style="font-size:40pt;">&nbsp;</p><p align="center"><img src="logo" height="90"></p>'
+             '<p align="center" style="font-size:11pt; color:#444444;">%s</p><p style="font-size:30pt;">&nbsp;</p>'
+             '<table width="100%%" cellspacing="0" cellpadding="14" border="0"><tr><td bgcolor="%s" style="color:#222222;">'
+             '<span style="font-size:24pt; font-weight:bold;">DRAWING REGISTER</span><br>'
+             '<span style="font-size:9pt; color:#555555;">Issue %s &nbsp;|&nbsp; %s</span></td></tr></table>'
+             '<table width="100%%" cellspacing="0" cellpadding="0" border="0"><tr><td bgcolor="%s" height="4"></td></tr></table>' %
+             (e(company), DARK, e(self.info["issue_no"] or "1"), e(self.issue_date()), RED))
+        h += ('<p style="font-size:12pt;">&nbsp;</p><p style="font-size:9pt; color:#666666;">PROJECT</p>'
+              '<p style="font-size:16pt; font-weight:bold; color:#222222; margin-top:0px;">%s</p>'
+              '<p style="font-size:9pt; color:#666666;">SITE</p>'
+              '<p style="font-size:13pt; font-weight:bold; color:#222222; margin-top:0px;">%s</p>' % (e(self.project_name()), e(rd.get("details") or "-")))
+        h += ('<p style="font-size:12pt;">&nbsp;</p><table width="100%%" cellspacing="0" cellpadding="3" border="0"><tr>'
+              '<td width="50%%" style="font-size:8.5pt; color:#666666;">CLIENT<br><span style="font-size:12pt; font-weight:bold; color:#222222;">%s</span></td>'
+              '<td width="50%%" style="font-size:8.5pt; color:#666666;">ISSUED TO<br><span style="font-size:12pt; font-weight:bold; color:#222222;">%s</span></td></tr></table>'
+              '<p style="font-size:8pt;">&nbsp;</p><table width="100%%" cellspacing="0" cellpadding="3" border="0"><tr>'
+              '<td width="50%%" style="font-size:8.5pt; color:#666666;">ARCHITECTURE FIRM<br><span style="font-size:12pt; font-weight:bold; color:#222222;">%s</span></td>'
+              '<td width="50%%" style="font-size:8.5pt; color:#666666;">DRAWINGS IN THIS ISSUE<br><span style="font-size:12pt; font-weight:bold; color:#222222;">%d</span></td></tr></table>' %
+              (e(self.info["client"] or rd.get("owner") or "-"), e(self.info["to"] or "-"), e(rd.get("architect") or company),
+               sum(len(r) for _g, r in self.groups_in_issue())))
+        if client_logo:
+            h += '<p style="font-size:10pt;">&nbsp;</p><p align="right">%s</p>' % client_logo
+        h += ('<p style="font-size:20pt;">&nbsp;</p><p style="font-size:9pt; color:#666666;">THIS REGISTER WAS COMPILED BY</p>'
+              '<p style="font-size:12pt; font-weight:bold; color:#222222; margin-top:0px;">%s</p>' % e(self.info["issued_by"] or rd.get("prepared_by") or company))
+        if rd.get("contact"):
+            h += '<p style="font-size:8pt; color:#777777;">%s</p>' % e(rd["contact"])
+        return h
 
     def write_pdf(self, path):
+        """Cover page like the other reports (logo, grey title band with the red bar), then the register on landscape pages with a footer."""
+        from PySide6.QtCore import QMarginsF, QRectF, QSizeF
+        from PySide6.QtGui import QFont, QPageLayout, QPageSize, QPainter, QPdfWriter, QTextDocument
+        M = sys.modules[type(self.host).__module__]
+        if not hasattr(M, "_pack_pages"):
+            return self._write_plain(path)
+        lg = self.logos()
+        if "mcp_logo" in lg:
+            lg["logo"] = lg.pop("mcp_logo")
+        w = QPdfWriter(path)
+        mk = lambda o: QPageLayout(QPageSize(QPageSize.PageSizeId.A4), o, QMarginsF(10, 10, 10, 10), QPageLayout.Unit.Millimeter)
+        w.setPageLayout(mk(QPageLayout.Orientation.Portrait))
+        w.setResolution(96)
+        w.setTitle("Drawing register")
+        pwp, php = float(w.width()), float(w.height())
+
+        def mkdoc(html_, pw):
+            d_ = QTextDocument()
+            for nm, im in lg.items():
+                d_.addResource(QTextDocument.ResourceType.ImageResource, QUrl(nm), im)
+            d_.setDefaultFont(QFont("Arial", 9))
+            d_.setHtml('<html><body style="font-family:Arial; color:#111111;">' + html_ + "</body></html>")
+            d_.setPageSize(QSizeF(pw, 1e7))
+            return d_
+        # the client logo is stored under the name used in the html
+        painter = QPainter(w)
+        painter.save()
+        M._draw_doc_rounded(painter, mkdoc(self.cover_html(), pwp))
+        painter.restore()
+        w.setPageLayout(mk(QPageLayout.Orientation.Landscape))
+        w.newPage()
+        pw, ph = float(w.width()), float(w.height())
+        body = self.report_parts()
+        pages = M._pack_pages(lambda h: mkdoc(h, pw), body, ph - 30.0)
+        company = (getattr(self.host, "rd", {}) or {}).get("company") or "MCP Architecture & Interiors"
+        for i, (html_, y0, y1) in enumerate(pages):
+            if i:
+                w.newPage()
+            painter.save()
+            painter.translate(0, -y0)
+            if y1 is not None:
+                painter.setClipRect(QRectF(-5, y0, pw + 10, y1 - y0 + 1))
+            M._draw_doc_rounded(painter, mkdoc(html_, pw))
+            painter.restore()
+            painter.save()
+            painter.setPen(QColor("#9A9A9A"))
+            painter.setFont(QFont("Arial", 7))
+            painter.drawLine(0, int(ph - 24), int(pw), int(ph - 24))
+            painter.drawText(QRectF(0, ph - 22, pw * 0.8, 16), int(Qt.AlignmentFlag.AlignLeft),
+                             "%s  |  Drawing Register  |  %s  |  Issue %s" % (company, self.project_name(), self.info["issue_no"] or "1"))
+            painter.drawText(QRectF(0, ph - 22, pw, 16), int(Qt.AlignmentFlag.AlignRight), "Page %d of %d" % (i + 2, len(pages) + 1))
+            painter.restore()
+        painter.end()
+
+    def _write_plain(self, path):
         from PySide6.QtCore import QMarginsF
         from PySide6.QtGui import QFont, QPageLayout, QPageSize, QPdfWriter, QTextDocument
         w = QPdfWriter(path)
         w.setPageLayout(QPageLayout(QPageSize(QPageSize.PageSizeId.A4), QPageLayout.Orientation.Landscape, QMarginsF(12, 12, 12, 12), QPageLayout.Unit.Millimeter))
-        w.setTitle("Drawing register")
         d = QTextDocument()
         d.setDefaultFont(QFont("Arial", 9))
-        for nm, im in self.logos().items():
-            d.addResource(QTextDocument.ResourceType.ImageResource, QUrl(nm), im)
-        d.setHtml('<html><body style="font-family:Arial;color:#111;">' + self.report_html() + "</body></html>")
+        d.setHtml('<html><body style="font-family:Arial;color:#111;">' + self.cover_html() + self.report_html() + "</body></html>")
         d.print_(w)
 
     def preview_pdf(self):
