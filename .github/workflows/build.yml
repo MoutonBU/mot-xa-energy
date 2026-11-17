@@ -6,6 +6,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
+concurrency:
+  group: build-installer
+  cancel-in-progress: true     # a newer push replaces a build that is still running
 env:
   # Releases go to a separate PUBLIC repository when the RELEASES_TOKEN secret exists, so the source stays private
   REL_REPO: ${{ secrets.RELEASES_TOKEN != '' && 'MoutonBU/mot-xa-energy-releases' || github.repository }}
@@ -13,6 +16,10 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
+      - name: Speed up the runner (virus scanning slows every file write)
+        shell: powershell
+        run: |
+          try { Set-MpPreference -DisableRealtimeMonitoring $true } catch { Write-Host "could not switch the scanner off" }
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.11", cache: pip }
@@ -24,6 +31,14 @@ jobs:
           echo "${VER}" > version.txt
           echo "{\"repo\": \"${REL_REPO}\"}" > app_config.json
           echo "APP_VER=${VER}" >> "$GITHUB_ENV"
+      - name: Cache the PyInstaller work
+        uses: actions/cache@v4
+        with:
+          path: |
+            build
+            ~\AppData\Local\pyinstaller
+          key: pyi-${{ runner.os }}-${{ hashFiles('requirements.txt', 'mot_xa_energy.spec') }}
+          restore-keys: pyi-${{ runner.os }}-
       - run: pyinstaller --noconfirm mot_xa_energy.spec
       - run: choco install innosetup -y --no-progress
       - run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss'

@@ -4,6 +4,9 @@ datas, binaries, hidden = [("version.txt", "."), ("app_config.json", "."), ("mai
 for pkg in ("ifcopenshell", "rapidocr_onnxruntime", "onnxruntime", "shapely", "fitz", "pymupdf", "ezdxf", "matplotlib"):
     try:
         d, b, h = collect_all(pkg)
+        skip = lambda t: any(x in str(t[0]).replace("\\", "/").split("/") + str(t[1]).replace("\\", "/").split("/") for x in ("tests", "sample_data", "testing"))
+        d, b = [x for x in d if not skip(x)], [x for x in b if not skip(x)]
+        h = [x for x in h if ".tests" not in x and ".testing" not in x]      # tests and sample data are never used by the program
         datas += d; binaries += b; hidden += h
     except Exception:
         pass
