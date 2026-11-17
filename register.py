@@ -116,6 +116,26 @@ def parse_titleblock(lines):
     return out
 
 
+def _revision_field(page):
+    """The drawing's own revision (for example 1 or B) from the title block's 'Revision' box: the value sits under the label."""
+    words = page.get_text("words") or []
+    W, H = page.rect.width, page.rect.height
+    for w in words:
+        if w[4].lower() != "revision" or w[0] < W * 0.5 or w[1] < H * 0.4:
+            continue
+        same = [v for v in words if abs(v[1] - w[1]) < 4 and v[0] > w[2] and v[0] - w[2] < 40]
+        if any(v[4].lower() in ("history", "date", "id") for v in same):
+            continue
+        below = sorted([v for v in words if 6 < v[1] - w[1] < 34 and abs(v[0] - w[0]) < 45], key=lambda v: (v[1], v[0]))
+        for v in below:
+            t = v[4].strip()
+            if norm_date(t):
+                continue
+            if re.match(r"^(?:[A-Za-z]|[A-Za-z]?\d{1,3})$", t):
+                return t.upper()
+    return ""
+
+
 def _revision_table(page):
     """Rows of the title block's revision history table: [(rev, date, description)].
     Found by its heading (Rev / ID / Change / Name / Date, or Revision History), then read by position so other text on the same line is ignored.
@@ -263,6 +283,12 @@ def read_pdf(path):
             if rt:      # the revision history table, read by position, is the most reliable
                 cur = max(rt, key=lambda x: (x[1], x[0]))
                 out.update({"revs": rt, "rev": cur[0], "rdate": cur[1], "rdesc": cur[2]})
+                try:
+                    rf = _revision_field(pg)       # the table's IDs are the individual changes (01, 02, 03); the drawing's revision is its own box
+                except Exception:
+                    rf = ""
+                if rf:
+                    out["rev"] = rf
             if not out["scale"] and tb is None:
                 pass
         d.close()
@@ -625,7 +651,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             try:       # what changed = every revision row newer than the last issue sent
                 items = self.change_items(old)
                 if items:
-                    old["comment"] = "; ".join("%s (Rev %s)" % (d, rv) if rv else d for d, rv in items)
+                    old["comment"] = "; ".join(d for d, _rv in items)
                     old["auto"] = old["comment"]
             except Exception:
                 pass
@@ -777,7 +803,8 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
                     continue
                 revs = [tuple(str(v or "") for v in x[:3]) for x in (r.get("revs") or []) if len(x) >= 3]
                 rdate = r.get("rdate") or (max((x[1] for x in revs if x[1]), default=""))
-                rows[self.key(r)] = {"rev": r.get("rev", ""), "rdate": rdate, "title": r.get("title", ""), "no": r.get("no", ""), "comment": "", "by": ""}
+                rows[self.key(r)] = {"rev": r.get("rev", ""), "rdate": rdate, "title": r.get("title", ""), "no": r.get("no", ""), "comment": "", "by": "",
+                                     "maxid": max((x[0] for x in revs), default="")}
                 if r.get("pdfdate"):
                     dates.append(r["pdfdate"])
         return rows, dates
@@ -797,7 +824,8 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
                     rev, rdate = cur[0], cur[1]
                 else:
                     rev, rdate = r.get("rev", ""), r.get("rdate", "")
-                rows[self.key(r)] = {"rev": rev, "rdate": rdate or date, "title": r.get("title", ""), "no": r.get("no", ""), "comment": "", "by": ""}
+                rows[self.key(r)] = {"rev": rev, "rdate": rdate or date, "title": r.get("title", ""), "no": r.get("no", ""), "comment": "", "by": "",
+                                     "maxid": max((x[0] for x in upto), default="")}
         self.history = [h for h in self.history if str(h.get("issue")) != str(issue)]
         self.history.append({"issue": str(issue), "date": date, "rows": rows})
         self.history.sort(key=lambda h: (h.get("date", ""), str(h.get("issue", ""))))
@@ -848,7 +876,8 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         for _n, rs in gi:
             for r in rs:
                 rows[self.key(r)] = {"rev": r.get("rev", ""), "rdate": r.get("rdate", ""), "title": r.get("title", ""), "no": r.get("no", ""),
-                                     "comment": r.get("comment", ""), "by": r.get("by", "")}
+                                     "comment": r.get("comment", ""), "by": r.get("by", ""),
+                                     "maxid": max((str(x[0]) for x in (r.get("revs") or []) if len(x) >= 3), default="")}
         self.history.append({"issue": self.info["issue_no"] or "0", "date": datetime.date.today().isoformat(), "rows": rows})
         try:
             self.info["issue_no"] = str(int(self.info["issue_no"] or "0") + 1)
@@ -1093,7 +1122,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
                 if odate and dt:
                     if dt <= odate:
                         continue
-                elif orev and rv <= orev:
+                elif (o.get("maxid") or orev) and rv <= (o.get("maxid") or orev):
                     continue
             out.append((rv, dt, ds))
         return out
@@ -1119,7 +1148,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         its = self.change_items(r)
         by = r.get("by") or ""
         if its:
-            return (by + ": " if by else "") + "; ".join("%s (Rev %s)" % (d, rv) if rv else d for d, rv in its)
+            return (by + ": " if by else "") + "; ".join(d for d, _rv in its)
         return self._why(r)
 
     def _why(self, r):
@@ -1138,15 +1167,15 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         if last and (rev or new):
             lines.append("WHAT CHANGED SINCE REVISION %s (%s)" % (last.get("issue", ""), last.get("date", "")))
             for r in rev:
-                lines.append("%s  %s" % (r.get("no") or "-", (r.get("title", "") or "").upper()))
+                lines.append("%s  %s%s" % (r.get("no") or "-", (r.get("title", "") or "").upper(), ("  (REVISION %s)" % r["rev"]) if r.get("rev") else ""))
                 its = self.change_items(r)
                 if its:
-                    for d, rv in its:
-                        lines.append("  - %s%s" % (d, (" (Rev %s)" % rv) if rv else ""))
+                    for d, _rv in its:
+                        lines.append("  - %s" % d)
                 else:
                     lines.append("  - " + self._why(r))
             for r in new:
-                lines.append("%s  %s" % (r.get("no") or "-", (r.get("title", "") or "").upper()))
+                lines.append("%s  %s%s" % (r.get("no") or "-", (r.get("title", "") or "").upper(), ("  (REVISION %s)" % r["rev"]) if r.get("rev") else ""))
                 lines.append("  - New drawing: %s" % (r.get("about", "") or "added to the set"))
             lines.append("")
         elif last:

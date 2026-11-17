@@ -877,8 +877,9 @@ class LogMixin:
                 if line is not None:      # an earlier automatic line that no longer has anything behind it
                     self.log.remove(line)
                 continue
-            parts = ["%s %s: %s" % (r.get("no") or "-", r.get("title", ""), self._what(r)) for r in rev]
-            parts += ["%s %s: NEW drawing, %s" % (r.get("no") or "-", r.get("title", ""), self._what(r)) for r in new]
+            rv_ = lambda r: (" (Rev %s)" % r["rev"]) if r.get("rev") else ""
+            parts = ["%s %s%s: %s" % (r.get("no") or "-", r.get("title", ""), rv_(r), self._what(r)) for r in rev]
+            parts += ["%s %s%s: NEW drawing, %s" % (r.get("no") or "-", r.get("title", ""), rv_(r), self._what(r)) for r in new]
             text = "\n".join(parts)          # one drawing per line
             kinds = ", ".join(self.guess_kinds(rev, new, name))
             if line is None:
