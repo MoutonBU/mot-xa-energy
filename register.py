@@ -265,6 +265,11 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             g1.addWidget(QLabel(label), i // 2, (i % 2) * 2)
             g1.addWidget(e, i // 2, (i % 2) * 2 + 1)
         v.addLayout(g1)
+        self.contacts_hint = QLabel("")
+        self.contacts_hint.setStyleSheet("color:gray;")
+        self.contacts_hint.setWordWrap(True)
+        self.contacts_hint.setVisible(False)
+        v.addWidget(self.contacts_hint)
         self.more_chk = QCheckBox("More details (revision, date, copy to, logo)")
         v.addWidget(self.more_chk)
         self.more_w = QWidget()
@@ -725,6 +730,41 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         if by and c.lower().startswith(by.lower().split()[0]):
             c = re.sub(r"^\s*[A-Za-z ]{3,22}[:\-]\s*", "", c)
         return c
+
+    def _local_addresses(self):
+        from email.utils import getaddresses
+        out = []
+        for t in [self.info.get("email", ""), self.info.get("cc", "")] + [x.get("req_from", "") for x in self.log] + [x.get("sent_to", "") for x in self.log] \
+                + [x.get("by_email", "") for x in self.log]:
+            out += [(n, a) for n, a in getaddresses([t or ""]) if a]
+        n = (self.info.get("to") or "").strip()
+        if n and self.info.get("email"):
+            out.append((n, self.info["email"].split(",")[0].split(";")[0].strip()))
+        return out
+
+    def _contacts_state(self):
+        """Load the Google contacts in the background and tell the person if one more sign-in is needed."""
+        try:
+            import contacts
+            M = self._M()
+            if not getattr(self, "_hint_wired", False):
+                self._hint_wired = True
+                contacts.model()
+                contacts._state["bus"].loaded.connect(lambda *_: self.contacts_hint.setVisible(False))
+            contacts.set_local(self._local_addresses())
+            contacts.refresh_async(M)
+            S = M.SETTINGS
+            need = S.get("mail_provider") != "gmail" or not S.get("google_refresh") or bool(S.get("contacts_note"))
+            self.contacts_hint.setVisible(need and not contacts.count())
+            self.contacts_hint.setText("To get your Gmail contacts here as you type: Email account > Sign in with Google (once more) and allow contacts."
+                                       if S.get("mail_provider") == "gmail" else
+                                       "Tip: sign in with Google (Email account) and the contacts of that Gmail account will appear here as you type.")
+        except Exception:
+            pass
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        self._contacts_state()
 
     def _contacts_on(self, line_edit):
         try:

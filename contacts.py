@@ -106,7 +106,7 @@ class _Bus(QObject):
     loaded = Signal(list)
 
 
-_state = {"bus": None, "model": None, "busy": False}
+_state = {"bus": None, "model": None, "busy": False, "google": [], "local": []}
 
 
 def model():
@@ -114,17 +114,42 @@ def model():
     if _state["model"] is None:
         _state["model"] = QStringListModel()
         _state["bus"] = _Bus()
-        _state["bus"].loaded.connect(lambda items: _state["model"].setStringList([label(n, a) for n, a in items]))
+        _state["bus"].loaded.connect(_set_google)
     return _state["model"]
+
+
+def _push():
+    seen, out = set(), []
+    for n, a in list(_state["google"]) + list(_state["local"]):
+        if a and a.lower() not in seen:
+            seen.add(a.lower())
+            out.append(label(n, a))
+    _state["model"].setStringList(out)
+
+
+def _set_google(items):
+    _state["google"] = list(items)
+    _push()
+
+
+def set_local(items):
+    """Addresses already used in this register (clients, copies, emails received and sent): [(name, email)]."""
+    model()
+    _state["local"] = [(n, a) for n, a in items if a and "@" in a]
+    _push()
+
+
+def count():
+    return len(_state["google"])
 
 
 def attach(line_edit, get_M):
     """Give a QLineEdit the contact autocomplete. get_M() returns the settings module (called lazily)."""
     m = model()
-    if not m.stringList():
+    if not _state["google"]:
         try:
             _t, items = load(get_M())
-            m.setStringList([label(n, a) for n, a in items])
+            _set_google(items)
         except Exception:
             pass
     c = ContactCompleter(m, line_edit)
