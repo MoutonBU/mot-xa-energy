@@ -371,7 +371,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         more = QPushButton("More")
         more.setMinimumHeight(38)
         menu = QMenu(more)
-        for text, fn in (("Email account...", self.email_account), ("My email signature...", self.my_signature), ("I sent it another way: record it as issued", self.mark_issued), (None, None),
+        for text, fn in (("Email account...", self.email_account), ("My email signature...", self.my_signature), ("Load my Gmail contacts", self.load_contacts_now), ("I sent it another way: record it as issued", self.mark_issued), (None, None),
                          ("Rename this block or house", self.rename_group), ("Delete this block or house", self.del_group),
                          ("Move the selected drawing up", lambda: self.move(-1)), ("Move the selected drawing down", lambda: self.move(1)),
                          ("Read the PDFs again (after you re-saved them)", self.reread), (None, None),
@@ -767,6 +767,28 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
     def showEvent(self, ev):
         super().showEvent(ev)
         self._contacts_state()
+
+    def load_contacts_now(self):
+        """More > Load my Gmail contacts: fetch now and say exactly what happened."""
+        import contacts
+        contacts.model()
+        bus = contacts._state["bus"]
+
+        def done(msg, ok, need):
+            try:
+                bus.finished.disconnect(done)
+            except Exception:
+                pass
+            if ok:
+                QMessageBox.information(self, "Gmail contacts", msg + "\nClick the arrow at the right of an email box to choose one.")
+            elif need:
+                if QMessageBox.question(self, "Gmail contacts", msg + "\n\nSign in with Google again now and tick the contacts permission?") == QMessageBox.StandardButton.Yes:
+                    self.email_account()
+            else:
+                QMessageBox.warning(self, "Gmail contacts", msg)
+            self._contacts_state()
+        bus.finished.connect(done)
+        contacts.refresh_async(self._M(), force=True, report=True)
 
     def _contacts_on(self, line_edit):
         try:

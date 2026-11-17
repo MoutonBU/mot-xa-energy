@@ -21,10 +21,30 @@ OTHER = "https://people.googleapis.com/v1/otherContacts?readMask=names,emailAddr
 MAX_AGE = 12 * 3600
 
 
+class ContactsError(Exception):
+    def __init__(self, msg, need_signin=False):
+        super().__init__(msg)
+        self.need_signin = need_signin
+
+
 def _get(url, token):
+    import urllib.error
     req = urllib.request.Request(url, headers={"Authorization": "Bearer " + token})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        return json.loads(r.read().decode("utf-8", "replace") or "{}")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return json.loads(r.read().decode("utf-8", "replace") or "{}")
+    except urllib.error.HTTPError as e:
+        try:
+            err = json.loads(e.read().decode("utf-8", "replace")).get("error", {})
+            msg = err.get("message") or str(e)
+            status = err.get("status", "")
+        except Exception:
+            msg, status = str(e), ""
+        scope = e.code in (401, 403) and bool(re.search(r"scope|insufficient|permission|PERMISSION_DENIED|UNAUTHENTICATED", msg + status, re.I))
+        if e.code == 403 and re.search(r"has not been used|disabled|SERVICE_DISABLED", msg + status, re.I):
+            scope = False
+            msg = "the People API is not switched on yet for the program (%s)" % msg
+        raise ContactsError(msg, need_signin=scope)
 
 
 def _parse(people):
@@ -40,7 +60,10 @@ def _parse(people):
 
 def fetch(S, getter=_get):
     """[(name, email)] from the signed-in Google account. Raises if the account has not allowed contacts yet."""
-    tok = mail_oauth.access_token(S, "gmail")
+    try:
+        tok = mail_oauth.access_token(S, "gmail")
+    except Exception as e:
+        raise ContactsError(str(e), need_signin=True)
     items = []
     for base, key in ((CONNECTIONS, "connections"), (OTHER, "otherContacts")):
         page = ""
@@ -108,6 +131,7 @@ class ContactCompleter(QCompleter):
 
 class _Bus(QObject):
     loaded = Signal(list)
+    finished = Signal(str, bool, bool)     # message, ok, need_signin
 
 
 _state = {"bus": None, "model": None, "busy": False, "google": [], "local": []}
@@ -194,15 +218,22 @@ def _dropdown(le, c):
     le._contact_filter = f
 
 
-def refresh_async(M, force=False):
+def refresh_async(M, force=False, report=False):
     """Fetch the contact list in the background when signed in with Google (at most every 12 hours unless forced)."""
     S = M.SETTINGS
-    if _state["busy"] or S.get("mail_provider") != "gmail" or not mail_oauth.signed_in(S, "gmail"):
+    if _state["busy"]:
+        return
+    if S.get("mail_provider") != "gmail" or not mail_oauth.signed_in(S, "gmail"):
+        model()
+        if report:
+            _state["bus"].finished.emit("You are not signed in with Google yet.", False, True)
         return
     t, items = load(M)
     model()
     if not force and items and time.time() - t < MAX_AGE:
         _state["bus"].loaded.emit(items)
+        if report:
+            _state["bus"].finished.emit("%d contacts are ready." % len(items), True, False)
         return
     _state["busy"] = True
 
@@ -212,8 +243,14 @@ def refresh_async(M, force=False):
             save(M, got)
             S["contacts_note"] = ""
             _state["bus"].loaded.emit(got)
+            if report:
+                _state["bus"].finished.emit("Loaded %d contacts from your Gmail account." % len(got), True, False)
         except Exception as e:
-            S["contacts_note"] = "contacts" if re.search(r"403|insufficient|scope|PERMISSION", str(e), re.I) else ""
+            need = bool(getattr(e, "need_signin", False))
+            S["contacts_note"] = "contacts" if need else ""
+            S["contacts_error"] = str(e)
+            if report:
+                _state["bus"].finished.emit("Google said: %s" % e, False, need)
         finally:
             _state["busy"] = False
     threading.Thread(target=work, daemon=True).start()
