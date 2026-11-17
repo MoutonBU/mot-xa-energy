@@ -127,6 +127,10 @@ class AccountDialog(QDialog):
         self.status = QLabel("")
         self.status.setWordWrap(True)
         v.addWidget(self.status)
+        self.reqbtn = QPushButton("Ask for access (opens an email to the person who manages the program)")
+        self.reqbtn.setVisible(False)
+        self.reqbtn.clicked.connect(self.ask_access)
+        v.addWidget(self.reqbtn)
         self.adv = QCheckBox("Other ways to connect (sign in with Google / Microsoft, or type the server by hand)")
         v.addWidget(self.adv)
         from PySide6.QtWidgets import QGroupBox, QWidget
@@ -267,6 +271,17 @@ class AccountDialog(QDialog):
         except RuntimeError:
             pass
 
+    def ask_access(self):
+        import urllib.parse
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        admin = str(self.mo._bundled().get("admin_email", "") or "")
+        me = self.addr.text().strip()
+        q = urllib.parse.quote
+        QDesktopServices.openUrl(QUrl("mailto:%s?subject=%s&body=%s" % (
+            admin, q("Please approve my Gmail for the drawing register"),
+            q("Please add this Gmail address so I can sign in to the drawing register:\n\n%s\n" % me))))
+
     def _toggle_pw(self):
         self._pw_mode = not self._pw_mode
         self.refresh()
@@ -347,6 +362,10 @@ class AccountDialog(QDialog):
             self.M.save_settings()
             self.refresh()
             self.status.setText("Signed in as %s. You can send from the program now." % (msg or "your account"))
+        elif "access_denied" in msg and self.S.get("mail_provider") == "gmail":
+            self.status.setText("Google says this address is not approved for the program yet. Press the button below to ask for access; "
+                                "once you are approved, press Sign in with Google again.")
+            self.reqbtn.setVisible(True)
         else:
             self.status.setText("Could not sign in: " + msg)
 
