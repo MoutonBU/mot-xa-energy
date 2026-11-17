@@ -5,12 +5,116 @@ import os
 import re
 
 from PySide6.QtCore import Qt, QTimer, QUrl
-from PySide6.QtGui import QDesktopServices, QGuiApplication
+from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
                                QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 STATUSES = ["For information", "For comment", "For approval", "For council submission", "For tender", "For construction", "As built", "Superseded"]
-COLS = ["Issue", "Drawing no.", "Title", "What it shows", "Size", "Sheets", "Scale", "Rev", "Date", "Status", "File"]
+KEYS = ("on", "no", "title", "about", "size", "scale", "rev", "rdate", "pdfdate", "by", "comment", "status", "file")
+COLS = ["Issue", "Drawing no.", "Title", "What it shows", "Size", "Scale", "Rev", "Rev date", "PDF'd", "Requested by", "What changed", "Status", "File"]
+BYS = ["", "Client request", "Council request", "Engineer", "Architect (own change)", "Site / contractor"]
+DATE_RE = r"(\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}|\d{1,2}\s+[A-Za-z]{3,9}\.?\s+\d{2,4})"
+MONTHS = {m: i for i, m in enumerate(["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
+
+
+def norm_date(t):
+    """Any of 2026-11-17, 17/11/2026, 17.11.26, 17 Nov 2026 -> 2026-11-17 (empty if it is not a date)."""
+    t = (t or "").strip()
+    try:
+        m = re.match(r"^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$", t)
+        if m:
+            y, mo, d = int(m[1]), int(m[2]), int(m[3])
+        else:
+            m = re.match(r"^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})$", t)
+            if m:
+                d, mo, y = int(m[1]), int(m[2]), int(m[3])
+                y += 2000 if y < 100 else 0
+            else:
+                m = re.match(r"^(\d{1,2})\s+([A-Za-z]{3})[A-Za-z]*\.?\s+(\d{2,4})$", t)
+                if not m or m[2].lower() not in MONTHS:
+                    return ""
+                d, mo, y = int(m[1]), MONTHS[m[2].lower()], int(m[3])
+                y += 2000 if y < 100 else 0
+        return datetime.date(y, mo, d).isoformat()
+    except ValueError:
+        return ""
+
+
+def _lines_from_page(page, clip):
+    """Text lines of a region, top to bottom (selectable text first, OCR when the title block is drawn as lines)."""
+    words = page.get_text("words", clip=clip) or []
+    rows = {}
+    for x0, y0, x1, y1, w, *_r in words:
+        rows.setdefault(round((y0 + y1) / 2 / 4), []).append((x0, w))
+    lines = [" ".join(w for _x, w in sorted(v)) for _k, v in sorted(rows.items())]
+    if sum(len(l) for l in lines) >= 25:
+        return lines
+    try:
+        import numpy as np
+        from rapidocr_onnxruntime import RapidOCR
+        pix = page.get_pixmap(clip=clip, dpi=200)
+        img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)[:, :, :3]
+        res, _ = RapidOCR()(img)
+        rows = {}
+        for box, txt, _sc in (res or []):
+            yc = (box[0][1] + box[2][1]) / 2
+            rows.setdefault(round(yc / 18), []).append((box[0][0], txt))
+        return [" ".join(w for _x, w in sorted(v)) for _k, v in sorted(rows.items())]
+    except Exception:
+        return lines
+
+
+def parse_titleblock(lines):
+    """Drawing number, current revision with its date and description, and every revision row, from title-block text lines."""
+    out = {"no": "", "title": "", "revs": [], "rev": "", "rdate": "", "rdesc": ""}
+    for i, l in enumerate(lines):
+        m = re.search(r"(?:drawing|dwg|sheet)\s*(?:no|nr|number|nommer)\.?\s*[:\-]?\s*([A-Za-z]{0,4}[-_. ]?\d{1,4}[A-Za-z]?(?:[-_.]\d{1,3})?)", l, re.I)
+        if not m and re.search(r"(?:drawing|dwg|sheet)\s*(?:no|nr|number)\.?\s*[:\-]?\s*$", l, re.I) and i + 1 < len(lines):
+            m = re.match(r"\s*([A-Za-z]{0,4}[-_. ]?\d{1,4}[A-Za-z]?)\b", lines[i + 1])
+        if m:
+            out["no"] = re.sub(r"[\s_.]+", "-", m.group(1).strip()).upper()
+            break
+    for l in lines:
+        m = re.search(r"(?:drawing\s*title|dwg\s*title|title|tekening\s*titel)\s*[:\-]\s*(.{3,80})$", l, re.I)
+        if m:
+            out["title"] = m.group(1).strip()
+            break
+    for l in lines:
+        m = re.match(r"^\s*(?:rev\.?\s*)?([A-Z]\d?|\d{1,2})\s+" + DATE_RE + r"\s*(.*)$", l, re.I)
+        if m and norm_date(m.group(2)):
+            out["revs"].append((m.group(1).upper(), norm_date(m.group(2)), m.group(3).strip(" -:")))
+            continue
+        m = re.match(r"^\s*" + DATE_RE + r"\s+(?:rev\.?\s*)?([A-Z]\d?|\d{1,2})\b\s*(.*)$", l, re.I)
+        if m and norm_date(m.group(1)):
+            out["revs"].append((m.group(2).upper(), norm_date(m.group(1)), m.group(3).strip(" -:")))
+    if not out["revs"]:
+        # the revision letter is sometimes lost (drawn text read by OCR): number the dated rows A, B, C ... in the order they appear
+        rows = []
+        for l in lines:
+            m = re.match(r"^\s*" + DATE_RE + r"\s+(\S.*)$", l)
+            if m and norm_date(m.group(1)):
+                rows.append((norm_date(m.group(1)), m.group(2).strip(" -:")))
+        out["revs"] = [(chr(65 + i), dt, ds) for i, (dt, ds) in enumerate(rows[:26])]
+    if not out["revs"]:
+        for l in lines:
+            m = re.search(r"\brev(?:ision)?\.?\s*[:\-]?\s*([A-Z]\d?|\d{1,2})\b", l, re.I)
+            if m:
+                out["rev"] = m.group(1).upper()
+                d = re.search(DATE_RE, l)
+                out["rdate"] = norm_date(d.group(1)) if d else ""
+                break
+    else:
+        key = lambda r: (r[1], r[0])
+        cur = max(out["revs"], key=key)
+        out["rev"], out["rdate"], out["rdesc"] = cur
+    return out
+
+
+def pdf_date(meta):
+    m = re.match(r"D:(\d{4})(\d{2})(\d{2})", (meta or {}).get("creationDate") or (meta or {}).get("modDate") or "")
+    return "%s-%s-%s" % m.groups() if m else ""
+
+
 # (pattern in the title or the drawing text, what the drawing is about)
 ABOUT = [
     (r"site\s*plan|site\s*development", "Stand layout: building positions, boundaries, building lines, coverage and access."),
@@ -42,8 +146,9 @@ def paper_size(w_pt, h_pt):
 
 
 def read_pdf(path):
-    """What can be read from a drawing PDF: sheets, paper size, scale, revision, a first line of text."""
-    out = {"pages": 1, "size": "", "scale": "", "rev": "", "text": ""}
+    """What can be read from a drawing PDF: sheets, paper size, scale, and the title block at the bottom right
+    (drawing number, revisions with date and description), plus the date the PDF was made."""
+    out = {"pages": 1, "size": "", "scale": "", "rev": "", "rdate": "", "rdesc": "", "no": "", "title": "", "revs": [], "pdfdate": "", "text": ""}
     try:
         try:
             import pymupdf as fitz
@@ -51,17 +156,28 @@ def read_pdf(path):
             import fitz
         d = fitz.open(path)
         out["pages"] = len(d)
+        out["pdfdate"] = pdf_date(d.metadata)
         if len(d):
-            r = d[0].rect
+            pg = d[0]
+            r = pg.rect
             out["size"] = paper_size(r.width, r.height)
-            t = d[0].get_text("text") or ""
+            t = pg.get_text("text") or ""
             out["text"] = t[:4000]
             m = re.search(r"(?:scale|skaal)?\s*[:@]?\s*(1\s*:\s*\d{1,4})", t, re.I)
             if m:
                 out["scale"] = re.sub(r"\s+", "", m.group(1))
-            m = re.search(r"\brev(?:ision)?\.?\s*[:\-]?\s*([A-Z]\d?|\d{1,2})\b", t, re.I)
-            if m:
-                out["rev"] = m.group(1).upper()
+            tb = None
+            for fx, fy in ((0.55, 0.62), (0.35, 0.40), (0.0, 0.0)):
+                clip = fitz.Rect(r.x0 + r.width * fx, r.y0 + r.height * fy, r.x1, r.y1)
+                cand = parse_titleblock(_lines_from_page(pg, clip))
+                if cand["revs"] or cand["rev"] or cand["no"]:
+                    tb = cand if tb is None or cand["revs"] else tb
+                    if cand["revs"] and cand["no"]:
+                        break
+            if tb:
+                out.update({k: tb[k] for k in ("no", "title", "revs", "rev", "rdate", "rdesc")})
+            if not out["scale"] and tb is None:
+                pass
         d.close()
     except Exception:
         pass
@@ -69,6 +185,7 @@ def read_pdf(path):
 
 
 def guess_row(path):
+    """One register row from a drawing PDF: the title block wins, the file name fills what the title block does not give."""
     base = os.path.splitext(os.path.basename(path))[0]
     info = read_pdf(path)
     no, title = "", base.replace("_", " ").strip()
@@ -78,8 +195,11 @@ def guess_row(path):
     rev = info["rev"]
     mr = re.search(r"[\s_\-]rev\.?\s*([A-Z]\d?|\d{1,2})\s*$", title, re.I)
     if mr:
-        rev = mr.group(1).upper()
+        rev = rev or mr.group(1).upper()
         title = title[:mr.start()].strip(" -_")
+    no = info["no"] or no
+    if info["title"] and (not m or re.fullmatch(r"[A-Za-z]{0,3}[-_ ]?\d{1,4}[A-Za-z]?", base.strip())):
+        title = info["title"]
     about = ""
     hay = title + " " + info["text"][:600]
     for pat, txt in ABOUT:
@@ -88,11 +208,20 @@ def guess_row(path):
             if re.search(pat, title, re.I):
                 break
     try:
-        date = datetime.date.fromtimestamp(os.path.getmtime(path)).isoformat()
+        fdate = datetime.date.fromtimestamp(os.path.getmtime(path)).isoformat()
     except OSError:
-        date = datetime.date.today().isoformat()
+        fdate = datetime.date.today().isoformat()
+    desc = info["rdesc"]
+    by = ""
+    if re.search(r"client|owner|eienaar|kliënt", desc, re.I):
+        by = "Client request"
+    elif re.search(r"council|municip|munisipal|plan\s*approv", desc, re.I):
+        by = "Council request"
+    elif re.search(r"engineer|ingenieur", desc, re.I):
+        by = "Engineer"
     return {"on": True, "no": no, "title": title, "about": about, "size": info["size"], "pages": info["pages"], "scale": info["scale"],
-            "rev": rev, "date": date, "status": "For information", "file": os.path.basename(path), "path": path}
+            "rev": rev, "rdate": info["rdate"] or "", "pdfdate": info["pdfdate"] or fdate, "by": by, "comment": desc, "auto": desc,
+            "revs": info["revs"], "status": "For information", "file": os.path.basename(path), "path": path}
 
 
 class RegisterPage(QWidget):
@@ -103,6 +232,7 @@ class RegisterPage(QWidget):
         super().__init__()
         self.host = host
         self.groups = []     # {name, rows:[...]}
+        self.history = []    # issues already sent: {issue, date, rows:{key: {rev, rdate, title, comment}}}
         self.info = {"project": "", "client": "", "issued_by": "", "to": "", "email": "", "note": "", "issue_no": "1", "date": ""}
         self.cur = 0
         self._busy = False
@@ -138,7 +268,7 @@ class RegisterPage(QWidget):
         self.gbox.currentIndexChanged.connect(self._group_changed)
         gl.addWidget(self.gbox)
         for text, fn in (("New group", self.add_group), ("Rename", self.rename_group), ("Delete group", self.del_group), ("Add PDFs...", self.add_pdfs),
-                         ("Add a folder...", self.add_folder), ("Remove drawing", self.remove_row), ("Move up", lambda: self.move(-1)), ("Move down", lambda: self.move(1))):
+                         ("Add a folder...", self.add_folder), ("Re-read the PDFs", self.reread), ("Remove drawing", self.remove_row), ("Move up", lambda: self.move(-1)), ("Move down", lambda: self.move(1))):
             b = QPushButton(text)
             b.clicked.connect(fn)
             gl.addWidget(b)
@@ -151,7 +281,7 @@ class RegisterPage(QWidget):
         h = self.tab.horizontalHeader()
         h.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         h.setStretchLastSection(True)
-        for i, w in enumerate((48, 90, 220, 360, 70, 55, 70, 45, 90, 150, 200)):
+        for i, w in enumerate((46, 80, 190, 250, 50, 60, 40, 85, 85, 130, 300, 140, 170)):
             self.tab.setColumnWidth(i, w)
         self.tab.itemChanged.connect(self._cell)
         v.addWidget(self.tab, 3)
@@ -160,7 +290,7 @@ class RegisterPage(QWidget):
         self.mail.setMaximumHeight(170)
         v.addWidget(self.mail, 1)
         bar = QHBoxLayout()
-        for text, fn in (("Write email", self.write_mail), ("Copy email", self.copy_mail), ("Open in email program", self.open_mail),
+        for text, fn in (("Write email", self.write_mail), ("Copy email", self.copy_mail), ("Mark as issued", self.mark_issued), ("Open in email program", self.open_mail),
                          ("Preview PDF", self.preview_pdf), ("Export PDF", self.export_pdf), ("Export CSV", self.export_csv)):
             b = QPushButton(text)
             b.clicked.connect(fn)
@@ -179,7 +309,7 @@ class RegisterPage(QWidget):
 
     # ----- state -----
     def state(self):
-        return {"groups": self.groups, "info": self.info, "cur": self.cur, "mail": self.mail.toPlainText()}
+        return {"groups": self.groups, "info": self.info, "cur": self.cur, "mail": self.mail.toPlainText(), "history": self.history}
 
     def set_state(self, d):
         d = d or {}
@@ -187,6 +317,7 @@ class RegisterPage(QWidget):
         if not self.groups:
             self.groups = [{"name": "House / Block 1", "rows": []}]
         self.info.update({k: str(v) for k, v in (d.get("info") or {}).items() if k in self.info})
+        self.history = [dict(h) for h in d.get("history", []) if isinstance(h, dict)]
         self.cur = min(int(d.get("cur", 0) or 0), len(self.groups) - 1)
         self.mail.setPlainText(d.get("mail", "") or "")
         self.refresh()
@@ -238,17 +369,97 @@ class RegisterPage(QWidget):
         if d:
             self.add_paths([os.path.join(d, f) for f in sorted(os.listdir(d)) if f.lower().endswith(".pdf")])
 
+    @staticmethod
+    def key(r):
+        return (r.get("no") or r.get("title", "")).strip().lower()
+
+    def find_row(self, k):
+        for g in self.groups:
+            for r in g["rows"]:
+                if self.key(r) == k:
+                    return r
+        return None
+
     def add_paths(self, paths):
-        have = {r.get("path") for g in self.groups for r in g["rows"]}
-        n = 0
+        """New drawings are added to the current group. A drawing already in the register (same drawing number) is updated in
+        place from the new PDF, so a revised drawing replaces its older revision; comments you typed are kept."""
+        added = updated = 0
         for p in sorted(paths, key=lambda x: os.path.basename(x).lower()):
-            if p in have or not p.lower().endswith(".pdf"):
+            if not p.lower().endswith(".pdf"):
                 continue
-            self.rows().append(guess_row(p))
-            n += 1
+            new = guess_row(p)
+            old = self.find_row(self.key(new))
+            if old is None:
+                self.rows().append(new)
+                added += 1
+            else:
+                self._merge(old, new)
+                updated += 1
         self.rows().sort(key=lambda r: (r.get("no") or "~", r.get("title", "").lower()))
         self.refresh()
-        return n
+        self.count.setText("%d added, %d updated from newer PDFs" % (added, updated) if (added or updated) else self.count.text())
+        return added + updated
+
+    def _merge(self, old, new):
+        keep_c = old.get("comment", "") not in ("", old.get("auto", ""))
+        keep_b = bool(old.get("by"))
+        for k in ("title", "about", "size", "pages", "scale", "rev", "rdate", "pdfdate", "revs", "file", "path", "auto"):
+            if new.get(k) not in (None, ""):
+                old[k] = new[k]
+        if not keep_c:
+            old["comment"] = new["comment"]
+        if not keep_b:
+            old["by"] = new["by"]
+
+    def reread(self):
+        paths = [r.get("path") for g in self.groups for r in g["rows"] if r.get("path") and os.path.exists(r["path"])]
+        for g in self.groups:
+            for r in g["rows"]:
+                if r.get("path") and os.path.exists(r["path"]):
+                    self._merge(r, guess_row(r["path"]))
+        self.refresh()
+        self.count.setText("%d PDFs read again" % len(paths))
+
+    # ----- what changed since the last issue -----
+    def last_issue(self):
+        return self.history[-1] if self.history else None
+
+    def change_of(self, r):
+        """('new' | 'revised' | 'same' | '', text) against the last issue that was marked as sent."""
+        h = self.last_issue()
+        if not h:
+            return "", ""
+        o = (h.get("rows") or {}).get(self.key(r))
+        if o is None:
+            return "new", "New drawing"
+        if (o.get("rev") or "") != (r.get("rev") or "") or (r.get("rdate") and o.get("rdate") and r["rdate"] != o["rdate"]):
+            return "revised", "Revised: Rev %s to Rev %s" % (o.get("rev") or "-", r.get("rev") or "-")
+        return "same", "No change"
+
+    def mark_issued(self):
+        gi = self.groups_in_issue()
+        if not gi:
+            QMessageBox.information(self, "Drawing register", "Tick the drawings that were sent first.")
+            return
+        if QMessageBox.question(self, "Drawing register", "Record this register as issued? The next register will show what changed "
+                                "against it (new drawings, new revisions and why) and the comments are cleared for the next round.") != QMessageBox.StandardButton.Yes:
+            return
+        rows = {}
+        for _n, rs in gi:
+            for r in rs:
+                rows[self.key(r)] = {"rev": r.get("rev", ""), "rdate": r.get("rdate", ""), "title": r.get("title", ""), "no": r.get("no", ""),
+                                     "comment": r.get("comment", ""), "by": r.get("by", "")}
+        self.history.append({"issue": self.info["issue_no"] or "1", "date": datetime.date.today().isoformat(), "rows": rows})
+        try:
+            self.info["issue_no"] = str(int(self.info["issue_no"] or "1") + 1)
+        except ValueError:
+            self.info["issue_no"] = self.info["issue_no"] + "+"
+        for g in self.groups:
+            for r in g["rows"]:
+                r["comment"], r["auto"], r["by"] = "", "", ""
+        self.mail.setPlainText("")
+        self.refresh()
+        self.count.setText("Issue recorded. Add the revised PDFs (or press Re-read the PDFs) to see the changes.")
 
     def remove_row(self):
         r = self.tab.currentRow()
@@ -267,18 +478,13 @@ class RegisterPage(QWidget):
         if self._busy or not (0 <= it.row() < len(self.rows())):
             return
         row = self.rows()[it.row()]
-        c = it.column()
-        if c == 0:
+        k = KEYS[it.column()]
+        if k == "on":
             row["on"] = it.checkState() == Qt.CheckState.Checked
+        elif k in ("rdate", "pdfdate"):
+            row[k] = norm_date(it.text()) or it.text().strip()
         else:
-            k = ("on", "no", "title", "about", "size", "pages", "scale", "rev", "date", "status", "file")[c]
-            if k == "pages":
-                try:
-                    row[k] = int(it.text())
-                except ValueError:
-                    return
-            else:
-                row[k] = it.text().strip()
+            row[k] = it.text().strip()
         QTimer.singleShot(0, self._counts)
 
     def _counts(self):
@@ -297,23 +503,37 @@ class RegisterPage(QWidget):
             self.tab.setRowCount(0)
             self.tab.setRowCount(len(rows))
             for i, r in enumerate(rows):
-                for c, k in enumerate(("on", "no", "title", "about", "size", "pages", "scale", "rev", "date", "status", "file")):
-                    if c == 0:
+                kind, _t = self.change_of(r)
+                for c, k in enumerate(KEYS):
+                    if k == "on":
                         it = QTableWidgetItem("")
                         it.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
                         it.setCheckState(Qt.CheckState.Checked if r.get("on", True) else Qt.CheckState.Unchecked)
                     else:
-                        it = QTableWidgetItem(str(r.get(k, "")))
+                        txt = str(r.get(k, ""))
+                        it = QTableWidgetItem(txt)
                         if k == "file":
                             it.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
                             it.setToolTip(r.get("path", ""))
+                        if k == "title" and kind in ("new", "revised"):
+                            it.setToolTip(_t)
+                        if k == "rev" and r.get("revs"):
+                            it.setToolTip("\n".join("Rev %s  %s  %s" % x for x in r["revs"]))
+                    if kind in ("new", "revised"):
+                        it.setBackground(QColor(120, 90, 20, 110) if kind == "revised" else QColor(30, 110, 60, 110))
                     self.tab.setItem(i, c, it)
                 cb = QComboBox()
                 cb.addItems(STATUSES)
                 cb.setEditable(True)
                 cb.setCurrentText(r.get("status", "For information"))
                 cb.currentTextChanged.connect(lambda t, row=r: row.__setitem__("status", t))
-                self.tab.setCellWidget(i, 9, cb)
+                self.tab.setCellWidget(i, KEYS.index("status"), cb)
+                cb2 = QComboBox()
+                cb2.addItems(BYS)
+                cb2.setEditable(True)
+                cb2.setCurrentText(r.get("by", ""))
+                cb2.currentTextChanged.connect(lambda t, row=r: row.__setitem__("by", t))
+                self.tab.setCellWidget(i, KEYS.index("by"), cb2)
             self.tab.resizeRowsToContents()
             self._counts()
         finally:
@@ -331,12 +551,50 @@ class RegisterPage(QWidget):
                 out.append((g["name"], rows))
         return out
 
+    def changes(self):
+        """(new, revised) rows of the issue against the last one sent."""
+        new, rev = [], []
+        for _n, rows in self.groups_in_issue():
+            for r in rows:
+                k, _t = self.change_of(r)
+                if k == "new":
+                    new.append(r)
+                elif k == "revised":
+                    rev.append(r)
+        return new, rev
+
+    @staticmethod
+    def _clean(r):
+        by = r.get("by") or ""
+        c = (r.get("comment") or "").strip()
+        if by and c.lower().startswith(by.lower().split()[0]):
+            c = re.sub(r"^\s*[A-Za-z ]{3,22}[:\-]\s*", "", c)
+        return c
+
+    def _why(self, r):
+        by, c = r.get("by") or "", self._clean(r)
+        return (by + (": " if by and c else "") + c) if (by or c) else "no reason given"
+
     def write_mail(self):
         gi = self.groups_in_issue()
         to = self.info["to"].strip()
+        last = self.last_issue()
+        new, rev = self.changes()
         lines = ["Subject: %s - drawing register, issue %s (%s)" % (self.project_name(), self.info["issue_no"] or "1", self.issue_date()), "",
                  "Hi %s," % (to.split()[0] if to else "there"), "",
-                 "Please find the drawings for %s issued today, %s. The drawing register is attached; in short:" % (self.project_name(), self.issue_date()), ""]
+                 "Please find the %sdrawings for %s issued today, %s. The drawing register is attached." %
+                 ("revised " if last else "", self.project_name(), self.issue_date()), ""]
+        if last and (rev or new):
+            lines.append("WHAT CHANGED SINCE ISSUE %s (%s)" % (last.get("issue", ""), last.get("date", "")))
+            for r in rev:
+                _k, t = self.change_of(r)
+                lines.append("  - %s  %s  %s (%s): %s" % (r.get("no") or "-", r.get("title", ""), t.replace("Revised: ", ""), r.get("rdate") or r.get("pdfdate", ""), self._why(r)))
+            for r in new:
+                lines.append("  - %s  %s  NEW: %s" % (r.get("no") or "-", r.get("title", ""), r.get("about", "")))
+            lines.append("")
+        elif last:
+            lines += ["No drawing has changed since issue %s." % last.get("issue", ""), ""]
+        lines.append("THE FULL LIST" if last else "THE DRAWINGS")
         for name, rows in gi:
             lines.append(name.upper() + (" (%d drawings)" % len(rows)))
             for r in rows:
@@ -376,9 +634,11 @@ class RegisterPage(QWidget):
         e = lambda x: _html.escape(str(x))
         RED, DARK = "#C8102E", "#DCDCDC"
         th = lambda t, w: '<th bgcolor="%s" align="left" width="%s%%" style="padding:3px;">%s</th>' % (DARK, w, t)
-        td = lambda t, a="left": '<td style="padding:3px;text-align:%s;">%s</td>' % (a, t)
+        td = lambda t, a="left", bg="": '<td%s style="padding:3px;text-align:%s;">%s</td>' % (' bgcolor="%s"' % bg if bg else "", a, t)
         gi = self.groups_in_issue()
         n = sum(len(r) for _g, r in gi)
+        last = self.last_issue()
+        new, rev = self.changes()
         out = ['<h1 style="color:%s;margin-bottom:2px;">Drawing register</h1>' % RED,
                '<table width="100%%" border="0" cellspacing="0" cellpadding="3" style="font-size:9.5pt;">'
                '<tr><td width="50%%"><b>Project:</b> %s</td><td><b>Issue no.:</b> %s</td></tr>'
@@ -386,18 +646,42 @@ class RegisterPage(QWidget):
                '<tr><td><b>Issued by:</b> %s</td><td><b>Issued to:</b> %s</td></tr></table>' %
                (e(self.project_name()), e(self.info["issue_no"] or "1"), e(self.info["client"]), e(self.issue_date()),
                 e(self.info["issued_by"] or "MCP Architecture & Interiors"), e(self.info["to"])),
-               '<p style="font-size:9pt;color:#444;">%d drawings in this issue.</p>' % n]
+               '<p style="font-size:9pt;color:#444;">%d drawings in this issue.%s</p>' %
+               (n, (" %d revised and %d new since issue %s." % (len(rev), len(new), e(last.get("issue", "")))) if last else "")]
+        if last and (rev or new):
+            body = ""
+            for r in rev:
+                _k, t = self.change_of(r)
+                body += "<tr>%s%s%s%s%s</tr>" % (td(e(r.get("no", ""))), td("<b>%s</b>" % e(r.get("title", ""))), td(e(t.replace("Revised: ", "")), "center"),
+                                                  td(e(r.get("rdate") or r.get("pdfdate", "")), "center"), td(e(self._why(r))))
+            for r in new:
+                body += "<tr>%s%s%s%s%s</tr>" % (td(e(r.get("no", ""))), td("<b>%s</b>" % e(r.get("title", ""))), td("New", "center"),
+                                                  td(e(r.get("rdate") or r.get("pdfdate", "")), "center"), td(e(r.get("about", ""))))
+            out.append('<h3 style="color:%s;margin-bottom:3px;">Changes since issue %s (%s)</h3>' % (RED, e(last.get("issue", "")), e(last.get("date", ""))))
+            out.append('<table width="100%%" border="0.6" cellspacing="0" style="font-size:8.5pt;"><tr>%s</tr>%s</table>' %
+                       ("".join((th("No.", 8), th("Drawing", 24), th("Change", 14), th("Date", 10), th("Why / what was changed", 44))), body))
         for name, rows in gi:
             body = ""
             for i, r in enumerate(rows):
-                bg = ' bgcolor="#F6F6F6"' if i % 2 else ""
-                cells = (td(e(r.get("no", ""))), td("<b>%s</b>" % e(r.get("title", ""))), td(e(r.get("about", ""))), td(e(r.get("size", "")), "center"),
-                         td(e(r.get("scale", "")), "center"), td(e(r.get("rev", "")), "center"), td(e(r.get("date", "")), "center"), td(e(r.get("status", ""))))
-                body += "<tr%s>%s</tr>" % (bg, "".join(cells))
+                kind, _t = self.change_of(r)
+                bg = "#FFF1CC" if kind == "revised" else "#DDF3E4" if kind == "new" else ("#F6F6F6" if i % 2 else "")
+                cmt = self._clean(r)
+                if r.get("by"):
+                    cmt = "<i>%s</i>%s" % (e(r["by"]), (": " + e(cmt)) if cmt else "")
+                else:
+                    cmt = e(cmt)
+                cells = (td(e(r.get("no", "")), bg=bg), td("<b>%s</b>" % e(r.get("title", "")), bg=bg), td(e(r.get("about", "")), bg=bg), td(e(r.get("size", "")), "center", bg),
+                         td(e(r.get("scale", "")), "center", bg), td("<b>%s</b>" % e(r.get("rev", "")), "center", bg), td(e(r.get("rdate", "")), "center", bg),
+                         td(e(r.get("pdfdate", "")), "center", bg), td(cmt, bg=bg), td(e(r.get("status", "")), bg=bg))
+                body += "<tr>%s</tr>" % "".join(cells)
             out.append('<h3 style="color:%s;margin-bottom:3px;">%s</h3>' % (RED, e(name)))
-            out.append('<table width="100%%" border="0.6" cellspacing="0" style="font-size:8.5pt;"><tr>%s</tr>%s</table>' %
-                       ("".join((th("No.", 7), th("Drawing", 22), th("What it shows", 33), th("Size", 5), th("Scale", 6), th("Rev", 4), th("Date", 9), th("Status", 14))), body))
-        out.append('<p style="font-size:7.5pt;color:#666;">Only the drawings of this issue are listed. Use the latest revision of every drawing; earlier revisions are superseded.</p>')
+            out.append('<table width="100%%" border="0.6" cellspacing="0" style="font-size:8pt;"><tr>%s</tr>%s</table>' %
+                       ("".join((th("No.", 6), th("Drawing", 15), th("What it shows", 22), th("Size", 4), th("Scale", 5), th("Rev", 3), th("Rev date", 8),
+                                 th("PDF'd", 8), th("What changed", 19), th("Status", 10))), body))
+        if self.history:
+            out.append('<p style="font-size:7.5pt;color:#666;">Earlier issues: %s.</p>' % e("; ".join("issue %s, %s (%d drawings)" % (h.get("issue", ""), h.get("date", ""), len(h.get("rows", {}))) for h in self.history)))
+        out.append('<p style="font-size:7.5pt;color:#666;">Revision, revision date and drawing number are read from the title block of each drawing; PDF\'d is the date the PDF was made. '
+                   'Shaded rows are new or revised since the last issue. Use the latest revision of every drawing; earlier revisions are superseded.</p>')
         return "".join(out)
 
     def write_pdf(self, path):
@@ -432,7 +716,8 @@ class RegisterPage(QWidget):
             return
         with open(path, "w", newline="", encoding="utf-8-sig") as f:
             w = csv.writer(f, delimiter=";")
-            w.writerow(["Group", "Drawing no.", "Title", "What it shows", "Size", "Sheets", "Scale", "Rev", "Date", "Status", "File"])
+            w.writerow(["Group", "Drawing no.", "Title", "What it shows", "Size", "Scale", "Rev", "Rev date", "PDF date", "Requested by", "What changed", "Change since last issue", "Status", "File"])
             for name, rows in self.groups_in_issue():
                 for r in rows:
-                    w.writerow([name] + [r.get(k, "") for k in ("no", "title", "about", "size", "pages", "scale", "rev", "date", "status", "file")])
+                    w.writerow([name] + [r.get(k, "") for k in ("no", "title", "about", "size", "scale", "rev", "rdate", "pdfdate", "by", "comment")] +
+                               [self.change_of(r)[1], r.get("status", ""), r.get("file", "")])

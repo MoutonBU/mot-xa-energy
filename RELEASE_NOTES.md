@@ -1,11 +1,17 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.41.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.42.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Drawing register reads the title block, 1.42.0**: the title block at the bottom right of each drawing PDF is read (drawing
+  number, drawing title, and every row of the revision table with its date and description). Text from ArchiCAD is read directly;
+  drawn text is read by OCR. The date the PDF was made is shown too. Mark as issued records what was sent. On the next issue,
+  drop the revised PDFs in again (or press Re-read PDFs): drawings are matched by drawing number, shaded as new or revised, and
+  the register and the email list what changed, who asked for it (client, council, engineer ...) and why, taken from the
+  revision description. Every field can be edited.
 - **Drawing register, 1.41.0**: a new subject under Overview. Add the drawing PDFs (or a whole folder) per block or house; the
   drawing number, title, revision, paper size, sheets and scale are read from the file name and the PDF, and each drawing gets a
   plain-language line on what it shows. Everything can be edited; a tick decides what is in the issue. Status per drawing,
