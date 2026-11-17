@@ -259,52 +259,169 @@ class PlanView(QGraphicsView):
     def __init__(self):
         super().__init__()
         self.setScene(QGraphicsScene(self))
-        self.setRenderHints(QPainter.RenderHint.Antialiasing)
+        self.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.TextAntialiasing)
+        # redraw the whole view every time: partial redraws left tags and labels missing after a click or a pan
+        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.scale(1, -1)                    # model y is up
-        self.rooms = {}                      # item -> (storey, name)
+        self.rooms = {}                      # item -> room dict
         self._storey = ""
         self._zoomed = False                 # the user zoomed or panned: stop re-fitting on resize
         self.show_tags = True
         self.rot = 0.0                       # degrees the plan is turned (to square it up on the screen)
+        self._press = None
+        self._sel = None                     # the selected room
+        self._sel_item = None
+        self._hover_item = None
+        self._hl, self._line = "#ffd23f", "#3a4048"
+        self._base = 1.0                     # scale of the fitted view, for zoom limits
+        self._tips = {}
 
-    def wheelEvent(self, e):
-        k = 1.18 if e.angleDelta().y() > 0 else 1 / 1.18
+    # ---- zoom and pan
+    def zoom(self, k):
+        cur = abs(self.transform().m11())
+        k = max(0.6 * self._base / cur, min(k, 60 * self._base / cur))      # keep between 0.6x and 60x the fitted size
         self._zoomed = True
         self.scale(k, k)
+
+    def pan(self, dx, dy):
+        """Move the view by a fraction of its size (dx = 0.25 is a quarter of the width to the right)."""
+        self._zoomed = True
+        h, v = self.horizontalScrollBar(), self.verticalScrollBar()
+        h.setValue(h.value() + int(dx * self.viewport().width()))
+        v.setValue(v.value() - int(dy * self.viewport().height()))     # dy up = up on the screen (the view is flipped)
+
+    def wheelEvent(self, e):
+        d = e.angleDelta()
+        if e.modifiers() & Qt.KeyboardModifier.ShiftModifier:           # Shift + wheel: left and right
+            self.pan(-0.15 if (d.y() or d.x()) > 0 else 0.15, 0)
+        elif e.modifiers() & Qt.KeyboardModifier.AltModifier:
+            self.pan(0, 0.15 if d.y() > 0 else -0.15)
+        elif d.x() and not d.y():                                       # a sideways wheel or trackpad swipe
+            self.pan(-0.15 if d.x() > 0 else 0.15, 0)
+        else:
+            self.zoom(1.2 if d.y() > 0 else 1 / 1.2)
+
+    def keyPressEvent(self, e):
+        k = e.key()
+        step = 0.2
+        if k == Qt.Key.Key_Left:
+            self.pan(-step, 0)
+        elif k == Qt.Key.Key_Right:
+            self.pan(step, 0)
+        elif k == Qt.Key.Key_Up:
+            self.pan(0, step)
+        elif k == Qt.Key.Key_Down:
+            self.pan(0, -step)
+        elif k in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):
+            self.zoom(1.25)
+        elif k == Qt.Key.Key_Minus:
+            self.zoom(1 / 1.25)
+        elif k in (Qt.Key.Key_F, Qt.Key.Key_0):
+            self.fit()
+        elif k == Qt.Key.Key_Escape:
+            self.highlight(None)
+            self.room_clicked.emit(None)
+        else:
+            super().keyPressEvent(e)
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
         if not self._zoomed and self.scene().items():
             self.fit()
 
+    def mouseDoubleClickEvent(self, e):
+        self.fit()
+
+    # ---- picking: the room under the cursor (the smallest one when zones overlap)
+    def room_at(self, view_pos):
+        p = self.mapToScene(view_pos)
+        best, ba = None, None
+        for it, sp in self.rooms.items():
+            if it.path().contains(p):
+                a = _poly_area(sp)
+                if ba is None or a < ba:
+                    best, ba = sp, a
+        return best
+
+    def mousePressEvent(self, e):
+        self._press = e.position().toPoint() if e.button() == Qt.MouseButton.LeftButton else None
+        self.setFocus()
+        super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):
+        super().mouseMoveEvent(e)
+        if e.buttons() & Qt.MouseButton.LeftButton:
+            self._zoomed = True
+            self._hover(None)
+            return
+        sp = self.room_at(e.position().toPoint())
+        self._hover(sp)
+        self.viewport().setCursor(Qt.CursorShape.PointingHandCursor if sp else Qt.CursorShape.OpenHandCursor)
+        self.viewport().setToolTip(self._tips.get(id(sp), "") if sp else "")
+
     def mouseReleaseEvent(self, e):
         super().mouseReleaseEvent(e)
-        if e.button() == Qt.MouseButton.LeftButton:
-            it = self.itemAt(e.position().toPoint())
-            while it is not None and it not in self.rooms:
-                it = it.parentItem()
-            if it in self.rooms:
-                self.room_clicked.emit(self.rooms[it])
+        if e.button() == Qt.MouseButton.LeftButton and self._press is not None:
+            moved = (e.position().toPoint() - self._press).manhattanLength()
+            self._press = None
+            if moved <= 4:                                   # a click, not the end of a drag
+                sp = self.room_at(e.position().toPoint())
+                self.highlight(sp)
+                self.room_clicked.emit(sp)
 
-    def highlight(self, name):
-        """Outline one room (by name) and bring it to the front; clear with None."""
-        for it, sp_ in self.rooms.items():
-            on = name is not None and sp_ is name
-            pen = QPen(QColor(self._hl if on else self._line), 3.0 if on else 0.0)
-            pen.setCosmetic(True)
-            it.setPen(pen)
-            it.setZValue(1.5 if on else 1)
+    def leaveEvent(self, e):
+        self._hover(None)
+        super().leaveEvent(e)
+
+    def _outline(self, sp, width, alpha, z):
+        """An outline (and a light wash) drawn over a room, so the room itself is never changed."""
+        it = next((i for i, s_ in self.rooms.items() if s_ is sp), None)
+        if it is None:
+            return None
+        o = QGraphicsPathItem(it.path())
+        pen = QPen(QColor(self._hl), width)
+        pen.setCosmetic(True)
+        pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
+        o.setPen(pen)
+        c = QColor(self._hl)
+        c.setAlpha(alpha)
+        o.setBrush(QBrush(c))
+        o.setZValue(z)
+        o.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self.scene().addItem(o)
+        return o
+
+    def _hover(self, sp):
+        if self._hover_item is not None:
+            self.scene().removeItem(self._hover_item)
+            self._hover_item = None
+        if sp is not None and sp is not self._sel:
+            self._hover_item = self._outline(sp, 1.5, 28, 8.5)
+
+    def highlight(self, sp):
+        """Mark one room: a thick bright outline and a light wash over it. None clears it."""
+        if self._sel_item is not None:
+            self.scene().removeItem(self._sel_item)
+            self._sel_item = None
+        self._sel = sp
+        if sp is not None:
+            self._sel_item = self._outline(sp, 4.0, 55, 9)
+        self._hover(None)
 
     def fit(self):
         self._zoomed = False
         r = self.scene().itemsBoundingRect()
         if not r.isEmpty():
-            self.fitInView(r.adjusted(-1, -1, 1, 1), Qt.AspectRatioMode.KeepAspectRatio)
+            self.fitInView(r.adjusted(-0.8, -0.8, 0.8, 0.8), Qt.AspectRatioMode.KeepAspectRatio)
+            self._base = abs(self.transform().m11())
 
     def _pt(self, x, y):
         c, s_ = math.cos(math.radians(self.rot)), math.sin(math.radians(self.rot))
@@ -325,9 +442,12 @@ class PlanView(QGraphicsView):
         """Draw one storey. pal = colours, status = {normalised room name: 'ok' | 'check' | 'fail'}."""
         sc = self.scene()
         sc.clear()
+        self._sel_item = self._hover_item = None
         self.rooms = {}
+        self._tips = {}
         self._storey = storey["name"]
         self._hl, self._line = pal["hl"], pal["spaceline"]
+        self._hl = pal["hl"]
         self.setBackgroundBrush(QBrush(QColor(pal["bg"])))
         pen0 = QPen(Qt.PenStyle.NoPen)
         for sp in storey["spaces"]:
@@ -348,6 +468,8 @@ class PlanView(QGraphicsView):
             it.setToolTip(sp["name"] or "Room")
             sc.addItem(it)
             self.rooms[it] = sp
+            self._tips[id(sp)] = "%s  %.1f m2  -  %s" % (sp["name"] or "Room", _poly_area(sp), {
+                "ok": "passes", "check": "check", "fail": "fails"}.get(st, "no result"))
         order = (("stair", pal["stair"], 2), ("wall", pal["wall"], 3), ("door", pal["door"], 4), ("window", pal["window"], 4))
         for kind, col, z in order:
             for poly in storey["layers"].get(kind, []):
@@ -451,7 +573,14 @@ class PlanView(QGraphicsView):
                 t.setPos(cx - br.width() * kk / 2, cy + ((len(lines) - 1) / 2.0 - n_) * lh + br.height() * kk / 2)
                 t.setZValue(6)
                 sc.addItem(t)
+        r = sc.itemsBoundingRect()
+        m = max(r.width(), r.height()) * 0.6                    # room to pan beyond the plan
+        sc.setSceneRect(r.adjusted(-m, -m, m, m))
         self.fit()
+        if self._sel is not None and any(q is self._sel for q in self.rooms.values()):
+            self.highlight(self._sel)
+        else:
+            self._sel = None
 
 
 def _palette(is_light):
@@ -642,13 +771,32 @@ class PlanPage(QWidget):
         self.tags_cb.toggled.connect(lambda on: (setattr(self.view, "show_tags", bool(on)), self._draw()))
         top.addWidget(self.tags_cb)
         self.fit_btn = QPushButton("Fit")
+        self.fit_btn.setToolTip("Fit the whole level in the window (double-click the plan or press F)")
         self.fit_btn.clicked.connect(lambda: self.view.fit())
+        top.addSpacing(10)
         top.addWidget(self.fit_btn)
+        from PySide6.QtWidgets import QToolButton
+        for glyph, tip, fn in (("\u2212", "Zoom out (- key, mouse wheel)", lambda: self.view.zoom(1 / 1.3)),
+                               ("+", "Zoom in (+ key, mouse wheel)", lambda: self.view.zoom(1.3)),
+                               ("\u25C0", "Pan left (arrow key, Shift + wheel)", lambda: self.view.pan(-0.25, 0)),
+                               ("\u25B6", "Pan right (arrow key, Shift + wheel)", lambda: self.view.pan(0.25, 0)),
+                               ("\u25B2", "Pan up (arrow key)", lambda: self.view.pan(0, 0.25)),
+                               ("\u25BC", "Pan down (arrow key)", lambda: self.view.pan(0, -0.25))):
+            tb = QPushButton(glyph)
+            tb.setToolTip(tip)
+            tb.setFixedSize(34, 30)
+            tb.setStyleSheet("padding:0; font-size:14px;")
+            tb.setAutoRepeat(glyph in ("\u25C0", "\u25B6", "\u25B2", "\u25BC"))
+            tb.clicked.connect(lambda _c=False, f=fn: f())
+            top.addWidget(tb)
         top.addStretch(1)
         left.addLayout(top)
         self.view = PlanView()
         self.view.room_clicked.connect(lambda sp: self._select(sp))
         left.addWidget(self.view, 1)
+        self.hint = QLabel("Click a room to select it  |  drag to move the plan  |  wheel to zoom  |  Shift + wheel or arrow keys to pan  |  double-click to fit")
+        self.hint.setObjectName("muted")
+        left.addWidget(self.hint)
         self.msg = QLabel("")
         self.msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.msg.setWordWrap(True)
@@ -740,6 +888,7 @@ class PlanPage(QWidget):
         self.msg.setText(text)
         self.msg.setVisible(True)
         self.view.setVisible(False)
+        self.hint.setVisible(False)
         self.combo.setEnabled(False)
         self.side.setVisible(False)
 
@@ -752,6 +901,7 @@ class PlanPage(QWidget):
             return
         self.msg.setVisible(False)
         self.view.setVisible(True)
+        self.hint.setVisible(True)
         self.side.setVisible(True)
         self.combo.setEnabled(True)
         st = self._plan["storeys"][max(0, self.combo.currentIndex())]
@@ -811,6 +961,13 @@ class PlanPage(QWidget):
             self._select(self._rows[i], from_list=True)
 
     def _select(self, sp, from_list=False):
+        if sp is None:
+            self.view.highlight(None)
+            self.list.blockSignals(True)
+            self.list.setCurrentRow(-1)
+            self.list.blockSignals(False)
+            self.note.setText("Click a room on the plan or in this list.")
+            return
         self.view.highlight(sp)
         if not from_list and sp in self._rows:
             self.list.blockSignals(True)
