@@ -23,6 +23,8 @@ LIGHT_CSS = """
 :root{color-scheme:light dark;supported-color-schemes:light dark;}
 @media (prefers-color-scheme: light){
  .pg{background-color:#FFFFFF !important;}
+ .lgd{display:none !important;max-height:0 !important;}
+ .lgl{display:block !important;max-height:none !important;overflow:visible !important;}
  .hd{background-color:#DCDCDC !important;border-color:#C9C9C9 !important;}
  .cd{background-color:#F3F3F3 !important;border-color:#CFCFCF !important;}
  .r1{background-color:#FFFFFF !important;}
@@ -147,7 +149,7 @@ def _title_parts(subject):
     return (subject or "Drawing register").strip(), ""
 
 
-def build(subject, body, logo_src="cid:mcplogo", attached="", company="MCP Architecture & Interiors"):
+def build(subject, body, logo_src="cid:mcplogo", attached="", logo_light_src="", company="MCP Architecture & Interiors"):
     project, strip = _title_parts(subject)
     blocks = parse(body)
     greet = next((b[1] for b in blocks if b[0] == "greet"), "")
@@ -211,10 +213,10 @@ def build(subject, body, logo_src="cid:mcplogo", attached="", company="MCP Archi
             '<body class="pg" style="margin:0;padding:0;background-color:%(page)s;" bgcolor="%(page)s">'
             '<table class="pg" width="100%%" cellpadding="0" cellspacing="0" border="0" bgcolor="%(page)s" style="background-color:%(page)s;"><tr><td align="center" style="padding:22px 12px;">'
             '<table width="640" cellpadding="0" cellspacing="0" border="0" style="width:100%%;max-width:640px;">'
-            # logo on its own white rounded tile, company name under it
-            '<tr><td align="center" style="padding:6px 0 4px 0;">'
-            '<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:separate;"><tr><td align="center" bgcolor="#FFFFFF" style="background-color:#FFFFFF;border:1px solid #E1E1E1;border-radius:26px;padding:16px 22px;">'
-            '<img src="%(logo)s" width="120" alt="MCP" style="display:block;border:0;border-radius:14px;"></td></tr></table></td></tr>'
+            # the logo: white and red for dark mode (the default), black and red for light mode
+            '<tr><td align="center" style="padding:10px 0 0 0;">'
+            '<img class="lgd" src="%(logo)s" width="150" alt="MCP" style="display:block;border:0;margin:0 auto;">'
+            '%(logo_light)s</td></tr>'
             '<tr><td align="center" class="tx" style="padding:14px 0 22px 0;font-family:%(font)s;font-size:20px;color:%(tx)s;">%(company)s</td></tr>'
             # grey rounded title card + red rounded bar, as on the PDF
             '<tr><td class="hd" bgcolor="%(head)s" style="background-color:%(head)s;border:1px solid #454953;border-radius:18px;padding:22px 26px 20px 26px;">'
@@ -234,6 +236,6 @@ def build(subject, body, logo_src="cid:mcplogo", attached="", company="MCP Archi
             '<tr><td align="center" class="mu" style="padding:22px 0 4px 0;font-family:%(font)s;font-size:11px;letter-spacing:3px;color:%(muted)s;">%(company_caps)s</td></tr>'
             '</table></td></tr></table></body></html>') % {
         "title": _e(project), "css": LIGHT_CSS, "page": PAGE, "head": HEAD, "card": CARD, "line": LINE, "tx": TXT, "st": STRONG, "muted": MUTED,
-        "logo": logo_src, "font": FONT, "sub": sub_line, "project": _e(project), "company": _e(company), "company_caps": _e(company.upper()),
+        "logo": logo_src, "logo_light": ('<img class="lgl" src="%s" width="150" alt="MCP" style="display:none;max-height:0;overflow:hidden;mso-hide:all;border:0;margin:0 auto;">' % logo_light_src) if logo_light_src else "", "font": FONT, "sub": sub_line, "project": _e(project), "company": _e(company), "company_caps": _e(company.upper()),
         "bar": _bar(None, 12, "left", "0"), "greet": _e(greet), "intro": intro, "attached": attached_html,
         "sections_wrap": ('<tr><td style="padding-top:6px;"><table width="100%%" cellpadding="0" cellspacing="0" border="0">%s</table></td></tr>' % sections) if sections else ""}

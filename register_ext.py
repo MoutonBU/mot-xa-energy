@@ -999,31 +999,29 @@ class MailMixin:
     def _M(self):
         return sys.modules[type(self.host).__module__]
 
-    def design_png(self):
-        """The MCP logo as in the PDF (black and red) on an opaque white background, as PNG bytes. It does not change with dark mode."""
+    def design_png(self, light=False):
+        """The MCP logo as PNG bytes with a transparent background: white and red for dark mode, or black and red (light=True) for light mode."""
         import base64
-        from PySide6.QtCore import QBuffer, QIODevice
-        from PySide6.QtGui import QColor, QImage, QPainter
         M = self._M()
-        im = QImage.fromData(base64.b64decode(M.LOGO_B64), "PNG").convertToFormat(QImage.Format.Format_ARGB32)
+        raw = base64.b64decode(M.LOGO_B64)
+        if not light:
+            return raw
+        from PySide6.QtCore import QBuffer, QIODevice
+        from PySide6.QtGui import QColor, QImage
+        im = QImage.fromData(raw, "PNG").convertToFormat(QImage.Format.Format_ARGB32)
         for y in range(im.height()):
             for x in range(im.width()):
                 c = im.pixelColor(x, y)
                 if c.alpha() and c.red() > 200 and c.green() > 200 and c.blue() > 200:
                     im.setPixelColor(x, y, QColor(17, 17, 17, c.alpha()))
-        out = QImage(im.size(), QImage.Format.Format_RGB32)
-        out.fill(QColor(255, 255, 255))
-        p = QPainter(out)
-        p.drawImage(0, 0, im)
-        p.end()
         buf = QBuffer()
         buf.open(QIODevice.OpenModeFlag.WriteOnly)
-        out.save(buf, "PNG")
+        im.save(buf, "PNG")
         return bytes(buf.data())
 
-    def design_html(self, subject, body, src="cid:mcplogo", attached=""):
+    def design_html(self, subject, body, src="cid:mcplogo", attached="", both=False):
         import mail_design
-        return mail_design.build(subject, body, logo_src=src, attached=attached, company=self._M().SETTINGS.get("sig_company") or "MCP Architecture & Interiors")
+        return mail_design.build(subject, body, logo_src=src, logo_light_src=("cid:mcplogol" if both else ""), attached=attached, company=self._M().SETTINGS.get("sig_company") or "MCP Architecture & Interiors")
 
     def designed_on(self):
         try:
@@ -1147,8 +1145,9 @@ class MailMixin:
             if i == 0 and dlg.design_chk.isChecked():
                 try:
                     note = ("This issue is sent in %d emails because of the size. This is part 1." % n) if n > 1 else ""
-                    m.add_alternative(self.design_html(dlg.sub.text().strip(), dlg.body.toPlainText(), attached=note), subtype="html")
+                    m.add_alternative(self.design_html(dlg.sub.text().strip(), dlg.body.toPlainText(), attached=note, both=True), subtype="html")
                     m.get_payload()[1].add_related(self.design_png(), maintype="image", subtype="png", cid="<mcplogo>", filename="mcp-logo.png", disposition="inline")
+                    m.get_payload()[1].add_related(self.design_png(True), maintype="image", subtype="png", cid="<mcplogol>", filename="mcp-logo-light.png", disposition="inline")
                 except Exception:
                     pass
             for p in files:
