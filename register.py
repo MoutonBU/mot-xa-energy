@@ -871,6 +871,8 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
                 bit = "  - %s" % x.get("group", "")
                 bit += (" (order no. %s)" % x["order"]) if x.get("order") else ""
                 bit += ": " + (x.get("text") or ("New order" if x.get("type") == "Order" else "Change"))
+                if x.get("kinds"):
+                    bit += " [%s]" % x["kinds"]
                 if x.get("by_name") or x.get("by_email"):
                     bit += " [asked by %s]" % " ".join(t for t in (x.get("by_name", ""), ("<%s>" % x["by_email"]) if x.get("by_email") else "") if t)
                 if x.get("req_subject"):

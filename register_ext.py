@@ -19,10 +19,11 @@ from PySide6.QtWidgets import (QWidget, QAbstractItemView, QCheckBox, QComboBox,
                                QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QTableWidget,
                                QTableWidgetItem, QVBoxLayout)
 
-LOGK = ("group", "type", "rev", "date", "order", "text", "by", "req_subject", "req_date", "req_from", "sent_date", "sent_to", "status", "by_name", "by_email", "sent_subject")
-LOGC = ["House or block", "Type", "Rev", "Date", "Order number", "What was ordered or changed", "Asked by", "The client's email", "Received",
+LOGK = ("group", "type", "rev", "date", "order", "text", "kinds", "by", "req_subject", "req_date", "req_from", "sent_date", "sent_to", "status", "by_name", "by_email", "sent_subject")
+LOGC = ["House or block", "Type", "Rev", "Date", "Order number", "What was ordered or changed", "Kind of change", "Asked by", "The client's email", "Received",
         "From", "Sent to the client on", "Sent to", "Status", "Client name", "Client email", "Email that was sent"]
 TYPES = ["Order", "Change", "Issue"]
+KINDS = ["Minor changes", "Major changes", "Masters", "Final plans", "SDP"]
 LSTAT = ["Draft", "Final", "Issued", "Superseded"]
 PRESETS = {"Gmail": ("smtp.gmail.com", 465, "SSL"), "Outlook / Office 365": ("smtp.office365.com", 587, "STARTTLS"), "Other": ("", 587, "STARTTLS")}
 
@@ -769,7 +770,7 @@ class SendDialog(QDialog):
 class LogMixin:
     """The orders-and-revisions log."""
 
-    LOG_SIMPLE = ("group", "order", "text", "by_name", "by_email", "req_subject", "sent_subject")
+    LOG_SIMPLE = ("group", "order", "text", "kinds", "by_name", "by_email", "req_subject", "sent_subject")
 
     def build_log(self):
         from PySide6.QtWidgets import QWidget
@@ -796,7 +797,7 @@ class LogMixin:
         self.ltab.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.ltab.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.ltab.horizontalHeader().setStretchLastSection(True)
-        for i, wd in enumerate((150, 70, 40, 85, 110, 360, 130, 300, 85, 170, 85, 200, 80, 150, 200, 320)):
+        for i, wd in enumerate((150, 70, 40, 85, 110, 360, 560, 130, 300, 85, 170, 85, 200, 80, 150, 200, 320)):
             self.ltab.setColumnWidth(i, wd)
         self.ltab.itemChanged.connect(self._log_cell)
         self.ltab.cellDoubleClicked.connect(lambda r, c: self.open_sent() if LOGK[c] == "sent_subject" else self.open_ref() if LOGK[c] == "req_subject" else None)
@@ -806,6 +807,25 @@ class LogMixin:
         v.addWidget(self.log_all)
         self._log_columns()
         return w
+
+    def _kinds_box(self, e):
+        """Tick boxes for the kind of change: Minor changes, Major changes, Masters, Final plans, SDP."""
+        from PySide6.QtWidgets import QWidget
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(4, 0, 4, 0)
+        have = {x.strip() for x in str(e.get("kinds", "")).split(",") if x.strip()}
+        for kname in KINDS:
+            cb = QCheckBox(kname)
+            cb.setChecked(kname in have)
+            cb.toggled.connect(lambda _on, ent=e: self._kinds_changed(ent, w))
+            h.addWidget(cb)
+        h.addStretch(1)
+        return w
+
+    def _kinds_changed(self, ent, w):
+        ent["kinds"] = ", ".join(cb.text() for cb in w.findChildren(QCheckBox) if cb.isChecked())
+        self.update_mail()
 
     def _log_columns(self, *_a):
         full = self.log_all.isChecked()
@@ -896,6 +916,7 @@ class LogMixin:
                     cb.setCurrentText(str(e.get(k, "")))
                     cb.currentTextChanged.connect(lambda tx, ent=e, kk=k: ent.__setitem__(kk, tx))
                     t.setCellWidget(i, LOGK.index(k), cb)
+                t.setCellWidget(i, LOGK.index("kinds"), self._kinds_box(e))
             t.resizeRowsToContents()
         finally:
             self._busy = False
