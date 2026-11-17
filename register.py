@@ -3,10 +3,11 @@ import datetime
 import html as _html
 import os
 import re
+import sys
 
-from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
+from PySide6.QtWidgets import (QTabWidget, QAbstractItemView, QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
                                QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 STATUSES = ["For information", "For comment", "For approval", "For council submission", "For tender", "For construction", "As built", "Superseded"]
@@ -224,7 +225,11 @@ def guess_row(path):
             "revs": info["revs"], "status": "For information", "file": os.path.basename(path), "path": path}
 
 
-class RegisterPage(QWidget):
+from register_ext import LogMixin, MailMixin
+
+
+class RegisterPage(LogMixin, MailMixin, QWidget):
+    mail_done = Signal(bool, str)
     is_costing = True
     report_title = "Drawing Register"
 
@@ -233,10 +238,16 @@ class RegisterPage(QWidget):
         self.host = host
         self.groups = []     # {name, rows:[...]}
         self.history = []    # issues already sent: {issue, date, rows:{key: {rev, rdate, title, comment}}}
-        self.info = {"project": "", "client": "", "issued_by": "", "to": "", "email": "", "note": "", "issue_no": "1", "date": ""}
+        self.info = {"project": "", "client": "", "issued_by": "", "to": "", "email": "", "note": "", "issue_no": "1", "date": "", "cc": "", "client_logo": ""}
+        self.log = []        # orders and revisions, see register_ext
         self.cur = 0
         self._busy = False
-        v = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self.sub = QTabWidget()
+        outer.addWidget(self.sub)
+        self.draw_w = QWidget()
+        v = QVBoxLayout(self.draw_w)
         v.setContentsMargins(0, 4, 0, 0)
         form = QFormLayout()
         self.f = {}
@@ -290,7 +301,7 @@ class RegisterPage(QWidget):
         self.mail.setMaximumHeight(170)
         v.addWidget(self.mail, 1)
         bar = QHBoxLayout()
-        for text, fn in (("Write email", self.write_mail), ("Copy email", self.copy_mail), ("Mark as issued", self.mark_issued), ("Open in email program", self.open_mail),
+        for text, fn in (("Write email", self.write_mail), ("Email account...", self.email_account), ("Send email", self.send_mail), ("Copy email", self.copy_mail), ("Mark as issued", self.mark_issued), ("Client logo...", self.pick_logo),
                          ("Preview PDF", self.preview_pdf), ("Export PDF", self.export_pdf), ("Export CSV", self.export_csv)):
             b = QPushButton(text)
             b.clicked.connect(fn)
@@ -304,12 +315,15 @@ class RegisterPage(QWidget):
         note.setWordWrap(True)
         note.setStyleSheet("color: gray; font-size: 11px;")
         v.addWidget(note)
+        self.sub.addTab(self.draw_w, "Drawings")
+        self.sub.addTab(self.build_log(), "Orders and revisions")
+        self.mail_done.connect(self._mail_finished)
         self.add_group("House / Block 1", quiet=True)
         self.refresh()
 
     # ----- state -----
     def state(self):
-        return {"groups": self.groups, "info": self.info, "cur": self.cur, "mail": self.mail.toPlainText(), "history": self.history}
+        return {"groups": self.groups, "info": self.info, "cur": self.cur, "mail": self.mail.toPlainText(), "history": self.history, "log": self.log}
 
     def set_state(self, d):
         d = d or {}
@@ -317,6 +331,7 @@ class RegisterPage(QWidget):
         if not self.groups:
             self.groups = [{"name": "House / Block 1", "rows": []}]
         self.info.update({k: str(v) for k, v in (d.get("info") or {}).items() if k in self.info})
+        self.log = [dict(x) for x in d.get("log", []) if isinstance(x, dict)]
         self.history = [dict(h) for h in d.get("history", []) if isinstance(h, dict)]
         self.cur = min(int(d.get("cur", 0) or 0), len(self.groups) - 1)
         self.mail.setPlainText(d.get("mail", "") or "")
@@ -436,14 +451,17 @@ class RegisterPage(QWidget):
             return "revised", "Revised: Rev %s to Rev %s" % (o.get("rev") or "-", r.get("rev") or "-")
         return "same", "No change"
 
-    def mark_issued(self):
+    def mark_issued(self, sent=None, ask=True):
         gi = self.groups_in_issue()
         if not gi:
             QMessageBox.information(self, "Drawing register", "Tick the drawings that were sent first.")
             return
-        if QMessageBox.question(self, "Drawing register", "Record this register as issued? The next register will show what changed "
-                                "against it (new drawings, new revisions and why) and the comments are cleared for the next round.") != QMessageBox.StandardButton.Yes:
+        if ask and QMessageBox.question(self, "Drawing register", "Record this register as issued? The next register will show what changed "
+                                        "against it (new drawings, new revisions and why), the log gets a line for it, and the comments are cleared for the next round.") != QMessageBox.StandardButton.Yes:
             return
+        changes = {id(r): self.change_of(r)[0] for _n, rs in gi for r in rs}
+        first = not self.history
+        self.log_issue(gi, changes, first, sent)
         rows = {}
         for _n, rs in gi:
             for r in rs:
@@ -460,6 +478,33 @@ class RegisterPage(QWidget):
         self.mail.setPlainText("")
         self.refresh()
         self.count.setText("Issue recorded. Add the revised PDFs (or press Re-read the PDFs) to see the changes.")
+
+    def pick_logo(self):
+        p, _ = QFileDialog.getOpenFileName(self, "Client logo", "", "Images (*.png *.jpg *.jpeg *.bmp)")
+        if p:
+            self.info["client_logo"] = p
+            self.count.setText("Client logo set")
+
+    def logos(self):
+        from PySide6.QtGui import QImage
+        out = {}
+        try:
+            M = sys.modules[type(self.host).__module__]
+            im = M.logo_pixmap().toImage().convertToFormat(QImage.Format.Format_ARGB32)
+            for yy in range(im.height()):
+                for xx in range(im.width()):
+                    c = im.pixelColor(xx, yy)
+                    if c.alpha() and c.red() > 200 and c.green() > 200 and c.blue() > 200:
+                        im.setPixelColor(xx, yy, QColor(17, 17, 17, c.alpha()))
+            out["mcp_logo"] = im
+        except Exception:
+            pass
+        p = self.info.get("client_logo")
+        if p and os.path.exists(p):
+            im = QImage(p)
+            if not im.isNull():
+                out["client_logo"] = im
+        return out
 
     def remove_row(self):
         r = self.tab.currentRow()
@@ -536,6 +581,7 @@ class RegisterPage(QWidget):
                 self.tab.setCellWidget(i, KEYS.index("by"), cb2)
             self.tab.resizeRowsToContents()
             self._counts()
+            self.refresh_log()
         finally:
             self._busy = False
 
@@ -639,7 +685,12 @@ class RegisterPage(QWidget):
         n = sum(len(r) for _g, r in gi)
         last = self.last_issue()
         new, rev = self.changes()
-        out = ['<h1 style="color:%s;margin-bottom:2px;">Drawing register</h1>' % RED,
+        lg = self.logos()
+        head = ""
+        if lg:
+            head = ('<table width="100%%" border="0" cellspacing="0"><tr><td align="left">%s</td><td align="right">%s</td></tr></table>' %
+                    ('<img src="mcp_logo" height="70">' if "mcp_logo" in lg else "", '<img src="client_logo" height="60">' if "client_logo" in lg else ""))
+        out = [head, '<h1 style="color:%s;margin-bottom:2px;">Drawing register</h1>' % RED,
                '<table width="100%%" border="0" cellspacing="0" cellpadding="3" style="font-size:9.5pt;">'
                '<tr><td width="50%%"><b>Project:</b> %s</td><td><b>Issue no.:</b> %s</td></tr>'
                '<tr><td><b>Client:</b> %s</td><td><b>Date:</b> %s</td></tr>'
@@ -648,6 +699,7 @@ class RegisterPage(QWidget):
                 e(self.info["issued_by"] or "MCP Architecture & Interiors"), e(self.info["to"])),
                '<p style="font-size:9pt;color:#444;">%d drawings in this issue.%s</p>' %
                (n, (" %d revised and %d new since issue %s." % (len(rev), len(new), e(last.get("issue", "")))) if last else "")]
+        out.append(self.log_html(e, td, th, RED))
         if last and (rev or new):
             body = ""
             for r in rev:
@@ -692,6 +744,8 @@ class RegisterPage(QWidget):
         w.setTitle("Drawing register")
         d = QTextDocument()
         d.setDefaultFont(QFont("Arial", 9))
+        for nm, im in self.logos().items():
+            d.addResource(QTextDocument.ResourceType.ImageResource, QUrl(nm), im)
         d.setHtml('<html><body style="font-family:Arial;color:#111;">' + self.report_html() + "</body></html>")
         d.print_(w)
 

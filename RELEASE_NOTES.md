@@ -1,11 +1,19 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.42.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.43.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Send the drawing register from the program, 1.43.0**: Email account (Gmail, Outlook / Office 365 or any SMTP server, with a
+  test button), then Send email: edit To, Cc, subject and text, tick the attachments (the register PDF and the drawing PDFs, with a
+  size check) and send. A copy of the sent email is saved and the issue is recorded.
+- **Orders and revisions log**: a second page in the Drawing register in the layout of the register you send now. One line per
+  order or revision, per house or block: what was ordered or changed, the order number, the client's or council's email attached as
+  the reference (.eml is read for subject, sender, date received and the order number), and the email sent back with its date and
+  who it went to, with status. Sending fills in the rev, date and recipients and lists the drawings that changed. The log prints
+  in the register PDF, with the MCP logo and an optional client logo.
 - **Drawing register reads the title block, 1.42.0**: the title block at the bottom right of each drawing PDF is read (drawing
   number, drawing title, and every row of the revision table with its date and description). Text from ArchiCAD is read directly;
   drawn text is read by OCR. The date the PDF was made is shown too. Mark as issued records what was sent. On the next issue,
