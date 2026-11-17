@@ -1,11 +1,16 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.46.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.47.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Email: just address and password, 1.47.0**: the Email account window now asks for the email address and password and a Connect
+  button. The mail server is found by the program (provider lists, the provider's own settings, or the usual smtp.* / mail.* names)
+  and the password is checked right away. For Gmail, Yahoo and iCloud, which refuse normal passwords, the window shows a button
+  to the provider's page where the app password is made, and explains where to paste it. Sign in with Google / Microsoft and typing
+  a server by hand are under "Other ways to connect".
 - **No Client ID screen for users, 1.46.0**: the Google / Microsoft Client ID now ships inside the program (file mail_client.json), so the
   Email account window only asks for the provider and your address, then Sign in. The one-time setup fields are hidden unless the
   program was built without an ID.

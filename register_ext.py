@@ -77,8 +77,11 @@ def short_date(iso):
 
 
 class AccountDialog(QDialog):
-    """Pick the mail provider, type the address, press Sign in: the browser opens the provider's own sign-in page."""
+    """Type the email address and password, press Connect. The mail server is found by the program.
+    Gmail needs an app password (the program shows where to get it) or the Sign in with Google button."""
     signed = Signal(bool, str)
+    conn = Signal(bool, str, object)
+    prog = Signal(str)
 
     def __init__(self, M, parent=None):
         super().__init__(parent)
@@ -87,30 +90,51 @@ class AccountDialog(QDialog):
         self.M = M
         self.S = M.SETTINGS
         self.setWindowTitle("Email account")
-        self.resize(560, 420)
+        self.resize(560, 470)
         v = QVBoxLayout(self)
-        t = QLabel("<b>Which email do you send from?</b>")
-        v.addWidget(t)
-        self.prov = QComboBox()
-        self.prov.addItems(["Gmail", "Outlook / Microsoft 365", "Other (needs an app password)"])
-        self.prov.setCurrentIndex({"gmail": 0, "outlook": 1, "smtp": 2}.get(self.S.get("mail_provider", "gmail"), 0))
-        v.addWidget(self.prov)
-        v.addWidget(QLabel("Your email address:"))
+        v.addWidget(QLabel("<b>Your email address</b>"))
         self.addr = QLineEdit(self.S.get("mail_address", ""))
+        self.addr.setPlaceholderText("name@company.co.za")
         v.addWidget(self.addr)
-        self.signbtn = QPushButton("")
-        self._show_setup = False
-        self.setup_btn = QPushButton("Sign-in is not switched on yet: set it up (one time)...")
-        self.setup_btn.clicked.connect(self._open_setup)
-        v.addWidget(self.setup_btn)
-        self.signbtn.setMinimumHeight(40)
-        self.signbtn.clicked.connect(self.sign_in)
-        v.addWidget(self.signbtn)
+        self.pw_lbl = QLabel("<b>Your email password</b>")
+        v.addWidget(self.pw_lbl)
+        self.pw = QLineEdit(self.S.get("smtp_pass", ""))
+        self.pw.setEchoMode(QLineEdit.EchoMode.Password)
+        v.addWidget(self.pw)
+        self.hint = QLabel("")
+        self.hint.setWordWrap(True)
+        self.hint.setOpenExternalLinks(True)
+        v.addWidget(self.hint)
+        self.gbtn = QPushButton("Open Google's page to make the app password")
+        self.gbtn.clicked.connect(self.open_app_pw)
+        v.addWidget(self.gbtn)
+        self.connect_b = QPushButton("Connect")
+        self.connect_b.setMinimumHeight(40)
+        self.connect_b.setStyleSheet("font-weight:700;")
+        self.connect_b.clicked.connect(self.connect_now)
+        v.addWidget(self.connect_b)
         self.status = QLabel("")
         self.status.setWordWrap(True)
         v.addWidget(self.status)
-        # one-time setup (client ID)
-        from PySide6.QtWidgets import QGroupBox
+        self.adv = QCheckBox("Other ways to connect (sign in with Google / Microsoft, or type the server by hand)")
+        v.addWidget(self.adv)
+        from PySide6.QtWidgets import QGroupBox, QWidget
+        self.adv_w = QWidget()
+        av = QVBoxLayout(self.adv_w)
+        av.setContentsMargins(0, 0, 0, 0)
+        self.prov = QComboBox()
+        self.prov.addItems(["Gmail: sign in with Google", "Outlook / Microsoft 365: sign in with Microsoft", "Type the mail server by hand"])
+        k0 = self.S.get("mail_provider", "smtp")
+        self.prov.setCurrentIndex({"gmail": 0, "outlook": 1, "smtp": 2}.get(k0, 2))
+        av.addWidget(self.prov)
+        self.signbtn = QPushButton("")
+        self.signbtn.setMinimumHeight(36)
+        self.signbtn.clicked.connect(self.sign_in)
+        av.addWidget(self.signbtn)
+        self._show_setup = False
+        self.setup_btn = QPushButton("Sign-in is not switched on yet: set it up (one time)...")
+        self.setup_btn.clicked.connect(self._open_setup)
+        av.addWidget(self.setup_btn)
         self.setup = QGroupBox("One-time setup of this program (whoever manages it)")
         sf = QFormLayout(self.setup)
         self.help = QLabel("")
@@ -123,8 +147,7 @@ class AccountDialog(QDialog):
         sf.addRow("Client ID", self.cid)
         self.csec_lbl = QLabel("Client secret")
         sf.addRow(self.csec_lbl, self.csec)
-        v.addWidget(self.setup)
-        # other (SMTP)
+        av.addWidget(self.setup)
         self.smtp = QGroupBox("Mail server")
         mf = QFormLayout(self.smtp)
         self.host = QLineEdit(self.S.get("smtp_host", ""))
@@ -134,18 +157,19 @@ class AccountDialog(QDialog):
         self.sec = QComboBox()
         self.sec.addItems(["SSL", "STARTTLS", "None"])
         self.sec.setCurrentText(self.S.get("smtp_security") or "STARTTLS")
-        self.pw = QLineEdit(self.S.get("smtp_pass", ""))
-        self.pw.setEchoMode(QLineEdit.EchoMode.Password)
-        for k, w in (("Server", self.host), ("Port", self.port), ("Security", self.sec), ("App password", self.pw)):
+        self.user = QLineEdit(self.S.get("smtp_user", ""))
+        for k, w in (("Server", self.host), ("Port", self.port), ("Security", self.sec), ("User name", self.user)):
             mf.addRow(k, w)
-        v.addWidget(self.smtp)
-        self.bcc = QCheckBox("Send myself a copy")
+        av.addWidget(self.smtp)
+        self.adv_w.setVisible(False)
+        v.addWidget(self.adv_w)
+        self.bcc = QCheckBox("Send myself a copy of every email I send")
         self.bcc.setChecked(bool(self.S.get("smtp_bcc_me", True)))
         v.addWidget(self.bcc)
         v.addStretch(1)
         bar = QHBoxLayout()
         self.test_b = QPushButton("Send a test to myself")
-        self.out_b = QPushButton("Sign out")
+        self.out_b = QPushButton("Disconnect")
         ok = QPushButton("Done")
         self.test_b.clicked.connect(self.test)
         self.out_b.clicked.connect(self.sign_out)
@@ -155,23 +179,41 @@ class AccountDialog(QDialog):
         bar.addStretch(1)
         bar.addWidget(ok)
         v.addLayout(bar)
+        self.adv.toggled.connect(self.adv_w.setVisible)
         self.prov.currentIndexChanged.connect(self.refresh)
+        self.addr.textChanged.connect(self.refresh)
         self.signed.connect(self._signed)
+        self.conn.connect(self._connected)
+        self.prog.connect(self.status.setText)
         self.refresh()
-
-    def _open_setup(self):
-        self._show_setup = True
-        self.refresh()
+        if self.S.get("mail_provider") in ("gmail", "outlook") and self.mo.signed_in(self.S, self.S.get("mail_provider")):
+            self.status.setText("Connected with %s. Mail goes from %s." % ("Google" if self.S["mail_provider"] == "gmail" else "Microsoft", self.S.get("mail_address", "")))
+        elif self.S.get("smtp_host") and self.S.get("mail_address"):
+            self.status.setText("Connected. Mail goes from %s." % self.S["mail_address"])
 
     def key(self):
         return ("gmail", "outlook", "smtp")[self.prov.currentIndex()]
 
+    def _domain(self):
+        a = self.addr.text().strip().lower()
+        return a.split("@")[1] if "@" in a else ""
+
     def refresh(self):
+        import mail_autoconfig as ac
+        d = self._domain()
+        link = ac.APP_PASSWORD_DOMAINS.get(d)
+        self.gbtn.setVisible(bool(link))
+        if link:
+            self.pw_lbl.setText("<b>App password</b> (not your normal password)")
+            self.hint.setText("%s does not accept your normal password in other programs. Press the button below, sign in, make an app password "
+                              "(Google asks for 2-step verification once) and paste the 16 letters here." % d.split(".")[0].title())
+        else:
+            self.pw_lbl.setText("<b>Your email password</b>")
+            self.hint.setText("")
         k = self.key()
         oauth = k in ("gmail", "outlook")
         self.signbtn.setVisible(oauth)
         self.smtp.setVisible(k == "smtp")
-        self.out_b.setVisible(oauth)
         need = oauth and not self.mo.configured(self.S, k)
         self.setup.setVisible(need and self._show_setup)
         self.setup_btn.setVisible(need and not self._show_setup)
@@ -190,11 +232,47 @@ class AccountDialog(QDialog):
                 if k == "gmail" else
                 "Someone sets this up once. In the Azure portal > App registrations: new registration (any account type), redirect URI 'Public client' "
                 "http://localhost, API permission Mail.Send (delegated). Paste the Application (client) ID here.")
-            self.status.setText(("Signed in. Mail goes from %s." % (self.S.get("mail_address") or "your account")) if self.mo.signed_in(self.S, k)
-                                else ("%s sign-in has not been switched on in this copy of the program, so it cannot open the sign-in page yet. "
-                                      "Until then, choose Other and use an app password." % name) if need else "Not signed in yet. Press the button: your browser opens, sign in as you normally do, then come back here.")
-        else:
-            self.status.setText("Use this only if your provider is not Gmail or Microsoft. Use an app password, not your normal password.")
+
+    def open_app_pw(self):
+        import webbrowser
+        import mail_autoconfig as ac
+        webbrowser.open(ac.APP_PASSWORD_DOMAINS.get(self._domain(), "https://myaccount.google.com/apppasswords"))
+
+    def connect_now(self):
+        import mail_autoconfig as ac
+        addr, pw = self.addr.text().strip(), self.pw.text()
+        if not addr or not pw:
+            self.status.setText("Type your email address and password first.")
+            return
+        self.connect_b.setEnabled(False)
+        self.status.setText("Connecting...")
+
+        def work():
+            try:
+                cfg = ac.detect(addr, pw.replace(" ", "") if self._domain() in ac.APP_PASSWORD_DOMAINS else pw, progress=lambda t: self.prog.emit(t))
+                self.conn.emit(True, "", cfg)
+            except Exception as e:
+                self.conn.emit(False, str(e), None)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _connected(self, ok, msg, cfg):
+        self.connect_b.setEnabled(True)
+        if not ok:
+            self.status.setText("Could not connect: " + msg)
+            return
+        pw = self.pw.text()
+        if "@" in self.addr.text() and self._domain() in ("gmail.com", "googlemail.com", "yahoo.com", "icloud.com", "me.com"):
+            pw = pw.replace(" ", "")
+        self.S.update(cfg)
+        self.S.update({"mail_provider": "smtp", "mail_address": self.addr.text().strip(), "smtp_pass": pw, "smtp_from": self.addr.text().strip(),
+                       "smtp_bcc_me": self.bcc.isChecked()})
+        self.M.save_settings()
+        self.host.setText(cfg["smtp_host"])
+        self.status.setText("Connected (%s). You can send from the program now." % cfg["smtp_host"])
+
+    def _open_setup(self):
+        self._show_setup = True
+        self.refresh()
 
     def _save_ids(self):
         k = self.key()
@@ -229,17 +307,20 @@ class AccountDialog(QDialog):
             self.status.setText("Could not sign in: " + msg)
 
     def sign_out(self):
-        self.mo.sign_out(self.S, self.key())
+        for k in ("gmail", "outlook"):
+            self.mo.sign_out(self.S, k)
+        self.S.update({"smtp_pass": "", "smtp_host": "", "mail_provider": ""})
+        self.pw.setText("")
         self.M.save_settings()
-        self.refresh()
+        self.status.setText("Disconnected.")
 
     def _commit(self):
         self._save_ids()
-        k = self.key()
-        self.S.update({"mail_provider": k, "mail_address": self.addr.text().strip(), "smtp_bcc_me": self.bcc.isChecked()})
-        if k == "smtp":
-            self.S.update({"smtp_host": self.host.text().strip(), "smtp_port": self.port.value(), "smtp_security": self.sec.currentText(),
-                           "smtp_user": self.addr.text().strip(), "smtp_pass": self.pw.text(), "smtp_from": self.addr.text().strip()})
+        self.S["smtp_bcc_me"] = self.bcc.isChecked()
+        if self.adv.isChecked() and self.key() == "smtp" and self.host.text().strip():
+            self.S.update({"mail_provider": "smtp", "mail_address": self.addr.text().strip(), "smtp_host": self.host.text().strip(),
+                           "smtp_port": self.port.value(), "smtp_security": self.sec.currentText(), "smtp_user": self.user.text().strip() or self.addr.text().strip(),
+                           "smtp_pass": self.pw.text(), "smtp_from": self.addr.text().strip()})
         self.M.save_settings()
 
     def done(self):
