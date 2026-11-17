@@ -783,7 +783,7 @@ class LogMixin:
         v.addWidget(n)
         bar = QHBoxLayout()
         for text, fn, bold in (("+ New order", lambda: self.add_log("Order"), True), ("+ Client change", lambda: self.add_log("Change"), True),
-                               ("Attach the client's email...", self.attach_ref, False), ("Open the client's email", self.open_ref, False), ("Open the email I sent", self.open_sent, False), ("Remove line", self.remove_log, False)):
+                               ("Get changes from the drawings", self.changes_from_drawings, True), ("Attach the client's email...", self.attach_ref, False), ("Open the client's email", self.open_ref, False), ("Open the email I sent", self.open_sent, False), ("Remove line", self.remove_log, False)):
             b = QPushButton(text)
             if bold:
                 b.setStyleSheet("font-weight:700;")
@@ -831,6 +831,65 @@ class LogMixin:
         full = self.log_all.isChecked()
         for i, k in enumerate(LOGK):
             self.ltab.setColumnHidden(i, not (full or k in self.LOG_SIMPLE))
+
+    # ----- fill the log from the drawings' revision rows -----
+    MAJOR = re.compile(r"\b(add|added|new|remov|delet|mov|reloc|redesign|re-?design|enlarg|resiz|extend|extension|re-?lay|stair|structur|wall|roof|window|door|room|bedroom|kitchen|bathroom|garage|floor|level|coverage|building line)", re.I)
+    MINOR = re.compile(r"\b(dimension|dim\b|text|note|label|typo|spelling|annotation|correct|update|tidy|clarif|title ?block|scale|legend|symbol|hatch|tag)", re.I)
+
+    def guess_kinds(self, rows_changed, new_rows, group):
+        """Tick-box suggestions for one house or block: which kind of change it looks like."""
+        kinds = []
+        text = " ".join(str(x) for r in rows_changed + new_rows for x in (r.get("title", ""), r.get("no", ""), r.get("comment", ""), self._what(r), r.get("status", ""))) + " " + group
+        low = text.lower()
+        major = bool(new_rows) or len(rows_changed) >= 4 or any(self.MAJOR.search(self._what(r) or "") and not self.MINOR.search(self._what(r) or "") for r in rows_changed)
+        kinds.append("Major changes" if major else "Minor changes")
+        if new_rows or "master" in low:
+            kinds.append("Masters")
+        if re.search(r"\bfinal\b|for construction|approved|approval set", low) or any((r.get("status") or "").lower().startswith("final") for r in rows_changed + new_rows):
+            kinds.append("Final plans")
+        if re.search(r"\bsdp\b|site development", low):
+            kinds.append("SDP")
+        return [k for k in KINDS if k in kinds]
+
+    def changes_from_drawings(self):
+        """Orders and changes > Get changes from the drawings: one line per house or block with what the revision rows say changed, and the kind of change ticked as a suggestion."""
+        if not self.history:
+            QMessageBox.information(self, "Drawing register", "There is nothing to compare with yet. Record an issue first, or use More > Continue from an earlier issue I already sent.")
+            return
+        made = 0
+        for name, rows in self.groups_in_issue():
+            rev, new = [], []
+            for r in rows:
+                kind, _t = self.change_of(r)
+                if kind == "revised":
+                    rev.append(r)
+                elif kind == "new":
+                    new.append(r)
+            if not (rev or new):
+                continue
+            parts = ["%s %s: %s" % (r.get("no") or "-", r.get("title", ""), self._what(r)) for r in rev]
+            parts += ["%s %s: NEW drawing" % (r.get("no") or "-", r.get("title", "")) for r in new]
+            text = "; ".join(parts)
+            kinds = ", ".join(self.guess_kinds(rev, new, name))
+            line = next((e for e in self.log if e.get("group") == name and not e.get("sent_date") and e.get("auto_text") is not None
+                         and e.get("text") in ("", e.get("auto_text"))), None)
+            if line is None:
+                line = {k: "" for k in LOGK}
+                line.update({"group": name, "type": "Change", "date": datetime.date.today().isoformat(), "status": "Draft", "req_path": "", "sent_path": "", "drawings": "",
+                             "by_name": self.info.get("to", ""), "by_email": self.info.get("email", "")})
+                self.log.append(line)
+            line["text"], line["auto_text"] = text, text
+            if not line.get("kinds") or line.get("kinds_auto") == line.get("kinds"):
+                line["kinds"], line["kinds_auto"] = kinds, kinds
+            made += 1
+        self.refresh_log()
+        if made:
+            self.count.setText("%d change line%s made from the drawings. Check the ticked kind of change on each." % (made, "" if made == 1 else "s"))
+            QMessageBox.information(self, "Drawing register", "%d change line%s made from the revision rows in the drawings.\n\n"
+                                    "The kind of change is ticked as a suggestion: Major for new or reworked rooms and walls, Minor for dimensions and notes, Masters for new drawings, "
+                                    "Final plans and SDP when the drawings say so. Change any of them." % (made, "" if made == 1 else "s"))
+        else:
+            QMessageBox.information(self, "Drawing register", "No drawing has changed since the last issue. Add the revised PDFs or press Re-read the PDFs first.")
 
     def add_log(self, typ):
         e = {k: "" for k in LOGK}
