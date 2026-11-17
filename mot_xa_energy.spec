@@ -1,6 +1,6 @@
 # PyInstaller spec - builds the folder dist/MCP_XA_Energy
 from PyInstaller.utils.hooks import collect_all
-datas, binaries, hidden = [("version.txt", "."), ("app_config.json", "."), ("RELEASE_NOTES.md", ".")], [], []
+datas, binaries, hidden = [("version.txt", "."), ("app_config.json", "."), ("mail_client.json", "."), ("RELEASE_NOTES.md", ".")], [], []
 for pkg in ("ifcopenshell", "rapidocr_onnxruntime", "onnxruntime", "shapely", "fitz", "pymupdf", "ezdxf", "matplotlib"):
     try:
         d, b, h = collect_all(pkg)

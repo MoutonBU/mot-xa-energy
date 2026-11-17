@@ -99,6 +99,10 @@ class AccountDialog(QDialog):
         self.addr = QLineEdit(self.S.get("mail_address", ""))
         v.addWidget(self.addr)
         self.signbtn = QPushButton("")
+        self._show_setup = False
+        self.setup_btn = QPushButton("Sign-in is not switched on yet: set it up (one time)...")
+        self.setup_btn.clicked.connect(self._open_setup)
+        v.addWidget(self.setup_btn)
         self.signbtn.setMinimumHeight(40)
         self.signbtn.clicked.connect(self.sign_in)
         v.addWidget(self.signbtn)
@@ -107,7 +111,7 @@ class AccountDialog(QDialog):
         v.addWidget(self.status)
         # one-time setup (client ID)
         from PySide6.QtWidgets import QGroupBox
-        self.setup = QGroupBox("First time only: connect the program to Google / Microsoft")
+        self.setup = QGroupBox("One-time setup of this program (whoever manages it)")
         sf = QFormLayout(self.setup)
         self.help = QLabel("")
         self.help.setWordWrap(True)
@@ -155,6 +159,10 @@ class AccountDialog(QDialog):
         self.signed.connect(self._signed)
         self.refresh()
 
+    def _open_setup(self):
+        self._show_setup = True
+        self.refresh()
+
     def key(self):
         return ("gmail", "outlook", "smtp")[self.prov.currentIndex()]
 
@@ -165,10 +173,12 @@ class AccountDialog(QDialog):
         self.smtp.setVisible(k == "smtp")
         self.out_b.setVisible(oauth)
         need = oauth and not self.mo.configured(self.S, k)
-        self.setup.setVisible(need)
+        self.setup.setVisible(need and self._show_setup)
+        self.setup_btn.setVisible(need and not self._show_setup)
         if oauth:
             name = "Google" if k == "gmail" else "Microsoft"
             self.signbtn.setText("Sign in with " + name)
+            self.signbtn.setEnabled(not need)
             P = self.mo.PROVIDERS[k]
             self.cid.setText(self.S.get(P["id"], ""))
             self.csec.setText(self.S.get(P["secret"], "") if P["secret"] else "")
@@ -181,7 +191,8 @@ class AccountDialog(QDialog):
                 "Someone sets this up once. In the Azure portal > App registrations: new registration (any account type), redirect URI 'Public client' "
                 "http://localhost, API permission Mail.Send (delegated). Paste the Application (client) ID here.")
             self.status.setText(("Signed in. Mail goes from %s." % (self.S.get("mail_address") or "your account")) if self.mo.signed_in(self.S, k)
-                                else "Not signed in yet. Press the button: your browser opens, sign in as you normally do, then come back here.")
+                                else ("%s sign-in has not been switched on in this copy of the program, so it cannot open the sign-in page yet. "
+                                      "Until then, choose Other and use an app password." % name) if need else "Not signed in yet. Press the button: your browser opens, sign in as you normally do, then come back here.")
         else:
             self.status.setText("Use this only if your provider is not Gmail or Microsoft. Use an app password, not your normal password.")
 
@@ -198,7 +209,7 @@ class AccountDialog(QDialog):
         self._save_ids()
         k = self.key()
         if not self.mo.configured(self.S, k):
-            self.status.setText("Fill in the Client ID below first (first time only).")
+            self.status.setText("Sign-in is not switched on yet.")
             return
         self.S["mail_provider"], self.S["mail_address"] = k, self.addr.text().strip()
         self.signbtn.setEnabled(False)

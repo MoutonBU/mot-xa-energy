@@ -3,6 +3,8 @@ import base64
 import hashlib
 import json
 import secrets
+import os
+import sys
 import threading
 import urllib.error
 import urllib.parse
@@ -16,6 +18,21 @@ GOOGLE = {"auth": "https://accounts.google.com/o/oauth2/v2/auth", "token": "http
 MICROSOFT = {"auth": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize", "token": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
              "scope": "offline_access Mail.Send User.Read openid email", "id": "ms_client_id", "secret": "", "refresh": "ms_refresh", "host": "localhost"}
 PROVIDERS = {"gmail": GOOGLE, "outlook": MICROSOFT}
+
+
+def _bundled():
+    """Client IDs shipped with the program (mail_client.json), so nobody has to type them."""
+    for base in (getattr(sys, "_MEIPASS", None), os.path.dirname(os.path.abspath(__file__))):
+        try:
+            with open(os.path.join(base or "", "mail_client.json"), encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            continue
+    return {}
+
+
+def _g(S, key):
+    return ((S.get(key) or "").strip() if key else "") or str(_bundled().get(key, "") or "").strip()
 
 
 def post(url, data=None, headers=None, raw=None, timeout=90):
@@ -43,7 +60,7 @@ def _claims(id_token):
 
 def configured(S, provider):
     P = PROVIDERS[provider]
-    return bool((S.get(P["id"]) or "").strip())
+    return bool(_g(S, P["id"]))
 
 
 def signed_in(S, provider):
@@ -53,7 +70,7 @@ def signed_in(S, provider):
 def sign_in(S, provider, hint="", timeout=240, opener=webbrowser.open):
     """Opens the browser, waits for the redirect on a local port, swaps the code for a refresh token. Returns the account's email."""
     P = PROVIDERS[provider]
-    cid = (S.get(P["id"]) or "").strip()
+    cid = _g(S, P["id"])
     if not cid:
         raise RuntimeError("the one-time setup (client ID) has not been entered")
     verifier = _b64u(secrets.token_bytes(48))
@@ -100,8 +117,8 @@ def sign_in(S, provider, hint="", timeout=240, opener=webbrowser.open):
     if q.get("state") != state:
         raise RuntimeError("sign-in answer did not match (try again)")
     form = {"client_id": cid, "code": q["code"], "code_verifier": verifier, "redirect_uri": redirect, "grant_type": "authorization_code"}
-    if P["secret"] and S.get(P["secret"]):
-        form["client_secret"] = S[P["secret"]].strip()
+    if P["secret"] and _g(S, P["secret"]):
+        form["client_secret"] = _g(S, P["secret"])
     st, txt = post(P["token"], form)
     tok = json.loads(txt or "{}")
     if st != 200 or "refresh_token" not in tok:
@@ -117,9 +134,9 @@ def sign_out(S, provider):
 
 def access_token(S, provider):
     P = PROVIDERS[provider]
-    form = {"client_id": S.get(P["id"], "").strip(), "refresh_token": S.get(P["refresh"], ""), "grant_type": "refresh_token"}
-    if P["secret"] and S.get(P["secret"]):
-        form["client_secret"] = S[P["secret"]].strip()
+    form = {"client_id": _g(S, P["id"]), "refresh_token": S.get(P["refresh"], ""), "grant_type": "refresh_token"}
+    if P["secret"] and _g(S, P["secret"]):
+        form["client_secret"] = _g(S, P["secret"])
     if provider == "outlook":
         form["scope"] = P["scope"]
     st, txt = post(P["token"], form)

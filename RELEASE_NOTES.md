@@ -1,11 +1,14 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.45.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.46.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **No Client ID screen for users, 1.46.0**: the Google / Microsoft Client ID now ships inside the program (file mail_client.json), so the
+  Email account window only asks for the provider and your address, then Sign in. The one-time setup fields are hidden unless the
+  program was built without an ID.
 - **Simpler drawing register, 1.45.0**: the screen now goes in three steps: 1 Who is it for, 2 Add the drawings, 3 Send it. Only the
   drawing number, name, revision and what changed are shown; "Show all details" brings back the rest. The less-used actions are
   under More. The Orders page is now "Orders and changes", with big "New order" and "Client change" buttons.
