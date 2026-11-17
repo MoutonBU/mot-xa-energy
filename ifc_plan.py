@@ -35,6 +35,41 @@ def _segments(v, f, z):
     return out
 
 
+def _rect_from_element(v, mat, sc, width):
+    """A window or door as a clean rectangle: length along the element's own X axis, thickness of the wall it sits in.
+    Open sashes, handles and swing leaves in the mesh are ignored. Returns four corners or None."""
+    import numpy as np
+    try:
+        O = np.array(mat)[:3, 3] * sc
+        X = np.array(mat)[:2, 0].astype(float)
+        n = float(np.linalg.norm(X))
+        if n < 1e-6:
+            return None
+        X = X / n
+        Y = np.array([-X[1], X[0]])
+        rel = v[:, :2] - O[:2]
+        xs, ys = rel @ X, rel @ Y
+        if width and width > 0.1:
+            m = (xs >= -0.06) & (xs <= width + 0.06)
+        else:
+            m = np.ones(len(xs), bool)
+        if m.sum() < 3:
+            return None
+        x0, x1 = float(np.percentile(xs[m], 1)), float(np.percentile(xs[m], 99))
+        if width and width > 0.1:
+            x0, x1 = max(x0, 0.0), min(x1, float(width))
+            if x1 - x0 < 0.5 * width:
+                x0, x1 = 0.0, float(width)
+        y0, y1 = float(np.percentile(ys[m], 3)), float(np.percentile(ys[m], 97))
+        t = min(max(y1 - y0, 0.14), 0.30)
+        yc = (y0 + y1) / 2.0
+        a, b = yc - t / 2.0, yc + t / 2.0
+        pts = [(x0, a), (x1, a), (x1, b), (x0, b), (x0, a)]
+        return [(float(O[0] + X[0] * px + Y[0] * py), float(O[1] + X[1] * px + Y[1] * py)) for px, py in pts]
+    except Exception:
+        return None
+
+
 def _opening(polys):
     """A window or door as a bar at least as thick as a wall, so it fills its gap in the wall on the plan."""
     from shapely.geometry import Polygon
@@ -117,15 +152,23 @@ def build_plan(path):
                 f = np.array(sh.geometry.faces, dtype=int).reshape(-1, 3)
                 if len(f):
                     nm = (getattr(el, "LongName", None) or getattr(el, "Name", None) or "") if kind == "space" else ""
-                    storeys[cont.id()]["items"].append((kind, v, f, nm))
+                    extra = None
+                    if kind in ("window", "door"):
+                        try:
+                            import ifcopenshell.util.placement as UP
+                            extra = (UP.get_local_placement(el.ObjectPlacement), float(getattr(el, "OverallWidth", None) or 0) * sc)
+                        except Exception:
+                            extra = None
+                    storeys[cont.id()]["items"].append((kind, v, f, nm, extra))
             except Exception:
                 continue
+    sc_ = sc
     ordered = sorted(storeys.values(), key=lambda s: s["elev"])
     out = []
     for s in ordered:
         z = s["elev"] + CUT_HEIGHT
         layers, spaces = {}, []
-        for kind, v, f, nm in s["items"]:
+        for kind, v, f, nm, extra in s["items"]:
             lo, hi = float(v[:, 2].min()), float(v[:, 2].max())
             zc = z
             if kind in ("window", "door") and (lo > z or hi < z):
@@ -135,9 +178,11 @@ def build_plan(path):
                 zc = (lo + hi) / 2.0
             elif lo > z or hi < z:
                 continue
-            ps = _polys(v, f, zc)
             if kind in ("window", "door"):
-                ps = _opening(ps)
+                rc = _rect_from_element(v, extra[0], sc_, extra[1]) if extra else None
+                ps = [(rc, [])] if rc else _opening(_polys(v, f, zc))
+            else:
+                ps = _polys(v, f, zc)
             if kind == "space":
                 for p in ps:
                     spaces.append({"name": nm, "poly": p})
@@ -259,37 +304,71 @@ class PlanView(QGraphicsView):
                 it = QGraphicsPathItem(self._path(poly))
                 it.setBrush(QBrush(QColor(col)))
                 pen = QPen(QColor(pal["edge"]), 0.0)
+                pen.setCosmetic(True)
                 it.setPen(pen)
                 it.setZValue(z)
                 sc.addItem(it)
+                if kind == "window" and len(poly[0]) >= 5:       # the centre line of the glass
+                    o = poly[0]
+                    a = self._pt((o[0][0] + o[3][0]) / 2, (o[0][1] + o[3][1]) / 2)
+                    b = self._pt((o[1][0] + o[2][0]) / 2, (o[1][1] + o[2][1]) / 2)
+                    gp = QPen(QColor(pal["glassline"]), 0.0)
+                    gp.setCosmetic(True)
+                    ln = sc.addLine(a.x(), a.y(), b.x(), b.y(), gp)
+                    ln.setZValue(5)
+                if kind == "door" and len(poly[0]) >= 5:         # the door leaf, a thin line along one edge
+                    o = poly[0]
+                    a, b = self._pt(*o[0]), self._pt(*o[1])
+                    lp = QPen(QColor(pal["edge"]), 0.0)
+                    lp.setCosmetic(True)
+                    ln = sc.addLine(a.x(), a.y(), b.x(), b.y(), lp)
+                    ln.setZValue(5)
         for sp in storey["spaces"]:
             if not sp["name"]:
                 continue
             pts = [self._pt(*q) for q in sp["poly"][0]]
             xs = [q.x() for q in pts]
             ys = [q.y() for q in pts]
-            t = QGraphicsSimpleTextItem(sp["name"])
-            t.setBrush(QBrush(QColor(pal["label"])))
-            f = t.font()
-            f.setPixelSize(1)
-            t.setFont(f)
+            ar = 0.0
+            o_ = sp["poly"][0]
+            for i_ in range(len(o_) - 1):
+                ar += o_[i_][0] * o_[i_ + 1][1] - o_[i_ + 1][0] * o_[i_][1]
+            ar = abs(ar) / 2.0
             w = max(max(xs) - min(xs), 0.5)
-            br = t.boundingRect()
-            k = min(0.30, 0.8 * w / max(br.width(), 1))        # text height in metres, kept inside the room
-            t.setScale(k)
-            t.setTransform(t.transform().scale(1, -1))          # undo the y flip of the view
-            t.setPos((min(xs) + max(xs)) / 2 - br.width() * k / 2, (min(ys) + max(ys)) / 2 + br.height() * k / 2)
-            t.setZValue(6)
-            sc.addItem(t)
+            cx, cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+            lines = [sp["name"]] + (["%.1f m\u00b2" % ar] if ar > 1 else [])
+            ks = []
+            for ln_ in lines:
+                t0 = QGraphicsSimpleTextItem(ln_)
+                f0 = t0.font()
+                f0.setPixelSize(1)
+                t0.setFont(f0)
+                ks.append(min(0.30, 0.85 * w / max(t0.boundingRect().width(), 1)))
+            k0 = min(ks)
+            lh = 1.35 * k0                       # line height in metres
+            for n_, ln_ in enumerate(lines):
+                t = QGraphicsSimpleTextItem(ln_)
+                t.setBrush(QBrush(QColor(pal["label"])))
+                f = t.font()
+                f.setPixelSize(1)
+                f.setBold(n_ == 0)
+                t.setFont(f)
+                br = t.boundingRect()
+                kk = k0 if n_ == 0 else k0 * 0.8
+                t.setScale(kk)
+                t.setTransform(t.transform().scale(1, -1))
+                t.setPos(cx - br.width() * kk / 2, cy + ((len(lines) - 1) / 2.0 - n_) * lh + br.height() * kk / 2)
+                t.setZValue(6)
+                sc.addItem(t)
         self.fit()
 
 
 def _palette(is_light):
     if is_light:
         return dict(bg="#f3f4f6", space="#e4e8ec", spaceline="#aeb6bf", wall="#2a2f36", window="#4aa3e8", door="#b98a52",
-                    stair="#98a0a9", edge="#1c1f24", label="#1c1f24", hl="#c4162a", ok="#bfe6cc", check="#fde7b0", fail="#f6b9bf")
+                    stair="#98a0a9", edge="#1c1f24", label="#1c1f24", hl="#c4162a", glassline="#ffffff", ok="#bfe6cc", check="#fde7b0", fail="#f6b9bf")
     return dict(bg="#101114", space="#1f2328", spaceline="#3a4048", wall="#d9dde2", window="#4aa3e8", door="#c8975a",
-                stair="#6b727b", edge="#101114", label="#eceef0", hl="#ffd23f", ok="#2a7a4e", check="#8a6c1c", fail="#9a2e3c")
+                stair="#6b727b", edge="#101114", label="#eceef0", hl="#ffd23f", glassline="#dff0ff", ok="#2a7a4e", check="#8a6c1c", fail="#9a2e3c")
 
 
 def print_palette():
