@@ -8611,6 +8611,11 @@ class MainWindow(QMainWindow):
         assign_btn = QPushButton("Show which windows are in which room...")
         assign_btn.clicked.connect(self._show_assignments)
         rl.addWidget(assign_btn)
+        self.cb_plan_pdf = QCheckBox("Include the floor plan pages in the PDF report")
+        self.cb_plan_pdf.setToolTip("Adds the IFC floor plan of each level, coloured by result, to the Light && ventilation PDF.")
+        self.cb_plan_pdf.setChecked(bool(SETTINGS.get("plan_in_pdf", True)))
+        self.cb_plan_pdf.toggled.connect(self._set_plan_in_pdf)
+        rl.addWidget(self.cb_plan_pdf)
         prev_btn = QPushButton("Preview PDF report")
         prev_btn.clicked.connect(self.preview_pdf_report)
         rl.addWidget(prev_btn)
@@ -10756,6 +10761,15 @@ class MainWindow(QMainWindow):
     def sign_out(self):
         acc_forget()
         QMessageBox.information(self, APP_NAME, "You are signed out. The password is asked for the next time the program starts.")
+
+    def _set_plan_in_pdf(self, on):
+        SETTINGS["plan_in_pdf"] = bool(on)
+        save_settings()
+        for cb in (getattr(self, "cb_plan_pdf", None), getattr(getattr(self, "plan_page", None), "cb_pdf", None)):
+            if cb is not None and cb.isChecked() != bool(on):
+                cb.blockSignals(True)
+                cb.setChecked(bool(on))
+                cb.blockSignals(False)
 
     def shell_is_light(self):
         return light()
@@ -17503,7 +17517,7 @@ Glazing limit: glazing may not exceed {GLAZE_LIMIT[0]:g}% of the net floor area,
         plan_imgs = {}
         try:                                             # the floor plan from the IFC, rooms coloured by result
             ipath = getattr(self, "ifc_path", "") or ""
-            if ipath and os.path.exists(ipath) and not list_only:
+            if ipath and os.path.exists(ipath) and not list_only and SETTINGS.get("plan_in_pdf", True):
                 import ifc_plan
                 QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
                 try:

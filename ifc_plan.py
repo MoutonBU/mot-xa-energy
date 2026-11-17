@@ -5,6 +5,7 @@ walls, windows, doors, stairs and the rooms (IfcSpace). Rooms are coloured by th
 Reading the model takes a few seconds, so it runs in a background thread and is kept for the next visit."""
 import math
 import os
+import re
 import threading
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
@@ -61,7 +62,7 @@ def _rect_from_element(v, mat, sc, width):
             if x1 - x0 < 0.5 * width:
                 x0, x1 = 0.0, float(width)
         y0, y1 = float(np.percentile(ys[m], 3)), float(np.percentile(ys[m], 97))
-        t = min(max(y1 - y0, 0.14), 0.30)
+        t = min(max(y1 - y0, 0.30), 0.36)
         yc = (y0 + y1) / 2.0
         a, b = yc - t / 2.0, yc + t / 2.0
         pts = [(x0, a), (x1, a), (x1, b), (x0, b), (x0, a)]
@@ -153,10 +154,13 @@ def build_plan(path):
                 if len(f):
                     nm = (getattr(el, "LongName", None) or getattr(el, "Name", None) or "") if kind == "space" else ""
                     extra = None
+                    if kind == "door" and re.match(r"^\s*G\d*\b", str(getattr(el, "Name", "") or ""), re.I):
+                        continue                          # a door labelled G is a gate: not part of the floor plan
                     if kind in ("window", "door"):
                         try:
                             import ifcopenshell.util.placement as UP
-                            extra = (UP.get_local_placement(el.ObjectPlacement), float(getattr(el, "OverallWidth", None) or 0) * sc)
+                            extra = (UP.get_local_placement(el.ObjectPlacement), float(getattr(el, "OverallWidth", None) or 0) * sc,
+                                     str(getattr(el, "Name", "") or "")[:8])
                         except Exception:
                             extra = None
                     storeys[cont.id()]["items"].append((kind, v, f, nm, extra))
@@ -167,7 +171,7 @@ def build_plan(path):
     out = []
     for s in ordered:
         z = s["elev"] + CUT_HEIGHT
-        layers, spaces = {}, []
+        layers, spaces, tags = {}, [], []
         for kind, v, f, nm, extra in s["items"]:
             lo, hi = float(v[:, 2].min()), float(v[:, 2].max())
             zc = z
@@ -181,6 +185,8 @@ def build_plan(path):
             if kind in ("window", "door"):
                 rc = _rect_from_element(v, extra[0], sc_, extra[1]) if extra else None
                 ps = [(rc, [])] if rc else _opening(_polys(v, f, zc))
+                if extra and extra[2]:
+                    tags.extend((kind, extra[2], q[0]) for q in ps)
             else:
                 ps = _polys(v, f, zc)
             if kind == "space":
@@ -189,7 +195,7 @@ def build_plan(path):
             else:
                 layers.setdefault(kind, []).extend(ps)
         if layers or spaces:
-            out.append({"name": s["name"], "elev": s["elev"], "layers": layers, "spaces": spaces})
+            out.append({"name": s["name"], "elev": s["elev"], "layers": layers, "spaces": spaces, "tags": tags})
     return {"storeys": out}
 
 
@@ -226,6 +232,7 @@ class PlanView(QGraphicsView):
         self.rooms = {}                      # item -> (storey, name)
         self._storey = ""
         self._zoomed = False                 # the user zoomed or panned: stop re-fitting on resize
+        self.show_tags = True
         self.rot = 0.0                       # degrees the plan is turned (to square it up on the screen)
 
     def wheelEvent(self, e):
@@ -303,7 +310,7 @@ class PlanView(QGraphicsView):
             for poly in storey["layers"].get(kind, []):
                 it = QGraphicsPathItem(self._path(poly))
                 it.setBrush(QBrush(QColor(col)))
-                pen = QPen(QColor(pal["edge"]), 0.0)
+                pen = QPen(QColor(pal["edge"]), 1.6 if kind in ("window", "door") else 0.0)
                 pen.setCosmetic(True)
                 it.setPen(pen)
                 it.setZValue(z)
@@ -323,6 +330,33 @@ class PlanView(QGraphicsView):
                     lp.setCosmetic(True)
                     ln = sc.addLine(a.x(), a.y(), b.x(), b.y(), lp)
                     ln.setZValue(5)
+        if self.show_tags:
+            from PySide6.QtWidgets import QGraphicsRectItem
+            for kind, text, ring in storey.get("tags", []):
+                if len(ring) < 4 or not text:
+                    continue
+                pts = [self._pt(*q) for q in ring[:4]]
+                cx = sum(q.x() for q in pts) / 4
+                cy = sum(q.y() for q in pts) / 4
+                t = QGraphicsSimpleTextItem(text)
+                f = t.font()
+                f.setPixelSize(1)
+                f.setBold(True)
+                t.setFont(f)
+                br = t.boundingRect()
+                k = 0.30 / max(br.height(), 1)
+                t.setScale(k)
+                t.setTransform(t.transform().scale(1, -1))
+                t.setBrush(QBrush(QColor("#ffffff")))
+                w_, h_ = br.width() * k, br.height() * k
+                chip = QGraphicsRectItem(cx - w_ / 2 - 0.04, cy - h_ / 2 - 0.02, w_ + 0.08, h_ + 0.04)
+                chip.setBrush(QBrush(QColor(pal["window"] if kind == "window" else pal["doorchip"])))
+                chip.setPen(QPen(Qt.PenStyle.NoPen))
+                chip.setZValue(7)
+                t.setPos(cx - w_ / 2, cy + h_ / 2)
+                t.setZValue(8)
+                sc.addItem(chip)
+                sc.addItem(t)
         for sp in storey["spaces"]:
             if not sp["name"]:
                 continue
@@ -365,9 +399,9 @@ class PlanView(QGraphicsView):
 
 def _palette(is_light):
     if is_light:
-        return dict(bg="#f3f4f6", space="#e4e8ec", spaceline="#aeb6bf", wall="#2a2f36", window="#4aa3e8", door="#b98a52",
+        return dict(bg="#f3f4f6", space="#e4e8ec", spaceline="#aeb6bf", wall="#2a2f36", window="#1e88e5", door="#d99a4e", doorchip="#9a5a14",
                     stair="#98a0a9", edge="#1c1f24", label="#1c1f24", hl="#c4162a", glassline="#ffffff", ok="#bfe6cc", check="#fde7b0", fail="#f6b9bf")
-    return dict(bg="#101114", space="#1f2328", spaceline="#3a4048", wall="#d9dde2", window="#4aa3e8", door="#c8975a",
+    return dict(bg="#101114", space="#1f2328", spaceline="#3a4048", wall="#d9dde2", window="#2f9bff", door="#e0a060", doorchip="#b8741f",
                 stair="#6b727b", edge="#101114", label="#eceef0", hl="#ffd23f", glassline="#dff0ff", ok="#2a7a4e", check="#8a6c1c", fail="#9a2e3c")
 
 
@@ -462,6 +496,11 @@ class PlanPage(QWidget):
         self.straight.setToolTip("Turn the plan so its main walls run level and upright. Untick for the model's own angle.")
         self.straight.toggled.connect(self._draw)
         top.addWidget(self.straight)
+        self.tags_cb = QCheckBox("Tags")
+        self.tags_cb.setChecked(True)
+        self.tags_cb.setToolTip("Show the window and door tags (W1, D2...) on the plan.")
+        self.tags_cb.toggled.connect(lambda on: (setattr(self.view, "show_tags", bool(on)), self._draw()))
+        top.addWidget(self.tags_cb)
         self.fit_btn = QPushButton("Fit")
         self.fit_btn.clicked.connect(lambda: self.view.fit())
         top.addWidget(self.fit_btn)
@@ -497,6 +536,10 @@ class PlanPage(QWidget):
         self.note.setTextFormat(Qt.TextFormat.RichText)
         self.note.setWordWrap(True)
         sv.addWidget(self.note)
+        self.cb_pdf = QCheckBox("Include floor plans in the PDF report")
+        self.cb_pdf.setChecked(bool(getattr(win, "cb_plan_pdf", None) is None or win.cb_plan_pdf.isChecked()))
+        self.cb_pdf.toggled.connect(lambda on: win._set_plan_in_pdf(on) if hasattr(win, "_set_plan_in_pdf") else None)
+        sv.addWidget(self.cb_pdf)
         self.go_btn = QPushButton("Open rooms list")
         self.go_btn.clicked.connect(lambda: (self.win.main_tabs.setCurrentIndex(1), self.win.tabs.setCurrentIndex(2)))
         sv.addWidget(self.go_btn)
@@ -590,7 +633,7 @@ class PlanPage(QWidget):
                 (pal["fail"], "Fails", "both light and ventilation fail"),
                 (pal["space"], "No result", "room not in the results yet"),
                 (pal["window"], "Window", "glazing, cut through its own height"),
-                (pal["door"], "Door", ""), (pal["wall"], "Wall", ""), (pal["stair"], "Stair", "")]
+                (pal["door"], "Door", "gates (G) are left out"), (pal["wall"], "Wall", ""), (pal["stair"], "Stair", "")]
         self.key.setText("<b>Key</b><br>" + "<br>".join(
             "%s <b>%s</b>%s" % (sw(c), a, (" <span style='opacity:.7'>- %s</span>" % b) if b else "") for c, a, b in rows))
         self._rows = []
