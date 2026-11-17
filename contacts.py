@@ -10,7 +10,7 @@ import time
 import urllib.parse
 import urllib.request
 
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import QCompleter
 
 import mail_oauth
@@ -89,7 +89,11 @@ def save(M, items):
 class ContactCompleter(QCompleter):
     """Completes the address being typed after the last comma or semicolon."""
 
+    show_all = False
+
     def splitPath(self, path):
+        if self.show_all:
+            return [""]
         return [re.split(r"[;,]", path)[-1].strip()]
 
     def pathFromIndex(self, index):
@@ -156,9 +160,38 @@ def attach(line_edit, get_M):
     c.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
     c.setFilterMode(Qt.MatchFlag.MatchContains)
     c.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
-    c.setMaxVisibleItems(8)
+    c.setMaxVisibleItems(12)
     line_edit.setCompleter(c)
     line_edit._contact_completer = c
+    _dropdown(line_edit, c)
+
+
+def _dropdown(le, c):
+    """A small arrow at the right of the box (and a click in an empty box) shows the whole contact list."""
+    from PySide6.QtCore import QEvent
+    from PySide6.QtGui import QAction
+    from PySide6.QtWidgets import QApplication, QStyle
+
+    def show_all():
+        c.show_all = True
+        c.setCompletionPrefix("")
+        c.complete()
+
+    act = QAction(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_ArrowDown), "Show my contacts", le)
+    act.setToolTip("Show my contacts")
+    act.triggered.connect(show_all)
+    le.addAction(act, le.ActionPosition.TrailingPosition)
+    c.activated.connect(lambda *_: setattr(c, "show_all", False))
+    le.textEdited.connect(lambda *_: setattr(c, "show_all", False))
+
+    class _F(QObject):
+        def eventFilter(self, obj, ev):
+            if ev.type() == QEvent.Type.MouseButtonPress and not le.text().strip():
+                QTimer.singleShot(0, show_all)
+            return False
+    f = _F(le)
+    le.installEventFilter(f)
+    le._contact_filter = f
 
 
 def refresh_async(M, force=False):
