@@ -8621,6 +8621,11 @@ class MainWindow(QMainWindow):
         self._assign_dialog = None
 
         self._build_menu()
+        try:
+            import app_shell
+            app_shell.install_shell(self, make_icon, light)
+        except Exception:
+            self.shell_rail = None
         self.add_sched_row(["W01", "1200", "1200", "85", "50", "Window"])
         self.add_room_row(["Bedroom 1", "12.0", "W01:1", False])
 
@@ -17908,13 +17913,20 @@ def apply_glass_theme(app, win):
     mid.setSpacing(4)
     mark = QLabel()
     mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    mark.setPixmap(logo_pixmap().scaledToHeight(64, Qt.TransformationMode.SmoothTransformation))
+    _compact = getattr(win, "shell_rail", None) is not None      # the left rail + ribbon are in use: a slimmer header
+    mark.setPixmap(logo_pixmap().scaledToHeight(30 if _compact else 64, Qt.TransformationMode.SmoothTransformation))
     win.logo_mark = mark
-    title = QLabel("<span style='font-size:19px;font-weight:700;letter-spacing:2px'>"
-                   "MCP ARCHITECTURE &amp; INTERIORS</span><br>"
-                   "<span style='font-size:12px;color:rgba(255,255,255,175);letter-spacing:1px'>"
-                   "SANS Compliance Suite &middot; Light, Ventilation &amp; Energy</span>")
+    if _compact:
+        title = QLabel("<span style='font-size:15px;font-weight:700;letter-spacing:2px'>"
+                       "MCP ARCHITECTURE &amp; INTERIORS</span>")
+    else:
+        title = QLabel("<span style='font-size:19px;font-weight:700;letter-spacing:2px'>"
+                       "MCP ARCHITECTURE &amp; INTERIORS</span><br>"
+                       "<span style='font-size:12px;color:rgba(255,255,255,175);letter-spacing:1px'>"
+                       "SANS Compliance Suite &middot; Light, Ventilation &amp; Energy</span>")
     title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    if _compact:
+        mid.setSpacing(0)
     mid.addWidget(mark)
     mid.addWidget(title)
     head.addWidget(spacer, 0, Qt.AlignmentFlag.AlignTop)
