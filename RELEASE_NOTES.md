@@ -1,11 +1,18 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.44.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.45.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Simpler drawing register, 1.45.0**: the screen now goes in three steps: 1 Who is it for, 2 Add the drawings, 3 Send it. Only the
+  drawing number, name, revision and what changed are shown; "Show all details" brings back the rest. The less-used actions are
+  under More. The Orders page is now "Orders and changes", with big "New order" and "Client change" buttons.
+- **Sign in with Google or Microsoft instead of a password, 1.45.0**: Email account now asks for the provider and your address, then
+  opens the normal Google (or Microsoft) sign-in in the browser; the program keeps only the sign-in, not the password. The first time
+  on a computer, a Client ID from Google Cloud (or Microsoft Azure) must be entered once; steps are shown in the window. Other providers
+  still work with an app password.
 - **Drawing register PDF in the same look as the other reports, 1.44.0**: a cover page with the MCP logo, the grey title band with
   the red bar, project, site, client, who it is issued to and who compiled it (plus the client's logo if you set one), then the
   register on landscape pages in the same rounded tables, with a footer and page numbers.

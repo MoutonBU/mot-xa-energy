@@ -13,15 +13,15 @@ from collections import Counter
 from email.message import EmailMessage
 from email.utils import parsedate_to_datetime
 
-from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QTableWidget,
                                QTableWidgetItem, QVBoxLayout)
 
 LOGK = ("group", "type", "rev", "date", "order", "text", "by", "req_subject", "req_date", "req_from", "sent_date", "sent_to", "status")
-LOGC = ["House / block", "Type", "Rev", "Date", "Order no.", "What was ordered / changed", "Requested by", "Request email (subject)", "Received",
-        "From", "Sent on", "Sent to", "Status"]
+LOGC = ["House or block", "Type", "Rev", "Date", "Order number", "What was ordered or changed", "Asked by", "The client's email", "Received",
+        "From", "Sent to the client on", "Sent to", "Status"]
 TYPES = ["Order", "Change", "Issue"]
 LSTAT = ["Draft", "Final", "Issued", "Superseded"]
 PRESETS = {"Gmail": ("smtp.gmail.com", 465, "SSL"), "Outlook / Office 365": ("smtp.office365.com", 587, "STARTTLS"), "Other": ("", 587, "STARTTLS")}
@@ -76,81 +76,199 @@ def short_date(iso):
         return iso or ""
 
 
-class SmtpDialog(QDialog):
+class AccountDialog(QDialog):
+    """Pick the mail provider, type the address, press Sign in: the browser opens the provider's own sign-in page."""
+    signed = Signal(bool, str)
+
     def __init__(self, M, parent=None):
         super().__init__(parent)
+        import mail_oauth
+        self.mo = mail_oauth
         self.M = M
+        self.S = M.SETTINGS
         self.setWindowTitle("Email account")
-        self.resize(520, 380)
-        S = M.SETTINGS
+        self.resize(560, 420)
         v = QVBoxLayout(self)
-        v.addWidget(QLabel("The account the drawing register is sent from. Gmail and Microsoft need an app password (made in the account's security "
-                           "settings), not the normal password. The password is kept in this program's settings file on this computer, not encrypted."))
-        v.itemAt(0).widget().setWordWrap(True)
-        f = QFormLayout()
-        self.pre = QComboBox()
-        self.pre.addItems(list(PRESETS))
-        self.host = QLineEdit(S.get("smtp_host", ""))
+        t = QLabel("<b>Which email do you send from?</b>")
+        v.addWidget(t)
+        self.prov = QComboBox()
+        self.prov.addItems(["Gmail", "Outlook / Microsoft 365", "Other (needs an app password)"])
+        self.prov.setCurrentIndex({"gmail": 0, "outlook": 1, "smtp": 2}.get(self.S.get("mail_provider", "gmail"), 0))
+        v.addWidget(self.prov)
+        v.addWidget(QLabel("Your email address:"))
+        self.addr = QLineEdit(self.S.get("mail_address", ""))
+        v.addWidget(self.addr)
+        self.signbtn = QPushButton("")
+        self.signbtn.setMinimumHeight(40)
+        self.signbtn.clicked.connect(self.sign_in)
+        v.addWidget(self.signbtn)
+        self.status = QLabel("")
+        self.status.setWordWrap(True)
+        v.addWidget(self.status)
+        # one-time setup (client ID)
+        from PySide6.QtWidgets import QGroupBox
+        self.setup = QGroupBox("First time only: connect the program to Google / Microsoft")
+        sf = QFormLayout(self.setup)
+        self.help = QLabel("")
+        self.help.setWordWrap(True)
+        self.help.setStyleSheet("color: gray; font-size: 11px;")
+        sf.addRow(self.help)
+        self.cid = QLineEdit()
+        self.csec = QLineEdit()
+        self.csec.setEchoMode(QLineEdit.EchoMode.Password)
+        sf.addRow("Client ID", self.cid)
+        self.csec_lbl = QLabel("Client secret")
+        sf.addRow(self.csec_lbl, self.csec)
+        v.addWidget(self.setup)
+        # other (SMTP)
+        self.smtp = QGroupBox("Mail server")
+        mf = QFormLayout(self.smtp)
+        self.host = QLineEdit(self.S.get("smtp_host", ""))
         self.port = QSpinBox()
         self.port.setRange(1, 65535)
-        self.port.setValue(int(S.get("smtp_port") or 587))
+        self.port.setValue(int(self.S.get("smtp_port") or 587))
         self.sec = QComboBox()
         self.sec.addItems(["SSL", "STARTTLS", "None"])
-        self.sec.setCurrentText(S.get("smtp_security") or "STARTTLS")
-        self.user = QLineEdit(S.get("smtp_user", ""))
-        self.pw = QLineEdit(S.get("smtp_pass", ""))
+        self.sec.setCurrentText(self.S.get("smtp_security") or "STARTTLS")
+        self.pw = QLineEdit(self.S.get("smtp_pass", ""))
         self.pw.setEchoMode(QLineEdit.EchoMode.Password)
-        self.frm = QLineEdit(S.get("smtp_from", ""))
-        self.frm.setPlaceholderText("MCP Architecture & Interiors <you@example.com>  (empty = the user name)")
-        self.cc_me = QCheckBox("Send myself a copy (Bcc)")
-        self.cc_me.setChecked(bool(S.get("smtp_bcc_me", True)))
-        for k, w in (("Provider", self.pre), ("Server", self.host), ("Port", self.port), ("Security", self.sec), ("User name", self.user),
-                     ("Password", self.pw), ("From", self.frm)):
-            f.addRow(k, w)
-        f.addRow("", self.cc_me)
-        v.addLayout(f)
-        self.pre.currentTextChanged.connect(self._preset)
-        for name, (h, p, s) in PRESETS.items():
-            if h and h == self.host.text():
-                self.pre.setCurrentText(name)
-        self.msg = QLabel("")
-        self.msg.setWordWrap(True)
-        v.addWidget(self.msg)
+        for k, w in (("Server", self.host), ("Port", self.port), ("Security", self.sec), ("App password", self.pw)):
+            mf.addRow(k, w)
+        v.addWidget(self.smtp)
+        self.bcc = QCheckBox("Send myself a copy")
+        self.bcc.setChecked(bool(self.S.get("smtp_bcc_me", True)))
+        v.addWidget(self.bcc)
+        v.addStretch(1)
         bar = QHBoxLayout()
-        for text, fn in (("Send a test to myself", self.test), ("Save", self.save), ("Cancel", self.reject)):
-            b = QPushButton(text)
-            b.clicked.connect(fn)
+        self.test_b = QPushButton("Send a test to myself")
+        self.out_b = QPushButton("Sign out")
+        ok = QPushButton("Done")
+        self.test_b.clicked.connect(self.test)
+        self.out_b.clicked.connect(self.sign_out)
+        ok.clicked.connect(self.done)
+        for b in (self.test_b, self.out_b):
             bar.addWidget(b)
+        bar.addStretch(1)
+        bar.addWidget(ok)
         v.addLayout(bar)
+        self.prov.currentIndexChanged.connect(self.refresh)
+        self.signed.connect(self._signed)
+        self.refresh()
 
-    def _preset(self, name):
-        h, p, s = PRESETS[name]
-        if h:
-            self.host.setText(h)
-            self.port.setValue(p)
-            self.sec.setCurrentText(s)
+    def key(self):
+        return ("gmail", "outlook", "smtp")[self.prov.currentIndex()]
 
-    def cfg(self):
-        return {"smtp_host": self.host.text().strip(), "smtp_port": self.port.value(), "smtp_security": self.sec.currentText(),
-                "smtp_user": self.user.text().strip(), "smtp_pass": self.pw.text(), "smtp_from": self.frm.text().strip(),
-                "smtp_bcc_me": self.cc_me.isChecked()}
+    def refresh(self):
+        k = self.key()
+        oauth = k in ("gmail", "outlook")
+        self.signbtn.setVisible(oauth)
+        self.smtp.setVisible(k == "smtp")
+        self.out_b.setVisible(oauth)
+        need = oauth and not self.mo.configured(self.S, k)
+        self.setup.setVisible(need)
+        if oauth:
+            name = "Google" if k == "gmail" else "Microsoft"
+            self.signbtn.setText("Sign in with " + name)
+            P = self.mo.PROVIDERS[k]
+            self.cid.setText(self.S.get(P["id"], ""))
+            self.csec.setText(self.S.get(P["secret"], "") if P["secret"] else "")
+            self.csec.setVisible(bool(P["secret"]))
+            self.csec_lbl.setVisible(bool(P["secret"]))
+            self.help.setText(
+                "Someone sets this up once (about 10 minutes) and it then works for everybody. In Google Cloud Console: make a project, switch on the Gmail API, "
+                "set up the consent screen and publish it, then create an OAuth client of type 'Desktop app'. Paste its Client ID and Client secret here."
+                if k == "gmail" else
+                "Someone sets this up once. In the Azure portal > App registrations: new registration (any account type), redirect URI 'Public client' "
+                "http://localhost, API permission Mail.Send (delegated). Paste the Application (client) ID here.")
+            self.status.setText(("Signed in. Mail goes from %s." % (self.S.get("mail_address") or "your account")) if self.mo.signed_in(self.S, k)
+                                else "Not signed in yet. Press the button: your browser opens, sign in as you normally do, then come back here.")
+        else:
+            self.status.setText("Use this only if your provider is not Gmail or Microsoft. Use an app password, not your normal password.")
 
-    def save(self):
-        self.M.SETTINGS.update(self.cfg())
+    def _save_ids(self):
+        k = self.key()
+        if k in ("gmail", "outlook"):
+            P = self.mo.PROVIDERS[k]
+            if self.cid.text().strip():
+                self.S[P["id"]] = self.cid.text().strip()
+            if P["secret"] and self.csec.text().strip():
+                self.S[P["secret"]] = self.csec.text().strip()
+
+    def sign_in(self):
+        self._save_ids()
+        k = self.key()
+        if not self.mo.configured(self.S, k):
+            self.status.setText("Fill in the Client ID below first (first time only).")
+            return
+        self.S["mail_provider"], self.S["mail_address"] = k, self.addr.text().strip()
+        self.signbtn.setEnabled(False)
+        self.status.setText("Your browser has opened. Sign in there, then come back here...")
+        self.mo.sign_in_thread(self.S, k, self.addr.text().strip(), lambda ok, m: self.signed.emit(ok, m))
+
+    def _signed(self, ok, msg):
+        self.signbtn.setEnabled(True)
+        if ok:
+            if msg:
+                self.S["mail_address"] = msg
+                self.addr.setText(msg)
+            self.M.save_settings()
+            self.refresh()
+            self.status.setText("Signed in as %s. You can send from the program now." % (msg or "your account"))
+        else:
+            self.status.setText("Could not sign in: " + msg)
+
+    def sign_out(self):
+        self.mo.sign_out(self.S, self.key())
         self.M.save_settings()
+        self.refresh()
+
+    def _commit(self):
+        self._save_ids()
+        k = self.key()
+        self.S.update({"mail_provider": k, "mail_address": self.addr.text().strip(), "smtp_bcc_me": self.bcc.isChecked()})
+        if k == "smtp":
+            self.S.update({"smtp_host": self.host.text().strip(), "smtp_port": self.port.value(), "smtp_security": self.sec.currentText(),
+                           "smtp_user": self.addr.text().strip(), "smtp_pass": self.pw.text(), "smtp_from": self.addr.text().strip()})
+        self.M.save_settings()
+
+    def done(self):
+        self._commit()
         self.accept()
 
     def test(self):
-        c = self.cfg()
-        addr = c["smtp_from"] or c["smtp_user"]
-        m = EmailMessage()
-        m["From"], m["To"], m["Subject"] = addr, addr, "Drawing register: test"
-        m.set_content("This is a test from the drawing register. The email account works.")
+        self._commit()
         try:
-            smtp_send(c, m)
-            self.msg.setText("Test sent to %s." % addr)
+            addr = self.S.get("mail_address", "")
+            m = EmailMessage()
+            m["From"], m["To"], m["Subject"] = addr, addr, "Drawing register: test"
+            m.set_content("This is a test from the drawing register. The email account works.")
+            deliver(self.S, m)
+            self.status.setText("Test sent to %s." % addr)
         except Exception as e:
-            self.msg.setText("Could not send: %s" % e)
+            self.status.setText("Could not send: %s" % e)
+
+
+def mail_ready(S):
+    import mail_oauth
+    k = S.get("mail_provider") or ("smtp" if S.get("smtp_host") else "")
+    if k in ("gmail", "outlook"):
+        return mail_oauth.signed_in(S, k)
+    return bool(S.get("smtp_host") and S.get("mail_address") or S.get("smtp_host") and S.get("smtp_user"))
+
+
+def deliver(S, m, bcc_me=False):
+    """Send m through the chosen account. The copy to myself is a Bcc header (web services) or an extra recipient (mail server)."""
+    import mail_oauth
+    k = S.get("mail_provider") or "smtp"
+    me = S.get("mail_address") or S.get("smtp_user") or ""
+    if k in ("gmail", "outlook"):
+        if bcc_me and me:
+            m["Bcc"] = me
+        mail_oauth.send(S, k, m)
+        return
+    c = {x: S.get(x, "") for x in ("smtp_host", "smtp_port", "smtp_security", "smtp_user", "smtp_pass")}
+    rc = [a for hdr in ("To", "Cc") for a in addresses(m[hdr] or "")] + ([me] if bcc_me and me else [])
+    MailMixin._send_with_bcc(c, m, rc) if rc else smtp_send(c, m)
 
 
 def smtp_send(c, msg):
@@ -239,15 +357,23 @@ class SendDialog(QDialog):
 class LogMixin:
     """The orders-and-revisions log."""
 
+    LOG_SIMPLE = ("group", "order", "text", "req_subject", "sent_date")
+
     def build_log(self):
         from PySide6.QtWidgets import QWidget
         w = QWidget()
         v = QVBoxLayout(w)
-        v.setContentsMargins(0, 4, 0, 0)
+        v.setContentsMargins(0, 6, 0, 0)
+        n = QLabel("Keep track of what the client ordered or asked to change, house by house. Add the line, attach the client's email as proof, "
+                   "and when you send the drawings the rest is filled in for you.")
+        n.setWordWrap(True)
+        v.addWidget(n)
         bar = QHBoxLayout()
-        for text, fn in (("Add order", lambda: self.add_log("Order")), ("Add change", lambda: self.add_log("Change")),
-                         ("Attach email / PDF...", self.attach_ref), ("Open attached", self.open_ref), ("Remove line", self.remove_log)):
+        for text, fn, bold in (("+ New order", lambda: self.add_log("Order"), True), ("+ Client change", lambda: self.add_log("Change"), True),
+                               ("Attach the client's email...", self.attach_ref, False), ("Open that email", self.open_ref, False), ("Remove line", self.remove_log, False)):
             b = QPushButton(text)
+            if bold:
+                b.setStyleSheet("font-weight:700;")
             b.clicked.connect(fn)
             bar.addWidget(b)
         bar.addStretch(1)
@@ -258,17 +384,20 @@ class LogMixin:
         self.ltab.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.ltab.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.ltab.horizontalHeader().setStretchLastSection(True)
-        for i, wd in enumerate((130, 70, 40, 85, 100, 330, 130, 240, 85, 170, 85, 200, 80)):
+        for i, wd in enumerate((150, 70, 40, 85, 110, 360, 130, 300, 85, 170, 85, 200, 80)):
             self.ltab.setColumnWidth(i, wd)
         self.ltab.itemChanged.connect(self._log_cell)
         v.addWidget(self.ltab, 1)
-        n = QLabel("One line per order or revision, like the register you send now: what was ordered or changed, the email it came from (attach the "
-                   "client's email here as the reference), and the email you sent back. Orders and changes you add stay \"Draft\" until the next "
-                   "email goes out; sending (or Mark as issued) fills in the rev, date and who it was sent to. Drawings that changed are listed for you.")
-        n.setWordWrap(True)
-        n.setStyleSheet("color: gray; font-size: 11px;")
-        v.addWidget(n)
+        self.log_all = QCheckBox("Show all details (rev, dates, who asked, sent to, status)")
+        self.log_all.toggled.connect(self._log_columns)
+        v.addWidget(self.log_all)
+        self._log_columns()
         return w
+
+    def _log_columns(self, *_a):
+        full = self.log_all.isChecked()
+        for i, k in enumerate(LOGK):
+            self.ltab.setColumnHidden(i, not (full or k in self.LOG_SIMPLE))
 
     def add_log(self, typ):
         e = {k: "" for k in LOGK}
@@ -409,32 +538,27 @@ class LogMixin:
 
 
 class MailMixin:
+    def _M(self):
+        return sys.modules[type(self.host).__module__]
+
     def email_account(self):
-        M = sys.modules[type(self.host).__module__]
+        M = self._M()
         if not hasattr(M, "SETTINGS"):
             return None
-        d = SmtpDialog(M, self)
-        return d.exec()
-
-    def _smtp_cfg(self):
-        M = sys.modules[type(self.host).__module__]
-        S = M.SETTINGS
-        c = {k: S.get(k, "") for k in ("smtp_host", "smtp_port", "smtp_security", "smtp_user", "smtp_pass", "smtp_from", "smtp_bcc_me")}
-        return c if c["smtp_host"] else None
+        return AccountDialog(M, self).exec()
 
     def send_mail(self):
         gi = self.groups_in_issue()
         if not gi:
             QMessageBox.information(self, "Drawing register", "Tick the drawings that go in this issue first.")
             return
-        cfg = self._smtp_cfg()
-        if cfg is None:
-            QMessageBox.information(self, "Drawing register", "Set up the email account the register is sent from first.")
-            if not self.email_account():
+        S = self._M().SETTINGS
+        if not mail_ready(S):
+            QMessageBox.information(self, "Drawing register", "First choose the email you send from (Gmail or Outlook) and sign in.")
+            self.email_account()
+            if not mail_ready(S):
                 return
-            cfg = self._smtp_cfg()
-            if cfg is None:
-                return
+        self.write_mail()
         subj, body = self._mail_parts()
         tmp = tempfile.mkdtemp()
         pdf = os.path.join(tmp, re.sub(r'[\\/:*?"<>|]+', "-", "Drawing register - %s - issue %s.pdf" % (self.project_name(), self.info["issue_no"] or "1")))
@@ -450,7 +574,7 @@ class MailMixin:
         if not dlg.exec():
             return
         m = EmailMessage()
-        frm = cfg["smtp_from"] or cfg["smtp_user"]
+        frm = S.get("mail_address") or S.get("smtp_from") or S.get("smtp_user")
         to, cc = addresses(dlg.to.text()), addresses(dlg.cc.text())
         m["From"], m["To"], m["Subject"] = frm, ", ".join(to), dlg.sub.text().strip()
         if cc:
@@ -459,7 +583,7 @@ class MailMixin:
         for p in dlg.files():
             with open(p, "rb") as f:
                 m.add_attachment(f.read(), maintype="application", subtype="pdf" if p.lower().endswith(".pdf") else "octet-stream", filename=os.path.basename(p))
-        bcc = [frm] if cfg.get("smtp_bcc_me") else []
+        bcc_me = bool(S.get("smtp_bcc_me", True))
         self.info["email"], self.info["cc"] = dlg.to.text().strip(), dlg.cc.text().strip()
         self._sending = {"to": ", ".join(to + cc), "subject": m["Subject"], "msg": m}
         self.count.setText("Sending...")
@@ -467,7 +591,7 @@ class MailMixin:
 
         def work():
             try:
-                smtp_send(cfg, m) if not bcc else self._send_with_bcc(cfg, m, to + cc + bcc)
+                deliver(S, m, bcc_me)
                 self.mail_done.emit(True, "")
             except Exception as e:
                 self.mail_done.emit(False, str(e))

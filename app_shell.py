@@ -322,10 +322,9 @@ class Ribbon(QFrame):
                 getattr(c, name)(*a)
             return f
         self.pages[6] = self._page([
-            ("Drawings", [T("Add PDFs", "add", reg("add_pdfs"), hot=True), T("Add folder", "folder", reg("add_folder")), T("Re-read PDFs", "refresh", reg("reread")), T("New group", "layers", reg("add_group")),
-                          T("Remove", "trash", reg("remove_row"))]),
-            ("Email", [T("Write email", "edit", reg("write_mail")), T("Mark as issued", "check_circle", reg("mark_issued")), T("Copy", "copy", reg("copy_mail")), T("Send email", "export", reg("send_mail"), hot=True), T("Email account", "settings", reg("email_account"))]),
-            ("Register", [T("Preview PDF", "eye", reg("preview_pdf")), T("Export PDF", "pdf", reg("export_pdf")), T("Export CSV", "export", reg("export_csv"))])])
+            ("Drawings", [T("Add PDFs", "add", reg("add_pdfs"), hot=True), T("Add folder", "folder", reg("add_folder")), T("Remove", "trash", reg("remove_row"))]),
+            ("Send", [T("Send to client", "export", reg("send_mail"), hot=True), T("Email account", "settings", reg("email_account"))]),
+            ("PDF", [T("Preview", "eye", reg("preview_pdf")), T("Save PDF", "pdf", reg("export_pdf"))])])
         for i in sorted(self.pages):
             self.stack.addWidget(self.pages[i])
         self.icon_names()

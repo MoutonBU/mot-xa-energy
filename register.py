@@ -7,12 +7,12 @@ import sys
 
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication
-from PySide6.QtWidgets import (QTabWidget, QAbstractItemView, QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
+from PySide6.QtWidgets import (QCheckBox, QGridLayout, QMenu, QTabWidget, QAbstractItemView, QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
                                QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 STATUSES = ["For information", "For comment", "For approval", "For council submission", "For tender", "For construction", "As built", "Superseded"]
 KEYS = ("on", "no", "title", "about", "size", "scale", "rev", "rdate", "pdfdate", "by", "comment", "status", "file")
-COLS = ["Issue", "Drawing no.", "Title", "What it shows", "Size", "Scale", "Rev", "Rev date", "PDF'd", "Requested by", "What changed", "Status", "File"]
+COLS = ["Send", "Drawing no.", "Drawing", "What it shows", "Size", "Scale", "Rev", "Rev date", "PDF'd", "Requested by", "What changed", "Status", "File"]
 BYS = ["", "Client request", "Council request", "Engineer", "Architect (own change)", "Site / contractor"]
 DATE_RE = r"(\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}|\d{1,2}\s+[A-Za-z]{3,9}\.?\s+\d{2,4})"
 MONTHS = {m: i for i, m in enumerate(["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
@@ -248,41 +248,63 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         outer.addWidget(self.sub)
         self.draw_w = QWidget()
         v = QVBoxLayout(self.draw_w)
-        v.setContentsMargins(0, 4, 0, 0)
-        form = QFormLayout()
+        v.setContentsMargins(0, 6, 0, 0)
+        step = lambda t: QLabel('<span style="font-size:14px; font-weight:700;">%s</span>' % t)
+        # 1  who is it for
+        v.addWidget(step("1.  Who is it for?"))
         self.f = {}
-        top = QHBoxLayout()
-        for key, label, ph in (("project", "Project", "taken from Project details if empty"), ("client", "Client", ""), ("issued_by", "Issued by", "MCP Architecture & Interiors")):
+        g1 = QGridLayout()
+        for i, (key, label, ph) in enumerate((("project", "Project", "taken from Project details if empty"), ("client", "Client", ""),
+                                              ("to", "Send to (name)", ""), ("email", "Their email", "name@company.co.za"))):
             e = QLineEdit()
             e.setPlaceholderText(ph)
             e.textEdited.connect(self._info_edited)
             self.f[key] = e
-            top.addWidget(QLabel(label))
-            top.addWidget(e, 1)
-        form.addRow(top)
-        r2 = QHBoxLayout()
-        for key, label, ph, w in (("to", "Send to", "name", 0), ("email", "Email", "address", 0), ("issue_no", "Issue no.", "", 70), ("date", "Date", "empty = today", 110)):
+            g1.addWidget(QLabel(label), i // 2, (i % 2) * 2)
+            g1.addWidget(e, i // 2, (i % 2) * 2 + 1)
+        v.addLayout(g1)
+        self.more_chk = QCheckBox("More details (issue number, date, copy to, logo)")
+        v.addWidget(self.more_chk)
+        self.more_w = QWidget()
+        g2 = QGridLayout(self.more_w)
+        g2.setContentsMargins(0, 0, 0, 0)
+        for i, (key, label, ph) in enumerate((("issued_by", "Issued by", "MCP Architecture & Interiors"), ("issue_no", "Issue number", ""),
+                                              ("date", "Date", "empty = today"), ("cc", "Copy to (Cc)", ""))):
             e = QLineEdit()
             e.setPlaceholderText(ph)
-            if w:
-                e.setMaximumWidth(w)
             e.textEdited.connect(self._info_edited)
             self.f[key] = e
-            r2.addWidget(QLabel(label))
-            r2.addWidget(e, 1 if not w else 0)
-        form.addRow(r2)
-        v.addLayout(form)
+            g2.addWidget(QLabel(label), i // 2, (i % 2) * 2)
+            g2.addWidget(e, i // 2, (i % 2) * 2 + 1)
+        lb = QPushButton("Client logo...")
+        lb.clicked.connect(self.pick_logo)
+        g2.addWidget(lb, 2, 1)
+        self.more_w.setVisible(False)
+        self.more_chk.toggled.connect(self.more_w.setVisible)
+        v.addWidget(self.more_w)
+        # 2  the drawings
+        v.addSpacing(6)
+        v.addWidget(step("2.  Add the drawings (PDFs)"))
         gl = QHBoxLayout()
-        gl.addWidget(QLabel("Block / house:"))
+        gl.addWidget(QLabel("For:"))
         self.gbox = QComboBox()
-        self.gbox.setMinimumWidth(220)
+        self.gbox.setMinimumWidth(200)
         self.gbox.currentIndexChanged.connect(self._group_changed)
         gl.addWidget(self.gbox)
-        for text, fn in (("New group", self.add_group), ("Rename", self.rename_group), ("Delete group", self.del_group), ("Add PDFs...", self.add_pdfs),
-                         ("Add a folder...", self.add_folder), ("Re-read the PDFs", self.reread), ("Remove drawing", self.remove_row), ("Move up", lambda: self.move(-1)), ("Move down", lambda: self.move(1))):
-            b = QPushButton(text)
-            b.clicked.connect(fn)
-            gl.addWidget(b)
+        nb = QPushButton("+ Another block or house")
+        nb.clicked.connect(self.add_group)
+        gl.addWidget(nb)
+        gl.addSpacing(16)
+        self.add_btn = QPushButton("Add drawing PDFs...")
+        self.add_btn.setStyleSheet("font-weight:700;")
+        self.add_btn.clicked.connect(self.add_pdfs)
+        gl.addWidget(self.add_btn)
+        fb = QPushButton("Add a whole folder...")
+        fb.clicked.connect(self.add_folder)
+        gl.addWidget(fb)
+        rb = QPushButton("Remove selected")
+        rb.clicked.connect(self.remove_row)
+        gl.addWidget(rb)
         gl.addStretch(1)
         v.addLayout(gl)
         self.tab = QTableWidget(0, len(COLS))
@@ -292,34 +314,60 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         h = self.tab.horizontalHeader()
         h.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         h.setStretchLastSection(True)
-        for i, w in enumerate((46, 80, 190, 250, 50, 60, 40, 85, 85, 130, 300, 140, 170)):
+        for i, w in enumerate((46, 90, 230, 250, 60, 60, 45, 90, 90, 140, 360, 150, 180)):
             self.tab.setColumnWidth(i, w)
         self.tab.itemChanged.connect(self._cell)
-        v.addWidget(self.tab, 3)
-        v.addWidget(QLabel("Email to send with the register (edit it freely; it is rebuilt from the list when you press Write email):"))
-        self.mail = QPlainTextEdit()
-        self.mail.setMaximumHeight(170)
-        v.addWidget(self.mail, 1)
+        v.addWidget(self.tab, 1)
+        self.all_chk = QCheckBox("Show all details (size, scale, dates, who asked, status, file)")
+        self.all_chk.toggled.connect(self._columns)
+        v.addWidget(self.all_chk)
+        self.mail = QPlainTextEdit()      # the email text; built when you send, edited in the send window
+        self.mail.setVisible(False)
+        # 3  send
+        v.addSpacing(6)
+        v.addWidget(step("3.  Send it"))
         bar = QHBoxLayout()
-        for text, fn in (("Write email", self.write_mail), ("Email account...", self.email_account), ("Send email", self.send_mail), ("Copy email", self.copy_mail), ("Mark as issued", self.mark_issued), ("Client logo...", self.pick_logo),
-                         ("Preview PDF", self.preview_pdf), ("Export PDF", self.export_pdf), ("Export CSV", self.export_csv)):
+        self.send_btn = QPushButton("Send to the client...")
+        self.send_btn.setMinimumHeight(38)
+        self.send_btn.setStyleSheet("font-weight:700; padding: 0 22px;")
+        self.send_btn.clicked.connect(self.send_mail)
+        bar.addWidget(self.send_btn)
+        for text, fn in (("Preview the PDF", self.preview_pdf), ("Save the PDF", self.export_pdf)):
             b = QPushButton(text)
+            b.setMinimumHeight(38)
             b.clicked.connect(fn)
             bar.addWidget(b)
+        more = QPushButton("More")
+        more.setMinimumHeight(38)
+        menu = QMenu(more)
+        for text, fn in (("Email account...", self.email_account), ("I sent it another way: record it as issued", self.mark_issued), (None, None),
+                         ("Rename this block or house", self.rename_group), ("Delete this block or house", self.del_group),
+                         ("Move the selected drawing up", lambda: self.move(-1)), ("Move the selected drawing down", lambda: self.move(1)),
+                         ("Read the PDFs again (after you re-saved them)", self.reread), (None, None),
+                         ("Copy the email text", self.copy_mail), ("Save the list as CSV", self.export_csv)):
+            if text is None:
+                menu.addSeparator()
+            else:
+                menu.addAction(text, fn)
+        more.setMenu(menu)
+        bar.addWidget(more)
         bar.addStretch(1)
         self.count = QLabel("")
         bar.addWidget(self.count)
         v.addLayout(bar)
-        note = QLabel("Size, scale, revision and what the drawing shows are read from the PDF and its file name (for example \"A-101 Ground floor plan Rev B.pdf\"). "
-                      "Check them: every cell can be edited. The tick in the first column decides whether a drawing is in this issue.")
-        note.setWordWrap(True)
-        note.setStyleSheet("color: gray; font-size: 11px;")
-        v.addWidget(note)
         self.sub.addTab(self.draw_w, "Drawings")
-        self.sub.addTab(self.build_log(), "Orders and revisions")
+        self.sub.addTab(self.build_log(), "Orders and changes")
         self.mail_done.connect(self._mail_finished)
         self.add_group("House / Block 1", quiet=True)
+        self._columns()
         self.refresh()
+
+    SIMPLE = ("on", "no", "title", "rev", "comment")
+
+    def _columns(self, *_a):
+        full = self.all_chk.isChecked()
+        for i, k in enumerate(KEYS):
+            self.tab.setColumnHidden(i, not (full or k in self.SIMPLE))
 
     # ----- state -----
     def state(self):
