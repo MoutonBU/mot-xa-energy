@@ -1775,7 +1775,30 @@ class Win(QMainWindow):
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.itemSelectionChanged.connect(self.on_table_sel)
-        split.addWidget(self.table)
+        side = QWidget()
+        sl = QVBoxLayout(side)
+        sl.setContentsMargins(0, 0, 0, 0)
+        sl.setSpacing(6)
+        self.note_search = QLineEdit()
+        self.note_search.setPlaceholderText("Search the notes, e.g. DPC or insulation")
+        self.note_search.setClearButtonEnabled(True)
+        self.note_search.textChanged.connect(self.apply_filter)
+        sl.addWidget(self.note_search)
+        fl = FlowLayout()
+        self.filters = {}
+        grp = QButtonGroup(self)
+        for key, lab in (("all", "All"), ("ok", "Checked"), ("verify", "To verify"), ("todo", "Unfinished")):
+            b = QPushButton(lab)
+            b.setCheckable(True)
+            b.setChecked(key == "all")
+            b.clicked.connect(lambda _c=False, k=key: self.set_filter(k))
+            grp.addButton(b)
+            fl.addWidget(b)
+            self.filters[key] = b
+        self.filter_key = "all"
+        sl.addLayout(fl)
+        sl.addWidget(self.table, 1)
+        split.addWidget(side)
         split.setSizes([800, 560])
         split.setHandleWidth(8)
         split.setChildrenCollapsible(False)
@@ -1789,7 +1812,7 @@ class Win(QMainWindow):
         self.lbl_checks.setWordWrap(True)
         self.lbl_checks.setTextFormat(Qt.TextFormat.RichText)
         nl.addWidget(self.lbl_checks)
-        br = QHBoxLayout()
+        br = FlowLayout()
         self.btn_gen = QPushButton("Suggest notes for everything (optional)")
         self.btn_gen.clicked.connect(self.generate)
         self.btn_gen.setEnabled(False)
@@ -1801,6 +1824,9 @@ class Win(QMainWindow):
         self.btn_choose.clicked.connect(lambda: self.row_spec(self.table.currentRow()))
         self.btn_remove = QPushButton("Remove selected notes")
         self.btn_remove.clicked.connect(self.remove_note)
+        self.btn_next = QPushButton("Next problem \u2192")
+        self.btn_next.setToolTip("Jump to the next note that still needs you: to verify first, then unfinished")
+        self.btn_next.clicked.connect(self.next_problem)
         self.btn_approve = QPushButton("Mark selected as checked")
         self.btn_approve.setToolTip("You have checked these notes against SANS 10400 / the NHBRC manual: they get a green tick")
         self.btn_approve.clicked.connect(self.approve_selected)
@@ -1809,6 +1835,7 @@ class Win(QMainWindow):
         self.btn_batch.clicked.connect(lambda: self.batch_folder())
         self.btn_sched = QPushButton("Notes schedule (PDF)...")
         self.btn_sched.clicked.connect(self.export_schedule)
+        br.addWidget(self.btn_next)
         br.addWidget(self.btn_choose)
         br.addWidget(self.btn_remove)
         br.addWidget(self.btn_approve)
@@ -3195,11 +3222,61 @@ class Win(QMainWindow):
                 st[iid] = "ok"
         return st
 
+    def set_filter(self, key):
+        self.filter_key = key
+        self.apply_filter()
+
+    def apply_filter(self, *_a):
+        """show only the notes that match the search text and the chosen status"""
+        st = self.note_status()
+        q = self.note_search.text().strip().lower()
+        for r in range(self.table.rowCount()):
+            a, n, m = self.table.item(r, 0), self.table.item(r, 1), self.table.item(r, 3)
+            if a is None or n is None:
+                continue
+            s_ = st.get(int(a.text()), "none")
+            ok = self.filter_key == "all" or s_ == self.filter_key
+            if ok and q:
+                ok = q in n.text().lower() or (m is not None and q in m.text().lower())
+            self.table.setRowHidden(r, not ok)
+
+    def next_problem(self):
+        st = self.note_status()
+        rows = [(r, st.get(int(self.table.item(r, 0).text()))) for r in range(self.table.rowCount()) if self.table.item(r, 0)]
+        todo = [r for r, s_ in rows if s_ in ("verify", "todo")]
+        if not todo:
+            self.say("Nothing left to check: every note is either checked or has no flags.")
+            return
+        cur = max([i.row() for i in self.table.selectionModel().selectedRows()], default=-1)
+        order = [r for r in todo if r > cur] + [r for r in todo if r <= cur]
+        pri = [r for r in order if st.get(int(self.table.item(r, 0).text())) == "verify"] or order
+        r = pri[0]
+        iid = int(self.table.item(r, 0).text())
+        self.filters["all"].setChecked(True)
+        self.filter_key = "all"
+        self.note_search.clear()
+        self.select_ids({iid})
+        b = self.note_boxes.get(iid)
+        if b:
+            self.view.centerOn((b[0] + b[2]) / 2, (b[1] + b[3]) / 2)
+            self.view._place_bar()
+        self.say(f"Note {r + 1}: {'check this product or wording' if st.get(iid) == 'verify' else 'choose its specification'}.")
+
     def update_stats(self):
         st = self.note_status()
         self.view.set_status(st)
         tot = self.table.rowCount()
-        txt = (f"{tot} notes  |  {sum(1 for v in st.values() if v == 'ok')} checked  |  "
+        for key, lab in (("all", "All"), ("ok", "Checked"), ("verify", "To verify"), ("todo", "Unfinished")):
+            n = tot if key == "all" else sum(1 for v in st.values() if v == key)
+            self.filters[key].setText(f"{lab} {n}")
+        for r in range(tot):                                   # a coloured number shows each note's status in the list
+            a = self.table.item(r, 0)
+            if a is not None:
+                col = {"ok": "#43a047", "verify": "#ff5a6e", "todo": "#ffb300"}.get(st.get(int(a.text())))
+                a.setForeground(QColor(col) if col else QColor("#cfcfd6"))
+        self.apply_filter()
+        pct = int(round(100 * sum(1 for v in st.values() if v == "ok") / tot)) if tot else 0
+        txt = (f"{tot} notes ({pct}% checked)  |  {sum(1 for v in st.values() if v == 'ok')} checked  |  "
                f"{sum(1 for v in st.values() if v == 'verify')} to verify  |  {sum(1 for v in st.values() if v == 'todo')} unfinished")
         if self.xa_provider:
             try:
