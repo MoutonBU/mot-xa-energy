@@ -332,13 +332,19 @@ class PlanView(QGraphicsView):
         pen0 = QPen(Qt.PenStyle.NoPen)
         for sp in storey["spaces"]:
             st = status.get(id(sp))
-            fill = QColor(pal.get(st or "space"))
             it = QGraphicsPathItem(self._path(sp["poly"]))
-            it.setBrush(QBrush(fill))
-            ln = QPen(QColor(pal["spaceline"]), 0.0)
+            if st:
+                it.setBrush(QBrush(QColor(pal[st])))
+                ln = QPen(QColor(pal["spaceline"]), 0.0)
+                it.setZValue(1)
+            else:                                   # a zone with no result: faint, under the rooms, never hides one
+                c = QColor(pal["nores"])
+                c.setAlpha(110)
+                it.setBrush(QBrush(c))
+                ln = QPen(QColor(pal["spaceline"]), 0.0, Qt.PenStyle.DashLine)
+                it.setZValue(0.5)
             ln.setCosmetic(True)
             it.setPen(ln)
-            it.setZValue(1)
             it.setToolTip(sp["name"] or "Room")
             sc.addItem(it)
             self.rooms[it] = sp
@@ -394,29 +400,43 @@ class PlanView(QGraphicsView):
                 t.setZValue(8)
                 sc.addItem(chip)
                 sc.addItem(t)
-        for sp in storey["spaces"]:
-            if not sp["name"]:
-                continue
+        placed = []
+        todo = sorted((q for q in storey["spaces"] if q["name"]), key=lambda q: (id(q) not in status, -_poly_area(q)))
+        for sp in todo:
             pts = [self._pt(*q) for q in sp["poly"][0]]
             xs = [q.x() for q in pts]
             ys = [q.y() for q in pts]
-            ar = 0.0
-            o_ = sp["poly"][0]
-            for i_ in range(len(o_) - 1):
-                ar += o_[i_][0] * o_[i_ + 1][1] - o_[i_ + 1][0] * o_[i_][1]
-            ar = abs(ar) / 2.0
+            ar = _poly_area(sp)
+            # area-weighted centre of the outline (the middle of an L-shaped room is inside the room)
+            a2 = cxs = cys = 0.0
+            for q0, q1 in zip(pts, pts[1:]):
+                cr = q0.x() * q1.y() - q1.x() * q0.y()
+                a2 += cr
+                cxs += (q0.x() + q1.x()) * cr
+                cys += (q0.y() + q1.y()) * cr
+            if abs(a2) > 1e-9:
+                cx, cy = cxs / (3 * a2), cys / (3 * a2)
+            else:
+                cx, cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
             w = max(max(xs) - min(xs), 0.5)
-            cx, cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
-            lines = [sp["name"]] + (["%.1f m\u00b2" % ar] if ar > 1 else [])
+            h = max(max(ys) - min(ys), 0.5)
+            lines = [sp["name"].strip()] + (["%.1f m\u00b2" % ar] if ar > 1 else [])
             ks = []
             for ln_ in lines:
                 t0 = QGraphicsSimpleTextItem(ln_)
                 f0 = t0.font()
                 f0.setPixelSize(1)
                 t0.setFont(f0)
-                ks.append(min(0.30, 0.85 * w / max(t0.boundingRect().width(), 1)))
-            k0 = min(ks)
-            lh = 1.35 * k0                       # line height in metres
+                ks.append(0.85 * w / max(t0.boundingRect().width(), 1))
+            k0 = min(0.30, min(ks), 0.8 * h / (len(lines) * 1.35))
+            if k0 < 0.11:                              # too small to read: leave it to the list and the tooltip
+                continue
+            lh = 1.35 * k0
+            widest = max((0.85 * w / ks[n]) * k0 for n in range(len(lines)))
+            box = QRectF(cx - widest / 2 - 0.05, cy - len(lines) * lh / 2 - 0.03, widest + 0.1, len(lines) * lh + 0.06)
+            if any(box.intersects(b) for b in placed):  # never write one label on top of another
+                continue
+            placed.append(box)
             for n_, ln_ in enumerate(lines):
                 t = QGraphicsSimpleTextItem(ln_)
                 t.setBrush(QBrush(QColor(pal["label"])))
@@ -437,9 +457,9 @@ class PlanView(QGraphicsView):
 def _palette(is_light):
     if is_light:
         return dict(bg="#f3f4f6", space="#e4e8ec", spaceline="#aeb6bf", wall="#2a2f36", window="#1e88e5", door="#d99a4e", doorchip="#9a5a14",
-                    stair="#98a0a9", edge="#1c1f24", label="#1c1f24", hl="#c4162a", glassline="#ffffff", ok="#bfe6cc", check="#fde7b0", fail="#f6b9bf")
+                    stair="#98a0a9", edge="#1c1f24", label="#1c1f24", nores="#9aa3ad", hl="#c4162a", glassline="#ffffff", ok="#bfe6cc", check="#fde7b0", fail="#f6b9bf")
     return dict(bg="#101114", space="#1f2328", spaceline="#3a4048", wall="#d9dde2", window="#2f9bff", door="#e0a060", doorchip="#b8741f",
-                stair="#6b727b", edge="#101114", label="#eceef0", hl="#ffd23f", glassline="#dff0ff", ok="#2a7a4e", check="#8a6c1c", fail="#9a2e3c")
+                stair="#6b727b", edge="#101114", label="#eceef0", nores="#6b727b", hl="#ffd23f", glassline="#dff0ff", ok="#2a7a4e", check="#8a6c1c", fail="#9a2e3c")
 
 
 _UNIT_RE = re.compile(r"^\W*[A-Za-z]{0,2}\s*(\d{1,2})\s*[-_.:]\s*(?=[A-Za-z])")
@@ -459,16 +479,30 @@ def _poly_area(sp):
     return abs(sum(o[i][0] * o[i + 1][1] - o[i + 1][0] * o[i][1] for i in range(len(o) - 1))) / 2.0
 
 
-def assign_results(storey, results):
+def assign_results(storey, results, combined=None):
     """Match every room of a level with a row of the results: {id(room): result row}.
     The program drops the unit prefix from room names (U3-Kitchen becomes Kitchen in unit U3), so rooms are matched
     on level, unit and bare name, then by closest area when a name repeats (several passages)."""
     rows = []
+    combined = combined or {}
     for r in results or []:
+        parts = combined.get(r.get("room"))
+        if parts:                       # an open-plan room made on the Rooms tab: each part on the plan gets its result
+            for pt in parts:
+                u, n = _split_unit(pt.get("name"))
+                try:
+                    pa = float(str(pt.get("area", 0)).replace(",", ".") or 0)
+                except ValueError:
+                    pa = 0.0
+                rows.append(([r, pt.get("name")], _norm(pt.get("floor") or r.get("floor")),
+                             (_norm(pt.get("unit") or r.get("unit")) or u).lower(), n, _norm(pt.get("name")), pa))
+            continue
         u, n = _split_unit(r.get("room"))
         ru = _norm(r.get("unit")) or u
-        rows.append((r, _norm(r.get("floor")), ru.lower(), n, _norm(r.get("room")), float(r.get("area") or 0)))
+        rows.append(([r, None], _norm(r.get("floor")), ru.lower(), n, _norm(r.get("room")), float(r.get("area") or 0)))
     used, out = set(), {}
+    for sp_ in storey["spaces"]:
+        sp_.pop("_part_of", None)
     fl = _norm(storey["name"])
     for sp in sorted(storey["spaces"], key=_poly_area, reverse=True):
         su, sn = _split_unit(sp["name"])
@@ -482,7 +516,9 @@ def assign_results(storey, results):
         if cand:
             best = min(cand, key=lambda x: abs(x[5] - ar) if x[5] and ar else 0)
             used.add(id(best[0]))
-            out[id(sp)] = best[0]
+            out[id(sp)] = best[0][0]
+            if best[0][1]:
+                sp["_part_of"] = best[0][0].get("room")
     return out
 
 
@@ -492,7 +528,7 @@ def print_palette():
     return p
 
 
-def render_levels(plan, status, width=1100, max_h=900, only_with_rooms=True):
+def render_levels(plan, status, combined=None, width=1100, max_h=900, only_with_rooms=True):
     """[(level name, QImage)] for the PDF report: the plan on white with rooms coloured by result."""
     from PySide6.QtGui import QImage
     out = []
@@ -506,7 +542,7 @@ def render_levels(plan, status, width=1100, max_h=900, only_with_rooms=True):
             continue
         v = PlanView()
         v.rot = ang
-        v.show_storey(st, print_palette(), {k: room_status(r) for k, r in assign_results(st, status).items()})
+        v.show_storey(st, print_palette(), {k: room_status(r) for k, r in assign_results(st, status, combined).items()})
         r = v.scene().itemsBoundingRect().adjusted(-0.6, -0.6, 0.6, 0.6)
         if r.isEmpty():
             continue
@@ -686,7 +722,7 @@ class PlanPage(QWidget):
 
     # --- drawing
     def _assigned(self, st):
-        return assign_results(st, getattr(self.win, "results", None) or [])
+        return assign_results(st, getattr(self.win, "results", None) or [], getattr(self.win, "combined", None))
 
     def _draw(self, *_):
         if not self._plan:
@@ -709,7 +745,7 @@ class PlanPage(QWidget):
         rows = [(pal["ok"], "Passes", "light and ventilation are both enough"),
                 (pal["check"], "Check", "only one of light or ventilation fails"),
                 (pal["fail"], "Fails", "both light and ventilation fail"),
-                (pal["space"], "No result", "room not in the results yet"),
+                (pal["nores"], "No result", "zone not in the results (dashed)"),
                 (pal["window"], "Window", "glazing, cut through its own height"),
                 (pal["door"], "Door", "gates (G) are left out"), (pal["wall"], "Wall", ""), (pal["stair"], "Stair", "")]
         self.key.setText("<b>Key</b><br>" + "<br>".join(
@@ -728,6 +764,8 @@ class PlanPage(QWidget):
             pm = QPixmap(14, 14)
             pm.fill(QColor(col))
             txt = sp["name"] or "Room"
+            if sp.get("_part_of"):
+                txt += "  (in %s)" % sp["_part_of"]
             if r:
                 txt += "   light %s  vent %s" % ("\u2713" if r.get("light_ok") else "\u2717", "\u2713" if r.get("vent_ok") else "\u2717")
             from PySide6.QtWidgets import QListWidgetItem

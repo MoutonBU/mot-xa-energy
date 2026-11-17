@@ -17522,7 +17522,7 @@ Glazing limit: glazing may not exceed {GLAZE_LIMIT[0]:g}% of the net floor area,
                 QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
                 try:
                     plan_ = ifc_plan.plan_for(ipath)
-                    lvls = ifc_plan.render_levels(plan_, self.results)
+                    lvls = ifc_plan.render_levels(plan_, self.results, getattr(self, "combined", None))
                 finally:
                     QApplication.restoreOverrideCursor()
                 sw_ = lambda c: '<span style="color:%s; font-size:11pt;">&#9632;</span>' % c
