@@ -457,7 +457,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         more = QPushButton("More")
         more.setMinimumHeight(38)
         menu = QMenu(more)
-        for text, fn in (("Email account...", self.email_account), ("My email signature...", self.my_signature), ("Load my Gmail contacts", self.load_contacts_now), ("I sent it another way: record it as issued", self.mark_issued), (None, None),
+        for text, fn in (("Email account...", self.email_account), ("My email signature...", self.my_signature), ("Load my Gmail contacts", self.load_contacts_now), ("I sent it another way: record it as issued", self.mark_issued), ("Continue from an earlier issue I already sent...", self.continue_from_earlier), (None, None),
                          ("Rename this block or house", self.rename_group), ("Delete this block or house", self.del_group),
                          ("Move the selected drawing up", lambda: self.move(-1)), ("Move the selected drawing down", lambda: self.move(1)),
                          ("Read the PDFs again (after you re-saved them)", self.reread), (None, None),
@@ -640,6 +640,135 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
                     self._merge(r, guess_row(r["path"]))
         self.refresh()
         self.count.setText("%d PDFs read again" % len(paths))
+
+    # ----- carrying on after a crash, or with a project that was never recorded here -----
+    @staticmethod
+    def _read_sent_register(path):
+        """(revision number, date) from a sent register or email: its file name, its first page text, or the email's headers."""
+        rev, date = "", ""
+        base = os.path.basename(path)
+        m = re.search(r"revision\s*([0-9A-Za-z]+)", base, re.I)
+        if m:
+            rev = m.group(1)
+        try:
+            if path.lower().endswith(".pdf"):
+                try:
+                    import pymupdf as fitz
+                except ImportError:
+                    import fitz
+                d = fitz.open(path)
+                t = (d[0].get_text("text") or "") if len(d) else ""
+                d.close()
+                m = re.search(r"revision\s*([0-9A-Za-z]+)\s*[|\-,]*\s*" + DATE_RE, t, re.I)
+                if m:
+                    rev, date = rev or m.group(1), norm_date(m.group(2))
+                if not date:
+                    for x in re.findall(DATE_RE, t):
+                        if norm_date(x):
+                            date = norm_date(x)
+                            break
+            elif path.lower().endswith(".eml"):
+                from email import policy
+                from email.parser import BytesParser
+                from email.utils import parsedate_to_datetime
+                with open(path, "rb") as f:
+                    msg = BytesParser(policy=policy.default).parse(f)
+                m = re.search(r"revision\s*([0-9A-Za-z]+)", msg.get("Subject", "") or "", re.I)
+                if m:
+                    rev = rev or m.group(1)
+                if msg.get("Date"):
+                    date = parsedate_to_datetime(msg["Date"]).date().isoformat()
+        except Exception:
+            pass
+        return rev, date
+
+    def continue_from_earlier(self):
+        """More > Continue from an earlier issue: tell the register which revision was last sent and when, so the next one shows only what changed after that."""
+        from PySide6.QtWidgets import QDialog, QDialogButtonBox
+        d = QDialog(self)
+        d.setWindowTitle("Continue from an earlier issue")
+        d.resize(560, 300)
+        v = QVBoxLayout(d)
+        t = QLabel("Use this if the program closed before the last register was recorded, or this project was sent before it was kept here.\n"
+                   "Tell it which revision you last sent and the date. Every revision row in the title blocks dated on or before that day counts as already sent, "
+                   "and the next email shows only what changed after it.")
+        t.setWordWrap(True)
+        v.addWidget(t)
+        pick = QPushButton("Read the number and date from the register PDF or email I sent...")
+        v.addWidget(pick)
+        f = QFormLayout()
+        try:
+            guess = str(max(int(self.info["issue_no"] or "1") - 1, 0))
+        except ValueError:
+            guess = "0"
+        rev = QLineEdit(guess)
+        dt = QLineEdit("")
+        dt.setPlaceholderText("for example 2026-11-17")
+        f.addRow("Revision last sent", rev)
+        f.addRow("Date it was sent", dt)
+        v.addLayout(f)
+        info = QLabel("")
+        info.setWordWrap(True)
+        v.addWidget(info)
+
+        def choose():
+            p, _ = QFileDialog.getOpenFileName(d, "The register PDF or the email you sent", "", "Register or email (*.pdf *.eml);;All files (*)")
+            if not p:
+                return
+            r_, dd = self._read_sent_register(p)
+            if r_:
+                rev.setText(r_)
+            if dd:
+                dt.setText(dd)
+            info.setText("Read: revision %s, %s." % (r_ or "?", dd or "date not found, type it in") if (r_ or dd) else "Could not read a revision or a date from that file. Type them in.")
+        pick.clicked.connect(choose)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        bb.accepted.connect(d.accept)
+        bb.rejected.connect(d.reject)
+        v.addWidget(bb)
+        if d.exec() != QDialog.DialogCode.Accepted:
+            return
+        date = norm_date(dt.text().strip())
+        if not date:
+            QMessageBox.information(self, "Drawing register", "Type the date it was sent, like 2026-11-17.")
+            return
+        n = self.rebuild_history(rev.text().strip() or "0", date)
+        self.count.setText("Continuing from revision %s of %s: %d drawings are counted as sent." % (rev.text().strip() or "0", date, n))
+
+    def rebuild_history(self, issue, date):
+        """Make an earlier issue out of the drawings in the list: what each one looked like on that date, read from its revision rows."""
+        rows = {}
+        for g in self.groups:
+            for r in g["rows"]:
+                revs = [tuple(str(v or "") for v in x[:3]) for x in (r.get("revs") or []) if len(x) >= 3]
+                dated = [x for x in revs if x[1]]
+                if dated and min(x[1] for x in dated) > date:
+                    continue                     # its first revision came after that date: it was not there yet, so it is new now
+                upto = [x for x in dated if x[1] <= date]
+                if upto:
+                    cur = max(upto, key=lambda x: (x[1], x[0]))
+                    rev, rdate = cur[0], cur[1]
+                else:
+                    rev, rdate = r.get("rev", ""), r.get("rdate", "")
+                rows[self.key(r)] = {"rev": rev, "rdate": rdate or date, "title": r.get("title", ""), "no": r.get("no", ""), "comment": "", "by": ""}
+        self.history = [h for h in self.history if str(h.get("issue")) != str(issue)]
+        self.history.append({"issue": str(issue), "date": date, "rows": rows})
+        self.history.sort(key=lambda h: (h.get("date", ""), str(h.get("issue", ""))))
+        try:
+            self.info["issue_no"] = str(int(str(issue)) + 1)
+        except ValueError:
+            self.info["issue_no"] = str(issue) + "+"
+        for g in self.groups:
+            for x in g["rows"]:
+                x["comment"] = x["auto"] = ""
+                try:
+                    self._merge(x, dict(x, comment=""))
+                except Exception:
+                    pass
+        self._mail_manual = False
+        self.mail.setPlainText("")
+        self.refresh()
+        return len(rows)
 
     # ----- what changed since the last issue -----
     def last_issue(self):

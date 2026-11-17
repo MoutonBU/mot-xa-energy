@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.60.3**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.61.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Continue from an earlier issue, 1.61.0**: in the drawing register, More > "Continue from an earlier issue I already sent...". If the program closed before the last register was recorded, or the project was sent before it was kept here, give the revision you last sent and the date (or pick the sent register PDF or email and it reads them). The register then counts every title-block revision dated on or before that day as already sent. The next revision starts after it and the email lists only what changed since.
 - **Faster build, 1.60.3**: no change to the program. The installer build is quicker: virus scanning is off on the build machine, the packaging work is cached between builds, test files and sample data are left out of the package, and a newer push replaces a build that is still running.
 - **Fix, 1.60.2**: opening a saved project that has revision rows no longer crashes ("not enough arguments for format string"). This crash came in with 1.60.1.
 - **Revision history table is read, 1.60.1**: the register now finds the title block's "Revision History" table (Rev ID, Change Name, Date) by its heading and reads each row by position, so other text on the same line no longer hides it. The date can be in any column. "What changed" fills with every revision row newer than the last issue. Press "Re-read the PDFs" on a set that is already loaded.
