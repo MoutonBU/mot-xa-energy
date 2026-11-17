@@ -17500,6 +17500,35 @@ Glazing limit: glazing may not exceed {GLAZE_LIMIT[0]:g}% of the net floor area,
                              cell(f"{o.glazed_m2:.2f}", "right"), cell(f"{o.openable_m2:.2f}", "right"),
                              cell(o.style), cell(f"{o.sched_qty:g}", "center")])
             return rows
+        plan_imgs = {}
+        try:                                             # the floor plan from the IFC, rooms coloured by result
+            ipath = getattr(self, "ifc_path", "") or ""
+            if ipath and os.path.exists(ipath) and not list_only:
+                import ifc_plan
+                QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+                try:
+                    plan_ = ifc_plan.plan_for(ipath)
+                    stat_ = {ifc_plan._norm(r_.get("room")): ifc_plan.room_status(r_) for r_ in self.results}
+                    lvls = ifc_plan.render_levels(plan_, stat_)
+                finally:
+                    QApplication.restoreOverrideCursor()
+                sw_ = lambda c: '<span style="color:%s; font-size:11pt;">&#9632;</span>' % c
+                pp_ = ifc_plan.print_palette()
+                keyh = ("<p style=\"font-size:8pt; margin-left:10px;\">" + " &nbsp; ".join(
+                    sw_(pp_[k]) + " " + t for k, t in (("ok", "Passes"), ("check", "Check (light or ventilation fails)"),
+                                                       ("fail", "Fails (both)"), ("window", "Window"), ("door", "Door"),
+                                                       ("wall", "Wall"))) + "</p>")
+                for li_, (lname, img_) in enumerate(lvls):
+                    key_ = "plan%d" % li_
+                    plan_imgs[key_] = img_
+                    body.sec = "Floor plan"
+                    ratio_ = img_.height() / max(img_.width(), 1)
+                    wpx = 690 if ratio_ * 690 < 800 else int(800 / ratio_)
+                    body.append('<p style="font-size:12pt; font-weight:bold; color:%s; margin-left:10px; margin-top:12px;">'
+                                'Floor plan: %s</p>%s<p style="margin-left:10px;"><img src="%s" width="%d"></p>'
+                                % (RED, e(lname), keyh, key_, wpx))
+        except Exception:
+            plan_imgs = {}
         for title, isdoor in (("Window schedule", False), ("Glazed door schedule", True)):
             rows = sched_rows(isdoor)
             if rows:
@@ -17537,6 +17566,8 @@ Glazing limit: glazing may not exceed {GLAZE_LIMIT[0]:g}% of the net floor area,
         def mkdoc(html_):
             d_ = QTextDocument()
             d_.addResource(QTextDocument.ImageResource, QUrl("logo"), logo)
+            for k_, im_ in plan_imgs.items():
+                d_.addResource(QTextDocument.ImageResource, QUrl(k_), im_)
             d_.setDefaultFont(QFont("Arial", 9))
             d_.setHtml("<html><body style=\"font-family:Arial; color:#111111;\">" + html_ + "</body></html>")
             d_.setPageSize(QSizeF(pw, 1e7))

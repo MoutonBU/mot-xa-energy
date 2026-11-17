@@ -35,6 +35,26 @@ def _segments(v, f, z):
     return out
 
 
+def _opening(polys):
+    """A window or door as a bar at least as thick as a wall, so it fills its gap in the wall on the plan."""
+    from shapely.geometry import Polygon
+    out = []
+    for outer, _holes in polys:
+        try:
+            g = Polygon(outer).buffer(0)
+            if g.is_empty:
+                continue
+            rect = g.minimum_rotated_rectangle
+            c = list(rect.exterior.coords)
+            a, b = math.hypot(c[1][0] - c[0][0], c[1][1] - c[0][1]), math.hypot(c[2][0] - c[1][0], c[2][1] - c[1][1])
+            d = max(0.0, (0.21 - min(a, b)) / 2.0)
+            r = rect.buffer(d, join_style=2) if d > 0 else rect
+            out.append(([tuple(q) for q in r.exterior.coords], []))
+        except Exception:
+            out.append((outer, []))
+    return out
+
+
 def _polys(v, f, z):
     """Closed outlines of one element at height z. Open meshes fall back to their flat faces, then to thick lines."""
     import numpy as np
@@ -106,9 +126,18 @@ def build_plan(path):
         z = s["elev"] + CUT_HEIGHT
         layers, spaces = {}, []
         for kind, v, f, nm in s["items"]:
-            if v[:, 2].min() > z or v[:, 2].max() < z:
+            lo, hi = float(v[:, 2].min()), float(v[:, 2].max())
+            zc = z
+            if kind in ("window", "door") and (lo > z or hi < z):
+                # high-level windows (bathrooms) do not reach 1.1 m: cut them through the middle of their own height
+                if lo < s["elev"] - 0.3 or lo > s["elev"] + 3.2:
+                    continue
+                zc = (lo + hi) / 2.0
+            elif lo > z or hi < z:
                 continue
-            ps = _polys(v, f, z)
+            ps = _polys(v, f, zc)
+            if kind in ("window", "door"):
+                ps = _opening(ps)
             if kind == "space":
                 for p in ps:
                     spaces.append({"name": nm, "poly": p})
@@ -173,6 +202,15 @@ class PlanView(QGraphicsView):
             if it in self.rooms:
                 self.room_clicked.emit(*self.rooms[it])
 
+    def highlight(self, name):
+        """Outline one room (by name) and bring it to the front; clear with None."""
+        for it, (_st, nm) in self.rooms.items():
+            on = name is not None and nm == name
+            pen = QPen(QColor(self._hl if on else self._line), 3.0 if on else 0.0)
+            pen.setCosmetic(True)
+            it.setPen(pen)
+            it.setZValue(1.5 if on else 1)
+
     def fit(self):
         self._zoomed = False
         r = self.scene().itemsBoundingRect()
@@ -200,6 +238,7 @@ class PlanView(QGraphicsView):
         sc.clear()
         self.rooms = {}
         self._storey = storey["name"]
+        self._hl, self._line = pal["hl"], pal["spaceline"]
         self.setBackgroundBrush(QBrush(QColor(pal["bg"])))
         pen0 = QPen(Qt.PenStyle.NoPen)
         for sp in storey["spaces"]:
@@ -208,6 +247,7 @@ class PlanView(QGraphicsView):
             it = QGraphicsPathItem(self._path(sp["poly"]))
             it.setBrush(QBrush(fill))
             ln = QPen(QColor(pal["spaceline"]), 0.0)
+            ln.setCosmetic(True)
             it.setPen(ln)
             it.setZValue(1)
             it.setToolTip(sp["name"] or "Room")
@@ -247,27 +287,97 @@ class PlanView(QGraphicsView):
 def _palette(is_light):
     if is_light:
         return dict(bg="#f3f4f6", space="#e4e8ec", spaceline="#aeb6bf", wall="#2a2f36", window="#4aa3e8", door="#b98a52",
-                    stair="#98a0a9", edge="#1c1f24", label="#1c1f24", ok="#bfe6cc", check="#fde7b0", fail="#f6b9bf")
+                    stair="#98a0a9", edge="#1c1f24", label="#1c1f24", hl="#c4162a", ok="#bfe6cc", check="#fde7b0", fail="#f6b9bf")
     return dict(bg="#101114", space="#1f2328", spaceline="#3a4048", wall="#d9dde2", window="#4aa3e8", door="#c8975a",
-                stair="#6b727b", edge="#101114", label="#eceef0", ok="#2a7a4e", check="#8a6c1c", fail="#9a2e3c")
+                stair="#6b727b", edge="#101114", label="#eceef0", hl="#ffd23f", ok="#2a7a4e", check="#8a6c1c", fail="#9a2e3c")
+
+
+def print_palette():
+    p = _palette(True)
+    p.update(bg="#ffffff", space="#f1f3f5", ok="#b9e3c6", check="#fbe3a1", fail="#f4a9b1")
+    return p
+
+
+def render_levels(plan, status, width=1100, max_h=900, only_with_rooms=True):
+    """[(level name, QImage)] for the PDF report: the plan on white with rooms coloured by result."""
+    from PySide6.QtGui import QImage
+    out = []
+    ang = 0.0
+    try:
+        ang = square_angle(plan)
+    except Exception:
+        pass
+    for st in plan["storeys"]:
+        if only_with_rooms and not st["spaces"]:
+            continue
+        v = PlanView()
+        v.rot = ang
+        v.show_storey(st, print_palette(), status)
+        r = v.scene().itemsBoundingRect().adjusted(-0.6, -0.6, 0.6, 0.6)
+        if r.isEmpty():
+            continue
+        w = int(width)
+        h = int(w * r.height() / max(r.width(), 1e-6))
+        if h > max_h:
+            h = int(max_h)
+            w = int(h * r.width() / max(r.height(), 1e-6))
+        img = QImage(w, h, QImage.Format.Format_ARGB32)
+        img.fill(QColor("#ffffff"))
+        pt = QPainter(img)
+        pt.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pt.translate(0, h)
+        pt.scale(1, -1)                                   # model y is up
+        v.scene().render(pt, QRectF(0, 0, w, h), r)
+        pt.end()
+        out.append((st["name"], img))
+    return out
+
+
+def square_angle(plan):
+    """Degrees to turn the plan so the long side of the walls' bounding rectangle is level."""
+    if "_angle" in plan:
+        return plan["_angle"]
+    ang = 0.0
+    try:
+        from shapely.geometry import Polygon
+        from shapely.ops import unary_union
+        st = max(plan["storeys"], key=lambda s: len(s["layers"].get("wall", [])))
+        u = unary_union([Polygon(p[0]).buffer(0) for p in st["layers"].get("wall", []) if len(p[0]) > 3])
+        c = list(u.minimum_rotated_rectangle.exterior.coords)
+        e1, e2 = (c[1][0] - c[0][0], c[1][1] - c[0][1]), (c[2][0] - c[1][0], c[2][1] - c[1][1])
+        e = e1 if math.hypot(*e1) >= math.hypot(*e2) else e2
+        ang = -math.degrees(math.atan2(e[1], e[0]))
+        ang = (ang + 90) % 180 - 90
+    except Exception:
+        ang = 0.0
+    plan["_angle"] = ang
+    return ang
+
+
+def room_status(r):
+    ok = bool(r.get("light_ok")) and bool(r.get("vent_ok"))
+    bad = (not r.get("light_ok")) and (not r.get("vent_ok"))
+    return "ok" if ok else ("fail" if bad else "check")
 
 
 class PlanPage(QWidget):
-    """The Plan tab: storey picker, the plan, a legend and a short note about the selected room."""
+    """The Plan tab: the plan on the left; on the right a key, the counts for the level and a list of its rooms."""
 
     def __init__(self, win):
         super().__init__()
         self.win = win
-        self._plan, self._path, self._err, self._busy = None, "", "", False
-        v = QVBoxLayout(self)
-        v.setContentsMargins(10, 8, 10, 8)
+        self._plan, self._path, self._busy = None, "", False
+        self._result, self._rows = {}, []
+        from PySide6.QtWidgets import QCheckBox, QListWidget, QScrollArea
+        root = QHBoxLayout(self)
+        root.setContentsMargins(10, 8, 10, 8)
+        left = QVBoxLayout()
         top = QHBoxLayout()
         top.addWidget(QLabel("Level:"))
         self.combo = QComboBox()
         self.combo.setMinimumWidth(180)
         self.combo.currentIndexChanged.connect(self._draw)
         top.addWidget(self.combo)
-        from PySide6.QtWidgets import QCheckBox
         self.straight = QCheckBox("Square up")
         self.straight.setChecked(True)
         self.straight.setToolTip("Turn the plan so its main walls run level and upright. Untick for the model's own angle.")
@@ -276,29 +386,44 @@ class PlanPage(QWidget):
         self.fit_btn = QPushButton("Fit")
         self.fit_btn.clicked.connect(lambda: self.view.fit())
         top.addWidget(self.fit_btn)
-        self.legend = QLabel("")
-        self.legend.setTextFormat(Qt.TextFormat.RichText)
-        top.addSpacing(14)
-        top.addWidget(self.legend)
         top.addStretch(1)
-        self.go_btn = QPushButton("Open rooms list")
-        self.go_btn.clicked.connect(lambda: (self.win.main_tabs.setCurrentIndex(1), self.win.tabs.setCurrentIndex(2)))
-        top.addWidget(self.go_btn)
-        v.addLayout(top)
+        left.addLayout(top)
         self.view = PlanView()
-        self.view.room_clicked.connect(self._room)
-        v.addWidget(self.view, 1)
-        self.note = QLabel("")
-        self.note.setWordWrap(True)
-        v.addWidget(self.note)
+        self.view.room_clicked.connect(lambda _st, nm: self._select(nm))
+        left.addWidget(self.view, 1)
         self.msg = QLabel("")
         self.msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.msg.setWordWrap(True)
-        v.addWidget(self.msg)
+        left.addWidget(self.msg)
+        root.addLayout(left, 1)
+        # ---- right-hand panel
+        self.side = QFrame()
+        self.side.setObjectName("planSide")
+        self.side.setFixedWidth(300)
+        sv = QVBoxLayout(self.side)
+        sv.setContentsMargins(12, 10, 12, 10)
+        sv.setSpacing(6)
+        self.key = QLabel("")
+        self.key.setTextFormat(Qt.TextFormat.RichText)
+        self.key.setWordWrap(True)
+        sv.addWidget(self.key)
+        self.count = QLabel("")
+        self.count.setTextFormat(Qt.TextFormat.RichText)
+        self.count.setWordWrap(True)
+        sv.addWidget(self.count)
+        self.list = QListWidget()
+        self.list.currentRowChanged.connect(self._pick_row)
+        sv.addWidget(self.list, 1)
+        self.note = QLabel("Click a room on the plan or in this list.")
+        self.note.setTextFormat(Qt.TextFormat.RichText)
+        self.note.setWordWrap(True)
+        sv.addWidget(self.note)
+        self.go_btn = QPushButton("Open rooms list")
+        self.go_btn.clicked.connect(lambda: (self.win.main_tabs.setCurrentIndex(1), self.win.tabs.setCurrentIndex(2)))
+        sv.addWidget(self.go_btn)
+        root.addWidget(self.side)
         self._poll = QTimer(self)
         self._poll.timeout.connect(self._check)
-        self._result = {}
-        self._light = None
 
     # --- loading
     def activate(self):
@@ -339,7 +464,9 @@ class PlanPage(QWidget):
             for s in self._plan["storeys"]:
                 self.combo.addItem(s["name"])
             i = self.combo.findText(cur)
-            self.combo.setCurrentIndex(i if i >= 0 else 0)
+            if i < 0:                                   # first level that has rooms
+                i = next((k for k, s in enumerate(self._plan["storeys"]) if s["spaces"]), 0)
+            self.combo.setCurrentIndex(i)
             self.combo.blockSignals(False)
             self._draw()
         else:
@@ -352,66 +479,91 @@ class PlanPage(QWidget):
         self.msg.setVisible(True)
         self.view.setVisible(False)
         self.combo.setEnabled(False)
+        self.side.setVisible(False)
 
     # --- drawing
+    def _results(self):
+        return {_norm(r.get("room")): r for r in (getattr(self.win, "results", None) or [])}
+
     def _status(self):
-        """Normalised room name -> ok / check / fail from the latest results."""
-        out = {}
-        for r in getattr(self.win, "results", None) or []:
-            ok = bool(r.get("light_ok")) and bool(r.get("vent_ok"))
-            bad = (not r.get("light_ok")) and (not r.get("vent_ok"))
-            out[_norm(r.get("room"))] = "ok" if ok else ("fail" if bad else "check")
-        return out
+        return {k: room_status(r) for k, r in self._results().items()}
 
     def _draw(self, *_):
         if not self._plan:
             return
         self.msg.setVisible(False)
         self.view.setVisible(True)
+        self.side.setVisible(True)
         self.combo.setEnabled(True)
-        i = max(0, self.combo.currentIndex())
+        st = self._plan["storeys"][max(0, self.combo.currentIndex())]
         is_l = bool(self.win.shell_is_light()) if hasattr(self.win, "shell_is_light") else False
         pal = _palette(is_l)
-        self.view.rot = self._square_angle() if self.straight.isChecked() else 0.0
-        self.view.show_storey(self._plan["storeys"][i], pal, self._status())
-        self.legend.setText("<span style='color:%s'>&#9632;</span> pass &nbsp; <span style='color:%s'>&#9632;</span> check "
-                            "&nbsp; <span style='color:%s'>&#9632;</span> fail &nbsp; <span style='color:%s'>&#9632;</span> window "
-                            "&nbsp; <span style='color:%s'>&#9632;</span> door"
-                            % (pal["ok"], pal["check"], pal["fail"], pal["window"], pal["door"]))
-        self._light = is_l
-
-    def _square_angle(self):
-        """Degrees to turn the plan so the long side of the walls' bounding rectangle is level."""
-        if "_angle" in self._plan:
-            return self._plan["_angle"]
-        ang = 0.0
-        try:
-            from shapely.geometry import Polygon
-            from shapely.ops import unary_union
-            st = max(self._plan["storeys"], key=lambda s: len(s["layers"].get("wall", [])))
-            u = unary_union([Polygon(p[0]).buffer(0) for p in st["layers"].get("wall", []) if len(p[0]) > 3])
-            rect = u.minimum_rotated_rectangle
-            c = list(rect.exterior.coords)
-            e1, e2 = (c[1][0] - c[0][0], c[1][1] - c[0][1]), (c[2][0] - c[1][0], c[2][1] - c[1][1])
-            e = e1 if math.hypot(*e1) >= math.hypot(*e2) else e2
-            ang = -math.degrees(math.atan2(e[1], e[0]))
-            ang = (ang + 90) % 180 - 90               # nearest to level, never upside down
-        except Exception:
-            ang = 0.0
-        self._plan["_angle"] = ang
-        return ang
+        self.view.rot = square_angle(self._plan) if self.straight.isChecked() else 0.0
+        stat = self._status()
+        self.view.show_storey(st, pal, stat)
+        fg, bg = ("#1c1f24", "#ffffff") if is_l else ("#eceef0", "#17171b")
+        self.list.setStyleSheet("QListWidget{background:%s;color:%s;border:1px solid %s;border-radius:8px;} "
+                                "QListWidget::item{padding:3px 4px;} QListWidget::item:selected{background:%s;color:%s;}"
+                                % (bg, fg, "#d4d7dc" if is_l else "#26262c", "#fbe3e6" if is_l else "#3a161d", fg))
+        sw = lambda c, ring=False: ("<span style='color:%s;font-size:15px'>&#9632;</span>" % c)
+        rows = [(pal["ok"], "Passes", "light and ventilation are both enough"),
+                (pal["check"], "Check", "only one of light or ventilation fails"),
+                (pal["fail"], "Fails", "both light and ventilation fail"),
+                (pal["space"], "No result", "room not in the results yet"),
+                (pal["window"], "Window", "glazing, cut through its own height"),
+                (pal["door"], "Door", ""), (pal["wall"], "Wall", ""), (pal["stair"], "Stair", "")]
+        self.key.setText("<b>Key</b><br>" + "<br>".join(
+            "%s <b>%s</b>%s" % (sw(c), a, (" <span style='opacity:.7'>- %s</span>" % b) if b else "") for c, a, b in rows))
+        self._rows = []
+        self.list.blockSignals(True)
+        self.list.clear()
+        res = self._results()
+        n = {"ok": 0, "check": 0, "fail": 0, "none": 0}
+        from PySide6.QtGui import QIcon, QPixmap
+        for sp in sorted(st["spaces"], key=lambda q: q["name"] or ""):
+            r = res.get(_norm(sp["name"]))
+            k = room_status(r) if r else "none"
+            n[k] += 1
+            col = pal.get(k if k != "none" else "space")
+            pm = QPixmap(14, 14)
+            pm.fill(QColor(col))
+            txt = sp["name"] or "Room"
+            if r:
+                txt += "   light %s  vent %s" % ("\u2713" if r.get("light_ok") else "\u2717", "\u2713" if r.get("vent_ok") else "\u2717")
+            from PySide6.QtWidgets import QListWidgetItem
+            it = QListWidgetItem(QIcon(pm), txt)
+            self.list.addItem(it)
+            self._rows.append(sp["name"])
+        self.list.blockSignals(False)
+        self.count.setText("<b>%s</b>: %d rooms. <b>%d</b> pass, <b>%d</b> check, <b>%d</b> fail%s." % (
+            st["name"], len(st["spaces"]), n["ok"], n["check"], n["fail"], (", %d without a result" % n["none"]) if n["none"] else ""))
+        self.note.setText("Click a room on the plan or in this list." if res else
+                          "Run the check (Run check in the ribbon) to colour the rooms.")
 
     def refresh(self):
         """Colours or results changed."""
         if self._plan and self.isVisible():
             self._draw()
 
-    def _room(self, storey, name):
-        res = {_norm(r.get("room")): r for r in (getattr(self.win, "results", None) or [])}
-        r = res.get(_norm(name))
+    def _pick_row(self, i):
+        if 0 <= i < len(self._rows):
+            self._select(self._rows[i], from_list=True)
+
+    def _select(self, name, from_list=False):
+        self.view.highlight(name)
+        if not from_list and name in self._rows:
+            self.list.blockSignals(True)
+            self.list.setCurrentRow(self._rows.index(name))
+            self.list.blockSignals(False)
+        r = self._results().get(_norm(name))
         if not r:
             self.note.setText("<b>%s</b>: no result yet. Run the check to colour the rooms." % (name or "Room"))
             return
-        self.note.setText("<b>%s</b>: light %s (%.1f%% of floor, needs %s), ventilation %s. %s" % (
-            r.get("room"), "passes" if r.get("light_ok") else "fails", 100.0 * (r.get("glazed") or 0) / max(r.get("area") or 1, 1e-9),
-            r.get("light_req", ""), "passes" if r.get("vent_ok") else "fails", "Open the Rooms list to change its windows."))
+        area = float(r.get("area") or 0)
+        gl = float(r.get("glazed") or 0)
+        self.note.setText(
+            "<b>%s</b>, %.1f m2<br>Light: <b>%s</b> (glazing %.2f m2%s)<br>Ventilation: <b>%s</b> (openable %.2f m2%s)"
+            % (r.get("room"), area, "pass" if r.get("light_ok") else "FAIL", gl,
+               ", needs %.2f" % r["light_req"] if isinstance(r.get("light_req"), (int, float)) else "",
+               "pass" if r.get("vent_ok") else "FAIL", float(r.get("openable") or 0),
+               ", needs %.2f" % r["vent_req"] if isinstance(r.get("vent_req"), (int, float)) else ""))
