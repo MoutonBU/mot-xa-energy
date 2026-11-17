@@ -1453,7 +1453,6 @@ def check_room(room, schedule, light_pct):
         "assumed": assumed,
         "internal": room.internal,
         "no_area": no_area,
-        "tags": {t: q for t, q in tags.items() if t in schedule and schedule[t].counts},
     }
 
 
@@ -8609,12 +8608,6 @@ class MainWindow(QMainWindow):
         self.summary = QLabel("")
         rl.addWidget(self.summary)
         self.tabs.addTab(res_widget, "4  Results")
-        try:
-            import lv_plan
-            self.plan_page = lv_plan.PlanPage(self, geo_fn=sim_read_geometry)
-            self.tabs.addTab(self.plan_page, "5  Plan")
-        except Exception:
-            self.plan_page = None
         self._build_xa_tab()
         self._build_cov_tab()
         self._build_detail_tab()
@@ -9690,11 +9683,6 @@ class MainWindow(QMainWindow):
                              + "   ".join(per) + "\n" + glazing_summary(self.results))
         self._fill_house_table()
         self._fill_assignments(rooms, sched)
-        if getattr(self, "plan_page", None) is not None:
-            try:
-                self.plan_page.refresh()
-            except Exception:
-                pass
         if goto:
             self._goto_lv(3)
 
