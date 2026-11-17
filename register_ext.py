@@ -107,10 +107,21 @@ class EmailPreviewDialog(QDialog):
         ev.addWidget(self.body, 1)
         self.tabs.addTab(ed, "Edit")
         self.view = QTextBrowser()
+        self.page = page
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QImage, QTextDocument
+        try:
+            self.view.document().addResource(QTextDocument.ResourceType.ImageResource, QUrl("cid:mcplogo"), QImage.fromData(page.design_png()))
+        except Exception:
+            pass
         self.tabs.addTab(self.view, "How it will look")
         self.attached = attached
         self.tabs.currentChanged.connect(self._look)
         v.addWidget(self.tabs, 1)
+        self.design_chk = QCheckBox("Send as a designed email (MCP look)")
+        self.design_chk.setChecked(page.designed_on())
+        self.design_chk.toggled.connect(lambda *_: self._look(self.tabs.currentIndex()))
+        v.addWidget(self.design_chk)
         v.addWidget(QLabel(attached))
         bar = QHBoxLayout()
         bar.addStretch(1)
@@ -131,6 +142,12 @@ class EmailPreviewDialog(QDialog):
             return
         import html
         to, cc, sub, body = self.values()
+        if self.design_chk.isChecked():
+            try:
+                self.view.setHtml(self.page.design_html(sub, body, attached=self.attached))
+                return
+            except Exception:
+                pass
         h = ('<div style="font-family:Segoe UI,Arial; font-size:10pt;">'
              '<table cellspacing="0" cellpadding="3"><tr><td><b>To</b></td><td>%s</td></tr>%s<tr><td><b>Subject</b></td><td><b>%s</b></td></tr></table><hr>'
              '<div style="white-space:pre-wrap;">%s</div><hr><p style="color:#777;">%s</p></div>' %
@@ -646,6 +663,15 @@ class SendDialog(QDialog):
         v.addLayout(f)
         self.body = QPlainTextEdit(body)
         v.addWidget(self.body, 3)
+        dr = QHBoxLayout()
+        self.design_chk = QCheckBox("Send as a designed email (MCP look)")
+        self.design_chk.setChecked(page.designed_on())
+        dr.addWidget(self.design_chk)
+        seeb = QPushButton("See how it looks")
+        seeb.clicked.connect(lambda: page.show_design(self.sub.text(), self.body.toPlainText()))
+        dr.addWidget(seeb)
+        dr.addStretch(1)
+        v.addLayout(dr)
         v.addWidget(QLabel("Attachments (tick what goes):"))
         self.att = QListWidget()
         self.items = []
@@ -952,6 +978,42 @@ class MailMixin:
     def _M(self):
         return sys.modules[type(self.host).__module__]
 
+    def design_png(self):
+        """The MCP logo (white and red, for the dark email) as PNG bytes."""
+        import base64
+        M = self._M()
+        return base64.b64decode(M.LOGO_B64)
+
+    def design_html(self, subject, body, src="cid:mcplogo", attached=""):
+        import mail_design
+        return mail_design.build(subject, body, logo_src=src, attached=attached, company=self._M().SETTINGS.get("sig_company") or "MCP Architecture & Interiors")
+
+    def designed_on(self):
+        try:
+            return bool(self._M().SETTINGS.get("mail_designed", True))
+        except Exception:
+            return True
+
+    def show_design(self, subject, body, attached=""):
+        """A window showing the designed email."""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QImage, QTextDocument
+        from PySide6.QtWidgets import QTextBrowser
+        d = QDialog(self)
+        d.setWindowTitle("How the designed email will look")
+        d.resize(760, 860)
+        v = QVBoxLayout(d)
+        tb = QTextBrowser()
+        img = QImage.fromData(self.design_png())
+        tb.document().addResource(QTextDocument.ResourceType.ImageResource, QUrl("cid:mcplogo"), img)
+        tb.setHtml(self.design_html(subject, body, attached=attached))
+        v.addWidget(tb, 1)
+        v.addWidget(QLabel("This is a simple preview. Email programs show it a little more smoothly, with rounded corners."))
+        b = QPushButton("Close")
+        b.clicked.connect(d.accept)
+        v.addWidget(b)
+        d.exec()
+
     def preview_email(self):
         """Show the email as the client will get it, and let the person change anything before it is sent."""
         subj, body = self._mail_parts()
@@ -969,6 +1031,10 @@ class MailMixin:
             finally:
                 self._mail_setting = False
             self._mail_manual = True
+            try:
+                self._M().SETTINGS["mail_designed"] = bool(d.design_chk.isChecked())
+            except Exception:
+                pass
 
     def my_signature(self):
         M = self._M()
@@ -1041,12 +1107,21 @@ class MailMixin:
                 m.set_content((("This issue is sent in %d emails because of the size. This is part 1.\n\n" % n) if n > 1 else "") + dlg.body.toPlainText())
             else:
                 m.set_content("Part %d of %d of the drawing issue for %s.\n\nIn this email:\n%s\n" % (i + 1, n, self.project_name(), "\n".join("  - " + os.path.basename(p) for p in files)))
+            if i == 0 and dlg.design_chk.isChecked():
+                try:
+                    note = ("This issue is sent in %d emails because of the size. This is part 1." % n) if n > 1 else ""
+                    m.add_alternative(self.design_html(dlg.sub.text().strip(), dlg.body.toPlainText(), attached=note), subtype="html")
+                    m.get_payload()[1].add_related(self.design_png(), maintype="image", subtype="png", cid="<mcplogo>", filename="mcp-logo.png", disposition="inline")
+                except Exception:
+                    pass
             for p in files:
                 with open(p, "rb") as f:
                     m.add_attachment(f.read(), maintype="application", subtype="pdf" if p.lower().endswith(".pdf") else "octet-stream",
                                      filename=re.sub(r"^\d+_\d+_", "", os.path.basename(p)))
             msgs.append(m)
         bcc_me = bool(S.get("smtp_bcc_me", True))
+        S["mail_designed"] = bool(dlg.design_chk.isChecked())
+        self._M().save_settings()
         self.info["email"], self.info["cc"] = dlg.to.text().strip(), dlg.cc.text().strip()
         self._sending = {"to": ", ".join(to + cc), "subject": dlg.sub.text().strip(), "msg": msgs[0]}
         self.count.setText("Sending %d email%s..." % (n, "s" if n > 1 else ""))

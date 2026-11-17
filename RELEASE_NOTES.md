@@ -1,11 +1,15 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.57.1**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.58.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Designed email in the MCP look, 1.58.0**: the register email now goes out as a dark, graphic email in the MCP red and black: a logo banner, the greeting and project
+  heading in a card, red section titles, change lines with a red edge, the drawing lists as tables with revision badges, a status pill and a signature card.
+  The text in the email box is still the one thing you edit; the designed email is built from it, and a plain-text copy is sent alongside it for programs that cannot show designs.
+  "See how it looks" in the send window and a "How it will look" tab in Preview and edit show it. Untick "Send as a designed email" to send plain text.
 - **Load my Gmail contacts, 1.57.1**: Drawing register > More > Load my Gmail contacts fetches your Gmail contacts right now and says exactly what happened (how many were loaded, or what Google refused). If your sign-in is older than the contacts permission, it offers to sign you in again.
 - **Whole contact list in the email boxes, 1.57.0**: To, Cc and "Their email" now have a small arrow at the right. Click it, or click an empty box, and your whole Gmail contact list drops down; type a few letters to narrow it and click the person.
 - **Fix: PDF preview no longer jumps to Light & ventilation, 1.56.1**: previewing the Drawing register, Energy (XA), Coverage, Costing or Building materials report now leaves you on that same page when you close the preview.
