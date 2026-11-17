@@ -19,9 +19,9 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
                                QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QTableWidget,
                                QTableWidgetItem, QVBoxLayout)
 
-LOGK = ("group", "type", "rev", "date", "order", "text", "by", "req_subject", "req_date", "req_from", "sent_date", "sent_to", "status")
+LOGK = ("group", "type", "rev", "date", "order", "text", "by", "req_subject", "req_date", "req_from", "sent_date", "sent_to", "status", "by_name", "by_email", "sent_subject")
 LOGC = ["House or block", "Type", "Rev", "Date", "Order number", "What was ordered or changed", "Asked by", "The client's email", "Received",
-        "From", "Sent to the client on", "Sent to", "Status"]
+        "From", "Sent to the client on", "Sent to", "Status", "Client name", "Client email", "Email that was sent"]
 TYPES = ["Order", "Change", "Issue"]
 LSTAT = ["Draft", "Final", "Issued", "Superseded"]
 PRESETS = {"Gmail": ("smtp.gmail.com", 465, "SSL"), "Outlook / Office 365": ("smtp.office365.com", 587, "STARTTLS"), "Other": ("", 587, "STARTTLS")}
@@ -77,6 +77,62 @@ def short_date(iso):
 
 
 _KEEP = []
+
+SIGK = (("sig_name", "Your name", "Mouton Burger"), ("sig_role", "Your position", "Director"), ("sig_company", "Company", "MCP Architecture & Interiors"),
+        ("sig_phone", "Phone", "082 000 0000"), ("sig_email", "Email", "name@company.co.za"), ("sig_web", "Website", ""), ("sig_address", "Address", ""))
+
+
+def signature_text(S, fallback=""):
+    """The email signature of the person using this program (each person fills in their own)."""
+    g = lambda k: str(S.get(k, "") or "").strip()
+    lines = [g("sig_name"), g("sig_role"), g("sig_company")]
+    contact = " | ".join(x for x in (("Tel: " + g("sig_phone")) if g("sig_phone") else "", g("sig_email") or g("mail_address"), g("sig_web")) if x)
+    lines += [contact, g("sig_address")]
+    lines = [x for x in lines if x]
+    return "\n".join(lines) if g("sig_name") or g("sig_company") else fallback
+
+
+class SignatureDialog(QDialog):
+    def __init__(self, M, parent=None):
+        super().__init__(parent)
+        self.M, self.S = M, M.SETTINGS
+        self.setWindowTitle("My email signature")
+        self.resize(520, 440)
+        v = QVBoxLayout(self)
+        v.addWidget(QLabel("Fill in your own details. They are added to the bottom of every register email you send from this computer."))
+        f = QFormLayout()
+        self.ed = {}
+        for k, label, ph in SIGK:
+            w = QLineEdit(str(self.S.get(k, "") or (self.S.get("mail_address", "") if k == "sig_email" else "")))
+            w.setPlaceholderText(ph)
+            w.textChanged.connect(self._prev)
+            f.addRow(label, w)
+            self.ed[k] = w
+        v.addLayout(f)
+        v.addWidget(QLabel("<b>How it will look</b>"))
+        self.prev = QPlainTextEdit()
+        self.prev.setReadOnly(True)
+        v.addWidget(self.prev, 1)
+        bar = QHBoxLayout()
+        bar.addStretch(1)
+        ok = QPushButton("Save")
+        ok.setStyleSheet("font-weight:700;")
+        ok.clicked.connect(self.save)
+        bar.addWidget(ok)
+        v.addLayout(bar)
+        self._prev()
+
+    def _vals(self):
+        return {k: w.text().strip() for k, w in self.ed.items()}
+
+    def _prev(self, *_a):
+        t = signature_text(dict(self._vals(), mail_address=self.S.get("mail_address", "")))
+        self.prev.setPlainText("Regards,\n" + (t or "(type your name)"))
+
+    def save(self):
+        self.S.update(self._vals())
+        self.M.save_settings()
+        self.accept()
 
 
 class AccountDialog(QDialog):
@@ -205,6 +261,8 @@ class AccountDialog(QDialog):
             self.status.setText("Connected with %s. Mail goes from %s." % ("Google" if self.S["mail_provider"] == "gmail" else "Microsoft", self.S.get("mail_address", "")))
         elif self.S.get("smtp_host") and self.S.get("mail_address"):
             self.status.setText("Connected. Mail goes from %s." % self.S["mail_address"])
+        if self.S.get("contacts_note") and self.S.get("mail_provider") == "gmail":
+            self.status.setText(self.status.text() + "\nTo find your Gmail contacts when you type a name, press Sign in with Google once more and allow contacts.")
 
     def key(self):
         return ("gmail", "outlook", "smtp")[self.prov.currentIndex()]
@@ -367,6 +425,11 @@ class AccountDialog(QDialog):
                 self.S["mail_address"] = msg
                 self.addr.setText(msg)
             self.M.save_settings()
+            try:
+                import contacts
+                contacts.refresh_async(self.M, force=True)
+            except Exception:
+                pass
             self.refresh()
             self.status.setText("Signed in as %s. You can send from the program now." % (msg or "your account"))
         elif "access_denied" in msg and self.S.get("mail_provider") == "gmail":
@@ -511,6 +574,12 @@ class SendDialog(QDialog):
         self.to = QLineEdit(page.info.get("email", ""))
         self.cc = QLineEdit(page.info.get("cc", ""))
         self.sub = QLineEdit(subject)
+        try:
+            import contacts
+            contacts.attach(self.to, lambda: page._M())
+            contacts.attach(self.cc, lambda: page._M())
+        except Exception:
+            pass
         f.addRow("To", self.to)
         f.addRow("Cc", self.cc)
         f.addRow("Subject", self.sub)
@@ -614,7 +683,7 @@ class SendDialog(QDialog):
 class LogMixin:
     """The orders-and-revisions log."""
 
-    LOG_SIMPLE = ("group", "order", "text", "req_subject", "sent_date")
+    LOG_SIMPLE = ("group", "order", "text", "by_name", "by_email", "req_subject", "sent_subject")
 
     def build_log(self):
         from PySide6.QtWidgets import QWidget
@@ -627,7 +696,7 @@ class LogMixin:
         v.addWidget(n)
         bar = QHBoxLayout()
         for text, fn, bold in (("+ New order", lambda: self.add_log("Order"), True), ("+ Client change", lambda: self.add_log("Change"), True),
-                               ("Attach the client's email...", self.attach_ref, False), ("Open that email", self.open_ref, False), ("Remove line", self.remove_log, False)):
+                               ("Attach the client's email...", self.attach_ref, False), ("Open the client's email", self.open_ref, False), ("Open the email I sent", self.open_sent, False), ("Remove line", self.remove_log, False)):
             b = QPushButton(text)
             if bold:
                 b.setStyleSheet("font-weight:700;")
@@ -641,9 +710,10 @@ class LogMixin:
         self.ltab.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.ltab.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.ltab.horizontalHeader().setStretchLastSection(True)
-        for i, wd in enumerate((150, 70, 40, 85, 110, 360, 130, 300, 85, 170, 85, 200, 80)):
+        for i, wd in enumerate((150, 70, 40, 85, 110, 360, 130, 300, 85, 170, 85, 200, 80, 150, 200, 320)):
             self.ltab.setColumnWidth(i, wd)
         self.ltab.itemChanged.connect(self._log_cell)
+        self.ltab.cellDoubleClicked.connect(lambda r, c: self.open_sent() if LOGK[c] == "sent_subject" else self.open_ref() if LOGK[c] == "req_subject" else None)
         v.addWidget(self.ltab, 1)
         self.log_all = QCheckBox("Show all details (rev, dates, who asked, sent to, status)")
         self.log_all.toggled.connect(self._log_columns)
@@ -659,7 +729,8 @@ class LogMixin:
     def add_log(self, typ):
         e = {k: "" for k in LOGK}
         e.update({"group": self.groups[self.cur]["name"], "type": typ, "date": datetime.date.today().isoformat(), "status": "Draft",
-                  "text": "New order" if typ == "Order" else "", "req_path": "", "sent_path": "", "drawings": ""})
+                  "text": "New order" if typ == "Order" else "", "req_path": "", "sent_path": "", "drawings": "",
+                  "by_name": self.info.get("to", ""), "by_email": self.info.get("email", "")})
         self.log.append(e)
         self.refresh_log()
         self.ltab.selectRow(len(self.log) - 1)
@@ -681,6 +752,10 @@ class LogMixin:
         ref = read_reference(p)
         e = self.log[r]
         e["req_path"], e["req_subject"], e["req_from"], e["req_date"] = p, ref["subject"], ref["from"], ref["date"]
+        from email.utils import parseaddr
+        nm, ad = parseaddr(ref["from"] or "")
+        if nm or ad:
+            e["by_name"], e["by_email"] = nm or e.get("by_name", ""), ad or e.get("by_email", "")
         if not e.get("order"):
             e["order"] = find_order_no(ref["subject"] + " " + ref["body"])
         if not e.get("text") or e["text"] == "New order":
@@ -689,6 +764,15 @@ class LogMixin:
         if not e.get("by"):
             e["by"] = "Council request" if re.search(r"council|municip", low) else "Client request"
         self.refresh_log()
+
+    def open_sent(self):
+        r = self.ltab.currentRow()
+        if 0 <= r < len(self.log):
+            p = self.log[r].get("sent_path")
+            if p and os.path.exists(p):
+                QDesktopServices.openUrl(QUrl.fromLocalFile(p))
+            else:
+                QMessageBox.information(self, "Drawing register", "That line has no sent email yet. It is linked when you send the drawings from the program.")
 
     def open_ref(self):
         r = self.ltab.currentRow()
@@ -749,13 +833,19 @@ class LogMixin:
             by = Counter(r.get("by") for r in items if r.get("by")).most_common(1)
             if not pend.get("by") and by:
                 pend["by"] = by[0][0]
+            if not pend.get("by_name"):
+                pend["by_name"] = self.info.get("to", "")
+            if not pend.get("by_email"):
+                pend["by_email"] = self.info.get("email", "")
             pend["drawings"] = "; ".join("%s Rev %s" % (r.get("no") or r.get("title", ""), r.get("rev") or "-") for r in items)
             if not pend.get("text") or pend["text"] == "New order":
-                parts = [self._why(r) for r in items if r.get("comment") or r.get("by")]
+                parts = ["%s %s" % (r.get("no") or r.get("title", ""), self._what(r)) for r in items if r.get("comment") or r.get("by") or self.rev_items(r)]
                 pend["text"] = (pend.get("text") or "") + ("; ".join(parts) if parts else ("Drawings issued" if first else "Drawings revised"))
             pend["date"] = today
             if sent:
                 pend["sent_date"], pend["sent_to"], pend["sent_subject"], pend["sent_path"] = today, sent["to"], sent["subject"], sent.get("path", "")
+                if sent.get("path"):
+                    pend["sent_subject"] = "%s  (%s)" % (sent["subject"], os.path.basename(sent["path"]))
             else:
                 pend["sent_date"] = today
             pend["status"] = "Final"
@@ -783,6 +873,8 @@ class LogMixin:
                 if x.get("req_subject") or x.get("by"):
                     lines.append('<font color="#1E8CC8">Request%s: %s%s%s</font>' % (" (%s)" % e_(x["by"]) if x.get("by") else "", e_(x.get("req_subject", "")),
                                  " (date received %s)" % e_(short_date(x["req_date"])) if x.get("req_date") else "", " " + e_(x["req_from"].split("<")[0].strip()) if x.get("req_from") else ""))
+                if x.get("by_name") or x.get("by_email"):
+                    lines.append('<font color="#1E8CC8">%s%s</font>' % (e_(x.get("by_name", "")), ("<br>" + e_(x["by_email"])) if x.get("by_email") else ""))
                 if x.get("sent_date"):
                     lines.append('<font color="#1E9C5A">email sent: %s %s</font>' % (e_(x.get("sent_subject", "")), e_(short_date(x["sent_date"]))))
                 left = '<b>%s</b>' % e_(name)
@@ -799,6 +891,17 @@ class LogMixin:
 class MailMixin:
     def _M(self):
         return sys.modules[type(self.host).__module__]
+
+    def my_signature(self):
+        M = self._M()
+        if not hasattr(M, "SETTINGS"):
+            return None
+        r = SignatureDialog(M, self).exec()
+        if r:
+            self._mail_manual = False
+            self.write_mail()
+            self._sync_issuer()
+        return r
 
     def email_account(self):
         M = self._M()
@@ -820,11 +923,20 @@ class MailMixin:
             self.email_account()
             if not mail_ready(S):
                 return
+        try:
+            import contacts
+            contacts.refresh_async(self._M())
+        except Exception:
+            pass
+        if not signature_text(S) and not getattr(self, "_sig_asked", False):
+            self._sig_asked = True
+            if QMessageBox.question(self, "Drawing register", "Your name and details are not set up for the bottom of the email yet. Set up your signature now?") == QMessageBox.StandardButton.Yes:
+                self.my_signature()
         if not getattr(self, "_mail_manual", False):
             self.write_mail()
         subj, body = self._mail_parts()
         tmp = tempfile.mkdtemp()
-        pdf = os.path.join(tmp, re.sub(r'[\\/:*?"<>|]+', "-", "Drawing register - %s - issue %s.pdf" % (self.project_name(), self.info["issue_no"] or "1")))
+        pdf = os.path.join(tmp, re.sub(r'[\\/:*?"<>|]+', "-", "Drawing register - %s - revision %s.pdf" % (self.project_name(), self.info["issue_no"] or "0")))
         self.write_pdf(pdf)
         seen, drawings = set(), []
         for _n, rows in gi:

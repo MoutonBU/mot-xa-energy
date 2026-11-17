@@ -238,7 +238,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         self.host = host
         self.groups = []     # {name, rows:[...]}
         self.history = []    # issues already sent: {issue, date, rows:{key: {rev, rdate, title, comment}}}
-        self.info = {"project": "", "client": "", "issued_by": "", "to": "", "email": "", "note": "", "issue_no": "1", "date": "", "cc": "", "client_logo": ""}
+        self.info = {"project": "", "client": "", "issued_by": "", "to": "", "email": "", "note": "", "issue_no": "0", "date": "", "cc": "", "client_logo": ""}
         self.log = []        # orders and revisions, see register_ext
         self.cur = 0
         self._busy = False
@@ -260,22 +260,33 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             e.setPlaceholderText(ph)
             e.textEdited.connect(self._info_edited)
             self.f[key] = e
+            if key == "email":
+                self._contacts_on(e)
             g1.addWidget(QLabel(label), i // 2, (i % 2) * 2)
             g1.addWidget(e, i // 2, (i % 2) * 2 + 1)
         v.addLayout(g1)
-        self.more_chk = QCheckBox("More details (issue number, date, copy to, logo)")
+        self.more_chk = QCheckBox("More details (revision, date, copy to, logo)")
         v.addWidget(self.more_chk)
         self.more_w = QWidget()
         g2 = QGridLayout(self.more_w)
         g2.setContentsMargins(0, 0, 0, 0)
-        for i, (key, label, ph) in enumerate((("issued_by", "Issued by", "MCP Architecture & Interiors"), ("issue_no", "Issue number", ""),
+        for i, (key, label, ph) in enumerate((("issued_by", "Issued by", "from your signature"), ("issue_no", "Revision", "0"),
                                               ("date", "Date", "empty = today"), ("cc", "Copy to (Cc)", ""))):
             e = QLineEdit()
             e.setPlaceholderText(ph)
             e.textEdited.connect(self._info_edited)
             self.f[key] = e
             g2.addWidget(QLabel(label), i // 2, (i % 2) * 2)
-            g2.addWidget(e, i // 2, (i % 2) * 2 + 1)
+            if key == "issued_by":
+                e.setVisible(False)
+                self.issued_btn = QPushButton("")
+                self.issued_btn.setStyleSheet("text-align:left;")
+                self.issued_btn.clicked.connect(self.my_signature)
+                g2.addWidget(self.issued_btn, i // 2, (i % 2) * 2 + 1)
+            else:
+                if key == "cc":
+                    self._contacts_on(e)
+                g2.addWidget(e, i // 2, (i % 2) * 2 + 1)
         lb = QPushButton("Client logo...")
         lb.clicked.connect(self.pick_logo)
         g2.addWidget(lb, 2, 1)
@@ -355,7 +366,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         more = QPushButton("More")
         more.setMinimumHeight(38)
         menu = QMenu(more)
-        for text, fn in (("Email account...", self.email_account), ("I sent it another way: record it as issued", self.mark_issued), (None, None),
+        for text, fn in (("Email account...", self.email_account), ("My email signature...", self.my_signature), ("I sent it another way: record it as issued", self.mark_issued), (None, None),
                          ("Rename this block or house", self.rename_group), ("Delete this block or house", self.del_group),
                          ("Move the selected drawing up", lambda: self.move(-1)), ("Move the selected drawing down", lambda: self.move(1)),
                          ("Read the PDFs again (after you re-saved them)", self.reread), (None, None),
@@ -562,9 +573,9 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             for r in rs:
                 rows[self.key(r)] = {"rev": r.get("rev", ""), "rdate": r.get("rdate", ""), "title": r.get("title", ""), "no": r.get("no", ""),
                                      "comment": r.get("comment", ""), "by": r.get("by", "")}
-        self.history.append({"issue": self.info["issue_no"] or "1", "date": datetime.date.today().isoformat(), "rows": rows})
+        self.history.append({"issue": self.info["issue_no"] or "0", "date": datetime.date.today().isoformat(), "rows": rows})
         try:
-            self.info["issue_no"] = str(int(self.info["issue_no"] or "1") + 1)
+            self.info["issue_no"] = str(int(self.info["issue_no"] or "0") + 1)
         except ValueError:
             self.info["issue_no"] = self.info["issue_no"] + "+"
         for g in self.groups:
@@ -638,6 +649,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         try:
             for k, e in self.f.items():
                 e.setText(self.info.get(k, ""))
+            self._sync_issuer()
             self.gbox.clear()
             self.gbox.addItems([g["name"] for g in self.groups])
             self.gbox.setCurrentIndex(self.cur)
@@ -714,6 +726,53 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             c = re.sub(r"^\s*[A-Za-z ]{3,22}[:\-]\s*", "", c)
         return c
 
+    def _contacts_on(self, line_edit):
+        try:
+            import contacts
+            contacts.attach(line_edit, self._M)
+        except Exception:
+            pass
+
+    def issuer(self):
+        """Who the register is issued by: the signature of the person using the program."""
+        try:
+            from register_ext import signature_text
+            t = signature_text(self._M().SETTINGS, "").split("\n")
+            return ", ".join(x for x in t[:3] if x)
+        except Exception:
+            return self.info.get("issued_by", "")
+
+    def _sync_issuer(self):
+        if hasattr(self, "issued_btn"):
+            self.issued_btn.setText(self.issuer() or "Click to set your name and details (your email signature)...")
+
+    def rev_items(self, r):
+        """The revision-column rows of this drawing that are newer than the last issue: [(rev, date, description)]."""
+        h = self.last_issue()
+        o = ((h or {}).get("rows") or {}).get(self.key(r)) or {}
+        orev, odate = (o.get("rev") or ""), (o.get("rdate") or "")
+        out = []
+        for it in sorted((tuple(x) for x in (r.get("revs") or []) if len(x) >= 3), key=lambda x: (x[1], x[0])):
+            rv, dt, ds = it[0], it[1], it[2]
+            if not ds:
+                continue
+            if o:
+                if odate and dt:
+                    if dt <= odate:
+                        continue
+                elif orev and rv <= orev:
+                    continue
+            out.append((rv, dt, ds))
+        return out
+
+    def _what(self, r):
+        """What changed on a drawing, read from the title block's revision column; falls back to the typed comment."""
+        items = self.rev_items(r)
+        by = r.get("by") or ""
+        if items:
+            return (by + ": " if by else "") + "; ".join("Rev %s - %s" % (rv, ds) for rv, _dt, ds in items)
+        return self._why(r)
+
     def _why(self, r):
         by, c = r.get("by") or "", self._clean(r)
         return (by + (": " if by and c else "") + c) if (by or c) else "no reason given"
@@ -723,28 +782,30 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         to = self.info["to"].strip()
         last = self.last_issue()
         new, rev = self.changes()
-        lines = ["Subject: %s - drawing register, issue %s (%s)" % (self.project_name(), self.info["issue_no"] or "1", self.issue_date()), "",
+        lines = ["Subject: %s - revision %s (%s)" % (self.project_name(), self.info["issue_no"] or "0", self.issue_date()), "",
                  "Hi %s," % (to.split()[0] if to else "there"), "",
                  "Please find the %sdrawings for %s issued today, %s. The drawing register is attached." %
                  ("revised " if last else "", self.project_name(), self.issue_date()), ""]
         if last and (rev or new):
-            lines.append("WHAT CHANGED SINCE ISSUE %s (%s)" % (last.get("issue", ""), last.get("date", "")))
+            lines.append("WHAT CHANGED SINCE REVISION %s (%s)" % (last.get("issue", ""), last.get("date", "")))
             for r in rev:
                 _k, t = self.change_of(r)
-                lines.append("  - %s  %s  %s (%s): %s" % (r.get("no") or "-", r.get("title", ""), t.replace("Revised: ", ""), r.get("rdate") or r.get("pdfdate", ""), self._why(r)))
+                lines.append("  - %s  %s  %s (%s): %s" % (r.get("no") or "-", r.get("title", ""), t.replace("Revised: ", ""), r.get("rdate") or r.get("pdfdate", ""), self._what(r)))
             for r in new:
                 lines.append("  - %s  %s  NEW: %s" % (r.get("no") or "-", r.get("title", ""), r.get("about", "")))
             lines.append("")
         elif last:
-            lines += ["No drawing has changed since issue %s." % last.get("issue", ""), ""]
+            lines += ["No drawing has changed since revision %s." % last.get("issue", ""), ""]
         names = {n for n, _r in gi}
         pend = [x for x in self.log if not x.get("sent_date") and x.get("group") in names]
         if pend:
-            lines.append("ORDERS AND CHANGES COVERED BY THIS ISSUE")
+            lines.append("ORDERS AND CHANGES COVERED BY THIS REVISION")
             for x in pend:
                 bit = "  - %s" % x.get("group", "")
                 bit += (" (order no. %s)" % x["order"]) if x.get("order") else ""
                 bit += ": " + (x.get("text") or ("New order" if x.get("type") == "Order" else "Change"))
+                if x.get("by_name") or x.get("by_email"):
+                    bit += " [asked by %s]" % " ".join(t for t in (x.get("by_name", ""), ("<%s>" % x["by_email"]) if x.get("by_email") else "") if t)
                 if x.get("req_subject"):
                     bit += " [your email: %s%s]" % (x["req_subject"], ", " + short_date(x["req_date"]) if x.get("req_date") else "")
                 lines.append(bit)
@@ -759,10 +820,15 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             lines.append("")
         statuses = sorted({r.get("status", "") for _n, rows in gi for r in rows})
         if statuses:
-            lines += ["Status of this issue: " + ", ".join(statuses) + ".", ""]
+            lines += ["Status of this revision: " + ", ".join(statuses) + ".", ""]
         if self.info["note"].strip():
             lines += [self.info["note"].strip(), ""]
-        lines += ["Please let me know if anything is missing or if you have comments.", "", "Regards,", self.info["issued_by"].strip() or "MCP Architecture & Interiors"]
+        lines += ["Please let me know if anything is missing or if you have comments.", "", "Regards,"]
+        try:
+            from register_ext import signature_text
+            lines.append(signature_text(self._M().SETTINGS, self.info["issued_by"].strip() or "MCP Architecture & Interiors"))
+        except Exception:
+            lines.append(self.info["issued_by"].strip() or "MCP Architecture & Interiors")
         self.mail.setPlainText("\n".join(lines))
 
     def _mail_parts(self):
@@ -795,7 +861,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         last = self.last_issue()
         new, rev = self.changes()
         out = ['<p style="font-size:9pt;color:#444;">%d drawings in this issue.%s</p>' %
-               (n, (" %d revised and %d new since issue %s." % (len(rev), len(new), e(last.get("issue", "")))) if last else "")]
+               (n, (" %d revised and %d new since revision %s." % (len(rev), len(new), e(last.get("issue", "")))) if last else "")]
         out.append(self.log_html(e, td, th, RED))
         if last and (rev or new):
             body = ""
@@ -806,7 +872,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             for r in new:
                 body += "<tr>%s%s%s%s%s</tr>" % (td(e(r.get("no", ""))), td("<b>%s</b>" % e(r.get("title", ""))), td("New", "center"),
                                                   td(e(r.get("rdate") or r.get("pdfdate", "")), "center"), td(e(r.get("about", ""))))
-            out.append('<h3 style="color:%s;margin-bottom:3px;">Changes since issue %s (%s)</h3>' % (RED, e(last.get("issue", "")), e(last.get("date", ""))))
+            out.append('<h3 style="color:%s;margin-bottom:3px;">Changes since revision %s (%s)</h3>' % (RED, e(last.get("issue", "")), e(last.get("date", ""))))
             out.append('<table width="100%%" border="0.6" cellspacing="0" style="font-size:8.5pt;"><tr>%s</tr>%s</table>' %
                        ("".join((th("No.", 8), th("Drawing", 24), th("Change", 14), th("Date", 10), th("Why / what was changed", 44))), body))
         for name, rows in gi:
@@ -828,7 +894,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
                        ("".join((th("No.", 6), th("Drawing", 15), th("What it shows", 22), th("Size", 4), th("Scale", 5), th("Rev", 3), th("Rev date", 8),
                                  th("PDF'd", 8), th("What changed", 19), th("Status", 10))), body))
         if self.history:
-            out.append('<p style="font-size:7.5pt;color:#666;">Earlier issues: %s.</p>' % e("; ".join("issue %s, %s (%d drawings)" % (h.get("issue", ""), h.get("date", ""), len(h.get("rows", {}))) for h in self.history)))
+            out.append('<p style="font-size:7.5pt;color:#666;">Earlier revisions: %s.</p>' % e("; ".join("revision %s, %s (%d drawings)" % (h.get("issue", ""), h.get("date", ""), len(h.get("rows", {}))) for h in self.history)))
         out.append('<p style="font-size:7.5pt;color:#666;">Revision, revision date and drawing number are read from the title block of each drawing; PDF\'d is the date the PDF was made. '
                    'Shaded rows are new or revised since the last issue. Use the latest revision of every drawing; earlier revisions are superseded.</p>')
         return [x for x in out if x]
@@ -846,9 +912,9 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
              '<p align="center" style="font-size:11pt; color:#444444;">%s</p><p style="font-size:30pt;">&nbsp;</p>'
              '<table width="100%%" cellspacing="0" cellpadding="14" border="0"><tr><td bgcolor="%s" style="color:#222222;">'
              '<span style="font-size:24pt; font-weight:bold;">DRAWING REGISTER</span><br>'
-             '<span style="font-size:9pt; color:#555555;">Issue %s &nbsp;|&nbsp; %s</span></td></tr></table>'
+             '<span style="font-size:9pt; color:#555555;">Revision %s &nbsp;|&nbsp; %s</span></td></tr></table>'
              '<table width="100%%" cellspacing="0" cellpadding="0" border="0"><tr><td bgcolor="%s" height="4"></td></tr></table>' %
-             (e(company), DARK, e(self.info["issue_no"] or "1"), e(self.issue_date()), RED))
+             (e(company), DARK, e(self.info["issue_no"] or "0"), e(self.issue_date()), RED))
         h += ('<p style="font-size:12pt;">&nbsp;</p><p style="font-size:9pt; color:#666666;">PROJECT</p>'
               '<p style="font-size:16pt; font-weight:bold; color:#222222; margin-top:0px;">%s</p>'
               '<p style="font-size:9pt; color:#666666;">SITE</p>'
@@ -858,13 +924,13 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
               '<td width="50%%" style="font-size:8.5pt; color:#666666;">ISSUED TO<br><span style="font-size:12pt; font-weight:bold; color:#222222;">%s</span></td></tr></table>'
               '<p style="font-size:8pt;">&nbsp;</p><table width="100%%" cellspacing="0" cellpadding="3" border="0"><tr>'
               '<td width="50%%" style="font-size:8.5pt; color:#666666;">ARCHITECTURE FIRM<br><span style="font-size:12pt; font-weight:bold; color:#222222;">%s</span></td>'
-              '<td width="50%%" style="font-size:8.5pt; color:#666666;">DRAWINGS IN THIS ISSUE<br><span style="font-size:12pt; font-weight:bold; color:#222222;">%d</span></td></tr></table>' %
+              '<td width="50%%" style="font-size:8.5pt; color:#666666;">DRAWINGS IN THIS REVISION<br><span style="font-size:12pt; font-weight:bold; color:#222222;">%d</span></td></tr></table>' %
               (e(self.info["client"] or rd.get("owner") or "-"), e(self.info["to"] or "-"), e(rd.get("architect") or company),
                sum(len(r) for _g, r in self.groups_in_issue())))
         if client_logo:
             h += '<p style="font-size:10pt;">&nbsp;</p><p align="right">%s</p>' % client_logo
         h += ('<p style="font-size:20pt;">&nbsp;</p><p style="font-size:9pt; color:#666666;">THIS REGISTER WAS COMPILED BY</p>'
-              '<p style="font-size:12pt; font-weight:bold; color:#222222; margin-top:0px;">%s</p>' % e(self.info["issued_by"] or rd.get("prepared_by") or company))
+              '<p style="font-size:12pt; font-weight:bold; color:#222222; margin-top:0px;">%s</p>' % e(self.issuer() or rd.get("prepared_by") or company))
         if rd.get("contact"):
             h += '<p style="font-size:8pt; color:#777777;">%s</p>' % e(rd["contact"])
         return h
@@ -919,7 +985,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             painter.setFont(QFont("Arial", 7))
             painter.drawLine(0, int(ph - 24), int(pw), int(ph - 24))
             painter.drawText(QRectF(0, ph - 22, pw * 0.8, 16), int(Qt.AlignmentFlag.AlignLeft),
-                             "%s  |  Drawing Register  |  %s  |  Issue %s" % (company, self.project_name(), self.info["issue_no"] or "1"))
+                             "%s  |  Drawing Register  |  %s  |  Revision %s" % (company, self.project_name(), self.info["issue_no"] or "0"))
             painter.drawText(QRectF(0, ph - 22, pw, 16), int(Qt.AlignmentFlag.AlignRight), "Page %d of %d" % (i + 2, len(pages) + 1))
             painter.restore()
         painter.end()

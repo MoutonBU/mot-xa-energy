@@ -13,7 +13,7 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 GOOGLE = {"auth": "https://accounts.google.com/o/oauth2/v2/auth", "token": "https://oauth2.googleapis.com/token",
-          "scope": "https://www.googleapis.com/auth/gmail.send openid email", "id": "google_client_id", "secret": "google_client_secret",
+          "scope": "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/contacts.readonly https://www.googleapis.com/auth/contacts.other.readonly openid email", "id": "google_client_id", "secret": "google_client_secret",
           "refresh": "google_refresh", "host": "127.0.0.1"}
 MICROSOFT = {"auth": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize", "token": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
              "scope": "offline_access Mail.Send User.Read openid email", "id": "ms_client_id", "secret": "", "refresh": "ms_refresh", "host": "localhost"}

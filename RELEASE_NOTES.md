@@ -1,11 +1,20 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.54.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.55.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Signature, changes from the PDFs, contacts, revision numbering, 1.55.0**:
+  - *My email signature* (Drawing register > More): each person fills in their own name, position, company, phone, email, website and address. It is added to
+    the bottom of every register email, and "Issued by" (cover page and More details) now comes from it.
+  - *Revision* replaces "issue number" and starts at 0. The email subject is now "<project> - revision 0 (date)", without "drawing register".
+  - *Changes read from the PDFs*: for a revised drawing the email and the log list every revision-column row newer than the last issue (Rev B - ..., Rev C - ...).
+  - *Orders and changes* have Client name and Client email (filled from "Send to" or from the client's email you attach) and show under the request in the
+    printed log and the email. The email that was sent is linked to its log line: "Open the email I sent" or double-click the "Email that was sent" cell.
+  - *Gmail contacts*: after signing in with Google, typing a few letters of a name (Belinda, Louis) in To / Cc / Their email offers that account's contacts
+    and the people you have emailed. People who signed in before must press Sign in with Google once more to allow contacts.
 - **Email account is now one box, 1.54.0**: it shows only your email address and a Sign in with Google button (a Disconnect button appears
   once you are signed in). For an address that is not Gmail, a password box appears automatically. Pressing Done is tested inside the whole program.
 - **Ask for access, 1.53.0**: if Google blocks a Gmail address because it has not been approved for the program yet, the Email account window says so
