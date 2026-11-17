@@ -17529,7 +17529,7 @@ Glazing limit: glazing may not exceed {GLAZE_LIMIT[0]:g}% of the net floor area,
                 pp_ = ifc_plan.print_palette()
                 keyh = ("<p style=\"font-size:8pt; margin-left:10px;\">" + " &nbsp; ".join(
                     sw_(pp_[k]) + " " + t for k, t in (("ok", "Passes"), ("check", "Check (light or ventilation fails)"),
-                                                       ("fail", "Fails (both)"), ("window", "Window"), ("door", "Door"),
+                                                       ("fail", "Fails (both)"), ("window", "Window"), ("door", "Door"), ("gate", "Gate"),
                                                        ("wall", "Wall"))) + "</p>")
                 for li_, (lname, img_) in enumerate(lvls):
                     key_ = "plan%d" % li_

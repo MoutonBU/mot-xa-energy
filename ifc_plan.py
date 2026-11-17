@@ -177,21 +177,38 @@ def build_plan(path):
                     cont = next((r.RelatingObject for r in (el.Decomposes or []) if r.RelatingObject.is_a("IfcBuildingStorey")), None)
                 if cont is None or cont.id() not in storeys:
                     continue
-                sh = ifcopenshell.geom.create_shape(st, el)
-                v = np.array(sh.geometry.verts, dtype=float).reshape(-1, 3)      # already metres, in world coordinates
-                f = np.array(sh.geometry.faces, dtype=int).reshape(-1, 3)
+                kind = kinds[cls]
+                is_gate = kind == "door" and re.match(r"^\s*G\d*\b", str(getattr(el, "Name", "") or ""), re.I)
+                if is_gate:
+                    kind = "gate"                          # a door labelled G is a gate: shown in a light grey
+                extra = None
+                if kind in ("window", "door", "gate"):
+                    try:
+                        import ifcopenshell.util.placement as UP
+                        extra = [UP.get_local_placement(el.ObjectPlacement), float(getattr(el, "OverallWidth", None) or 0) * sc,
+                                 str(getattr(el, "Name", "") or "")[:8], None]
+                    except Exception:
+                        extra = None
+                try:
+                    sh = ifcopenshell.geom.create_shape(st, el)
+                    v = np.array(sh.geometry.verts, dtype=float).reshape(-1, 3)      # already metres, in world coordinates
+                    f = np.array(sh.geometry.faces, dtype=int).reshape(-1, 3)
+                except Exception:
+                    # doors drawn only as a 2D symbol have no 3D shape: place a bar from the door's own position and width
+                    if not (extra and extra[1] > 0.1):
+                        continue
+                    mt = np.array(extra[0])
+                    o3 = mt[:3, 3] * sc
+                    xa = mt[:2, 0].astype(float)
+                    xa = xa / max(float(np.linalg.norm(xa)), 1e-9)
+                    ya = np.array([-xa[1], xa[0]])
+                    w_, h_ = extra[1], float(getattr(el, "OverallHeight", None) or 2100 / max(sc, 1e-9) * 1.0) * sc
+                    corners = [(-0.0, -0.19), (w_, -0.19), (w_, 0.03), (-0.0, 0.03), (-0.0, -0.19)]
+                    extra[3] = [(float(o3[0] + xa[0] * px + ya[0] * py), float(o3[1] + xa[1] * px + ya[1] * py)) for px, py in corners]
+                    v = np.array([[o3[0], o3[1], o3[2]], [o3[0], o3[1], o3[2] + max(h_, 2.0)]])
+                    f = np.zeros((1, 3), dtype=int)
                 if len(f):
                     nm = (getattr(el, "LongName", None) or getattr(el, "Name", None) or "") if kind == "space" else ""
-                    extra = None
-                    if kind == "door" and re.match(r"^\s*G\d*\b", str(getattr(el, "Name", "") or ""), re.I):
-                        continue                          # a door labelled G is a gate: not part of the floor plan
-                    if kind in ("window", "door"):
-                        try:
-                            import ifcopenshell.util.placement as UP
-                            extra = (UP.get_local_placement(el.ObjectPlacement), float(getattr(el, "OverallWidth", None) or 0) * sc,
-                                     str(getattr(el, "Name", "") or "")[:8])
-                        except Exception:
-                            extra = None
                     storeys[cont.id()]["items"].append((kind, v, f, nm, extra))
             except Exception:
                 continue
@@ -208,15 +225,15 @@ def build_plan(path):
                     spaces.append({"name": nm, "poly": p_})
                 continue
             zc = z
-            if kind in ("window", "door") and (lo > z or hi < z):
+            if kind in ("window", "door", "gate") and (lo > z or hi < z):
                 # high-level windows (bathrooms) do not reach 1.1 m: cut them through the middle of their own height
                 if lo < s["elev"] - 0.3 or lo > s["elev"] + 3.2:
                     continue
                 zc = (lo + hi) / 2.0
             elif lo > z or hi < z:
                 continue
-            if kind in ("window", "door"):
-                rc = _rect_from_element(v, extra[0], sc_, extra[1]) if extra else None
+            if kind in ("window", "door", "gate"):
+                rc = (extra[3] or _rect_from_element(v, extra[0], sc_, extra[1])) if extra else None
                 ps = [(rc, [])] if rc else _opening(_polys(v, f, zc))
                 if extra and extra[2]:
                     tags.extend((kind, extra[2], q[0]) for q in ps)
@@ -470,7 +487,7 @@ class PlanView(QGraphicsView):
             self.rooms[it] = sp
             self._tips[id(sp)] = "%s  %.1f m2  -  %s" % (sp["name"] or "Room", _poly_area(sp), {
                 "ok": "passes", "check": "check", "fail": "fails"}.get(st, "no result"))
-        order = (("stair", pal["stair"], 2), ("wall", pal["wall"], 3), ("door", pal["door"], 4), ("window", pal["window"], 4))
+        order = (("stair", pal["stair"], 2), ("wall", pal["wall"], 3), ("door", pal["door"], 4), ("gate", pal["gate"], 4), ("window", pal["window"], 4))
         for kind, col, z in order:
             for poly in storey["layers"].get(kind, []):
                 it = QGraphicsPathItem(self._path(poly))
@@ -488,7 +505,7 @@ class PlanView(QGraphicsView):
                     gp.setCosmetic(True)
                     ln = sc.addLine(a.x(), a.y(), b.x(), b.y(), gp)
                     ln.setZValue(5)
-                if kind == "door" and len(poly[0]) >= 5:         # the door leaf, a thin line along one edge
+                if kind in ("door", "gate") and len(poly[0]) >= 5:         # the door leaf, a thin line along one edge
                     o = poly[0]
                     a, b = self._pt(*o[0]), self._pt(*o[1])
                     lp = QPen(QColor(pal["edge"]), 0.0)
@@ -515,7 +532,7 @@ class PlanView(QGraphicsView):
                 t.setBrush(QBrush(QColor("#ffffff")))
                 w_, h_ = br.width() * k, br.height() * k
                 chip = QGraphicsRectItem(cx - w_ / 2 - 0.04, cy - h_ / 2 - 0.02, w_ + 0.08, h_ + 0.04)
-                chip.setBrush(QBrush(QColor(pal["window"] if kind == "window" else pal["doorchip"])))
+                chip.setBrush(QBrush(QColor(pal["window"] if kind == "window" else pal["gatechip"] if kind == "gate" else pal["doorchip"])))
                 chip.setPen(QPen(Qt.PenStyle.NoPen))
                 chip.setZValue(7)
                 t.setPos(cx - w_ / 2, cy + h_ / 2)
@@ -585,9 +602,9 @@ class PlanView(QGraphicsView):
 
 def _palette(is_light):
     if is_light:
-        return dict(bg="#f3f4f6", space="#e4e8ec", spaceline="#aeb6bf", wall="#2a2f36", window="#1e88e5", door="#d99a4e", doorchip="#9a5a14",
+        return dict(bg="#f3f4f6", space="#e4e8ec", spaceline="#aeb6bf", wall="#2a2f36", window="#1e88e5", door="#d99a4e", doorchip="#9a5a14", gate="#c9ced5", gatechip="#6d747d",
                     stair="#98a0a9", edge="#1c1f24", label="#1c1f24", nores="#9aa3ad", hl="#c4162a", glassline="#ffffff", ok="#bfe6cc", check="#fde7b0", fail="#f6b9bf")
-    return dict(bg="#101114", space="#1f2328", spaceline="#3a4048", wall="#d9dde2", window="#2f9bff", door="#e0a060", doorchip="#b8741f",
+    return dict(bg="#101114", space="#1f2328", spaceline="#3a4048", wall="#d9dde2", window="#2f9bff", door="#e0a060", doorchip="#b8741f", gate="#c9ced5", gatechip="#7c838c",
                 stair="#6b727b", edge="#101114", label="#eceef0", nores="#6b727b", hl="#ffd23f", glassline="#dff0ff", ok="#2a7a4e", check="#8a6c1c", fail="#9a2e3c")
 
 
@@ -811,7 +828,8 @@ class PlanPage(QWidget):
         sv.setSpacing(6)
         self.key = QLabel("")
         self.key.setTextFormat(Qt.TextFormat.RichText)
-        self.key.setWordWrap(True)
+        self.key.setWordWrap(False)
+        self.key.setMinimumHeight(205)
         sv.addWidget(self.key)
         self.count = QLabel("")
         self.count.setTextFormat(Qt.TextFormat.RichText)
@@ -915,12 +933,12 @@ class PlanPage(QWidget):
                                 "QListWidget::item{padding:3px 4px;} QListWidget::item:selected{background:%s;color:%s;}"
                                 % (bg, fg, "#d4d7dc" if is_l else "#26262c", "#fbe3e6" if is_l else "#3a161d", fg))
         sw = lambda c, ring=False: ("<span style='color:%s;font-size:15px'>&#9632;</span>" % c)
-        rows = [(pal["ok"], "Passes", "light and ventilation are both enough"),
-                (pal["check"], "Check", "only one of light or ventilation fails"),
-                (pal["fail"], "Fails", "both light and ventilation fail"),
-                (pal["nores"], "No result", "zone not in the results (dashed)"),
-                (pal["window"], "Window", "glazing, cut through its own height"),
-                (pal["door"], "Door", "gates (G) are left out"), (pal["wall"], "Wall", ""), (pal["stair"], "Stair", "")]
+        rows = [(pal["ok"], "Passes", "light and ventilation OK"),
+                (pal["check"], "Check", "light or ventilation fails"),
+                (pal["fail"], "Fails", "both fail"),
+                (pal["nores"], "No result", "dashed"),
+                (pal["window"], "Window", ""), (pal["door"], "Door", ""), (pal["gate"], "Gate", "door named G"),
+                (pal["wall"], "Wall", ""), (pal["stair"], "Stair", "")]
         self.key.setText("<b>Key</b><br>" + "<br>".join(
             "%s <b>%s</b>%s" % (sw(c), a, (" <span style='opacity:.7'>- %s</span>" % b) if b else "") for c, a, b in rows))
         self._rows = []
