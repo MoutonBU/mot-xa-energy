@@ -310,8 +310,8 @@ class Ribbon(QFrame):
         self.pages[5] = self._page([
             ("Schedule", [T("Build from rooms", "room", cost("build_from_rooms"), hot=True), T("Add line", "add", cost("add_line"))]),
             ("Products", [T("From link", "import", cost("add_from_link")), T("Manual", "edit", cost("add_product")),
-                          T("Find online", "search", cost("find_online"))]),
-            ("Reports", [T("Export PDF", "pdf", cost("export_pdf")), T("Export CSV", "export", cost("export_csv"))])])
+                          T("Find product", "search", cost("find_ai"), hot=True)]),
+            ("Reports", [T("Preview PDF", "eye", cost("preview_pdf")), T("Export PDF", "pdf", cost("export_pdf")), T("Export CSV", "export", cost("export_csv"))])])
         for i in sorted(self.pages):
             self.stack.addWidget(self.pages[i])
         self.icon_names()

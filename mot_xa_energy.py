@@ -17299,6 +17299,7 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
         from PySide6.QtGui import QPixmap
         kind_name = ("SANS 10400-XA Energy Report" if writer == self._write_xa_pdf else
                      "Rational Design Report" if writer == self._write_rd_pdf else
+                     "Fixture Schedule" if getattr(getattr(writer, "__self__", None), "is_costing", False) else
                      "Light and Ventilation Report")
         d = QDialog(self)
         d.setWindowTitle("PDF report preview")
