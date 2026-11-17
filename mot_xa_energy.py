@@ -1,6 +1,6 @@
 import sys, json, csv, re, os, tempfile, html, datetime
 from dataclasses import dataclass
-from PySide6.QtWidgets import (
+from PySide6.QtWidgets import (QLayout, 
     QGroupBox, QListWidgetItem, QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
     QTableWidget, QTableWidgetItem, QPushButton, QLabel, QComboBox, QSplitter, QSplitterHandle,
     QFileDialog, QMessageBox, QHeaderView, QCheckBox, QProgressDialog, QDialog,
@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import (QColor, QAction, QImage, QPainter, QLinearGradient, QRadialGradient,
                            QPen, QBrush, QPainterPath, QPolygonF)
 from PySide6.QtCore import (Qt, QThread, Signal, QBuffer, QByteArray, QIODevice, QTimer, QProcess,
-                            QRectF, QPointF, QSize, QObject, QEvent, QPoint)
+                            QRectF, QPointF, QSize, QObject, QEvent, QPoint, QRect)
 
 FROZEN = bool(getattr(sys, "frozen", False))
 
@@ -3992,10 +3992,38 @@ def decorate_icons(root, force=False):
                     a.setIcon(make_icon(n, "#eceef0", 16))
 
 
+from flow_layout import FlowLayout
+
+
+def _nopix(lb):
+    try:
+        pm = lb.pixmap()
+        return pm is None or pm.isNull()
+    except Exception:
+        return True
+
+
+def wrap_long_labels(root):
+    """A long one-line label sets the whole window's minimum width (the window then opens far wider than the screen).
+    Letting such labels wrap keeps the window the size it was given."""
+    for lb in root.findChildren(QLabel):
+        try:
+            if not lb.wordWrap() and len(lb.text()) > 60 and _nopix(lb):
+                lb.setWordWrap(True)
+        except Exception:
+            pass
+
+
 class _IconFilter(QObject):
     """Adds icons to dialogs and menus the moment they appear."""
 
     def eventFilter(self, obj, ev):
+        if ev.type() == QEvent.Type.Polish and isinstance(obj, QLabel):
+            try:
+                if not obj.wordWrap() and len(obj.text()) > 60 and _nopix(obj):
+                    obj.setWordWrap(True)
+            except Exception:
+                pass
         if ev.type() == QEvent.Type.Show and isinstance(obj, (QDialog, QMenu)):
             try:
                 if not obj.property("_icons_done") or isinstance(obj, QMenu):
@@ -8366,7 +8394,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
 
-        top = QHBoxLayout()
+        top = FlowLayout()
         top.addWidget(QLabel("Occupancy rule:"))
         self.rule_box = QComboBox()
         self.rule_box.addItems(list(RULES.keys()))
@@ -9853,10 +9881,10 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    def project_wizard(self, editing=False):
+    def project_wizard(self, editing=False, confirm=True):
         """Step 1. Returns True when a project was created (or its details saved)."""
         if not editing:
-            has_data = bool(self.sched_table.rowCount() or self.door_table.rowCount() or self.room_table.rowCount()
+            has_data = confirm and bool(self.sched_table.rowCount() or self.door_table.rowCount() or self.room_table.rowCount()
                             or self.xa_elements)
             if has_data:
                 r = QMessageBox.question(
@@ -9880,7 +9908,7 @@ class MainWindow(QMainWindow):
     def start_on_launch(self):
         if getattr(self, "current_file", None):
             return
-        self.project_wizard()
+        self.project_wizard(confirm=False)      # nothing of yours is open yet: do not ask "start a new project?"
 
     def building_kind(self):
         n = len(self.floors)
@@ -18475,7 +18503,13 @@ def main():
     app._icon_filter = _IconFilter(app)
     app.installEventFilter(app._icon_filter)
     apply_icons(win)
-    win.resize(1280, 780)
+    wrap_long_labels(win)
+    win.setMinimumWidth(0)
+    try:
+        _av = app.primaryScreen().availableGeometry()
+        win.resize(min(1280, _av.width() - 40), min(780, _av.height() - 60))
+    except Exception:
+        win.resize(1280, 780)
     av = sys.argv[1:]
     restoring = "--restore" in av or "--after-update" in av
     if "--ready" in av:

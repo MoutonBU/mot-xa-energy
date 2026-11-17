@@ -1,6 +1,6 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.29.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.30.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
@@ -19,6 +19,7 @@ Current version: **1.29.0**. You can read these notes in the program: File > Rel
 - **Updates**: the red "Update available" button and Menu > Check for updates download and install the new version in
   one click, with no token. Your work is saved and restored after the update.
 - **Dark / light mode** switch that changes the interface at once, without restarting. The installer matches the dark theme.
+- **Resize a note by its corner, normal window size, no start-up question (1.30.0):** select a note and a small yellow square appears on its bottom corner. Drag it to make the note wider or narrower and the text re-flows to fit; right-click > Back to the standard width undoes it. The width is saved with the detail and covered by undo. The program no longer opens wider than your screen: long rows of buttons now wrap onto a second line and long hint texts wrap instead of forcing the window wide. It also no longer asks “Start a new project?” each time it opens when nothing of yours is open.
 - **Faster note editing on the drawing (1.29.0):** right-click a note for a menu (edit text, choose specification, pointer, snap to column, mark as checked, delete). A small bar appears beside the selected note with Spec, In line, Delete and Pointer. Double-click a note to type its new wording right on the drawing (Enter saves, Shift+Enter new line, Esc cancels). Notes get a coloured outline: green = checked by you, red = to verify, amber = no specification chosen yet. A status line under the drawing counts notes, checked, to verify and unfinished, and shows the town and XA zone.
 - **Town and climate zone on the Detail Notes tab (1.28.0):** type the nearest SANS 10400-XA town in the Notes step and press Enter. It sets the same town and energy zone as the Energy tab, shows the zone's roof and wall R-values, and every insulation note already on the detail is rewritten to that zone. Changing the zone on the Energy tab updates the notes the same way.
 - **Project check (1.27.0):** after "Batch folder" the tool compares all the details together. It flags the same material that is worded differently on different details (a different thickness does not count), lists the parts that still have no specification chosen, and saves one combined project notes schedule PDF for the whole folder.

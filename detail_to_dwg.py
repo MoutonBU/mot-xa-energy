@@ -1095,12 +1095,13 @@ def _pointer(msp, style, tx, ty, fx, fy, h, dot_r):
 
 
 def place_notes(doc, notes, extents, mmu, scale, text_mm, width_mm, gap_mm, number=False, manual=None, targets=None,
-                pointer="dot", pointers=None, side="right", font="arial.ttf"):
-    """side: "right", "left" or "both" (each note goes to the nearer side of the drawing)."""
+                pointer="dot", pointers=None, side="right", font="arial.ttf", widths=None):
+    """widths: id -> note width on paper (mm) for notes you resized; others use width_mm.
+    side: "right", "left" or "both" (each note goes to the nearer side of the drawing)."""
     LAST_COLUMNS.clear()
     if not notes:
         return []
-    kw = dict(number=number, manual=manual, targets=targets, pointer=pointer, pointers=pointers, font=font)
+    kw = dict(number=number, manual=manual, targets=targets, pointer=pointer, pointers=pointers, font=font, widths=widths)
     if side != "both":
         return _place_column(doc, notes, extents, mmu, scale, text_mm, width_mm, gap_mm, side=side, start=0, **kw)
     cx = (extents[0] + extents[2]) / 2
@@ -1115,7 +1116,7 @@ def place_notes(doc, notes, extents, mmu, scale, text_mm, width_mm, gap_mm, numb
 
 
 def _place_column(doc, notes, extents, mmu, scale, text_mm, width_mm, gap_mm, number=False, manual=None, targets=None,
-                  pointer="dot", pointers=None, side="right", start=0, font="arial.ttf"):
+                  pointer="dot", pointers=None, side="right", start=0, font="arial.ttf", widths=None):
     msp = doc.modelspace()
     h = text_mm * scale / mmu                # text height, drawing units
     width = width_mm * scale / mmu
@@ -1132,11 +1133,13 @@ def _place_column(doc, notes, extents, mmu, scale, text_mm, width_mm, gap_mm, nu
     LAST_COLUMNS.append(x)
     LAST_COLUMN_X[0] = LAST_COLUMNS[0]
     y_top = maxy + h
-    cpl = max(10, int(width / (0.78 * h)))   # chars per line estimate
+    widths = widths or {}
+    ws = [max(20.0, float(widths.get(n.get("id"), width_mm))) * scale / mmu for n in notes]   # each note's own width
     dot_r = 0.35 * h
     heights = []
-    for n in notes:      # the number is only added to what is drawn: the note text itself stays clean
+    for k, n in enumerate(notes):      # the number is only added to what is drawn: the note text itself stays clean
         extra = 5 if number else 0
+        cpl = max(10, int(ws[k] / (0.78 * h)))   # chars per line estimate
         lines = max(1, sum(math.ceil(max(1, len(p) + extra) / cpl) for p in n["note"].split("\n")))
         heights.append(lines * h * 1.4 + 1.2 * h)
     ax = x - 0.4 * h if side != "left" else x + width + 0.4 * h
@@ -1147,7 +1150,7 @@ def _place_column(doc, notes, extents, mmu, scale, text_mm, width_mm, gap_mm, nu
     y = y_top
     manual = manual or {}
     mboxes = [(manual[notes[k]["id"]][0], manual[notes[k]["id"]][1] - heights[k],
-               manual[notes[k]["id"]][0] + width, manual[notes[k]["id"]][1])
+               manual[notes[k]["id"]][0] + ws[k], manual[notes[k]["id"]][1])
               for k in range(len(notes)) if notes[k].get("id") in manual]
     for k in order:
         n = notes[k]
@@ -1160,18 +1163,19 @@ def _place_column(doc, notes, extents, mmu, scale, text_mm, width_mm, gap_mm, nu
         if not mp:                                        # the other notes close ranks around the ones you placed
             while True:
                 bottom = y - heights[k]
-                hit = [b for b in mboxes if not (b[2] <= x or b[0] >= x + width or b[3] <= bottom or b[1] >= y)]
+                x0_ = x if side != "left" else x + width - ws[k]
+                hit = [b for b in mboxes if not (b[2] <= x0_ or b[0] >= x0_ + ws[k] or b[3] <= bottom or b[1] >= y)]
                 if not hit:
                     break
                 y = min(b[1] for b in hit) - 0.3 * h
-        px, py = (mp if mp else (x, y))                  # a note you dragged keeps your position and takes no slot in the stack
-        n["box"] = (px, py - heights[k], px + width, py)
+        px, py = (mp if mp else ((x if side != "left" else x + width - ws[k]), y))   # a dragged note keeps your position and takes no slot
+        n["box"] = (px, py - heights[k], px + ws[k], py)
         msp.add_mtext((f"{start + len(ordered) + 1}.  " if number else "") + n["note"], dxfattribs={
-            "layer": NOTE_LAYER, "style": "MOT_NOTE", "char_height": h, "width": width,
+            "layer": NOTE_LAYER, "style": "MOT_NOTE", "char_height": h, "width": ws[k],
             "insert": (px, py), "attachment_point": 1,
             "color": 1 if n["verify"] else 256})
         ymid = py - 0.6 * h
-        msp.add_lwpolyline([((px - 0.4 * h) if side != "left" else (px + width + 0.4 * h), ymid), (tx, ymid), (tx, ty)], dxfattribs={"layer": LEADER_LAYER})
+        msp.add_lwpolyline([((px - 0.4 * h) if side != "left" else (px + ws[k] + 0.4 * h), ymid), (tx, ymid), (tx, ty)], dxfattribs={"layer": LEADER_LAYER})
         _pointer(msp, (pointers or {}).get(n.get("id"), pointer), tx, ty, tx, ymid, h, dot_r)
         if not mp:
             y -= heights[k]

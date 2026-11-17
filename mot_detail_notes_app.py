@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (QStyle, QStyledItemDelegate, QTreeWidget, QTreeWi
 import detail_catalog as cat
 import detail_smart as smart
 import detail_refs as refs
+from flow_layout import FlowLayout
 import detail_icons as icons
 import detail_to_dwg as core
 
@@ -226,6 +227,7 @@ class View(QGraphicsView):
     note_menu = Signal(int, object)          # note id, global position: right-click on a note
     bar_action = Signal(str)                 # "spec" / "snap" / "delete" / "ptr:<style>" from the floating bar
     note_text = Signal(int, str)             # note id, new text typed on the drawing
+    note_resized = Signal(int, float)        # note id, new x of the edge you dragged
 
     def __init__(self):
         super().__init__()
@@ -244,6 +246,9 @@ class View(QGraphicsView):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.scale(1, -1)  # DXF y is up
         self.tool = None
+        self._grip = None
+        self._dragw = None                    # (note id, left side?) while a note is being resized
+        self.left_ids = set()                 # notes in the left-hand column: their grip is on the bottom-left corner
         self.status = {}                      # note id -> "ok" / "verify" / "todo"
         self.menu_ok = True
         self._edit = None
@@ -385,6 +390,7 @@ class View(QGraphicsView):
     def set_boxes(self, boxes, targets):
         self.boxes, self.targets = dict(boxes), dict(targets)
         self._ov = {}
+        self._grip = None
         sc = self.scene()
         if sc is None:
             return
@@ -404,11 +410,55 @@ class View(QGraphicsView):
             sc.addItem(r)
             self._ov[iid] = (r, ring)
         self._style()
+        self._update_grip()
 
     def set_selected(self, ids):
         self.sel = set(ids)
         self._style()
         self._place_bar()
+        self._update_grip()
+
+    # ---- resize grip on the corner of a selected note
+    def _grip_corner(self):
+        ids = [i for i in self.sel if i in self.boxes]
+        if len(ids) != 1:
+            return None
+        iid = ids[0]
+        x0, y0, x1, y1 = self.boxes[iid]
+        left = iid in self.left_ids
+        return iid, (x0 if left else x1), y0, left
+
+    def _update_grip(self):
+        sc = self.scene()
+        if sc is None:
+            return
+        try:
+            gone = self._grip is None or self._grip.scene() is not sc
+        except RuntimeError:
+            gone = True
+        c = self._grip_corner()
+        if gone:
+            self._grip = QGraphicsRectItem(-7, -7, 14, 14)
+            self._grip.setFlag(QGraphicsRectItem.GraphicsItemFlag.ItemIgnoresTransformations)
+            self._grip.setBrush(QColor("#ffd600"))
+            self._grip.setPen(QPen(QColor("#222"), 1))
+            self._grip.setZValue(9.5e6)
+            self._grip.setToolTip("Drag to make this note wider or narrower; the text re-flows to fit")
+            sc.addItem(self._grip)
+        if c is None or self._dragn is not None:
+            self._grip.setVisible(False)
+            return
+        self._grip.setPos(c[1], c[2])
+        self._grip.setVisible(True)
+
+    def grip_at(self, sp):
+        c = self._grip_corner()
+        if c is None:
+            return None
+        tol = 13 / max(abs(self.transform().m11()), 1e-9)
+        if abs(sp.x() - c[1]) <= tol and abs(sp.y() - c[2]) <= tol:
+            return c[0], c[3]
+        return None
 
     def set_status(self, st):
         self.status = dict(st)
@@ -649,6 +699,11 @@ class View(QGraphicsView):
             self._moved = False
             self._shift = bool(e.modifiers() & Qt.KeyboardModifier.ShiftModifier)
             sp = self.mapToScene(e.position().toPoint())
+            gr = self.grip_at(sp)
+            if gr is not None and not self._shift:
+                self._dragw = gr                 # the corner grip: a drag changes the note's width
+                self._bar.hide()
+                return
             dot = self.dot_at(sp)
             if dot is not None and not self._shift:
                 self._dragd = dot                # pressing on a leader dot: a drag moves where the note points
@@ -689,6 +744,21 @@ class View(QGraphicsView):
                     self._band = QRubberBand(QRubberBand.Shape.Rectangle, self.viewport())
                 else:
                     self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+            if self._moved and self._dragw is not None:
+                iid, left = self._dragw
+                p1 = self.mapToScene(e.position().toPoint())
+                x0, y0, x1, y1 = self.boxes[iid]
+                nx0, nx1 = (min(p1.x(), x1 - 1), x1) if left else (x0, max(p1.x(), x0 + 1))
+                it = self._ov.get(iid)
+                if it:
+                    rp = QPainterPath()
+                    rp.addRoundedRect(QRectF(nx0, y0, nx1 - nx0, y1 - y0), 0, 0)
+                    it[0].setPath(rp)
+                    it[0].setBrush(QColor(255, 214, 0, 70))
+                if self._grip is not None:
+                    self._grip.setPos(nx0 if left else nx1, y0)
+                self.viewport().setCursor(Qt.CursorShape.SizeHorCursor)
+                return
             if self._moved and self._dragd is not None:
                 p1 = self.mapToScene(e.position().toPoint())
                 x0, y0, x1, y1 = self.boxes[self._dragd]
@@ -732,6 +802,9 @@ class View(QGraphicsView):
             x, y, on = self._pt(e)
             self.show_snap(x, y, on and h is None)
             self.moved.emit(x, y)
+        if self.grip_at(sp) is not None:
+            self.viewport().setCursor(Qt.CursorShape.SizeHorCursor)
+            return
         self.viewport().setCursor(Qt.CursorShape.SizeAllCursor if (h is not None or self.dot_at(sp) is not None) else
                                   (Qt.CursorShape.CrossCursor if self.tool else Qt.CursorShape.ArrowCursor))
 
@@ -742,6 +815,16 @@ class View(QGraphicsView):
             return
         if e.button() == Qt.MouseButton.LeftButton and self._press is not None:
             add = bool(e.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier))
+            if self._dragw is not None:
+                iid, left = self._dragw
+                self._dragw = None
+                if self._moved:
+                    p1 = self.mapToScene(e.position().toPoint())
+                    self.note_resized.emit(iid, p1.x())
+                self._press = None
+                self._moved = False
+                self.viewport().setCursor(Qt.CursorShape.CrossCursor if self.tool else Qt.CursorShape.ArrowCursor)
+                return
             if self._dragd is not None and self._moved:
                 p1 = self.mapToScene(e.position().toPoint())
                 nid = self._dragd
@@ -792,6 +875,7 @@ class View(QGraphicsView):
         super().mouseReleaseEvent(e)
 
     def mouseDoubleClickEvent(self, e):
+        self._dragw = None
         self._press = None
         self._dragn = None
         self._dragd = None
@@ -1495,7 +1579,7 @@ class Win(QMainWindow):
         hl.addWidget(w2)
 
         w3, l3 = section("Step 3   Notes")
-        r3 = QHBoxLayout()
+        r3 = FlowLayout()
         self.scale = QDoubleSpinBox()
         self.scale.setRange(1, 500)
         self.scale.setValue(10)
@@ -1544,7 +1628,7 @@ class Win(QMainWindow):
         nt = QWidget()
         nl = QVBoxLayout(nt)
         nl.setContentsMargins(0, 14, 0, 0)
-        top = QHBoxLayout()
+        top = FlowLayout()
         b_open = QPushButton("Open DWG / DXF...")
         b_open.setObjectName("primary")
         b_open.clicked.connect(self.pick_file)
@@ -1558,8 +1642,8 @@ class Win(QMainWindow):
         self.lbl_file2.setObjectName("muted")
         top.addWidget(self.lbl_file2, 1)
         nl.addLayout(top)
-        tbm = QHBoxLayout()                       # the two modes: auto, or by clicking
-        tb = QHBoxLayout()                        # extra drawing tools (hidden until asked for)
+        tbm = FlowLayout()                        # the two modes: auto, or by clicking
+        tb = FlowLayout()                         # extra drawing tools (hidden until asked for)
         self.user = []
         self.uid = 0
         self.overrides = {}
@@ -1667,11 +1751,14 @@ class Win(QMainWindow):
         self.view.note_menu.connect(self.note_context_menu)
         self.view.bar_action.connect(self.on_bar_action)
         self.view.note_text.connect(self.set_note_text)
+        self.view.note_resized.connect(self.on_note_resized)
         self.view.delete_req.connect(self.remove_note)
         self.view.note_moved.connect(self.on_note_moved)
         self.view.target_moved.connect(self.on_target_moved)
+        QTimer.singleShot(0, self._wrap_labels)
         self.note_pos, self.note_tgt = {}, {}
         self.ptr_default, self.note_ptr = "dot", {}
+        self.note_wd = {}                     # note key -> width in mm on paper, for notes you resized
         self.side, self.font = "right", "arial.ttf"
         self.note_boxes, self.note_targets = {}, {}
         self.xa_set_town, self.xa_towns = None, []
@@ -1898,6 +1985,7 @@ class Win(QMainWindow):
             _e = read_json(self.edits_path())
             self.ptr_default = _e.get("pointer", "dot")
             self.note_ptr = dict(_e.get("note_ptr", {}) or {})
+            self.note_wd = {k: float(v) for k, v in (_e.get("note_width", {}) or {}).items()}
             self.side, self.font = _e.get("side", "right"), _e.get("font", "arial.ttf")
             self.ptr_combo.setCurrentIndex(max(0, self.ptr_combo.findData(self.ptr_default)))
             self.table.setRowCount(0)
@@ -2089,7 +2177,7 @@ class Win(QMainWindow):
 
     def snap(self):
         st = {"rows": self._rows_state(), "specs": copy.deepcopy(self.specs), "user": copy.deepcopy(self.user),
-              "overrides": copy.deepcopy(self.overrides), "uid": self.uid, "pos": dict(self.note_pos), "tgt": dict(self.note_tgt), "ptr": (self.ptr_default, dict(self.note_ptr)),
+              "overrides": copy.deepcopy(self.overrides), "uid": self.uid, "pos": dict(self.note_pos), "tgt": dict(self.note_tgt), "ptr": (self.ptr_default, dict(self.note_ptr), dict(self.note_wd)),
               "items": [(i, i.get("point")) for i in self.items]}
         st["sig"] = json.dumps([st["rows"], st["specs"], st["user"], st["overrides"], st["pos"], st["tgt"], st["ptr"]], sort_keys=True, default=str)
         return st
@@ -2137,6 +2225,7 @@ class Win(QMainWindow):
             self.note_pos = dict(st["pos"])
             self.note_tgt = dict(st["tgt"])
             self.ptr_default, self.note_ptr = st["ptr"][0], dict(st["ptr"][1])
+            self.note_wd = dict(st["ptr"][2]) if len(st["ptr"]) > 2 else {}
             self.ptr_combo.setCurrentIndex(max(0, self.ptr_combo.findData(self.ptr_default)))
             self.uid = max(self.uid, st["uid"])
             self.items = []
@@ -2621,7 +2710,7 @@ class Win(QMainWindow):
             write_json(self.edits_path(), {"elements": self.user, "overrides": self.overrides, "specs": self.specs,
                                            "note_pos": {k: list(v) for k, v in self.note_pos.items()},
                                            "note_tgt": {k: list(v) for k, v in self.note_tgt.items()},
-                                           "pointer": self.ptr_default, "note_ptr": self.note_ptr,
+                                           "pointer": self.ptr_default, "note_ptr": self.note_ptr, "note_width": self.note_wd,
                                            "side": self.side, "font": self.font})
         except Exception:
             traceback.print_exc()
@@ -3013,6 +3102,40 @@ class Win(QMainWindow):
         lay.addLayout(bb)
         dlg.exec()
 
+    def _wrap_labels(self):
+        """long one-line labels must wrap, or they force the whole program window wider than the screen"""
+        for lb in self.findChildren(QLabel):
+            try:
+                pm = lb.pixmap()
+                if pm is None or pm.isNull():
+                    lb.setWordWrap(True)
+            except Exception:
+                pass
+
+    def reset_width(self, iid):
+        it = next((i for i in self.items if i["id"] == iid), None)
+        if it is not None and self.item_key(it) in self.note_wd:
+            self.note_wd.pop(self.item_key(it))
+            self.commit()
+            self.save_edits()
+            self.apply_and_save()
+
+    def on_note_resized(self, iid, edge_x):
+        b = self.note_boxes.get(iid)
+        it = next((i for i in self.items if i["id"] == iid), None)
+        if not b or it is None:
+            return
+        left = iid in self.view.left_ids
+        w_draw = (b[2] - edge_x) if left else (edge_x - b[0])
+        w_mm = max(25.0, min(400.0, w_draw * self.mmu / max(self.scale.value(), 1e-9)))
+        key = self.item_key(it)
+        self.note_wd[key] = round(w_mm, 1)
+        if left:                                     # a left-column note keeps its right edge at the column
+            self.note_pos.pop(key, None)
+        self.commit()
+        self.save_edits()
+        self.apply_and_save()
+
     def edit_on_drawing(self, iid):
         r = self._row_of(iid)
         if r < 0:
@@ -3050,6 +3173,7 @@ class Win(QMainWindow):
         for lab, k in (("Dot", "dot"), ("Arrow", "arrow"), ("Ring", "ring"), ("Tick", "tick"), ("None", "none")):
             pm.addAction(lab, lambda kk=k: self.on_bar_action("ptr:" + kk))
         m.addAction("Snap to the column", lambda: self.align_notes("column"))
+        m.addAction("Back to the standard width", lambda: self.reset_width(iid))
         m.addAction("Mark as checked by me", self.approve_selected)
         m.addSeparator()
         m.addAction("Delete", self.remove_note)
@@ -3347,8 +3471,14 @@ class Win(QMainWindow):
                                                 if self.item_key(i) in self.note_tgt},
                                        pointer=self.ptr_default, side=self.side, font=self.font,
                                        pointers={i["id"]: self.note_ptr[self.item_key(i)] for i in self.items
-                                                 if self.item_key(i) in self.note_ptr})
+                                                 if self.item_key(i) in self.note_ptr},
+                                       widths={i["id"]: self.note_wd[self.item_key(i)] for i in self.items
+                                               if self.item_key(i) in self.note_wd})
             self.note_boxes = {n["id"]: n["box"] for n in ordered if "box" in n}
+            cols = list(core.LAST_COLUMNS)
+            mid = sum(cols) / len(cols) if len(cols) > 1 else None
+            self.view.left_ids = {i for i, b in self.note_boxes.items()
+                                  if (self.side == "left") or (mid is not None and (b[0] + b[2]) / 2 < mid)}
             self.note_targets = {n["id"]: n["target"] for n in ordered if "target" in n}
             OUT_DIR.mkdir(parents=True, exist_ok=True)
             self.save_edits()
