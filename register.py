@@ -503,7 +503,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         self.host = host
         self.groups = []     # {name, rows:[...]}
         self.history = []    # issues already sent: {issue, date, rows:{key: {rev, rdate, title, comment}}}
-        self.info = {"project": "", "client": "", "issued_by": "", "to": "", "email": "", "note": "", "issue_no": "0", "date": "", "cc": "", "client_logo": "", "sheet_index": "1", "show_orders": "0", "show_changes": "0"}
+        self.info = {"project": "", "client": "", "issued_by": "", "to": "", "email": "", "note": "", "issue_no": "0", "date": "", "cc": "", "client_logo": "", "sheet_index": "1", "issue_kind": "", "show_orders": "0", "show_changes": "0"}
         self.log = []        # orders and revisions, see register_ext
         self.cur = 0
         self._busy = False
@@ -696,6 +696,18 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             rr.addWidget(c)
         rr.addStretch(1)
         v.addLayout(rr)
+        rk = QHBoxLayout()
+        rk.addWidget(QLabel("<b>This email is:</b>"))
+        self.kind_box = QComboBox()
+        self.kind_box.addItem("Revised drawings (shows what changed)", "revised")
+        self.kind_box.addItem("A new set of drawings", "new")
+        self.kind_box.addItem("These drawings (just the list, no changes shown)", "these")
+        self.kind_box.setToolTip("Revised: the email says what changed since the last issue. New set or These drawings: it is just the list of drawings, with no changes shown.")
+        self.kind_box.currentIndexChanged.connect(self._kind_changed)
+        rk.addWidget(self.kind_box)
+        rk.addStretch(1)
+        v.addLayout(rk)
+        self._sync_kind()
         rx = QHBoxLayout()
         rx.addWidget(QLabel("<b>Also list in the email and the PDF:</b>"))
         self.ord_chk = QCheckBox("Orders")
@@ -1549,6 +1561,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         return [(k, lab, d) for k, lab, d in self.REPORTS if k in on]
 
     def _blocks_panel(self):
+        self._sync_kind()
         """One tick box per block or house: tick it to send it now, leave it unticked to tell the client it is still to come."""
         lay = self.blocks_l
         while lay.count():
@@ -1857,6 +1870,26 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         except Exception:
             pass
 
+    def issue_kind(self):
+        """revised, new or these. Until you choose, it is revised when something was sent before, otherwise a new set."""
+        k = self.info.get("issue_kind", "")
+        if k in ("revised", "new", "these"):
+            return k
+        return "revised" if self.last_issue() else "new"
+
+    def _sync_kind(self):
+        if not hasattr(self, "kind_box"):
+            return
+        i = self.kind_box.findData(self.issue_kind())
+        if i >= 0 and i != self.kind_box.currentIndex():
+            self.kind_box.blockSignals(True)
+            self.kind_box.setCurrentIndex(i)
+            self.kind_box.blockSignals(False)
+
+    def _kind_changed(self, *_a):
+        self.info["issue_kind"] = self.kind_box.currentData()
+        self.update_mail()
+
     def want_log(self, kind):
         return self.info.get("show_orders" if kind == "Order" else "show_changes") == "1"
 
@@ -1898,10 +1931,13 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         to = self.info["to"].strip()
         last = self.last_issue()
         new, rev = self.changes()
+        kind = self.issue_kind()
+        intro = {"revised": "Please find the revised drawings", "new": "Please find attached a new set of drawings", "these": "Please find attached the following drawings"}[kind]
         lines = ["Subject: %s - revision %s (%s)" % (self.project_name(), self.info["issue_no"] or "0", self.issue_date()), "",
                  "Hi %s," % (to.split()[0] if to else "there"), "",
-                 "Please find the %sdrawings for %s issued today, %s. The drawing register is attached." %
-                 ("revised " if last else "", self.project_name(), self.issue_date()), ""]
+                 "%s for %s issued today, %s. The drawing register is attached." % (intro, self.project_name(), self.issue_date()), ""]
+        if kind != "revised":
+            last = None             # a new set (or just these drawings): no comparison with an earlier issue
         if last and (rev or new):
             lines.append("WHAT CHANGED SINCE REVISION %s (%s)" % (last.get("issue", ""), last.get("date", "")))
             for r in rev:
@@ -1939,7 +1975,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
                     bit += " [your email: %s%s]" % (x["req_subject"], ", " + short_date(x["req_date"]) if x.get("req_date") else "")
                 lines.append(bit)
             lines.append("")
-        lines.append("THE FULL LIST" if last else "THE DRAWINGS")
+        lines.append("THE FULL LIST" if (last and kind == "revised") else "THE DRAWINGS")
         for name, rows in gi:
             lines.append(name.upper() + (" (%d drawings)" % len(rows)))
             for r in rows:
@@ -2007,7 +2043,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         td = lambda t, a="left", bg="": '<td%s style="padding:3px;text-align:%s;">%s</td>' % (' bgcolor="%s"' % bg if bg else "", a, t)
         gi = self.groups_in_issue()
         n = sum(len(r) for _g, r in gi)
-        last = self.last_issue()
+        last = self.last_issue() if self.issue_kind() == "revised" else None
         new, rev = self.changes()
         out = ['<p style="font-size:9pt;color:#444;">%d drawings in this issue.%s</p>' %
                (n, (" %d revised and %d new since revision %s." % (len(rev), len(new), e(last.get("issue", "")))) if last else "")]
