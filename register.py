@@ -674,8 +674,13 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         rw = QPushButton("Write it again")
         rw.setToolTip("Throws away your changes to the text and writes the email again from the list above.")
         rw.clicked.connect(self.rewrite_mail)
+        self.stale_lbl = QLabel("You changed this email by hand, so it no longer updates itself. Press Write it again to bring in the latest drawings, sheet index and options.")
+        self.stale_lbl.setStyleSheet("color:#E0A020;font-weight:700;")
+        self.stale_lbl.setWordWrap(True)
+        self.stale_lbl.hide()
         head.addWidget(rw)
         v.addLayout(head)
+        v.addWidget(self.stale_lbl)
         self.mail = QPlainTextEdit()      # written automatically from the drawings, orders and changes; you can still edit it
         self.mail.setMinimumHeight(150)
         self._mail_setting, self._mail_manual = False, False
@@ -768,15 +773,21 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
     def _mail_edited(self):
         if not self._mail_setting:
             self._mail_manual = True
+            if hasattr(self, "stale_lbl"):
+                self.stale_lbl.show()
 
     def rewrite_mail(self):
         self._mail_manual = False
+        if hasattr(self, "stale_lbl"):
+            self.stale_lbl.hide()
         self.update_mail()
 
     def update_mail(self):
         """Keep the email under the list up to date: written from the drawings, orders and changes unless you have edited it yourself."""
         if getattr(self, "_mail_setting", None) is None or not hasattr(self, "att_lbl"):
             return
+        if hasattr(self, "stale_lbl"):
+            self.stale_lbl.setVisible(bool(self._mail_manual))
         if not self._mail_manual:
             self._mail_setting = True
             try:
@@ -885,7 +896,19 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
     def _loose(k):
         return re.sub(r"[^0-9a-z]", "", str(k).lower())
 
+    def find_in_group(self, g, k):
+        lk = self._loose(k)
+        for r in g["rows"]:
+            if self.key(r) == k or (lk and self._loose(self.key(r)) == lk):
+                return r
+        return None
+
     def find_row(self, k):
+        cur = self.groups[self.cur] if 0 <= self.cur < len(self.groups) else None
+        if cur is not None:                     # the block that is open comes first (the same drawing number can be in several blocks)
+            r = self.find_in_group(cur, k)
+            if r is not None:
+                return r
         for g in self.groups:
             for r in g["rows"]:
                 if self.key(r) == k:
@@ -1791,7 +1814,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         v.addWidget(bb)
         if not d.exec():
             return
-        total = 0
+        total = skipped = 0
         blank = [g for g in self.groups if not g["rows"]]
         for i, (f, items) in enumerate(found):
             if t.item(i, 0).checkState() != Qt.CheckState.Checked:
@@ -1808,10 +1831,11 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
                 blank.remove(g)
             for no, title, rev in items:
                 row = {"on": False, "no": no, "title": title, "about": "", "size": "", "scale": "", "rev": rev, "rdate": "", "pdfdate": "", "by": "", "comment": "", "status": "For information", "file": "", "path": "", "revs": []}
-                old = self.find_row(self.key(row))
+                old = self.find_in_group(g, self.key(row))
                 if old is not None:
                     if not old.get("title") and title:
                         old["title"] = title
+                    skipped += 1
                     continue
                 g["rows"].append(row)
                 total += 1
@@ -1819,7 +1843,10 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         self.cur = min(self.cur, len(self.groups) - 1)
         self.refresh()
         self.update_mail()
-        self.count.setText("%d drawing%s loaded from the sheet index. Now add the PDFs you are sending today (B)." % (total, "" if total == 1 else "s"))
+        self.count.setText("%d drawing%s loaded from the sheet index%s. Now add the PDFs you are sending today (B)." % (total, "" if total == 1 else "s",
+                           (" (%d already in that block, left as they were)" % skipped) if skipped else ""))
+        if self._mail_manual:
+            QMessageBox.information(self, "Drawing register", "The drawings are loaded. Your email was edited by hand, so it was not updated: press \"Write it again\" (step 3) to bring the sheet index into it.")
 
     def add_planned(self):
         """Type drawings that are not ready yet (one per line, number then title) so they show as still to come."""
@@ -1853,7 +1880,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
                 parts = line.split(None, 1) if re.match(r"^[A-Za-z]*[\d.-]+\S*\s+\S", line) else ["", line]
             no, title = parts[0].strip(), parts[1].strip() if len(parts) > 1 else ""
             row = {"on": False, "no": no, "title": title, "about": "", "size": "", "scale": "", "rev": "", "rdate": "", "pdfdate": "", "by": "", "comment": "", "status": "For information", "file": "", "path": "", "revs": []}
-            if self.find_row(self.key(row)) is not None:
+            if self.find_in_group(g, self.key(row)) is not None:
                 continue
             g["rows"].append(row)
             added += 1
