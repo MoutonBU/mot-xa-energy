@@ -35,6 +35,10 @@ DARK_CSS = """
  .lgl{display:none !important;max-height:0 !important;}
  .lgd{display:block !important;max-height:none !important;overflow:visible !important;}
 }
+@media only screen and (max-width:480px){
+ .sgd{display:none !important;max-height:0 !important;overflow:hidden !important;}
+ .sgm{display:block !important;max-height:none !important;overflow:visible !important;}
+}
 [data-ogsc] .pg{background-color:#0E0F12 !important;} [data-ogsc] .hd{background-color:#2A2D34 !important;} [data-ogsc] .cd{background-color:#23262D !important;}
 [data-ogsc] .r1{background-color:#1A1C21 !important;} [data-ogsc] .r2{background-color:#202329 !important;}
 [data-ogsc] .tx{color:#D7D9DE !important;} [data-ogsc] .st{color:#FFFFFF !important;} [data-ogsc] .mu{color:#9DA1AA !important;}
@@ -264,6 +268,13 @@ def build(subject, body, logo_src="cid:mcplogo", attached="", logo_dark_src="", 
             rows, lt = sig_parts
             href = {"tel": "tel:" + lt.get("tel", ""), "mail": "mailto:" + lt.get("email", ""), "web": "https://www.mcparchitecture.co.za"}
             alt = {"tel": lt.get("phone", ""), "mail": lt.get("email", ""), "web": "www.mcparchitecture.co.za"}
+            nm, rl = sig_parts[1].get("name", ""), sig_parts[1].get("role", "")
+            mob = ('<div class="sgm cd" style="display:none;max-height:0;overflow:hidden;mso-hide:all;background-color:#F1F1F1;border-radius:14px;padding:16px 18px;font-family:%s;">'
+                   '<div class="st" style="font-size:20px;font-weight:700;color:%s;">%s</div>'
+                   '<div style="font-size:15px;font-weight:700;color:%s;padding:2px 0 8px 0;">%s</div>'
+                   '<div style="font-size:16px;line-height:26px;">%s</div></div>'
+                   % (FONT, STRONG, _e(nm), RED, _e(rl), "<br>".join(
+                       '<a class="st" href="%s" style="color:%s;text-decoration:none;">%s</a>' % (_e(href[k]), STRONG, _e(alt[k])) for k in ("tel", "mail", "web") if alt[k])))
             tb = ""
             for _h, cells in rows:
                 tds = ""
@@ -274,7 +285,7 @@ def build(subject, body, logo_src="cid:mcplogo", attached="", logo_dark_src="", 
                     tds += '<td width="%.3f%%" style="padding:0;font-size:0;line-height:0;">%s</td>' % ((x1 - x0) * 100.0 / 1875.0, img)
                 tb += '<table width="100%%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;table-layout:fixed;"><tr>%s</tr></table>' % tds
             sections += ('<tr><td style="padding:26px 0 0 0;font-family:%s;font-size:12px;letter-spacing:3px;font-weight:700;color:%s;">REGARDS</td></tr>' % (FONT, RED)
-                         + '<tr><td style="padding:10px 0 0 0;"><div style="max-width:640px;border-radius:12px;overflow:hidden;">%s</div></td></tr>' % tb)
+                         + '<tr><td style="padding:10px 0 0 0;"><div class="sgd" style="max-width:640px;border-radius:12px;overflow:hidden;">%s</div>%s</td></tr>' % (tb, mob))
         elif r[0] == "G" and sig_src:
             # the finished signature banner (picture): "Regards," above it, scaled to the width of the phone
             sections += ('<tr><td style="padding:26px 0 0 0;font-family:%s;font-size:12px;letter-spacing:3px;font-weight:700;color:%s;">REGARDS</td></tr>'

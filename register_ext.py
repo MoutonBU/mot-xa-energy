@@ -1532,7 +1532,19 @@ class MailMixin:
         h = view._corner_html
         if 'alt="Signature"' in h:
             w = max(260, view.viewport().width() - 32)
-            h = h.replace('width="600" alt="Signature"', 'width="%d" alt="Signature"' % w)
+            if w < 420:
+                # a small window (like a phone): plain readable text instead of the picture
+                import re, html as _h
+                import sig_banner
+                lt = sig_banner.link_text(self._M().SETTINGS)
+                card = ('<table width="100%%" cellpadding="12" cellspacing="0" bgcolor="#F1F1F1"><tr><td>'
+                        '<span style="font-size:15pt;font-weight:700;color:#111111;">%s</span><br>'
+                        '<span style="font-size:10pt;font-weight:700;color:#D1121F;">%s</span><br><br>'
+                        '<span style="font-size:11pt;color:#111111;">%s<br>%s<br>www.mcparchitecture.co.za</span></td></tr></table>'
+                        % (_h.escape(lt["name"]), _h.escape(lt["role"]), _h.escape(lt["phone"]), _h.escape(lt["email"])))
+                h = re.sub(r'<img src="cid:mcpsig"[^>]*>', lambda m_: card, h, count=1)
+            else:
+                h = h.replace('width="600" alt="Signature"', 'width="%d" alt="Signature"' % w)
         sb = view.verticalScrollBar().value()
         view.setHtml(h)
         view.verticalScrollBar().setValue(sb)

@@ -47,6 +47,51 @@ def _placeholder(p):
     p.drawPath(path)
 
 
+_ICONS = {}
+
+
+def _icon(kind):
+    if kind not in _ICONS:
+        base = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__))
+        _ICONS[kind] = QImage(os.path.join(base, "sig_icon_%s.png" % kind))
+    return _ICONS[kind]
+
+
+ROW1, ROW2, FS = 252, 312, 30
+
+
+def _tw(text, px, maxw):
+    f = QFont("Arial")
+    f.setBold(True)
+    while px > 14:
+        f.setPixelSize(int(px))
+        if QFontMetrics(f).horizontalAdvance(text) <= maxw:
+            break
+        px -= 1
+    f.setPixelSize(int(px))
+    return QFontMetrics(f).horizontalAdvance(text), px
+
+
+def layout(S):
+    """Where the phone, email and website sit. The email follows straight after the phone number, so the two stay together."""
+    g = lambda k: str(S.get(k, "") or "").strip()
+    phone, email = g("sig_phone"), g("sig_email") or g("mail_address")
+    L = {}
+    right = 1850
+    x = 850
+    if phone:
+        w, px = _tw(phone, FS, 420)
+        L["phone"] = {"text": phone, "x0": x, "tx": x + 42, "px": px, "maxw": 420, "base": ROW1, "end": x + 42 + w}
+        x = x + 42 + w + 44
+    if email:
+        avail = right - (x + 42)
+        w, px = _tw(email, FS, avail)
+        L["mail"] = {"text": email, "x0": x, "tx": x + 42, "px": px, "maxw": avail, "base": ROW1, "end": x + 42 + w}
+    w, px = _tw("www.mcparchitecture.co.za", FS, 900)
+    L["web"] = {"text": "www.mcparchitecture.co.za", "x0": 850, "tx": 892, "px": px, "maxw": 900, "base": ROW2, "end": 892 + w}
+    return L
+
+
 def render(S, photo_path=None):
     """The signature as a QImage (1875 x 469)."""
     tpl = QImage(_template_path())
@@ -73,23 +118,25 @@ def render(S, photo_path=None):
         p.drawImage(QRectF(x, y, w, h), ph)
     p.restore()
     g = lambda k: str(S.get(k, "") or "").strip()
-    name, role, phone = g("sig_name"), g("sig_role"), g("sig_phone")
-    email = g("sig_email") or g("mail_address")
+    name, role = g("sig_name"), g("sig_role")
+    L = layout(S)
     p.setPen(INK)
-    _fit(p, name, 37, 660)
-    p.drawText(QPointF(850, 158), name)
+    _fit(p, name, 46, 980)
+    p.drawText(QPointF(850, 150), name)
     if role:
         p.setPen(RED)
-        _fit(p, role, 25, 660)
-        p.drawText(QPointF(851, 199), role)
+        _fit(p, role, 31, 980)
+        p.drawText(QPointF(851, 192), role)
     p.setPen(INK)
-    if phone:
-        line = phone
-        _fit(p, line, 21.5, 322)
-        p.drawText(QPointF(890, 257), line)
-    if email:
-        _fit(p, email, 21, 575)
-        p.drawText(QPointF(1266, 257), email)
+    for key, kind in (("phone", "phone"), ("mail", "mail"), ("web", "web")):
+        if key not in L:
+            continue
+        txt, x0, tx, px, base = L[key]["text"], L[key]["x0"], L[key]["tx"], L[key]["px"], L[key]["base"]
+        ic = _icon(kind)
+        if not ic.isNull():
+            p.drawImage(QRectF(x0, base - 27, ic.width() * 1.05, ic.height() * 1.05), ic)
+        _fit(p, txt, px, L[key]["maxw"])
+        p.drawText(QPointF(tx, base), txt)
     p.end()
     return img
 
@@ -126,7 +173,7 @@ def link_text(S):
     g = lambda k: str(S.get(k, "") or "").strip()
     phone = g("sig_phone")
     tel = "".join(ch for ch in phone if ch.isdigit() or ch == "+")
-    return {"phone": phone, "tel": tel, "email": g("sig_email") or g("mail_address")}
+    return {"phone": phone, "tel": tel, "email": g("sig_email") or g("mail_address"), "name": g("sig_name"), "role": g("sig_role")}
 
 
 def slices(S, width=1250, quality=92):
@@ -137,10 +184,20 @@ def slices(S, width=1250, quality=92):
     full = _rounded(S, width)
     k = width / float(W)
     ymap = lambda y: int(round(y * k))
-    spec = [(0, 232, [(0, W, "")]),
-            (232, 274, [(0, 840, ""), (840, 1215, "tel" if lt["tel"] else ""), (1215, 1862, "mail" if lt["email"] else ""), (1862, W, "")]),
-            (274, 332, [(0, 840, ""), (840, 1180, "web"), (1180, W, "")]),
-            (332, H, [(0, W, "")])]
+    L = layout(S)
+    row1 = [(0, 840, "")]
+    cur = 840
+    for key, kind in (("phone", "tel"), ("mail", "mail")):
+        if key in L:
+            x0, x1 = (L[key]["x0"] - 10), L[key]["end"] + 12
+            if x0 > cur:
+                row1.append((cur, x0, ""))
+            row1.append((x0, x1, kind))
+            cur = x1
+    row1.append((cur, W, ""))
+    pe = L["web"]["end"] + 12
+    spec = [(0, 222, [(0, W, "")]), (222, 274, row1), (274, 282, [(0, W, "")]),
+            (282, 332, [(0, 840, ""), (840, pe, "web"), (pe, W, "")]), (332, H, [(0, W, "")])]
     rows, jp = [], []
     for y0, y1, cells in spec:
         r = []
