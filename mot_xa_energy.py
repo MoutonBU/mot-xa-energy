@@ -10134,12 +10134,12 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Project saved: {self.current_file}", 8000)
 
     def save_project_as(self):
-        start = self.current_file or os.path.join(os.path.expanduser("~"), "Documents", "My project.mcplv.json")
+        start = self.current_file or os.path.join(os.path.expanduser("~"), "Documents", "My project.mcplv")
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save project", start, "MCP project (*.mcplv.json);;All files (*)")
+            self, "Save project", start, "MCP project (*.mcplv);;Older project files (*.mcplv.json);;All files (*)")
         if path:
-            if not path.endswith(".json"):
-                path += ".mcplv.json"
+            if not path.lower().endswith((".mcplv", ".json")):
+                path += ".mcplv"
             self.current_file = path
             self.save_project()
 
@@ -10191,7 +10191,7 @@ class MainWindow(QMainWindow):
             return
         for i, p in enumerate(lst, 1):
             name = os.path.basename(p)
-            for suf in (".mcplv.json", ".json"):
+            for suf in (".mcplv.json", ".mcplv", ".json"):
                 if name.lower().endswith(suf):
                     name = name[:-len(suf)]
                     break
@@ -10318,7 +10318,7 @@ class MainWindow(QMainWindow):
         if not self.current_file:
             return None
         base = self.current_file
-        for suf in (".mcplv.json", ".json"):
+        for suf in (".mcplv.json", ".mcplv", ".json"):
             if base.lower().endswith(suf):
                 base = base[:-len(suf)]
                 break
@@ -10530,7 +10530,7 @@ class MainWindow(QMainWindow):
     def open_project(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Open project", os.path.dirname(self.current_file) if self.current_file else "",
-            "MCP project (*.json);;All files (*)")
+            "MCP project (*.mcplv *.json);;All files (*)")
         if not path:
             return
         self.open_project_path(path)
@@ -18809,7 +18809,18 @@ def main():
         except Exception:
             win.setWindowOpacity(1.0)
     win.start_autosave()
-    if not restoring:
+    _openf, _skip = None, False
+    for _a in av:                                   # a project file double-clicked in Windows arrives as the argument
+        if _skip:
+            _skip = False
+        elif _a in ("--restore", "--geom", "--ready"):
+            _skip = True
+        elif not _a.startswith("--") and _a.lower().endswith((".mcplv", ".json")) and os.path.isfile(_a):
+            _openf = os.path.abspath(_a)
+            break
+    if _openf and not restoring:
+        QTimer.singleShot(250, lambda: win.open_project_path(_openf))
+    elif not restoring:
         QTimer.singleShot(250, lambda: win.check_recovery() or win.start_on_launch())   # step 1: create the project
     sys.exit(app.exec())
 

@@ -22,8 +22,15 @@ SolidCompression=yes
 CloseApplications=yes
 RestartApplications=no
 PrivilegesRequired=lowest
+ChangesAssociations=yes
 [Files]
 Source: "dist\MCP_XA_Energy\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
+[Registry]
+Root: HKA; Subkey: "Software\Classes\.mcplv"; ValueType: string; ValueName: ""; ValueData: "MCP.Project"; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\MCP.Project"; ValueType: string; ValueName: ""; ValueData: "MCP project"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\MCP.Project\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\MCP_XA_Energy.exe,0"
+Root: HKA; Subkey: "Software\Classes\MCP.Project\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\MCP_XA_Energy.exe"" ""%1"""
+Root: HKA; Subkey: "Software\Classes\.json\OpenWithProgids"; ValueType: string; ValueName: "MCP.Project"; ValueData: ""; Flags: uninsdeletevalue
 [InstallDelete]
 Type: files; Name: "{app}\MOT_XA_Energy.exe"
 Type: files; Name: "{autodesktop}\MOT XA Energy.lnk"
