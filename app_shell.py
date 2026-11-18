@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton, QSizePo
 # main tab index -> (rail label, icon name); order of the main tabs in the window
 SUBJECTS = [(0, "Project", "home"), (6, "Drawing register", "clipboard"), (1, "Light && ventilation", "lightvent"), (2, "Energy (XA)", "bolt"),
             (3, "Coverage && FAR", "building"), (4, "Detail notes", "ruler"), (5, "Costing", "tag")]
+CTX = {1: "sans", 2: "sans", 3: "sans", 4: "detail", 5: "costing", 6: "register"}      # which tool a main tab belongs to
 LV_SUBS = [(0, "Windows", "window"), (1, "Doors", "door"), (2, "Rooms", "room"), (3, "Results", "results"), (4, "Plan", "plan")]
 
 
@@ -66,7 +67,16 @@ class Rail(QFrame):
         hb_.setCursor(Qt.CursorShape.PointingHandCursor)
         hb_.setToolTip("Back to the four squares")
         hb_.clicked.connect(lambda _c=False: win.main_tabs.setCurrentIndex(win.launcher_idx[0]))
-        v.addWidget(hb_)
+        sw_ = QPushButton("Switch tool  \u25BE")
+        sw_.setObjectName("railNav")
+        sw_.setCursor(Qt.CursorShape.PointingHandCursor)
+        sw_.setToolTip("Jump straight to another tool")
+        sw_.clicked.connect(lambda _c=False, b=sw_: self._switch_menu(b))
+        hr_ = QHBoxLayout()
+        hr_.setSpacing(4)
+        hr_.addWidget(hb_)
+        hr_.addWidget(sw_, 1)
+        v.addLayout(hr_)
         v.addSpacing(6)
         v.addWidget(self.title)
         v.addWidget(self.sub)
@@ -84,7 +94,7 @@ class Rail(QFrame):
         navsc.setStyleSheet("QScrollArea{background:transparent;} #railNavBox{background:transparent;} QScrollBar:vertical{width:6px;}")
         navsc.setWidget(navw)
         v.addWidget(navsc, 1)
-        self.nav, self.badge, self.subs = {}, {}, {}
+        self.nav, self.badge, self.subs, self.rows = {}, {}, {}, {}
         for idx, label, _icon in SUBJECTS:
             row = QWidget()
             hl = QHBoxLayout(row)
@@ -102,6 +112,7 @@ class Rail(QFrame):
             hl.addWidget(bd)
             nv.addWidget(row)
             self.nav[idx], self.badge[idx] = b, bd
+            self.rows[idx] = row
             if idx == 1:
                 for si, sl, sic in LV_SUBS:
                     sb = QPushButton(sl)
@@ -129,6 +140,18 @@ class Rail(QFrame):
             if n:
                 b.setIcon(self.make_icon(n, col, 20))
 
+    def _switch_menu(self, btn):
+        from PySide6.QtWidgets import QMenu
+        m = QMenu(self)
+        w = self.win
+        for label, idx in (("Drawing register", 6), ("Detail Notes", 4), ("Costing", 5), (None, None),
+                           ("Light && Ventilation", 1), ("Energy (XA)", 2), ("Coverage && FAR", 3), (None, None), ("Home (the four squares)", -1)):
+            if label is None:
+                m.addSeparator()
+                continue
+            m.addAction(label, lambda i=idx: w.main_tabs.setCurrentIndex(w.launcher_idx[0] if i < 0 else i))
+        m.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
+
     def _lv_sub(self, i):
         self.win.main_tabs.setCurrentIndex(1)
         self.win.tabs.setCurrentIndex(i)
@@ -145,6 +168,15 @@ class Rail(QFrame):
 
     def sync(self):
         cur = self.win.main_tabs.currentIndex()
+        w_ = self.win
+        if cur in CTX:
+            w_._ctx = CTX[cur]
+        elif cur in (getattr(w_, "launcher_idx", None) or ()):
+            w_._ctx = None
+        ctx = getattr(w_, "_ctx", None)
+        for idx, row in self.rows.items():
+            row.setVisible((ctx != "detail") if idx == 0 else (CTX.get(idx) == ctx))
+        self.pack.setVisible(ctx == "detail")
         for idx, b in self.nav.items():
             on = "true" if idx == cur else "false"
             if b.property("on") != on:
