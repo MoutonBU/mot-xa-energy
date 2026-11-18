@@ -924,6 +924,19 @@ class LogMixin:
         self.h_open_dir.clicked.connect(self._h_open_dir)
         bar.addWidget(self.h_open_mail)
         bar.addWidget(self.h_open_dir)
+        bar.addSpacing(18)
+        self.h_add = QPushButton("Add an earlier issue (email, PDF or folder)...")
+        self.h_add.setToolTip("Continue from a register that was sent before: pick the email you sent (.eml), its register PDF, or the folder of that revision's drawings, or type the revision and date. It is added to this list.")
+        self.h_add.clicked.connect(self.continue_from_earlier)
+        self.h_del = QPushButton("Delete selected")
+        self.h_del.setToolTip("Takes the highlighted revision out of the list. The next register then compares with the revision before it.")
+        self.h_del.clicked.connect(self._h_delete)
+        self.h_clear = QPushButton("Start fresh (delete all)")
+        self.h_clear.setToolTip("Clears the whole list so the next register is a first issue. Your drawings stay as they are.")
+        self.h_clear.clicked.connect(self._h_clear)
+        bar.addWidget(self.h_add)
+        bar.addWidget(self.h_del)
+        bar.addWidget(self.h_clear)
         bar.addStretch(1)
         v.addLayout(bar)
         sp = QSplitter(Qt.Orientation.Vertical)
@@ -935,7 +948,7 @@ class LogMixin:
         self.htab.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.htab.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.htab.horizontalHeader().setStretchLastSection(True)
-        for i, wd in enumerate((80, 130, 200, 70, 420, 300)):
+        for i, wd in enumerate((110, 190, 220, 80, 420, 300)):
             self.htab.setColumnWidth(i, wd)
         self.htab.itemSelectionChanged.connect(self._h_show)
         sp.addWidget(self.htab)
@@ -988,6 +1001,50 @@ class LogMixin:
             return "First issue: all %d sheets" % len(h.get("rows", {}))
         txt = ", ".join(("%s %s" % (n, t)).strip() + (" (new)" if k == "new" else "") for n, t, k in sheets)
         return "%d sheet%s: %s" % (len(sheets), "" if len(sheets) == 1 else "s", txt)
+
+    def _h_delete(self):
+        h = self._h_current()
+        if h is None:
+            return
+        if QMessageBox.question(self, "Sent and revisions", "Delete Revision %s (%s) from this list?\n\nThe next register will compare with the revision before it. "
+                                "The email and the PDFs on your computer are not touched." % (h.get("issue", ""), self._long_date(h.get("date", "")))) != QMessageBox.StandardButton.Yes:
+            return
+        self.history = [x for x in self.history if x is not h]
+        self._h_after_change()
+
+    def _h_clear(self):
+        if not self.history:
+            return
+        if QMessageBox.question(self, "Sent and revisions", "Delete all %d revisions from this list and start fresh?\n\nThe next register becomes a first issue. "
+                                "Your drawings, emails and PDFs are not touched." % len(self.history)) != QMessageBox.StandardButton.Yes:
+            return
+        self.history = []
+        self._h_after_change()
+
+    def _h_after_change(self):
+        """After revisions were removed: the next revision number follows the last one left, and the 'what changed' lines are worked out again."""
+        last = self.history[-1] if self.history else None
+        if last:
+            try:
+                self.info["issue_no"] = str(int(str(last.get("issue"))) + 1)
+            except ValueError:
+                self.info["issue_no"] = str(last.get("issue")) + "+"
+        else:
+            self.info["issue_no"] = "0"
+        for g in self.groups:
+            for x in g["rows"]:
+                x["comment"] = x["auto"] = ""
+                try:
+                    self._merge(x, dict(x, comment=""))
+                except Exception:
+                    pass
+        self._mail_manual = False
+        try:
+            self.mail.setPlainText("")
+        except Exception:
+            pass
+        self.refresh()
+        self.refresh_history()
 
     def _h_summary(self, h, hist):
         """A short line for an issue recorded without the full memory: compare its drawings with the issue before it."""
