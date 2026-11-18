@@ -11206,6 +11206,8 @@ class MainWindow(QMainWindow):
         try:
             if getattr(self, "logo_mark", None) is not None:
                 self.logo_mark.setPixmap(logo_pixmap().scaledToHeight(64, Qt.TransformationMode.SmoothTransformation))
+            if getattr(self, "home_logo", None) is not None:
+                self.home_logo.setPixmap(logo_pixmap().scaledToHeight(110, Qt.TransformationMode.SmoothTransformation))
             if getattr(self, "mode_btn", None) is not None:
                 self.mode_btn.setText("\u263E  Dark" if light() else "\u2600  Light")
             if getattr(self, "mode_act", None) is not None:
@@ -12356,7 +12358,69 @@ class MainWindow(QMainWindow):
             v.addWidget(box)
             return vb
 
-        g1 = group("Step 1   Your project", "Where is it and what is it? The town sets the energy zone. Save your work here too.")
+        def goto(prefix):
+            for i in range(self.main_tabs.count()):
+                if self.main_tabs.tabText(i).replace("&&", "&").startswith(prefix):
+                    self.main_tabs.setCurrentIndex(i)
+                    return
+
+        def tile(title, sub, ico, prefix, square):
+            b = QPushButton()
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setToolTip("Open " + title.replace("&&", "&"))
+            lab = QLabel("<b style='font-size:17px'>%s</b><br>%s" % (title.replace("&&", "&"), sub), b)
+            lab.setWordWrap(True)
+            lab.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            icl = QLabel()
+            icl.setPixmap(icon_pixmap(ico, "#ff4056", 56))
+            icl.setFixedSize(64, 64)
+            icl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            icl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            if square:
+                b.setMinimumHeight(190)
+                bl = QVBoxLayout(b)
+                bl.setContentsMargins(14, 16, 14, 16)
+                bl.setSpacing(8)
+                bl.addWidget(icl, 0, Qt.AlignmentFlag.AlignHCenter)
+                lab.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+                bl.addWidget(lab, 1)
+            else:
+                b.setMinimumHeight(140)
+                bl = QHBoxLayout(b)
+                bl.setContentsMargins(18, 14, 18, 14)
+                bl.setSpacing(16)
+                bl.addWidget(icl, 0, Qt.AlignmentFlag.AlignVCenter)
+                bl.addWidget(lab, 1)
+            b.clicked.connect(lambda _=False, pf=prefix: goto(pf))
+            return b
+
+        # the launcher: big logo, then one tile for each tool, and the SANS tools together in their own box
+        self.home_logo = QLabel()
+        self.home_logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.home_logo.setPixmap(logo_pixmap().scaledToHeight(110, Qt.TransformationMode.SmoothTransformation))
+        v.addWidget(self.home_logo)
+        hello = QLabel("<span style='font-size:20px; font-weight:700; letter-spacing:2px;'>MCP ARCHITECTURE &amp; INTERIORS</span><br>"
+                       "<span>Pick what you want to work on. Everything you do is saved by the program or in your project.</span>")
+        hello.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        hello.setWordWrap(True)
+        v.addWidget(hello)
+        trow = QHBoxLayout()
+        trow.setSpacing(16)
+        for title, sub, ico, pf in (("Drawing register", "Issue drawings by email, with the sheet index and what is still to come.", "clipboard", "Drawing register"),
+                                    ("Detail Notes", "Add construction detail notes to an Archicad detail.", "ruler", "Detail Notes"),
+                                    ("Costing", "Fixtures, materials and the budget for a job.", "calc", "Costing")):
+            trow.addWidget(tile(title, sub, ico, pf, True))
+        v.addLayout(trow)
+        sans = group("SANS", "Light and ventilation, energy and coverage checks for the building regulations.")
+        srow = QHBoxLayout()
+        srow.setSpacing(16)
+        for title, sub, ico, pf in (("Light && Ventilation", "SANS 10400-O<br><br>Windows and doors, rooms, natural light, ventilation and the glazing limit.", "lightvent", "Light & Ventilation"),
+                                    ("Energy (XA)", "SANS 10400-XA and SANS 204<br><br>Walls, roof, floors, hot water pipes, windows and the rational design report.", "bolt", "Energy (XA)"),
+                                    ("Coverage && FAR", "Site coverage and floor area ratio<br><br>Coverage and bulk against the zoning limits.", "plan", "Coverage & FAR")):
+            srow.addWidget(tile(title, sub, ico, pf, False))
+        sans.addLayout(srow)
+
+        g1 = group("Your project", "Where is it and what is it? The town sets the energy zone. Save your work here too.")
         self.home_summary = QLabel("")
         self.home_summary.setWordWrap(True)
         g1.addWidget(self.home_summary)
@@ -12400,41 +12464,10 @@ class MainWindow(QMainWindow):
                    "The rooms, windows, doors, floor areas and north then feed Energy (XA) and the rational "
                    "design report. Light & Ventilation uses your screenshots, or tick \"Use IFC model for windows and doors\" there.")
         gi.addWidget(self._make_ifc_row())
-        title = QLabel("<span style='font-size:20px; font-weight:700;'>Step 2   Choose what you want to do</span><br>"
-                       "<span>Everything is saved in one project. Switch between the two parts at any time.</span>")
-        title.setWordWrap(True)
-        v.addWidget(title)
         g0 = group("Building type", "A house is calculated per floor. A block of flats or townhouses is "
                                     "calculated per unit, each unit with its own light, ventilation, glazing and energy check.")
         g0.addWidget(self._make_units_chk())
         self._units_chks[-1].toggled.connect(lambda _on: self._refresh_home_summary())
-
-        cards = QHBoxLayout()
-        cards.setSpacing(16)
-        for text, idx, ico in (
-                ("<b style='font-size:17px'>Light && Ventilation</b><br>SANS 10400-O<br><br>"
-                 "Windows and doors, rooms, natural light, ventilation and the glazing limit.", 1, "lightvent"),
-                ("<b style='font-size:17px'>Energy (XA)</b><br>SANS 10400-XA and SANS 204<br><br>"
-                 "Walls, roof, floors, hot water pipes, windows and the rational design report.", 2, "bolt")):
-            b = QPushButton()
-            b.setMinimumHeight(140)
-            b.setCursor(Qt.CursorShape.PointingHandCursor)
-            lab = QLabel(text.replace("&&", "&"), b)
-            lab.setWordWrap(True)
-            lab.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-            icl = QLabel()
-            icl.setPixmap(icon_pixmap(ico, "#ff4056", 56))
-            icl.setFixedSize(64, 64)
-            icl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            icl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-            bl = QHBoxLayout(b)
-            bl.setContentsMargins(18, 14, 18, 14)
-            bl.setSpacing(16)
-            bl.addWidget(icl, 0, Qt.AlignmentFlag.AlignVCenter)
-            bl.addWidget(lab, 1)
-            b.clicked.connect(lambda _=False, i=idx: self.main_tabs.setCurrentIndex(i))
-            cards.addWidget(b)
-        v.addLayout(cards)
 
         g = group("How Light && Ventilation works",
                   "Work through the four numbered steps inside the Light & Ventilation tab.")
