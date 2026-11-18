@@ -144,12 +144,16 @@ class Rail(QFrame):
         from PySide6.QtWidgets import QMenu
         m = QMenu(self)
         w = self.win
-        for label, idx in (("Drawing register", 6), ("Detail Notes", 4), ("Costing", 5), (None, None),
-                           ("Light && Ventilation", 1), ("Energy (XA)", 2), ("Coverage && FAR", 3), (None, None), ("Home (the four squares)", -1)):
+        col = "#1c1f24" if self.light_fn() else "#eceef0"
+        for label, idx, ico in (("Drawing register", 6, "clipboard"), ("Detail Notes", 4, "ruler"), ("Costing", 5, "calc"), (None, None, None),
+                                ("Light && Ventilation", 1, "lightvent"), ("Energy (XA)", 2, "bolt"), ("Coverage && FAR", 3, "building"), (None, None, None),
+                                ("Home (the four squares)", -1, "home")):
             if label is None:
                 m.addSeparator()
                 continue
-            m.addAction(label, lambda i=idx: w.main_tabs.setCurrentIndex(w.launcher_idx[0] if i < 0 else i))
+            a = m.addAction(label.replace("&&", "&"), lambda i=idx: w.main_tabs.setCurrentIndex(w.launcher_idx[0] if i < 0 else i))
+            if self.make_icon:
+                a.setIcon(self.make_icon(ico, col, 20))
         m.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
 
     def _lv_sub(self, i):

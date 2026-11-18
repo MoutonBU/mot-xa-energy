@@ -12125,17 +12125,17 @@ class MainWindow(QMainWindow):
         if online_ready():
             pill.setText("Online AI  \u00b7  " + ai_balance_text())
             pill.setStyleSheet("background: rgba(255,50,64,90); border: 1px solid rgba(255,150,158,200);"
-                               "border-radius: 11px; padding: 3px 10px; color: #ffffff; font-weight: 600;")
+                               "border-radius: 9px; padding: 1px 8px; font-size: 11px; color: #ffffff; font-weight: 600;")
             if studio():
                 pill.setStyleSheet("background: #d8132b; border: 1px solid #d8132b;"
-                                   "border-radius: 11px; padding: 3px 10px; color: #ffffff; font-weight: 600;")
+                                   "border-radius: 9px; padding: 1px 8px; font-size: 11px; color: #ffffff; font-weight: 600;")
         else:
             pill.setText("Offline")
             pill.setStyleSheet("background: rgba(255,255,255,26); border: 1px solid rgba(255,255,255,90);"
-                               "border-radius: 11px; padding: 3px 10px; color: #ffffff; font-weight: 600;")
+                               "border-radius: 9px; padding: 1px 8px; font-size: 11px; color: #ffffff; font-weight: 600;")
             if studio():
                 pill.setStyleSheet("background: #262a2f; border: 1px solid #3a3f46;"
-                                   "border-radius: 11px; padding: 3px 10px; color: #eceef0; font-weight: 600;")
+                                   "border-radius: 9px; padding: 1px 8px; font-size: 11px; color: #eceef0; font-weight: 600;")
 
     def online_settings(self):
         dlg = QDialog(self)
@@ -18518,14 +18518,15 @@ def apply_glass_theme(app, win):
     pill.setToolTip("Online mode: click to enter your API key and switch online AI on or off")
     pill.mousePressEvent = lambda _e, w_=win: w_.online_settings()
     pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    pill.setFixedWidth(210)
+    pill.setFixedWidth(150)
     pill.setStyleSheet("background: rgba(255,255,255,26); border: 1px solid rgba(255,255,255,90);"
-                       "border-radius: 11px; padding: 3px 10px; color: #ffffff; font-weight: 600;")
+                       "border-radius: 9px; padding: 1px 8px; font-size: 11px; color: #ffffff; font-weight: 600;")
     if studio():
         pill.setStyleSheet("background: #262a2f; border: 1px solid #3a3f46;"
-                           "border-radius: 11px; padding: 3px 10px; color: #eceef0; font-weight: 600;")  # light mode: colours translated by setStyleSheet
+                           "border-radius: 9px; padding: 1px 8px; font-size: 11px; color: #eceef0; font-weight: 600;")  # light mode: colours translated by setStyleSheet
     spacer = QPushButton("\u263E  Dark" if light() else "\u2600  Light")
-    spacer.setFixedWidth(96)
+    spacer.setFixedSize(78, 24)
+    spacer.setStyleSheet("font-size: 11px; padding: 0px 6px;")
     spacer.setToolTip("Switch between the dark and the light look")
     spacer.setCursor(Qt.CursorShape.PointingHandCursor)
     spacer.clicked.connect(win.toggle_mode)
@@ -18550,9 +18551,16 @@ def apply_glass_theme(app, win):
         mid.setSpacing(0)
     mid.addWidget(mark)
     mid.addWidget(title)
-    head.addWidget(spacer, 0, Qt.AlignmentFlag.AlignTop)
+    # both sides get the same width, so the logo sits exactly over the middle of the page
+    lw_, rw_ = QWidget(), QWidget()
+    for w_, wid_, al_ in ((lw_, spacer, Qt.AlignmentFlag.AlignLeft), (rw_, pill, Qt.AlignmentFlag.AlignRight)):
+        w_.setFixedWidth(170)
+        hl_ = QHBoxLayout(w_)
+        hl_.setContentsMargins(0, 0, 0, 0)
+        hl_.addWidget(wid_, 0, al_ | Qt.AlignmentFlag.AlignTop)
+    head.addWidget(lw_, 0, Qt.AlignmentFlag.AlignTop)
     head.addLayout(mid, 1)
-    head.addWidget(pill, 0, Qt.AlignmentFlag.AlignTop)
+    head.addWidget(rw_, 0, Qt.AlignmentFlag.AlignTop)
     lay.addLayout(head)
     win.refresh_mode_pill()
     win._pill_timer = QTimer(win)                    # searches run in the background: keep the balance on the button up to date
