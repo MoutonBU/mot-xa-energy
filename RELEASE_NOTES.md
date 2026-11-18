@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.71.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.71.1**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Sheet index on/off button, 1.71.1**: under the email there is a blue button, "Sheet index (what is still to come): ON". Click it to turn the sheet index off when you only want to send one batch of drawings; the email then lists just the drawings you are sending. Click again to bring it back. It is on by default.
 - **Shorter email, grey tabs, rounded labels, 1.71.0**: the list of drawings in the email now runs in two columns, so a block of 9 drawings takes about half the height, with the revision and size under each title. The Issued today, Issued earlier and Not yet issued labels are rounded. Each report (and other list item) now sits on a light grey tab with the red edge. On a phone the two columns stack under each other.
 - **Sheet index always on, 1.70.8**: the sheet index and the still-to-come drawings are now always put into the email whenever something is not in the issue. A project saved while the old "Add a sheet index" tick box was switched off kept it off with no way to turn it back on; that setting is gone.
 - **Email written fresh when a project opens, 1.70.7**: when you open a saved project the email is now written again from the drawings (so the sheet index and the still-to-come drawings appear), unless you had changed the text by hand. Before, an opened project kept the old saved email text and never updated it.

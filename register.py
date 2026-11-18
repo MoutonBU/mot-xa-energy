@@ -503,7 +503,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         self.host = host
         self.groups = []     # {name, rows:[...]}
         self.history = []    # issues already sent: {issue, date, rows:{key: {rev, rdate, title, comment}}}
-        self.info = {"project": "", "client": "", "issued_by": "", "to": "", "email": "", "note": "", "issue_no": "0", "date": "", "cc": "", "client_logo": "", "sheet_index": "1", "issue_kind": "", "show_orders": "0", "show_changes": "0"}
+        self.info = {"project": "", "client": "", "issued_by": "", "to": "", "email": "", "note": "", "issue_no": "0", "date": "", "cc": "", "client_logo": "", "sheet_index": "1", "show_index": "1", "issue_kind": "", "show_orders": "0", "show_changes": "0"}
         self.log = []        # orders and revisions, see register_ext
         self.cur = 0
         self._busy = False
@@ -710,6 +710,14 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         self.kind_box.setToolTip("Revised: the email says what changed since the last issue. New set or These drawings: it is just the list of drawings, with no changes shown.")
         self.kind_box.currentIndexChanged.connect(self._kind_changed)
         rk.addWidget(self.kind_box)
+        rk.addSpacing(16)
+        self.idx_btn = QPushButton()
+        self.idx_btn.setCheckable(True)
+        self.idx_btn.setChecked(self.info.get("show_index") != "0")
+        self.idx_btn.setToolTip("On: the email also lists every drawing of every block or house and what is still to come (needs the sheet index loaded). Off: the email lists only the drawings you are sending.")
+        self.idx_btn.toggled.connect(self._idx_toggled)
+        rk.addWidget(self.idx_btn)
+        self._style_idx_btn()
         rk.addStretch(1)
         v.addLayout(rk)
         self._sync_kind()
@@ -1903,6 +1911,17 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         self.update_mail()
         self.count.setText("%d drawing%s added as still to come." % (added, "" if added == 1 else "s"))
 
+    def _style_idx_btn(self):
+        on = self.idx_btn.isChecked()
+        self.idx_btn.setText("Sheet index (what is still to come): ON" if on else "Sheet index (what is still to come): OFF")
+        self.idx_btn.setStyleSheet("QPushButton{background-color:%s;color:#FFFFFF;font-weight:700;border:1px solid %s;border-radius:8px;padding:6px 14px;}"
+                                   "QPushButton:hover{background-color:%s;}" % (("#1F7A8C", "#16596A", "#2791A6") if on else ("#6B6F78", "#50545C", "#7B808A")))
+
+    def _idx_toggled(self, on):
+        self.info["show_index"] = "1" if on else "0"
+        self._style_idx_btn()
+        self.update_mail()
+
     def _opt_changed(self, k, on):
         self.info[k] = "1" if on else "0"
         self.update_mail()
@@ -1921,6 +1940,11 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
     def _sync_kind(self):
         if not hasattr(self, "kind_box"):
             return
+        if hasattr(self, "idx_btn") and self.idx_btn.isChecked() != (self.info.get("show_index") != "0"):
+            self.idx_btn.blockSignals(True)
+            self.idx_btn.setChecked(self.info.get("show_index") != "0")
+            self.idx_btn.blockSignals(False)
+            self._style_idx_btn()
         i = self.kind_box.findData(self.issue_kind())
         if i >= 0 and i != self.kind_box.currentIndex():
             self.kind_box.blockSignals(True)
@@ -1937,6 +1961,8 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
     def sheet_index(self):
         """Every drawing of every block/house: [(group name, [(row, state, note)], n_today)], or [] when there is nothing more than today's issue to show.
         state is 'today', 'earlier' or 'not'."""
+        if self.info.get("show_index") == "0":
+            return []
         out, total, today = [], 0, 0
         for g in self.groups:
             rows = []
