@@ -684,6 +684,19 @@ class SendDialog(QDialog):
             self.items.append((it, p))
         self.att.itemChanged.connect(self._size)
         v.addWidget(self.att, 2)
+        self._page = page
+        self._rep = {}
+        host = getattr(page, "host", None)
+        if host is not None and hasattr(host, "_write_report_pdf"):
+            rr = QHBoxLayout()
+            rr.addWidget(QLabel("Also attach a report:"))
+            for kind, label in (("lv", "Light & Ventilation"), ("xa", "Energy XA"), ("rd", "Rational design")):
+                c = QCheckBox(label)
+                c.setToolTip("Makes the report from the project that is open now and adds it to the attachments.")
+                c.toggled.connect(lambda on, k=kind, l=label: self._report_toggled(k, l, on))
+                rr.addWidget(c)
+            rr.addStretch(1)
+            v.addLayout(rr)
         self.size = QLabel("")
         self.size.setWordWrap(True)
         v.addWidget(self.size)
@@ -710,6 +723,49 @@ class SendDialog(QDialog):
         bar.addWidget(c)
         bar.addWidget(self.send)
         v.addLayout(bar)
+        self._size()
+
+    def _report_toggled(self, kind, label, on):
+        """Make the report when it is ticked and put it in the attachment list; take it out again when unticked."""
+        from PySide6.QtWidgets import QApplication
+        from PySide6.QtCore import Qt as _Qt
+        if not on:
+            it = self._rep.pop(kind, None)
+            if it is not None:
+                self.items = [(i, p) for i, p in self.items if i is not it]
+                self.att.takeItem(self.att.row(it))
+                self._size()
+            return
+        host = self._page.host
+        w, pre = {"lv": (host._write_report_pdf, host.run_check), "xa": (host._write_xa_pdf, host._run_xa),
+                  "rd": (host._write_rd_pdf, host._run_xa_quiet)}[kind]
+        proj = re.sub(r'[\\/:*?"<>|]+', "-", self._page.project_name() or "Project")
+        path = os.path.join(self.tmp, "%s - %s report.pdf" % (proj, label))
+        QApplication.setOverrideCursor(_Qt.CursorShape.WaitCursor)
+        self.size.setText("Making the %s report ..." % label)
+        QApplication.processEvents()
+        try:
+            pre()
+            w(path)
+            if not os.path.exists(path):
+                raise RuntimeError("the report was not written")
+        except Exception as e:
+            QApplication.restoreOverrideCursor()
+            sender = self.sender()
+            if sender is not None:
+                sender.blockSignals(True)
+                sender.setChecked(False)
+                sender.blockSignals(False)
+            QMessageBox.information(self, "Drawing register", "The %s report could not be made: %s\n\nOpen that tab and check the project first." % (label, e))
+            self._size()
+            return
+        QApplication.restoreOverrideCursor()
+        it = QListWidgetItem("%s report (PDF)   (%.1f MB)" % (label, os.path.getsize(path) / 1e6))
+        it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+        it.setCheckState(Qt.CheckState.Checked)
+        self.att.addItem(it)
+        self.items.append((it, path))
+        self._rep[kind] = it
         self._size()
 
     def files(self):
