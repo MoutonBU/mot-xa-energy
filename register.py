@@ -566,26 +566,31 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         # 2  the drawings
         v.addSpacing(6)
         v.addWidget(step("2.  Add the drawings (PDFs)"))
-        gl = QHBoxLayout()
-        gl.addWidget(QLabel("For:"))
-        self.gbox = QComboBox()
-        self.gbox.setMinimumWidth(200)
-        self.gbox.currentIndexChanged.connect(self._group_changed)
-        gl.addWidget(self.gbox)
-        nb = QPushButton("+ Another block or house")
-        nb.clicked.connect(self.add_group)
-        gl.addWidget(nb)
-        ib = QPushButton("Import a sheet index...")
-        ib.setToolTip("Pick the sheet index (list of layouts) you exported from Archicad for another block or house. Its drawings are added as still to come.")
+        hint = QLabel("How it works: first load the list of every drawing in the job (the Archicad sheet index), then add the PDFs you are sending today. "
+                      "Whatever you do not send is listed for the client as still to come.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: gray;")
+        v.addWidget(hint)
+        # a) the whole job
+        la = QHBoxLayout()
+        la.addWidget(QLabel("<b>A.</b> The whole job:"))
+        ib = QPushButton("Load the sheet index(es)...")
+        ib.setStyleSheet("font-weight:700;")
+        ib.setToolTip("Pick the sheet index PDF (or csv/xlsx) from Archicad. Pick one for each block or house, all at once. Every drawing in them is added and listed as still to come.")
         ib.clicked.connect(self.import_sheet_index)
-        gl.addWidget(ib)
-        pb = QPushButton("Drawings still to come...")
-        pb.setToolTip("Type the drawings that are not ready yet, so the client can see what is still to come. They are listed as not yet issued until you add their PDFs.")
+        la.addWidget(ib)
+        pb = QPushButton("Type drawings that are still to come...")
+        pb.setToolTip("No sheet index? Type the drawings that are not ready yet, one per line.")
         pb.clicked.connect(self.add_planned)
-        gl.addWidget(pb)
-        gl.addSpacing(16)
+        la.addWidget(pb)
+        la.addStretch(1)
+        v.addLayout(la)
+        # b) what goes today
+        gl = QHBoxLayout()
+        gl.addWidget(QLabel("<b>B.</b> What I am sending today:"))
         self.add_btn = QPushButton("Add drawing PDFs...")
         self.add_btn.setStyleSheet("font-weight:700;")
+        self.add_btn.setToolTip("Pick the PDFs you are sending. Each one is matched to the sheet index by its drawing number and ticked to send. Anything else stays as still to come.")
         self.add_btn.clicked.connect(self.add_pdfs)
         gl.addWidget(self.add_btn)
         fb = QPushButton("Add a whole folder...")
@@ -605,6 +610,26 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         gl.addWidget(ra)
         gl.addStretch(1)
         v.addLayout(gl)
+        # c) the blocks and houses
+        gb = QHBoxLayout()
+        gb.addWidget(QLabel("<b>Block or house shown below:</b>"))
+        self.gbox = QComboBox()
+        self.gbox.setMinimumWidth(200)
+        self.gbox.currentIndexChanged.connect(self._group_changed)
+        gb.addWidget(self.gbox)
+        nb = QPushButton("+ Add a block or house...")
+        nb.clicked.connect(self.add_group)
+        gb.addWidget(nb)
+        rn = QPushButton("Rename...")
+        rn.setToolTip("Give this block or house your own name, for example Block A, Unit 3 or Clubhouse.")
+        rn.clicked.connect(self.rename_group)
+        gb.addWidget(rn)
+        dl = QPushButton("Delete")
+        dl.setToolTip("Deletes this block or house and its list of drawings (asks first).")
+        dl.clicked.connect(self.del_group)
+        gb.addWidget(dl)
+        gb.addStretch(1)
+        v.addLayout(gb)
         self.blocks_w = QWidget()
         self.blocks_l = QHBoxLayout(self.blocks_w)
         self.blocks_l.setContentsMargins(0, 2, 0, 0)
@@ -720,7 +745,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         self.sub.addTab(self.build_log("Change"), "Client changes")
         self.sub.addTab(self.build_history(), "Sent and revisions")
         self.mail_done.connect(self._mail_finished)
-        self.add_group("House / Block 1", quiet=True)
+        self.add_group("Main house", quiet=True)
         self._columns()
         self.refresh()
 
@@ -775,7 +800,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         d = d or {}
         self.groups = [dict(name=g.get("name", "Group"), rows=[dict(r, revs=[tuple(x) for x in (r.get("revs") or []) if isinstance(x, (list, tuple))]) for r in g.get("rows", [])]) for g in d.get("groups", []) if isinstance(g, dict)]
         if not self.groups:
-            self.groups = [{"name": "House / Block 1", "rows": []}]
+            self.groups = [{"name": "Main house", "rows": []}]
         self.info.update({k: str(v) for k, v in (d.get("info") or {}).items() if k in self.info})
         for k, c in getattr(self, "rep_chk", {}).items():
             c.blockSignals(True)
@@ -802,7 +827,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
 
     def add_group(self, name=None, quiet=False):
         if not isinstance(name, str):
-            name, ok = QInputDialog.getText(self, "Drawing register", "Name of the block or house:")
+            name, ok = QInputDialog.getText(self, "Drawing register", "Name of the block or house (for example Block A, House 2, Clubhouse):")
             if not ok or not name.strip():
                 return
         self.groups.append({"name": name.strip(), "rows": []})
@@ -811,7 +836,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             self.refresh()
 
     def rename_group(self):
-        name, ok = QInputDialog.getText(self, "Drawing register", "New name:", text=self.groups[self.cur]["name"])
+        name, ok = QInputDialog.getText(self, "Drawing register", "New name for this block or house:", text=self.groups[self.cur]["name"])
         if ok and name.strip():
             self.groups[self.cur]["name"] = name.strip()
             self.refresh()
@@ -840,11 +865,21 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
     def key(r):
         return (r.get("no") or r.get("title", "")).strip().lower()
 
+    @staticmethod
+    def _loose(k):
+        return re.sub(r"[^0-9a-z]", "", str(k).lower())
+
     def find_row(self, k):
         for g in self.groups:
             for r in g["rows"]:
                 if self.key(r) == k:
                     return r
+        lk = self._loose(k)
+        if lk:
+            for g in self.groups:
+                for r in g["rows"]:
+                    if self._loose(self.key(r)) == lk:
+                        return r
         return None
 
     def add_paths(self, paths):
@@ -860,7 +895,10 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
                 self.rows().append(new)
                 added += 1
             else:
+                was_planned = not old.get("path")
                 self._merge(old, new)
+                if was_planned and old.get("path"):
+                    old["on"] = True            # its PDF is here: it goes today
                 updated += 1
         self.rows().sort(key=lambda r: (r.get("no") or "~", r.get("title", "").lower()))
         self.refresh()
@@ -1512,6 +1550,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         while lay.count():
             it = lay.takeAt(0)
             if it.widget():
+                it.widget().setParent(None)
                 it.widget().deleteLater()
         multi = len(self.groups) > 1
         lay.addWidget(QLabel("<b>Send now:</b>"))
@@ -1651,10 +1690,12 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         return out
 
     def import_sheet_index(self):
-        files, _ = QFileDialog.getOpenFileNames(self, "Sheet index from Archicad (one per block or house)", "", "Sheet index (*.pdf *.csv *.txt *.tsv *.xlsx);;All files (*)")
+        """Pick the sheet index file(s); one per block or house, or one for the whole job. A small window shows what was found and lets you name each block."""
+        from PySide6.QtWidgets import QDialog, QDialogButtonBox
+        files, _ = QFileDialog.getOpenFileNames(self, "Sheet index from Archicad: pick one for each block or house (you can pick several)", "", "Sheet index (*.pdf *.csv *.txt *.tsv *.xlsx);;All files (*)")
         if not files:
             return
-        total = 0
+        found = []
         for f in files:
             try:
                 items = self.read_sheet_index(f)
@@ -1662,18 +1703,62 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
                 QMessageBox.warning(self, "Drawing register", "Could not read %s:\n%s" % (os.path.basename(f), e))
                 continue
             if not items:
-                QMessageBox.information(self, "Drawing register", "No drawings found in %s." % os.path.basename(f))
+                QMessageBox.information(self, "Drawing register", "No drawings found in %s. (A scanned PDF, which is only a picture, cannot be read.)" % os.path.basename(f))
                 continue
-            stem = os.path.splitext(os.path.basename(f))[0]
-            names = [g["name"] for g in self.groups]
-            name, ok = QInputDialog.getItem(self, "Drawing register", "%d drawings found in %s.\nWhich block or house are they for? (pick one or type a new name)" % (len(items), os.path.basename(f)),
-                                            names + [stem], len(names) if stem not in names else names.index(stem), True)
-            if not ok or not name.strip():
+            found.append((f, items))
+        if not found:
+            return
+        names = [g["name"] for g in self.groups]
+        d = QDialog(self)
+        d.setWindowTitle("Load the sheet index")
+        v = QVBoxLayout(d)
+        v.addWidget(QLabel("Here is what was found. Give each list a name: the block or house it belongs to (pick one or type your own).\nUntick a list you do not want."))
+        t = QTableWidget(len(found), 3)
+        t.setHorizontalHeaderLabels(["Use", "Block or house", "Drawings found"])
+        t.verticalHeader().setVisible(False)
+        t.setMinimumSize(620, 40 + 34 * min(len(found), 8))
+        boxes = []
+        for i, (f, items) in enumerate(found):
+            ck = QTableWidgetItem("")
+            ck.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+            ck.setCheckState(Qt.CheckState.Checked)
+            t.setItem(i, 0, ck)
+            stem = re.sub(r"(?i)[\s_-]*(sheet|drawing)?[\s_-]*(index|list|register)\b", "", os.path.splitext(os.path.basename(f))[0]).strip(" _-") or os.path.splitext(os.path.basename(f))[0]
+            cb = QComboBox()
+            cb.setEditable(True)
+            cb.addItems(names)
+            cb.setCurrentText(next((n for n in names if n.lower() == stem.lower()), stem))
+            t.setCellWidget(i, 1, cb)
+            boxes.append(cb)
+            it = QTableWidgetItem("%d   (%s)" % (len(items), os.path.basename(f)))
+            it.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            t.setItem(i, 2, it)
+        t.setColumnWidth(0, 40)
+        t.setColumnWidth(1, 240)
+        t.horizontalHeader().setStretchLastSection(True)
+        v.addWidget(t)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        bb.button(QDialogButtonBox.StandardButton.Ok).setText("Add them")
+        bb.accepted.connect(d.accept)
+        bb.rejected.connect(d.reject)
+        v.addWidget(bb)
+        if not d.exec():
+            return
+        total = 0
+        blank = [g for g in self.groups if not g["rows"]]
+        for i, (f, items) in enumerate(found):
+            if t.item(i, 0).checkState() != Qt.CheckState.Checked:
                 continue
-            g = next((x for x in self.groups if x["name"] == name.strip()), None)
+            name = boxes[i].currentText().strip() or "Block"
+            g = next((x for x in self.groups if x["name"].lower() == name.lower()), None)
+            if g is None and blank:
+                g = blank.pop(0)                    # the empty starting block takes the first name instead of staying empty
+                g["name"] = name
             if g is None:
-                g = {"name": name.strip(), "rows": []}
+                g = {"name": name, "rows": []}
                 self.groups.append(g)
+            if g in blank:
+                blank.remove(g)
             for no, title, rev in items:
                 row = {"on": False, "no": no, "title": title, "about": "", "size": "", "scale": "", "rev": rev, "rdate": "", "pdfdate": "", "by": "", "comment": "", "status": "For information", "file": "", "path": "", "revs": []}
                 old = self.find_row(self.key(row))
@@ -1684,9 +1769,10 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
                 g["rows"].append(row)
                 total += 1
             g["rows"].sort(key=lambda r: (r.get("no") or "~", r.get("title", "").lower()))
+        self.cur = min(self.cur, len(self.groups) - 1)
         self.refresh()
         self.update_mail()
-        self.count.setText("%d drawing%s added as still to come from the sheet index." % (total, "" if total == 1 else "s"))
+        self.count.setText("%d drawing%s loaded from the sheet index. Now add the PDFs you are sending today (B)." % (total, "" if total == 1 else "s"))
 
     def add_planned(self):
         """Type drawings that are not ready yet (one per line, number then title) so they show as still to come."""
