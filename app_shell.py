@@ -10,6 +10,8 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton, QSizePo
 SUBJECTS = [(0, "Project", "home"), (6, "Drawing register", "clipboard"), (1, "Light && ventilation", "lightvent"), (2, "Energy (XA)", "bolt"),
             (3, "Coverage && FAR", "building"), (4, "Detail notes", "ruler"), (5, "Costing", "tag")]
 CTX = {1: "sans", 2: "sans", 3: "sans", 4: "detail", 5: "costing", 6: "register"}      # which tool a main tab belongs to
+PSUB_ICONS = {"Drawings": "clipboard", "Orders": "tag", "Client changes": "edit", "Sent and revisions": "export",
+              "Fixtures and sanitary ware": "drop", "Building materials": "layers", "Whole building and budget": "calc"}
 LV_SUBS = [(0, "Windows", "window"), (1, "Doors", "door"), (2, "Rooms", "room"), (3, "Results", "results"), (4, "Plan", "plan")]
 
 
@@ -94,7 +96,7 @@ class Rail(QFrame):
         navsc.setStyleSheet("QScrollArea{background:transparent;} #railNavBox{background:transparent;} QScrollBar:vertical{width:6px;}")
         navsc.setWidget(navw)
         v.addWidget(navsc, 1)
-        self.nav, self.badge, self.subs, self.rows = {}, {}, {}, {}
+        self.nav, self.badge, self.subs, self.rows, self.psubs = {}, {}, {}, {}, {}
         for idx, label, _icon in SUBJECTS:
             row = QWidget()
             hl = QHBoxLayout(row)
@@ -123,6 +125,21 @@ class Rail(QFrame):
                     sb.clicked.connect(lambda _c=False, i=si: self._lv_sub(i))
                     nv.addWidget(sb)
                     self.subs[si] = sb
+            tw = self._inner_tabs(idx)
+            if tw is not None:
+                tw.tabBar().hide()              # the sections of this tool are listed in the bar instead of along the top
+                self.psubs[idx] = []
+                for ti in range(tw.count()):
+                    lbl = tw.tabText(ti)
+                    sb = QPushButton(lbl.replace("&&", "&"))
+                    sb.setObjectName("railSubItem")
+                    sb.setProperty("iconName", PSUB_ICONS.get(lbl, "folder"))
+                    sb.setIconSize(QSize(16, 16))
+                    sb.setCursor(Qt.CursorShape.PointingHandCursor)
+                    sb.clicked.connect(lambda _c=False, i=idx, t=ti, w_=tw: (win.main_tabs.setCurrentIndex(i), w_.setCurrentIndex(t)))
+                    nv.addWidget(sb)
+                    self.psubs[idx].append(sb)
+                tw.currentChanged.connect(lambda _i: self.sync())
         nv.addStretch(1)
         self.pack = QPushButton("Build submission pack")
         self.pack.setObjectName("railPack")
@@ -139,6 +156,12 @@ class Rail(QFrame):
             n = b.property("iconName")
             if n:
                 b.setIcon(self.make_icon(n, col, 20))
+
+    def _inner_tabs(self, idx):
+        """The tab widget inside the Drawing register (6) or the Costing (5), whose sections the bar lists."""
+        pg = getattr(self.win, "register_page" if idx == 6 else "costing_page" if idx == 5 else "", None) if idx in (5, 6) else None
+        tw = getattr(pg, "sub" if idx == 6 else "main", None) if pg is not None else None
+        return tw
 
     def _switch_menu(self, btn):
         from PySide6.QtWidgets import QMenu
@@ -181,6 +204,15 @@ class Rail(QFrame):
         for idx, row in self.rows.items():
             row.setVisible((ctx != "detail") if idx == 0 else (CTX.get(idx) == ctx))
         self.pack.setVisible(ctx == "detail")
+        for idx, btns in self.psubs.items():
+            tw = self._inner_tabs(idx)
+            for i, sb in enumerate(btns):
+                sb.setVisible(cur == idx)
+                on = "true" if (cur == idx and tw is not None and tw.currentIndex() == i) else "false"
+                if sb.property("on") != on:
+                    sb.setProperty("on", on)
+                    sb.style().unpolish(sb)
+                    sb.style().polish(sb)
         for idx, b in self.nav.items():
             on = "true" if idx == cur else "false"
             if b.property("on") != on:
@@ -376,7 +408,8 @@ class Ribbon(QFrame):
             ("Products", [T("From link", "import", cost("add_from_link")), T("Manual", "edit", cost("add_product")),
                           T("Find product", "search", cost("find_ai"), hot=True)]),
             ("Building materials", [T("Read IFC", "cube", cost("mat_read")), T("Preview", "eye", cost("mat_preview")), T("Export", "pdf", cost("mat_export"))]),
-            ("Reports", [T("Preview PDF", "eye", cost("preview_pdf")), T("Export PDF", "pdf", cost("export_pdf")), T("Export CSV", "export", cost("export_csv"))])])
+            ("Costing report", [T("Preview", "eye", cost("cost_report_preview"), hot=True), T("Export PDF", "pdf", cost("cost_report_export"))]),
+            ("Fixture schedule", [T("Preview PDF", "eye", cost("preview_pdf")), T("Export PDF", "pdf", cost("export_pdf")), T("Export CSV", "export", cost("export_csv"))])])
         def reg(name, *a):
             def f():
                 c = getattr(w, "register_page", None)

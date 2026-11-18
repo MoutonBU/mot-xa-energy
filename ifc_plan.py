@@ -10,7 +10,7 @@ import threading
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import (QComboBox, QFrame, QGraphicsPathItem, QGraphicsScene, QGraphicsSimpleTextItem, QGraphicsView,
+from PySide6.QtWidgets import (QSizePolicy, QComboBox, QFrame, QGraphicsPathItem, QGraphicsScene, QGraphicsSimpleTextItem, QGraphicsView,
                                QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget)
 
 CUT_HEIGHT = 1.1
@@ -930,8 +930,8 @@ class PlanPage(QWidget):
         sv.setSpacing(6)
         self.key = QLabel("")
         self.key.setTextFormat(Qt.TextFormat.RichText)
-        self.key.setWordWrap(False)
-        self.key.setMinimumHeight(205)
+        self.key.setWordWrap(True)           # the key takes the height its text needs, so it never runs into the room count below it
+        self.key.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
         sv.addWidget(self.key)
         self.count = QLabel("")
         self.count.setTextFormat(Qt.TextFormat.RichText)
@@ -1034,7 +1034,7 @@ class PlanPage(QWidget):
         self.list.setStyleSheet("QListWidget{background:%s;color:%s;border:1px solid %s;border-radius:8px;} "
                                 "QListWidget::item{padding:3px 4px;} QListWidget::item:selected{background:%s;color:%s;}"
                                 % (bg, fg, "#d4d7dc" if is_l else "#26262c", "#fbe3e6" if is_l else "#3a161d", fg))
-        sw = lambda c, ring=False: ("<span style='color:%s;font-size:15px'>&#9632;</span>" % c)
+        sw = lambda c, ring=False: ("<span style='color:%s;font-size:12px'>&#9632;</span>" % c)
         rows = [(pal["ok"], "Passes", "light and ventilation OK"),
                 (pal["check"], "Check", "light or ventilation fails"),
                 (pal["fail"], "Fails", "both fail"),

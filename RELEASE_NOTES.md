@@ -1,11 +1,16 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.75.1**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.76.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Costing report, 1.76.0**: a combined PDF for the whole costing: the whole-building estimate (cost per m2, the share of each part, and the budget with over / under when you set a target), the building materials by block, and then the full sanitary ware and fixtures schedule with the product photos and totals. Open it from the ribbon (Costing report: Preview, Export PDF) or from the buttons on the Whole building and budget section.
+- **Sections in the left bar, 1.76.0**: the Drawing register (Drawings, Orders, Client changes, Sent and revisions) and the Costing (Fixtures, Building materials, Whole building and budget) now list their sections in the left bar instead of tabs along the top.
+- **Status line, 1.76.0**: the thin line at the bottom shows the open project (saved or unsaved changes), the register and the costing in use (saved automatically) and whether each is linked to the project. The project link is now only set when you save the project, not just by looking at it.
+- **Detail Notes picker icons, 1.76.0**: the catalog picker uses the program's line icons in place of emoji, so it matches the rest of the program in dark and light.
+- **Plan key fixed, 1.76.0**: the key on the floor plan page takes the height its text needs and no longer runs into the room count below it.
 - **Tidier top bar and menu icons, 1.75.1**: the logo is now exactly centred over the four squares, and the Light/Dark button and the Online AI label are smaller. The Switch tool menu has an icon for every tool.
 - **Left bar shows only the tool you are in, and Switch tool, 1.75.0**: inside the Drawing register, Costing or Detail Notes the left bar lists only that tool (plus Project, except in Detail Notes), and inside SANS it lists Light & Ventilation, Energy (XA) and Coverage & FAR together. Detail Notes also shows its Build submission pack button. At the top of the bar, Home returns to the four squares and the new "Switch tool" menu jumps straight to any other tool without going home first.
 - **Four squares to start, 1.74.0**: the program now opens on just four big squares: Drawing register, Detail Notes, Costing and SANS. SANS opens a second screen with Light & Ventilation, Energy (XA) and Coverage & FAR. The left bar, the ribbon (New, Open, Save...) and the step strip only appear once you are inside one of them, and the Home button at the top of the left bar (or Back on the SANS screen) returns you to the squares. The old overview is now the Project page in the left bar. The program no longer asks you to start a project when it opens; File > New or Open is still there.

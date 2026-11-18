@@ -45,3 +45,21 @@ def family_of(group):
         if group in groups:
             return name
     return None
+
+
+# vector icons (names from the program's own icon set), used instead of the emoji above whenever the program supplies them
+FAMILY_VICON = {"Foundations and floors": "floor", "Walls": "wall", "Roof and ceiling": "roof", "Waterproofing and insulation": "drop",
+                "Windows, doors and joinery": "window", "Services and outside": "bolt", "Finishes and general": "edit",
+                "South African products": "tag", "My specs": "star"}
+VICONS = {
+    "Foundations": "floor", "Ground and fill": "layers", "Concrete slabs and floors": "floor", "Screeds and floor finishes": "ruler",
+    "Steel and structural": "building", "Masonry walls": "wall", "Masonry details": "search", "Wall reinforcing, ties, lintels": "shield",
+    "Light-weight and framed walls": "wall", "Plaster, paint and finishes": "edit", "Stone, coping and cladding": "cube",
+    "Roof covering": "roof", "Purlins and battens": "ruler", "Roof timber and structure": "leaf", "Roofs: flat roofs and waterproofing": "drop",
+    "Ceilings": "layers", "Fascias, gutters, rainwater": "drop", "Damp-proofing and waterproofing": "drop", "Insulation": "thermo",
+    "Thermal and energy (SANS 10400-XA)": "thermo", "Windows, doors, openings": "window", "Window and door details": "door",
+    "Joinery, trims and internal finishes": "settings", "Timber and carpentry": "leaf", "Wet areas and plumbing": "drop",
+    "Services: energy, solar, electrical": "bolt", "External works": "leaf", "Stairs, balustrades, safety": "stairs", "Fire and safety": "warning",
+    "Paint, sealants and coatings": "edit", "General notes": "clipboard", "SA products: insulation": "thermo",
+    "SA products: waterproofing (a.b.e.)": "drop", "SA products: boards, cement and masonry": "cube", "My specs": "star",
+}

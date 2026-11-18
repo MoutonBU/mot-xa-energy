@@ -938,9 +938,14 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             return None
         d = self._state()
         d["rid"], d["rname"] = self.rid, self.rname
-        self.linked = True
-        self.link_bar.refresh()
+        d["linked"] = bool(self.linked)
         return d
+
+    def after_project_saved(self):
+        """The project file was written with this register in it: it is linked now."""
+        if self.link_ok:
+            self.linked = True
+            self.link_bar.refresh()
 
     def _state(self):
         return {"groups": self.groups, "info": self.info, "cur": self.cur, "mail": self.mail.toPlainText(), "mail_manual": bool(self._mail_manual), "history": self.history, "log": self.log,

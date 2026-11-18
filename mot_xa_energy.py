@@ -10279,6 +10279,14 @@ class MainWindow(QMainWindow):
         self.update_btn.clicked.connect(self.update_now)
         self.update_btn.hide()
         self.statusBar().addWidget(self.update_btn)
+        self.status_info = QLabel("")
+        self.status_info.setTextFormat(Qt.TextFormat.RichText)
+        self.status_info.setToolTip("Project: saved when you press Save. Register and costing: saved by the program as you work.")
+        self.statusBar().addPermanentWidget(self.status_info)
+        self._status_timer = QTimer(self)
+        self._status_timer.timeout.connect(self.refresh_status_info)
+        self._status_timer.start(2500)
+        QTimer.singleShot(800, self.refresh_status_info)
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.check_for_update)
         self._timer.start(3000)
@@ -10461,6 +10469,11 @@ class MainWindow(QMainWindow):
         import datetime
         self._set_project_label("saved " + datetime.datetime.now().strftime("%H:%M:%S"))
         self._recent_add(self.current_file)
+        for pg_ in (getattr(self, "register_page", None), getattr(self, "costing_page", None)):
+            try:
+                pg_.after_project_saved()
+            except Exception:
+                pass
         self._mark_clean()
         self.statusBar().showMessage(f"Project saved: {self.current_file}", 8000)
 
@@ -10557,6 +10570,28 @@ class MainWindow(QMainWindow):
             return hashlib.md5(json.dumps(self.project_data(), sort_keys=True, default=str).encode("utf-8")).hexdigest()
         except Exception:
             return ""
+
+    def refresh_status_info(self):
+        """The thin line at the bottom: the open project, register and costing, and whether each is saved."""
+        try:
+            esc = lambda t: str(t).replace("&", "&amp;").replace("<", "&lt;")
+            good, warn, mut = "#2e9e5b", "#d9a21b", "#8a8f98"
+            parts = []
+            f = getattr(self, "current_file", None)
+            name = os.path.splitext(os.path.basename(f))[0] if f else ((self.rd.get("project") or "").strip() or "no project")
+            if f or (self.rd.get("project") or "").strip():
+                dirty = self._data_hash() != getattr(self, "_clean_hash", None)
+                parts.append("Project: <b>%s</b> <span style='color:%s'>%s</span>" % (esc(name), warn if dirty else good,
+                                                                              "unsaved changes" if dirty else ("saved" if f else "not saved yet")))
+            else:
+                parts.append("<span style='color:%s'>No project open</span>" % mut)
+            for pg, lab, nm in ((getattr(self, "register_page", None), "Register", "rname"), (getattr(self, "costing_page", None), "Costing", "cname")):
+                if pg is not None and getattr(pg, nm, ""):
+                    link = " <span style='color:%s'>linked</span>" % good if getattr(pg, "linked", False) else ""
+                    parts.append("%s: <b>%s</b> <span style='color:%s'>saved automatically</span>%s" % (lab, esc(getattr(pg, nm)), mut, link))
+            self.status_info.setText("&nbsp;&nbsp;|&nbsp;&nbsp;".join(parts))
+        except Exception:
+            pass
 
     def _mark_clean(self):
         self._clean_hash = self._data_hash()

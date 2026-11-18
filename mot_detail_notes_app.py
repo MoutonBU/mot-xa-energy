@@ -1184,6 +1184,8 @@ class SpecDialog(QDialog):
     def __init__(self, parent, title, cat_name, measured=None, current="", name="", typed=""):
         super().__init__(parent)
         self.name = name
+        self._mk = getattr(parent, "make_icon", None)          # vector icons from the program (emoji when this runs on its own)
+        self._light = bool(getattr(parent, "is_light", None) and parent.is_light())
         self.setWindowTitle("Choose specification")
         self.resize(980, 640)
         self.note = ""
@@ -1216,6 +1218,7 @@ class SpecDialog(QDialog):
         self.cats = QTreeWidget()
         self.cats.setHeaderHidden(True)
         self.cats.setIndentation(14)
+        self.cats.setIconSize(QSize(18, 18))
         self.cats.setMaximumWidth(290)
         self.cats.setMinimumWidth(230)
         self.cats.setUniformRowHeights(True)
@@ -1327,6 +1330,11 @@ class SpecDialog(QDialog):
             d["My specs"] = [(c["label"], c["note"]) for c in self.custom]
         return d
 
+    def _vico(self, item, name):
+        if self._mk:
+            item.setData(0, Qt.ItemDataRole.UserRole + 2, name)
+            item.setIcon(0, self._mk(name, "#1c1f24" if self._light else "#eceef0", 18))
+
     def _fill_cats(self):
         self.cats.clear()
         self._cat_items = {}
@@ -1336,7 +1344,8 @@ class SpecDialog(QDialog):
             groups = [g for g in groups if g in data]
             if not groups:
                 continue
-            top = QTreeWidgetItem([f"{ic}  {fam}"])
+            top = QTreeWidgetItem([fam if self._mk else f"{ic}  {fam}"])
+            self._vico(top, icons.FAMILY_VICON.get(fam, "folder"))
             f = top.font(0)
             f.setBold(True)
             top.setFont(0, f)
@@ -1344,7 +1353,8 @@ class SpecDialog(QDialog):
             self.cats.addTopLevelItem(top)
             for g in groups:
                 used.add(g)
-                ch = QTreeWidgetItem([f"{icons.ICONS.get(g, '')}  {g}"])
+                ch = QTreeWidgetItem([g if self._mk else f"{icons.ICONS.get(g, '')}  {g}"])
+                self._vico(ch, icons.VICONS.get(g, "folder"))
                 ch.setData(0, Qt.ItemDataRole.UserRole, g)
                 ch.setToolTip(0, f"{len(data[g])} specifications")
                 top.addChild(ch)
@@ -1392,7 +1402,7 @@ class SpecDialog(QDialog):
         for (lab, note), c in zip(opts, cats):
             it = QListWidgetItem(lab)
             it.setData(Qt.ItemDataRole.UserRole, note)
-            it.setData(Qt.ItemDataRole.UserRole + 1, (icons.ICONS.get(c, "") + "  " + c) if c else "")
+            it.setData(Qt.ItemDataRole.UserRole + 1, (c if self._mk else icons.ICONS.get(c, "") + "  " + c) if c else "")
             it.setToolTip(note)
             self.opts.addItem(it)
             self._notes.append(note)

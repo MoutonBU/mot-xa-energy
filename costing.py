@@ -572,9 +572,14 @@ class CostingPage(QWidget):
             return None
         d = self._state()
         d["cid"], d["cname"] = self.cid, self.cname
-        self.linked = True
-        self.link_bar.refresh()
+        d["linked"] = bool(self.linked)
         return d
+
+    def after_project_saved(self):
+        """The project file was written with this costing in it: it is linked now."""
+        if self.link_ok:
+            self.linked = True
+            self.link_bar.refresh()
 
     def _state(self):
         return {"products": self.products, "defaults": self.defaults, "lines": self.lines,
@@ -1172,6 +1177,57 @@ class CostingPage(QWidget):
                    'must be confirmed with the supplier before ordering. %s</p>' % ("Prices exclude VAT." if self.vat else "Prices include VAT."))
         return "".join(out)
 
+    def cost_report_html(self, doc):
+        import datetime
+        e = lambda x: _html.escape(str(x))
+        RED = "#C8102E"
+        rd = getattr(self.win, "rd", {}) or {}
+        out = ['<h1 style="color:%s;">Costing report</h1>' % RED,
+               '<p style="font-size:9pt;color:#444;">%s%s &nbsp;|&nbsp; %s</p>' % (
+                   e(" | ".join(dict.fromkeys(x for x in (rd.get("project"), self.cname) if x)) or "Project"), "", datetime.date.today().strftime("%d %B %Y"))]
+        if getattr(self, "summary_page", None):
+            out.append(self.summary_page.report_html())
+        m = getattr(self, "materials", None)
+        if m is not None and m.blocks:
+            th = lambda t, w: '<th bgcolor="#DCDCDC" width="%d%%" style="padding:3px;">%s</th>' % (w, t)
+            td = lambda t, a="left": '<td style="padding:3px;text-align:%s;">%s</td>' % (a, t)
+            rows = ""
+            for b in m.blocks:
+                rows += "<tr>%s%s%s</tr>" % (td(e(b.get("name", ""))), td(str(b.get("repeat", 1)), "center"),
+                                              td(money(m.block_cost(b)) if b.get("q") else "not read yet", "right"))
+            out.append("<h3>Building materials by block</h3>")
+            out.append('<table width="100%%" border="0.6" cellspacing="0" style="font-size:8.5pt;"><tr>%s%s%s</tr>%s</table>' % (th("Block", 60), th("Repeats", 12), th("Cost (all in)", 28), rows))
+        out.append('<div style="page-break-before:always;"></div>')
+        out.append(self.report_html(doc))
+        out.append('<p style="font-size:7.5pt;color:#666;">An estimate for budgeting, not a quotation. Quantities come from the model and the rates and prices from the lists in this costing.</p>')
+        return "".join(out)
+
+    def write_cost_report(self, path):
+        from PySide6.QtCore import QMarginsF
+        from PySide6.QtGui import QFont, QPageLayout, QPageSize, QPdfWriter, QTextDocument
+        w = QPdfWriter(path)
+        w.setPageLayout(QPageLayout(QPageSize(QPageSize.PageSizeId.A4), QPageLayout.Orientation.Portrait, QMarginsF(12, 12, 12, 12), QPageLayout.Unit.Millimeter))
+        w.setTitle("Costing report")
+        d = QTextDocument()
+        d.setDefaultFont(QFont("Arial", 9))
+        d.setHtml('<html><body style="font-family:Arial;color:#111;">' + self.cost_report_html(d) + "</body></html>")
+        d.print_(w)
+
+    def cost_report_preview(self):
+        try:
+            self.win.preview_pdf_report(self.write_cost_report, lambda: None)
+        except Exception as e:
+            QMessageBox.warning(self, "Costing", "The preview could not be shown (%s). Use Export costing report." % e)
+
+    def cost_report_export(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Export costing report", ((self.cname or "Costing") + " report.pdf"), "PDF (*.pdf)")
+        if not path:
+            return
+        if not path.lower().endswith(".pdf"):
+            path += ".pdf"
+        self.write_cost_report(path)
+        QMessageBox.information(self, "Costing", "PDF saved:\n" + path)
+
     def write_pdf(self, path):
         from PySide6.QtCore import QMarginsF
         from PySide6.QtGui import QFont, QPageLayout, QPageSize, QPdfWriter, QTextDocument
@@ -1423,6 +1479,13 @@ class SummaryPage(QWidget):
         self.note.setWordWrap(True)
         self.note.setStyleSheet("color: gray; font-size: 11px;")
         v.addWidget(self.note)
+        rr = QHBoxLayout()
+        for txt, fn in (("Preview costing report", lambda: self.host.cost_report_preview()), ("Export costing report (PDF)...", lambda: self.host.cost_report_export())):
+            b_ = QPushButton(txt)
+            b_.clicked.connect(lambda _=False, f=fn: f())
+            rr.addWidget(b_)
+        rr.addStretch(1)
+        v.addLayout(rr)
         for w_, sig in ((self.basis_box, "currentIndexChanged"), (self.manual_spin, "valueChanged"), (self.target_spin, "valueChanged"),
                         (self.share_spin, "valueChanged")):
             getattr(w_, sig).connect(self._edited)
@@ -1498,6 +1561,44 @@ class SummaryPage(QWidget):
     def max_price(self, category):
         r = self.fixture_budget().get(category)
         return r[2] if r else 0.0
+
+    def report_html(self):
+        """The whole-building cost: headline, the parts of the cost with their share and (when a target is set) the budget and over / under."""
+        e = lambda x: _html.escape(str(x))
+        th = lambda t, w: '<th bgcolor="#DCDCDC" width="%d%%" style="padding:3px;">%s</th>' % (w, t)
+        td = lambda t, a="left", b=False: '<td style="padding:3px;text-align:%s;">%s</td>' % (a, ("<b>%s</b>" % t) if b else t)
+        area = self.area()
+        rows, total = self.components()
+        budget = self.target * area if self.target > 0 and area > 0 else 0.0
+        out = ['<h3>Whole building</h3>']
+        if not rows:
+            return "".join(out) + '<p style="color:#555;">The building materials have not been read yet, so there is no whole-building estimate.</p>'
+        line = "<b>Estimate: %s</b>" % mon0(total)
+        if area > 0:
+            line += " &nbsp;on %s m2 &nbsp;=&nbsp; <b>%s per m2</b>" % ("{:,.0f}".format(area).replace(",", " "), mon0(total / area))
+        if budget:
+            diff = total - budget
+            line += "<br>Budget at %s per m2: %s &nbsp;|&nbsp; the estimate is %s %s the budget" % (mon0(self.target), mon0(budget), mon0(abs(diff)), "over" if diff > 0 else "under")
+        out.append('<table width="100%%" border="0" cellspacing="0" cellpadding="8"><tr><td bgcolor="#F4F4F4" style="font-size:10pt;">%s</td></tr></table><p></p>' % line)
+        head = th("Part of the cost", 32) + th("Estimate", 16) + th("R per m2", 14) + th("Share", 10)
+        if budget:
+            head += th("Budget", 14) + th("Over / under", 14)
+        body = ""
+        for name, c in rows + [("Total", total)]:
+            b_ = name == "Total"
+            cells = td(e(name), b=b_) + td(mon0(c), "right", b_) + td(mon0(c / area) if area else "", "right", b_) + td("%.1f %%" % (100.0 * c / total) if total else "", "right", b_)
+            if budget:
+                if b_:
+                    bud = budget
+                elif name.startswith("Sanitary"):
+                    bud = budget * self.fx_share / 100.0
+                else:
+                    others = sum(c2 for n2, c2 in rows if not n2.startswith("Sanitary"))
+                    bud = budget * (100.0 - self.fx_share) / 100.0 * c / others if others else 0.0
+                cells += td(mon0(bud), "right", b_) + td(mon0(c - bud), "right", b_)
+            body += "<tr>%s</tr>" % cells
+        out.append('<table width="100%%" border="0.6" cellspacing="0" style="font-size:8.5pt;"><tr>%s</tr>%s</table>' % (head, body))
+        return "".join(out)
 
     def refresh(self):
         self._busy = True
