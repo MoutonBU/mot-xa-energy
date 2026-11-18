@@ -12,6 +12,7 @@ HEAD = "#DCDCDC"       # class hd   (the grey title card, as on the PDF)
 CARD = "#F3F3F3"       # class cd
 ROW1 = "#FFFFFF"       # class r1
 ROW2 = "#F6F6F6"       # class r2
+TAB = "#EFEFEF"        # the light grey tab behind each item (class cd)
 LINE = "#CFCFCF"       # class bd
 TXT = "#2B2B2B"        # class tx
 STRONG = "#111111"     # class st
@@ -36,6 +37,7 @@ DARK_CSS = """
  .lgd{display:block !important;max-height:none !important;overflow:visible !important;}
 }
 @media only screen and (max-width:480px){
+ .sx{display:block !important;width:100% !important;border-left:0 !important;}
  .sgd{display:none !important;max-height:0 !important;overflow:hidden !important;}
  .sgm{display:block !important;max-height:none !important;overflow:visible !important;}
 }
@@ -184,29 +186,56 @@ def _drawing_table(rows):
             '<tr>%s</tr>%s</table>' % (LINE, head, body))
 
 
-def _index_table(rows):
-    """One list of every drawing of a block: its details and its state (issued today / issued earlier / not yet issued)."""
-    head = "".join('<td class="mu bd" width="%s" style="padding:10px 12px;font-family:%s;font-size:11px;letter-spacing:1.5px;color:%s;border-bottom:1px solid %s;">%s</td>' % (w, FONT, MUTED, LINE, _e(t))
-                   for w, t in (("14%", "DRAWING"), ("33%", "TITLE"), ("8%", "REV"), ("17%", "SIZE / SCALE"), ("28%", "STATUS")))
+def _chip(text, kind):
+    """A rounded label (a table cell, so it keeps its padding and rounded corners in the email programs that allow it)."""
+    if kind == "today":
+        bg, fg, bd, cls = RED, "#FFFFFF", RED, ""
+    elif kind == "earlier":
+        bg, fg, bd, cls = "#E4E4E4", "#444444", "#E4E4E4", "cd"
+    else:
+        bg, fg, bd, cls = "#FFFFFF", RED, RED, "r1"
+    return ('<table cellpadding="0" cellspacing="0" border="0" align="right"><tr><td class="%s" bgcolor="%s" style="background-color:%s;border:1px solid %s;border-radius:12px;'
+            'padding:3px 10px;font-family:%s;font-size:11px;font-weight:700;color:%s;white-space:nowrap;text-align:center;">%s</td></tr></table>' % (cls, bg, bg, bd, FONT, fg, _e(text)))
+
+
+def _index_half(rows, start):
     body = ""
     for n, (no, title, rev, size, state, about) in enumerate(rows):
-        cls, bg = ("r1", ROW1) if n % 2 == 0 else ("r2", ROW2)
-        cell = 'class="%s tx" style="padding:9px 12px;font-family:%s;font-size:13px;color:%s;background-color:%s;" bgcolor="%s"' % (cls, FONT, TXT, bg, bg)
+        cls, bg = ("r1", ROW1) if (start + n) % 2 == 0 else ("r2", ROW2)
         up = state.upper()
         if up.startswith("ISSUED TODAY"):
-            chip = '<span style="background-color:%s;color:#FFFFFF;border-radius:10px;padding:2px 9px;font-size:12px;font-weight:700;" bgcolor="%s">Issued today</span>' % (RED, RED)
+            chip = _chip("Issued today", "today")
         elif up.startswith("ISSUED EARLIER"):
             extra = re.search(r"\(([^)]*)\)", state)
-            chip = '<span class="mu" style="color:%s;font-size:12px;font-weight:700;">Issued earlier</span>%s' % (MUTED, ('<br><span class="mu" style="color:%s;font-size:11px;">%s</span>' % (MUTED, _e(extra.group(1).title()))) if extra else "")
+            chip = _chip("Issued earlier", "earlier") + ('<div class="mu" style="clear:both;text-align:right;color:%s;font-size:10px;padding-top:2px;">%s</div>' % (MUTED, _e(extra.group(1).title())) if extra else "")
         else:
-            chip = '<span class="st" style="color:%s;font-size:12px;font-weight:700;border:1px solid %s;border-radius:10px;padding:1px 8px;">Not yet issued</span>' % (RED, RED)
-        sub = ('<br><span class="mu" style="color:%s;font-size:11px;">%s</span>' % (MUTED, _e(about))) if about else ""
-        body += ('<tr><td %s><b class="st" style="color:%s;">%s</b></td><td %s>%s%s</td><td %s>%s</td><td %s>%s</td><td %s>%s</td></tr>'
-                 % (cell, STRONG, _e(no), cell, _e(title), sub, cell, _e(rev), cell, _e(size if size != "-" else ""), cell, chip))
+            chip = _chip("Not yet issued", "not")
+        bits = [x for x in (("Rev " + rev) if rev and rev != "-" else "", size if size and size != "-" else "") if x]
+        sub = ('<br><span class="mu" style="color:%s;font-size:11px;">%s</span>' % (MUTED, _e("  \u00b7  ".join(bits)))) if bits else ""
+        cell = 'class="%s tx" style="padding:8px 10px;font-family:%s;font-size:12px;line-height:17px;color:%s;background-color:%s;" bgcolor="%s"' % (cls, FONT, TXT, bg, bg)
+        body += ('<tr><td %s valign="middle"><b class="st" style="color:%s;">%s</b>&nbsp; %s%s</td><td %s width="104" valign="middle">%s</td></tr>'
+                 % (cell, STRONG, _e(no), _e(title), sub, cell.replace("padding:8px 10px", "padding:8px 8px 8px 0"), chip))
+    return '<table width="100%%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">%s</table>' % body
+
+
+def _index_table(rows):
+    """Every drawing of a block, in two columns to keep the email short: the drawing, and its state (issued today / issued earlier / not yet issued)."""
+    n = len(rows)
+    if n <= 3:
+        halves = [rows, []]
+    else:
+        k = (n + 1) // 2
+        halves = [rows[:k], rows[k:]]
+    left = _index_half(halves[0], 0)
+    right = _index_half(halves[1], len(halves[0])) if halves[1] else ""
+    two = bool(halves[1])
+    cells = '<td class="sx" width="%s" valign="top" style="padding:0;">%s</td>' % ("50%" if two else "100%", left)
+    if two:
+        cells += '<td class="sx" width="50%%" valign="top" style="padding:0;border-left:1px solid %s;">%s</td>' % (LINE, right)
+    inner = '<table width="100%%" cellpadding="0" cellspacing="0" border="0" style="table-layout:fixed;"><tr>%s</tr></table>' % cells
     if _pv["on"]:
-        return _wrap('<table width="100%%" cellpadding="0" cellspacing="0" border="0"><tr>%s</tr>%s</table>' % (head, body), ROW1, 12)
-    return ('<table class="bd" width="100%%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid %s;border-radius:14px;border-collapse:separate;overflow:hidden;table-layout:fixed;">'
-            '<tr>%s</tr>%s</table>' % (LINE, head, body))
+        return _wrap(inner, ROW1, 12)
+    return '<div class="bd" style="border:1px solid %s;border-radius:14px;overflow:hidden;">%s</div>' % (LINE, inner)
 
 
 def _list(items):
@@ -222,11 +251,11 @@ def _list(items):
         tag_html = "".join('<br><span class="mu" style="color:%s;font-size:12px;">%s</span>' % (MUTED, _e(t)) for t in tags)
         if _pv["on"]:
             out += ('<tr><td>%s</td></tr><tr><td height="6" style="font-size:1px;line-height:1px;">&nbsp;</td></tr>'
-                    % _wrap('<div style="font-family:%s;font-size:14px;line-height:21px;">%s%s</div>' % (FONT, main_html, tag_html), ROW1, 8, accent=RED))
+                    % _wrap('<div style="font-family:%s;font-size:14px;line-height:21px;">%s%s</div>' % (FONT, main_html, tag_html), TAB, 8, accent=RED))
             continue
         out += ('<tr><td width="5" bgcolor="%s" style="background-color:%s;border-radius:6px 0 0 6px;font-size:0;line-height:0;">&nbsp;</td>'
-                '<td class="r1" style="padding:10px 14px;font-family:%s;font-size:14px;line-height:21px;background-color:%s;border-radius:0 10px 10px 0;" bgcolor="%s">%s%s</td></tr>'
-                '<tr><td colspan="2" height="6" style="font-size:0;line-height:0;">&nbsp;</td></tr>') % (RED, RED, FONT, ROW1, ROW1, main_html, tag_html)
+                '<td class="cd" style="padding:10px 14px;font-family:%s;font-size:14px;line-height:21px;background-color:%s;border-radius:0 10px 10px 0;" bgcolor="%s">%s%s</td></tr>'
+                '<tr><td colspan="2" height="6" style="font-size:0;line-height:0;">&nbsp;</td></tr>') % (RED, RED, FONT, TAB, TAB, main_html, tag_html)
     return '<table width="100%%" cellpadding="0" cellspacing="0" border="0">%s</table>' % out
 
 
