@@ -635,6 +635,17 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         self.att_lbl.setWordWrap(True)
         self.att_lbl.setStyleSheet("color: gray;")
         v.addWidget(self.att_lbl)
+        rr = QHBoxLayout()
+        rr.addWidget(QLabel("<b>Also attach a report:</b>"))
+        self.rep_chk = {}
+        for kind, label in (("lv", "Light & Ventilation"), ("xa", "Energy XA"), ("rd", "Rational design"), ("cov", "Coverage and FAR")):
+            c = QCheckBox(label)
+            c.setToolTip("Makes this report from the project that is open and sends it with the drawings.")
+            c.toggled.connect(self.refresh)
+            self.rep_chk[kind] = c
+            rr.addWidget(c)
+        rr.addStretch(1)
+        v.addLayout(rr)
         bar = QHBoxLayout()
         self.send_btn = QPushButton("Send to the client...")
         self.send_btn.setMinimumHeight(38)
@@ -701,8 +712,10 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
                     files.append(p)
         mb = sum(os.path.getsize(p) for p in files) / 1e6
         self.to_lbl.setText("<b>To:</b> %s" % (self.info.get("email") or "<i>add their email above</i>"))
-        self.att_lbl.setText("Attached when you send: the drawing register (PDF)%s.%s" % (
+        reps = [c.text() for c in getattr(self, "rep_chk", {}).values() if c.isChecked()]
+        self.att_lbl.setText("Attached when you send: the drawing register (PDF)%s%s.%s" % (
             (" and %d drawing PDFs (%.1f MB)" % (len(files), mb)) if files else "",
+            ("; reports: " + ", ".join(reps)) if reps else "",
             "  That is too big for one email: the send window can make the PDFs smaller or send them in several emails." if mb > 17 else ""))
 
     SIMPLE = ("on", "no", "title", "rev", "comment")
@@ -714,7 +727,8 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
 
     # ----- state -----
     def state(self):
-        return {"groups": self.groups, "info": self.info, "cur": self.cur, "mail": self.mail.toPlainText(), "history": self.history, "log": self.log}
+        return {"groups": self.groups, "info": self.info, "cur": self.cur, "mail": self.mail.toPlainText(), "history": self.history, "log": self.log,
+                "reports": [k for k, c in getattr(self, "rep_chk", {}).items() if c.isChecked()]}
 
     def set_state(self, d):
         d = d or {}
@@ -722,6 +736,10 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         if not self.groups:
             self.groups = [{"name": "House / Block 1", "rows": []}]
         self.info.update({k: str(v) for k, v in (d.get("info") or {}).items() if k in self.info})
+        for k, c in getattr(self, "rep_chk", {}).items():
+            c.blockSignals(True)
+            c.setChecked(k in (d.get("reports") or []))
+            c.blockSignals(False)
         self.log = [dict(x) for x in d.get("log", []) if isinstance(x, dict)]
         self.history = [dict(h) for h in d.get("history", []) if isinstance(h, dict)]
         self.cur = min(int(d.get("cur", 0) or 0), len(self.groups) - 1)

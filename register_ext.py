@@ -695,6 +695,8 @@ class SendDialog(QDialog):
                 c.setToolTip("Makes the report from the project that is open now and adds it to the attachments.")
                 c.toggled.connect(lambda on, k=kind, l=label: self._report_toggled(k, l, on))
                 rr.addWidget(c)
+                self._rep_boxes = getattr(self, "_rep_boxes", {})
+                self._rep_boxes[kind] = c
             rr.addStretch(1)
             v.addLayout(rr)
         self.size = QLabel("")
@@ -724,6 +726,10 @@ class SendDialog(QDialog):
         bar.addWidget(self.send)
         v.addLayout(bar)
         self._size()
+        for k, c in getattr(self, "_rep_boxes", {}).items():     # the ones ticked on the register page start ticked here
+            pc = getattr(page, "rep_chk", {}).get(k)
+            if pc is not None and pc.isChecked():
+                c.setChecked(True)
 
     def _report_toggled(self, kind, label, on):
         """Make the report when it is ticked and put it in the attachment list; take it out again when unticked."""
