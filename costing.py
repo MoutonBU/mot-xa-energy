@@ -415,6 +415,7 @@ class CostingPage(QWidget):
         self.vat = False
         self._busy = False
         self.cid, self.cname, self._loaded, self._saving = "", "", False, False
+        self.what, self.linked, self.link_ok, self.host = "costing", False, True, win
         v = QVBoxLayout(self)
         v.setContentsMargins(8, 8, 8, 8)
         cb = QHBoxLayout()
@@ -435,6 +436,9 @@ class CostingPage(QWidget):
             cb.addWidget(b)
         cb.addStretch(1)
         v.addLayout(cb)
+        from ui_extras import LinkBar
+        self.link_bar = LinkBar(self)
+        v.addWidget(self.link_bar)
         QTimer.singleShot(0, lambda: None if self._loaded else self.set_state({}))
         from PySide6.QtWidgets import QTabWidget
         self.main = QTabWidget()
@@ -563,8 +567,13 @@ class CostingPage(QWidget):
 
     # ----- state -----
     def state(self):
+        """What the project file keeps: nothing when you unlinked it, otherwise the costing with its id (the program's own copy wins on opening)."""
+        if not self.link_ok:
+            return None
         d = self._state()
         d["cid"], d["cname"] = self.cid, self.cname
+        self.linked = True
+        self.link_bar.refresh()
         return d
 
     def _state(self):
@@ -600,6 +609,8 @@ class CostingPage(QWidget):
                 return
             else:
                 cid, name, st = "c%d" % int(time.time() * 1000), "My costing", {}
+        self.linked = bool(d.get("cid")) and st is not None and cid == d.get("cid")
+        self.link_ok = True
         self._cswitch(cid, name, st)
 
     def _cswitch(self, cid, name, st):
@@ -610,6 +621,7 @@ class CostingPage(QWidget):
         cost_last(cid)
         self.save_costing()
         self._cost_combo()
+        self.link_bar.refresh()
 
     def _cost_combo(self):
         self.cbox.blockSignals(True)
@@ -717,6 +729,10 @@ class CostingPage(QWidget):
         if getattr(self, "summary_page", None):
             self.summary_page.set_state(d.get("budget"))
         self.refresh()
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        self.link_bar.refresh()
 
     def _dirty(self):
         if self._loaded:

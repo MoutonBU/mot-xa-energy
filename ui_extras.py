@@ -428,3 +428,64 @@ def table_menu(table, is_light, extras=None):
         m.exec(table.viewport().mapToGlobal(pos))
     table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
     table.customContextMenuRequested.connect(show)
+
+
+# ---------------------------------------------------------------- link between a register / costing and the open project
+class LinkBar(QWidget):
+    """One line under the Register: / Costing: list that says whether the open project is linked to it, with a button to link or unlink.
+    `owner` has: host (main window), what ("register" or "costing"), linked, link_ok."""
+
+    def __init__(self, owner):
+        super().__init__()
+        self.owner = owner
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        self.lbl = QLabel("")
+        self.lbl.setWordWrap(True)
+        lay.addWidget(self.lbl, 1)
+        self.btn = QPushButton("")
+        self.btn.clicked.connect(self._click)
+        lay.addWidget(self.btn)
+        self.refresh()
+
+    def project_name(self):
+        h = self.owner.host
+        f = getattr(h, "current_file", None)
+        if f:
+            return os.path.splitext(os.path.basename(f))[0]
+        return str((getattr(h, "rd", {}) or {}).get("project", "") or "").strip()
+
+    def refresh(self):
+        o, p = self.owner, self.project_name()
+        what = o.what
+        if not p:
+            self.lbl.setText("Working on its own: no project is open.")
+            self.lbl.setStyleSheet("color:gray;")
+            self.btn.hide()
+        elif o.linked:
+            self.lbl.setText("Linked to project <b>%s</b>. Opening that project brings this %s back." % (p, what))
+            self.lbl.setStyleSheet("color:%s;" % GREEN)
+            self.btn.setText("Unlink")
+            self.btn.show()
+        elif o.link_ok:
+            self.lbl.setText("Not linked to project <b>%s</b> yet. Saving the project links it, or press Link now." % p)
+            self.lbl.setStyleSheet("color:%s;" % AMBER)
+            self.btn.setText("Link now")
+            self.btn.show()
+        else:
+            self.lbl.setText("Not linked to project <b>%s</b>: this %s stays separate and the project keeps no copy." % (p, what))
+            self.lbl.setStyleSheet("color:gray;")
+            self.btn.setText("Link to this project")
+            self.btn.show()
+
+    def _click(self):
+        o = self.owner
+        if o.linked:
+            o.linked, o.link_ok = False, False
+        else:
+            o.linked, o.link_ok = True, True
+        try:
+            o.host._mark_dirty()
+        except Exception:
+            pass
+        self.refresh()

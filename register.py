@@ -568,6 +568,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         self.cur = 0
         self._busy = False
         self.rid, self.rname, self._loaded, self._saving = "", "", False, False
+        self.what, self.linked, self.link_ok = "register", False, True
         self._info0 = dict(self.info)
         QTimer.singleShot(0, lambda: None if self._loaded else self.set_state({}))
         outer = QVBoxLayout(self)
@@ -597,6 +598,9 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             rb.addWidget(b)
         rb.addStretch(1)
         v.addLayout(rb)
+        from ui_extras import LinkBar
+        self.link_bar = LinkBar(self)
+        v.addWidget(self.link_bar)
         v.addSpacing(4)
         # 1  who is it for
         v.addWidget(step("1.  Who is it for?"))
@@ -929,8 +933,13 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
 
     # ----- state -----
     def state(self):
+        """What the project file keeps: nothing when you unlinked it, otherwise the register with its id (the program's own copy wins on opening)."""
+        if not self.link_ok:
+            return None
         d = self._state()
         d["rid"], d["rname"] = self.rid, self.rname
+        self.linked = True
+        self.link_bar.refresh()
         return d
 
     def _state(self):
@@ -960,6 +969,8 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
                 return          # nothing to change: keep working in the register that is open
             else:
                 rid, name, st = "r%d" % int(time.time() * 1000), "My register", _empty_register()
+        self.linked = bool(d.get("rid")) and bool(st is not None) and rid == d.get("rid")
+        self.link_ok = True
         self._switch(rid, name, st)
 
     def _switch(self, rid, name, st):
@@ -970,6 +981,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         reg_last(rid)
         self.save_register()
         self._reg_combo()
+        self.link_bar.refresh()
 
     def _reg_combo(self):
         self.rbox.blockSignals(True)
@@ -1757,6 +1769,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
 
     def showEvent(self, ev):
         super().showEvent(ev)
+        self.link_bar.refresh()
         self._contacts_state()
 
     def load_contacts_now(self):
