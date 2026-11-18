@@ -1084,20 +1084,21 @@ class LogMixin:
         h = self._h_current()
         if h is None:
             return
-        if QMessageBox.question(self, "Sent and revisions", "Delete Revision %s (%s) from this list?\n\nThe next register will compare with the revision before it. "
-                                "The email and the PDFs on your computer are not touched." % (h.get("issue", ""), self._long_date(h.get("date", "")))) != QMessageBox.StandardButton.Yes:
-            return
+        import copy
+        snap = copy.deepcopy(self.state())
         self.history = [x for x in self.history if x is not h]
         self._h_after_change()
+        self._toast_undo("Revision %s taken out of the list. The next register compares with the one before it." % h.get("issue", ""), snap)
 
     def _h_clear(self):
         if not self.history:
             return
-        if QMessageBox.question(self, "Sent and revisions", "Delete all %d revisions from this list and start fresh?\n\nThe next register becomes a first issue. "
-                                "Your drawings, emails and PDFs are not touched." % len(self.history)) != QMessageBox.StandardButton.Yes:
-            return
+        import copy
+        snap = copy.deepcopy(self.state())
+        n = len(self.history)
         self.history = []
         self._h_after_change()
+        self._toast_undo("All %d revisions taken out. The next register is a first issue." % n, snap)
 
     def _h_after_change(self):
         """After revisions were removed: the next revision number follows the last one left, and the 'what changed' lines are worked out again."""

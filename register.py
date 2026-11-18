@@ -598,10 +598,13 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         gl.addStretch(1)
         v.addLayout(gl)
         self.tab = QTableWidget(0, len(COLS))
+        self.tab.setMinimumHeight(170)
         self.tab.setHorizontalHeaderLabels(COLS)
         self.tab.verticalHeader().setVisible(False)
         self.tab.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.tab.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        from PySide6.QtGui import QKeySequence, QShortcut
+        QShortcut(QKeySequence(Qt.Key.Key_Delete), self.tab, activated=lambda: self.remove_row(), context=Qt.ShortcutContext.WidgetShortcut)
         # the selected drawing(s) show clearly: a red band across the whole row
         self.tab.setStyleSheet("QTableWidget::item:selected{background:rgba(200,16,46,150);color:white;}"
                                "QTableWidget::item:selected:!active{background:rgba(200,16,46,110);color:white;}")
@@ -675,7 +678,15 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         self.count = QLabel("")
         bar.addWidget(self.count)
         v.addLayout(bar)
-        self.sub.addTab(self.draw_w, "Drawings")
+        from PySide6.QtWidgets import QScrollArea
+        self.draw_w.setMinimumHeight(900)                  # on a small screen the page scrolls instead of squashing its rows together
+        sc = QScrollArea()
+        sc.setWidgetResizable(True)
+        sc.setFrameShape(QScrollArea.Shape.NoFrame)
+        sc.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        sc.setStyleSheet("QScrollArea{background:transparent;} QScrollArea > QWidget > QWidget{background:transparent;}")
+        sc.setWidget(self.draw_w)
+        self.sub.addTab(sc, "Drawings")
         self.sub.addTab(self.build_log(), "Orders and changes")
         self.sub.addTab(self.build_history(), "Sent and revisions")
         self.mail_done.connect(self._mail_finished)
@@ -1152,21 +1163,39 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             r = self.tab.currentRow()
             picked = [r] if r >= 0 else []
         n = 0
+        snap = None
         for r in picked:
             if 0 <= r < len(self.rows()):
+                if snap is None:
+                    import copy
+                    snap = copy.deepcopy(self.state())
                 self.rows().pop(r)
                 n += 1
         if n:
             self.refresh()
+            self._toast_undo("%d drawing%s taken out of the list" % (n, "" if n == 1 else "s"), snap)
 
     def remove_all(self):
         n = len(self.rows())
         if not n:
             return
-        if QMessageBox.question(self, "Drawing register", "Take all %d drawings out of this list? (The PDF files themselves are not touched.)" % n) != QMessageBox.StandardButton.Yes:
-            return
+        import copy
+        snap = copy.deepcopy(self.state())
         self.rows().clear()
         self.refresh()
+        self._toast_undo("All %d drawings taken out of the list (the PDF files are not touched)" % n, snap)
+
+    def _toast_undo(self, message, snap):
+        def undo():
+            self.set_state(snap)
+            self.refresh()
+            try:
+                self.refresh_history()
+            except Exception:
+                pass
+        h = getattr(self, "host", None)
+        if hasattr(h, "toast"):
+            h.toast(message, "Undo", undo)
 
     def move(self, d):
         r, rows = self.tab.currentRow(), self.rows()

@@ -8521,7 +8521,14 @@ class MainWindow(QMainWindow):
         lv_lay.addLayout(top)
         self.tabs = QTabWidget()
         lv_lay.addWidget(self.tabs)
-        self.main_tabs.addTab(lv_page, "Light && Ventilation")
+        lv_page.setMinimumSize(980, 640)                 # a small screen scrolls this page instead of crushing its rows together
+        from PySide6.QtWidgets import QScrollArea as _SA
+        lv_scroll = _SA()
+        lv_scroll.setWidgetResizable(True)
+        lv_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        lv_scroll.setStyleSheet("QScrollArea{background:transparent;} QScrollArea > QWidget > QWidget{background:transparent;}")
+        lv_scroll.setWidget(lv_page)
+        self.main_tabs.addTab(lv_scroll, "Light && Ventilation")
 
         tip = ("The size of the part that actually opens (one sash or leaf). When W and H "
                "are filled in, the ventilation area is No. of sashes x W x H and the "
@@ -8703,6 +8710,173 @@ class MainWindow(QMainWindow):
             self.shell_rail = None
         self.add_sched_row(["W01", "1200", "1200", "85", "50", "Window"])
         self.add_room_row(["Bedroom 1", "12.0", "W01:1", False])
+        try:
+            self._ui_setup()
+        except Exception as e_:
+            print("interface helpers not started:", e_)
+
+    # ---- interface helpers (toast with Undo, progress strip, shortcuts, drop, What's new) ----
+    def _ui_setup(self):
+        import ui_extras as ux
+        from PySide6.QtGui import QKeySequence, QShortcut
+        self._ux = ux
+        self.setMinimumSize(860, 540)
+        self.toast_w = ux.Toast(self, lambda: bool(light()))
+        steps = [("project", "Project", "Home"), ("model", "Model", "Home"), ("lv", "Light & Ventilation", "Light & Ventilation"),
+                 ("xa", "Energy XA", "Energy (XA)"), ("reg", "Drawing register", "Drawing register"), ("sent", "Sent", "Drawing register")]
+        self.step_strip = ux.StepStrip(self, steps, lambda: bool(light()))
+        lay = self.centralWidget().layout()
+        try:
+            lay.insertWidget(max(0, lay.indexOf(self.main_tabs)), self.step_strip)
+        except Exception:
+            lay.insertWidget(0, self.step_strip)
+        self._steps_timer = QTimer(self)
+        self._steps_timer.timeout.connect(self._update_steps)
+        self._steps_timer.start(2000)
+        self.main_tabs.currentChanged.connect(lambda *_: self._update_steps())
+        QTimer.singleShot(400, self._update_steps)
+        # keyboard
+        for i in range(9):
+            QShortcut(QKeySequence("Ctrl+%d" % (i + 1)), self, activated=lambda i=i: self.main_tabs.setCurrentIndex(i) if i < self.main_tabs.count() else None)
+        QShortcut(QKeySequence("Ctrl+PgDown"), self, activated=lambda: self.main_tabs.setCurrentIndex((self.main_tabs.currentIndex() + 1) % self.main_tabs.count()))
+        QShortcut(QKeySequence("Ctrl+PgUp"), self, activated=lambda: self.main_tabs.setCurrentIndex((self.main_tabs.currentIndex() - 1) % self.main_tabs.count()))
+        QShortcut(QKeySequence("Esc"), self, activated=lambda: self.toast_w.hide())
+        want = {"New project": "Ctrl+N", "Open project": "Ctrl+O", "Save project": "Ctrl+S", "Save project as": "Ctrl+Shift+S",
+                "Release notes": "F1", "Export PDF report": "Ctrl+P"}
+        try:
+            for a_ in self.menuBar().actions():
+                if a_.text() == "File":
+                    def walk(menu):
+                        for x in menu.actions():
+                            if x.menu():
+                                walk(x.menu())
+                                continue
+                            for k, sc in want.items():
+                                if x.text().rstrip(".") == k or x.text().startswith(k + "..."):
+                                    x.setShortcut(QKeySequence(sc))
+                    walk(a_.menu())
+        except Exception:
+            pass
+        # drop files on the window
+        self._drop = ux.DropFilter(self, (".mcplv", ".json", ".ifc", ".ifczip", ".pdf"), self._dropped)
+        # empty states
+        rp = getattr(self, "register_page", None)
+        if rp is not None:
+            for attr, title, hint in (("tab", "Drag your drawing PDFs here",
+                                       "or a whole folder. You can also use the buttons above: Add drawing PDFs... or Add a whole folder..."),
+                                      ("htab", "Nothing sent yet",
+                                       "When you send the register, every issue is recorded here: what changed, the sheets, the email. "
+                                       "Or use \"Continue from an earlier issue\" for one you sent before."),
+                                      ("ltab", "No orders or changes yet", "Add a new order or a client change, or use \"Get changes from the drawings\".")):
+                t = getattr(rp, attr, None)
+                if t is not None:
+                    try:
+                        ux.EmptyHint(t, title, hint, lambda: bool(light()))
+                    except Exception:
+                        pass
+
+    def toast(self, text, action_text="", action=None, ms=9000):
+        """A short message at the bottom of the window (instead of a pop-up), with an optional button such as Undo."""
+        try:
+            self.toast_w.show_message(text, action_text, action, ms)
+        except Exception:
+            self.statusBar().showMessage(text, 6000)
+
+    def toast_saved(self, path, what="PDF saved"):
+        self.toast("%s: %s" % (what, os.path.basename(path)), "Open folder", lambda p=path: self._ux.open_folder_of(p))
+
+    def goto_main_tab(self, name):
+        want = name.replace("&&", "&").strip().lower()
+        for i in range(self.main_tabs.count()):
+            if self.main_tabs.tabText(i).replace("&&", "&").strip().lower() == want:
+                self.main_tabs.setCurrentIndex(i)
+                return True
+        return False
+
+    def _step_states(self):
+        st = {}
+        try:
+            named = bool((self.rd.get("project") or "").strip()) or bool(self.current_file)
+            st["project"] = ("done", "Project details are filled in") if named else ("todo", "Start a project: File > New project")
+        except Exception:
+            pass
+        try:
+            ok = bool(self.rd.get("has_ifc"))
+            st["model"] = ("done", "IFC model imported") if ok else ("todo", "Import the IFC model from the Home page")
+        except Exception:
+            pass
+        try:
+            rooms = [r for r in range(self.room_table.rowCount()) if self.room_table.item(r, 0) and self.room_table.item(r, 0).text().strip()]
+            res = getattr(self, "results", []) or []
+            bad = [r for r in res if isinstance(r, dict) and not (r.get("light_ok") and r.get("vent_ok"))]
+            if bad:
+                st["lv"] = ("look", "%d room(s) do not pass light or ventilation" % len(bad))
+            elif rooms and res:
+                st["lv"] = ("done", "%d rooms, all pass" % len(rooms))
+            elif len(rooms) > 1 or (rooms and self.rd.get("has_ifc")):
+                st["lv"] = ("todo", "Rooms are in: run the check")
+            else:
+                st["lv"] = ("todo", "Add the rooms and windows, or import the IFC model")
+        except Exception:
+            pass
+        try:
+            st["xa"] = ("done", "Energy XA elements are set up") if (self.xa_elements or getattr(self, "xa_fen_results", [])) else ("todo", "Not started")
+        except Exception:
+            pass
+        rp = getattr(self, "register_page", None)
+        try:
+            n = sum(len(g["rows"]) for g in rp.groups)
+            st["reg"] = ("done", "%d drawings in the register" % n) if n else ("todo", "Add the drawing PDFs")
+            h = len(rp.history)
+            st["sent"] = ("done", "%d issue(s) sent" % h) if h else ("todo", "Nothing sent yet")
+        except Exception:
+            pass
+        return st
+
+    def _update_steps(self):
+        try:
+            self.step_strip.update_states(self._step_states())
+        except Exception:
+            pass
+
+    def _dropped(self, paths):
+        proj = [p for p in paths if p.lower().endswith((".mcplv", ".json"))]
+        ifc = [p for p in paths if p.lower().endswith((".ifc", ".ifczip"))]
+        pdf = [p for p in paths if p.lower().endswith(".pdf")]
+        if proj:
+            if self._has_work() and self._data_hash() != getattr(self, "_clean_hash", None):
+                if QMessageBox.question(self, APP_NAME, "Open %s?\n\nChanges you have not saved in the current project will be lost." % os.path.basename(proj[0])) != QMessageBox.StandardButton.Yes:
+                    return
+            self.open_project_path(proj[0])
+        elif ifc:
+            self.import_ifc(ifc[0])
+        elif pdf and getattr(self, "register_page", None) is not None:
+            self.goto_main_tab("Drawing register")
+            n = self.register_page.add_paths(pdf)
+            self.toast("%d drawing%s added to the register" % (n, "" if n == 1 else "s"))
+
+    def maybe_whats_new(self):
+        """After an update: a short window with what is new since the version used before."""
+        cur = app_version()
+        if not cur:
+            return
+        last = SETTINGS.get("last_seen_version")
+        SETTINGS["last_seen_version"] = vtext(cur)
+        save_settings()
+        lastt = tuple(int(x) for x in re.findall(r"\d+", last)) if last else (1, 63, 0)
+        if lastt >= cur:
+            return
+        txt = ""
+        for base in (_app_data_file("RELEASE_NOTES.md"), os.path.join(os.path.dirname(os.path.abspath(__file__)), "RELEASE_NOTES.md")):
+            try:
+                with open(base, encoding="utf-8") as f:
+                    txt = f.read()
+                break
+            except Exception:
+                continue
+        items = self._ux.notes_since(txt, lastt) if txt else []
+        if items:
+            self._ux.whats_new_dialog(self, items, cur)
 
     def _with_buttons(self, table, add_fn, extra=()):
         w = QWidget()
@@ -11017,13 +11191,14 @@ class MainWindow(QMainWindow):
         self._run_bg(work, done, "Installing the IFC reader... this can take a minute.",
                      "Could not install the IFC reader (check your internet connection)")
 
-    def import_ifc(self):
+    def import_ifc(self, path=None):
         try:
             import ifcopenshell  # noqa
         except Exception:
-            self._install_ifcopenshell(self.import_ifc)
+            self._install_ifcopenshell(lambda: self.import_ifc(path))
             return
-        path, _ = QFileDialog.getOpenFileName(self, "IFC model from Archicad", "", "IFC model (*.ifc *.ifczip)")
+        if not isinstance(path, str):
+            path, _ = QFileDialog.getOpenFileName(self, "IFC model from Archicad", "", "IFC model (*.ifc *.ifczip)")
         if not path:
             return
         def done(res):
@@ -13103,7 +13278,7 @@ class MainWindow(QMainWindow):
             path += ".pdf"
         self._remember_pdf_dir(path)
         self._write_cov_pdf(path)
-        QMessageBox.information(self, APP_NAME, f"PDF saved:\n{path}")
+        self.toast_saved(path)
 
     def _build_xa_tab(self):
         from PySide6.QtWidgets import QMenu
@@ -16072,7 +16247,7 @@ class MainWindow(QMainWindow):
             out.append(path)
         self._remember_pdf_dir(out[-1])
         if not quiet:
-            QMessageBox.information(self, APP_NAME, f"{len(out)} PDFs saved in:\n{folder}")
+            self.toast("%d PDFs saved" % len(out), "Open folder", lambda p=out[-1]: self._ux.open_folder_of(p))
         return out
 
     def pdf_default_path(self, kind):
@@ -16198,7 +16373,7 @@ class MainWindow(QMainWindow):
             path += ".pdf"
         self._remember_pdf_dir(path)
         self._write_xa_pdf(path)
-        QMessageBox.information(self, APP_NAME, f"PDF saved:\n{path}")
+        self.toast_saved(path)
 
     def _write_xa_pdf(self, path, only=None, list_only=False):
         import datetime, html as _h
@@ -16798,7 +16973,7 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
             path += ".pdf"
         self._remember_pdf_dir(path)
         self._write_rd_pdf(path)
-        QMessageBox.information(self, APP_NAME, f"PDF saved:\n{path}")
+        self.toast_saved(path)
 
     def _write_rd_pdf(self, path, only=None, list_only=False):
         import datetime, html as _h
@@ -18744,6 +18919,11 @@ def main():
         for ln in lines:
             print(ln[4])
         return
+    try:                                   # 125% and 150% Windows scaling: use the real factor, do not round it to 100% or 200%
+        from PySide6.QtGui import QGuiApplication
+        QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    except Exception:
+        pass
     app = QApplication(sys.argv)
     if not any(a in sys.argv for a in ("--restore", "--ready", "--after-update")):   # reloads and updates stay signed in
         user = sign_in_gate(app)
@@ -18798,6 +18978,8 @@ def main():
         except Exception:
             win.setWindowOpacity(1.0)
     win.start_autosave()
+    if "--ready" not in av:
+        QTimer.singleShot(2500, win.maybe_whats_new)
     _openf, _skip = None, False
     for _a in av:                                   # a project file double-clicked in Windows arrives as the argument
         if _skip:

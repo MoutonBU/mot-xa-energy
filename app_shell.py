@@ -150,7 +150,15 @@ class Ribbon(QFrame):
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         self.stack = QStackedWidget()
-        v.addWidget(self.stack)
+        from PySide6.QtWidgets import QScrollArea
+        sc = QScrollArea()                              # on a narrow window the ribbon scrolls sideways instead of overlapping its labels
+        sc.setWidgetResizable(True)
+        sc.setFrameShape(QFrame.Shape.NoFrame)
+        sc.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        sc.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        sc.setStyleSheet("QScrollArea{background:transparent;} QScrollArea > QWidget > QWidget{background:transparent;} QScrollBar:horizontal{height:6px;}")
+        sc.setWidget(self.stack)
+        v.addWidget(sc)
         self.pages = {}
         self._build()
 
