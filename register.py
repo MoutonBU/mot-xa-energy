@@ -575,6 +575,10 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         nb = QPushButton("+ Another block or house")
         nb.clicked.connect(self.add_group)
         gl.addWidget(nb)
+        ib = QPushButton("Import a sheet index...")
+        ib.setToolTip("Pick the sheet index (list of layouts) you exported from Archicad for another block or house. Its drawings are added as still to come.")
+        ib.clicked.connect(self.import_sheet_index)
+        gl.addWidget(ib)
         pb = QPushButton("Drawings still to come...")
         pb.setToolTip("Type the drawings that are not ready yet, so the client can see what is still to come. They are listed as not yet issued until you add their PDFs.")
         pb.clicked.connect(self.add_planned)
@@ -1537,6 +1541,88 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             r["on"] = bool(on)
         self.refresh()
         self.update_mail()
+
+    @staticmethod
+    def read_sheet_index(path):
+        """[(number, title, rev)] from a sheet index exported by Archicad (.csv, .txt, .tsv or .xlsx). The columns are found by their headings."""
+        import csv, io
+        rows = []
+        if path.lower().endswith((".xlsx", ".xlsm")):
+            import openpyxl
+            ws = openpyxl.load_workbook(path, read_only=True, data_only=True).worksheets[0]
+            rows = [[("" if c is None else str(c)).strip() for c in r] for r in ws.iter_rows(values_only=True)]
+        else:
+            raw = open(path, "rb").read()
+            text = ""
+            for enc in ("utf-8-sig", "utf-16", "cp1252", "latin-1"):
+                try:
+                    text = raw.decode(enc)
+                    break
+                except Exception:
+                    continue
+            sample = "\n".join(text.splitlines()[:5])
+            delim = max("\t;,", key=lambda d: sample.count(d))
+            rows = [[c.strip() for c in r] for r in csv.reader(io.StringIO(text), delimiter=delim)]
+        rows = [r for r in rows if any(r)]
+        hi, cols = -1, {}
+        for i, r in enumerate(rows[:15]):
+            low = [c.lower() for c in r]
+            def find(*pats):
+                for j, c in enumerate(low):
+                    if any(re.search(p, c) for p in pats):
+                        return j
+                return None
+            no, ti, rv = find(r"^(id|no\.?|number|nr\.?|sheet|drawing|layout)\b", r"\bno\b|number|\bid\b"), find(r"name|title|description"), find(r"rev")
+            if no is not None and ti is not None and no != ti:
+                hi, cols = i, {"no": no, "title": ti, "rev": rv}
+                break
+        if hi < 0:
+            hi, cols = -1, {"no": 0, "title": 1 if max(len(r) for r in rows) > 1 else 0, "rev": None}
+        out = []
+        for r in rows[hi + 1:]:
+            g = lambda k: (r[cols[k]] if cols.get(k) is not None and cols[k] < len(r) else "").strip()
+            no, title = g("no"), g("title")
+            if title or no:
+                out.append((no, title, g("rev")))
+        return out
+
+    def import_sheet_index(self):
+        files, _ = QFileDialog.getOpenFileNames(self, "Sheet index from Archicad (one per block or house)", "", "Sheet index (*.csv *.txt *.tsv *.xlsx);;All files (*)")
+        if not files:
+            return
+        total = 0
+        for f in files:
+            try:
+                items = self.read_sheet_index(f)
+            except Exception as e:
+                QMessageBox.warning(self, "Drawing register", "Could not read %s:\n%s" % (os.path.basename(f), e))
+                continue
+            if not items:
+                QMessageBox.information(self, "Drawing register", "No drawings found in %s." % os.path.basename(f))
+                continue
+            stem = os.path.splitext(os.path.basename(f))[0]
+            names = [g["name"] for g in self.groups]
+            name, ok = QInputDialog.getItem(self, "Drawing register", "%d drawings found in %s.\nWhich block or house are they for? (pick one or type a new name)" % (len(items), os.path.basename(f)),
+                                            names + [stem], len(names) if stem not in names else names.index(stem), True)
+            if not ok or not name.strip():
+                continue
+            g = next((x for x in self.groups if x["name"] == name.strip()), None)
+            if g is None:
+                g = {"name": name.strip(), "rows": []}
+                self.groups.append(g)
+            for no, title, rev in items:
+                row = {"on": False, "no": no, "title": title, "about": "", "size": "", "scale": "", "rev": rev, "rdate": "", "pdfdate": "", "by": "", "comment": "", "status": "For information", "file": "", "path": "", "revs": []}
+                old = self.find_row(self.key(row))
+                if old is not None:
+                    if not old.get("title") and title:
+                        old["title"] = title
+                    continue
+                g["rows"].append(row)
+                total += 1
+            g["rows"].sort(key=lambda r: (r.get("no") or "~", r.get("title", "").lower()))
+        self.refresh()
+        self.update_mail()
+        self.count.setText("%d drawing%s added as still to come from the sheet index." % (total, "" if total == 1 else "s"))
 
     def add_planned(self):
         """Type drawings that are not ready yet (one per line, number then title) so they show as still to come."""
