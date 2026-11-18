@@ -8766,7 +8766,7 @@ class MainWindow(QMainWindow):
         try:
             import costing
             self.costing_page = costing.CostingPage(self)
-            self.main_tabs.addTab(self.costing_page, "Costing")
+            self.main_tabs.addTab(self.costing_page, "Costing (WIP)")
         except Exception:
             self.costing_page = None
         try:

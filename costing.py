@@ -15,14 +15,15 @@ import json
 import re
 import sys
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
 
-from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QSize, Qt, Signal
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QIcon, QImage, QPixmap
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
+from PySide6.QtWidgets import (QInputDialog, QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
                                QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton,
                                QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget)
 
@@ -347,6 +348,59 @@ class ProductDialog(QDialog):
 
 
 # ---------------- the tab ----------------
+# ----- the costings the program keeps for you (one file each, saved by itself, independent of any project)
+COST_DIR = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "MCP_LightVent", "costings")
+
+
+def cost_list():
+    out = []
+    try:
+        for fn in os.listdir(COST_DIR):
+            if fn.endswith(".json"):
+                try:
+                    with open(os.path.join(COST_DIR, fn), encoding="utf-8") as f:
+                        out.append((fn[:-5], str(json.load(f).get("name", fn[:-5]))))
+                except Exception:
+                    pass
+    except OSError:
+        pass
+    return sorted(out, key=lambda x: x[1].lower())
+
+
+def cost_load(cid):
+    try:
+        with open(os.path.join(COST_DIR, cid + ".json"), encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def cost_save(cid, name, state):
+    try:
+        os.makedirs(COST_DIR, exist_ok=True)
+        tmp = os.path.join(COST_DIR, cid + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"name": name, "saved": time.time(), "state": state}, f, ensure_ascii=False)
+        os.replace(tmp, os.path.join(COST_DIR, cid + ".json"))
+        return True
+    except Exception:
+        return False
+
+
+def cost_last(set_to=None):
+    fp = os.path.join(COST_DIR, "_last.txt")
+    try:
+        if set_to is not None:
+            os.makedirs(COST_DIR, exist_ok=True)
+            with open(fp, "w", encoding="utf-8") as f:
+                f.write(set_to)
+            return set_to
+        with open(fp, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
 class CostingPage(QWidget):
     is_costing = True
     ifc_done = Signal(object, str)
@@ -360,8 +414,28 @@ class CostingPage(QWidget):
         self.contingency = 0.0
         self.vat = False
         self._busy = False
+        self.cid, self.cname, self._loaded, self._saving = "", "", False, False
         v = QVBoxLayout(self)
         v.setContentsMargins(8, 8, 8, 8)
+        cb = QHBoxLayout()
+        cb.addWidget(QLabel("<b>Costing:</b>"))
+        self.cbox = QComboBox()
+        self.cbox.setMinimumWidth(240)
+        self.cbox.setToolTip("Every costing is kept by the program and saves itself. It does not depend on the project that is open, but you can still pull rooms, fixtures and sizes from the open project.")
+        self.cbox.activated.connect(self._cost_picked)
+        cb.addWidget(self.cbox)
+        for txt, tip, fn in (("+ New costing...", "Starts a new, empty costing, for example for a new job.", self.cost_new),
+                             ("Rename...", "Changes the name of this costing.", self.cost_rename),
+                             ("Delete", "Removes this costing (asks first).", self.cost_delete),
+                             ("Save a copy...", "Writes this costing to a file, as a backup or to open on another computer.", self.cost_export),
+                             ("Open a copy...", "Brings in a costing from a file saved with Save a copy.", self.cost_import)):
+            b = QPushButton(txt)
+            b.setToolTip(tip)
+            b.clicked.connect(lambda _=False, f=fn: f())
+            cb.addWidget(b)
+        cb.addStretch(1)
+        v.addLayout(cb)
+        QTimer.singleShot(0, lambda: None if self._loaded else self.set_state({}))
         from PySide6.QtWidgets import QTabWidget
         self.main = QTabWidget()
         v.addWidget(self.main, 1)
@@ -489,12 +563,149 @@ class CostingPage(QWidget):
 
     # ----- state -----
     def state(self):
+        d = self._state()
+        d["cid"], d["cname"] = self.cid, self.cname
+        return d
+
+    def _state(self):
         return {"products": self.products, "defaults": self.defaults, "lines": self.lines,
                 "contingency": self.contingency, "vat": self.vat,
                 "materials": self.materials.state() if getattr(self, "materials", None) else None,
                 "budget": self.summary_page.state() if getattr(self, "summary_page", None) else None}
 
+    @staticmethod
+    def _has_data(d):
+        return bool(d.get("products") or d.get("lines") or d.get("materials") or d.get("budget"))
+
     def set_state(self, d):
+        """From a project (or empty). The costing kept by the program wins over the copy inside the project."""
+        d = d or {}
+        if self._loaded:
+            self.save_costing()
+        cid, name, st = d.get("cid") or "", "", None
+        if cid:
+            rec = cost_load(cid)
+            if rec:
+                st, name = rec.get("state"), rec.get("name", "")
+        if st is None and self._has_data(d):
+            cid = cid or "c%d" % int(time.time() * 1000)
+            name = d.get("cname") or "Imported costing"
+            st = d
+        if st is None:
+            last = cost_last()
+            rec = cost_load(last) if last else None
+            if rec:
+                cid, name, st = last, rec.get("name", ""), rec.get("state")
+            elif self._loaded and self.cid:
+                return
+            else:
+                cid, name, st = "c%d" % int(time.time() * 1000), "My costing", {}
+        self._cswitch(cid, name, st)
+
+    def _cswitch(self, cid, name, st):
+        self.cid, self.cname = cid, name
+        self._loaded = False
+        self._apply_state(st)
+        self._loaded = True
+        cost_last(cid)
+        self.save_costing()
+        self._cost_combo()
+
+    def _cost_combo(self):
+        self.cbox.blockSignals(True)
+        self.cbox.clear()
+        for cid, nm in cost_list():
+            self.cbox.addItem(nm, cid)
+        i = self.cbox.findData(self.cid)
+        if i >= 0:
+            self.cbox.setCurrentIndex(i)
+        self.cbox.blockSignals(False)
+
+    def save_costing(self):
+        if self.cid and self._loaded and not self._saving:
+            self._saving = True
+            try:
+                cost_save(self.cid, self.cname, self._state())
+            finally:
+                self._saving = False
+
+    def _autosave(self):
+        if not getattr(self, "_save_timer", None):
+            self._save_timer = QTimer(self)
+            self._save_timer.setSingleShot(True)
+            self._save_timer.timeout.connect(self.save_costing)
+        self._save_timer.start(800)
+
+    def _cost_picked(self, i):
+        cid = self.cbox.itemData(i)
+        if not cid or cid == self.cid:
+            return
+        self.save_costing()
+        rec = cost_load(cid)
+        if rec:
+            self._cswitch(cid, rec.get("name", ""), rec.get("state"))
+        else:
+            self._cost_combo()
+
+    def cost_new(self):
+        name, ok = QInputDialog.getText(self, "New costing", "Name of the costing (for example the job or house):")
+        name = name.strip()
+        if not ok or not name:
+            return
+        self.save_costing()
+        self._cswitch("c%d" % int(time.time() * 1000), name, {})
+
+    def cost_rename(self):
+        name, ok = QInputDialog.getText(self, "Rename costing", "New name:", text=self.cname)
+        name = name.strip()
+        if not ok or not name:
+            return
+        self.cname = name
+        self.save_costing()
+        self._cost_combo()
+
+    def cost_delete(self):
+        if QMessageBox.question(self, "Delete costing", "Delete the costing \"%s\" with all its products, lines and budget? This cannot be undone." % self.cname) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            os.remove(os.path.join(COST_DIR, self.cid + ".json"))
+        except OSError:
+            pass
+        rest = cost_list()
+        self._loaded = False
+        if rest:
+            rec = cost_load(rest[0][0])
+            self._cswitch(rest[0][0], rec.get("name", ""), rec.get("state"))
+        else:
+            self._cswitch("c%d" % int(time.time() * 1000), "My costing", {})
+
+    def cost_export(self):
+        fn, _ = QFileDialog.getSaveFileName(self, "Save a copy of this costing", (self.cname or "costing") + ".mcpcost", "Costing (*.mcpcost)")
+        if not fn:
+            return
+        try:
+            with open(fn, "w", encoding="utf-8") as f:
+                json.dump({"name": self.cname, "state": self._state()}, f, ensure_ascii=False)
+        except OSError as ex:
+            QMessageBox.warning(self, "Save a copy", "Could not save the file: %s" % ex)
+
+    def cost_import(self):
+        fn, _ = QFileDialog.getOpenFileName(self, "Open a copy of a costing", "", "Costing (*.mcpcost)")
+        if not fn:
+            return
+        try:
+            with open(fn, encoding="utf-8") as f:
+                d = json.load(f)
+            st, name = d["state"], str(d.get("name") or "Costing")
+        except Exception:
+            QMessageBox.warning(self, "Open a copy", "That file is not a costing.")
+            return
+        if name in [n for _i, n in cost_list()]:
+            name += " (copy)"
+        self.save_costing()
+        self._cswitch("c%d" % int(time.time() * 1000), name, st)
+
+    def _apply_state(self, d):
         d = d or {}
         self.products = [dict(p) for p in d.get("products", []) if isinstance(p, dict)]
         self.defaults = dict(d.get("defaults", {}) or {})
@@ -508,6 +719,8 @@ class CostingPage(QWidget):
         self.refresh()
 
     def _dirty(self):
+        if self._loaded:
+            self._autosave()
         try:
             self.win._mark_dirty()
         except Exception:
