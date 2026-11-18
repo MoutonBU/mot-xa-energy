@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.73.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.74.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Four squares to start, 1.74.0**: the program now opens on just four big squares: Drawing register, Detail Notes, Costing and SANS. SANS opens a second screen with Light & Ventilation, Energy (XA) and Coverage & FAR. The left bar, the ribbon (New, Open, Save...) and the step strip only appear once you are inside one of them, and the Home button at the top of the left bar (or Back on the SANS screen) returns you to the squares. The old overview is now the Project page in the left bar. The program no longer asks you to start a project when it opens; File > New or Open is still there.
 - **New home screen, 1.73.0**: the program now opens on one big home screen with a larger logo at the top. Square tiles open the Drawing register, Detail Notes and Costing, and a SANS box holds Light & Ventilation, Energy (XA) and Coverage & FAR. The project details, location and reports are further down the same page.
 - **Link to the project is visible, 1.72.2**: under the Register: and Costing: lists a line says whether the open project is linked: "Linked to project X" (button Unlink), "Not linked yet. Saving the project links it" (button Link now), or "Not linked: this stays separate and the project keeps no copy" (button Link to this project). Opening a project that has no link keeps the register or costing you are working in, and it only links when you save or press Link now.
 - **Costing works on its own, 1.72.1**: the Costing tab (now marked (WIP)) has a Costing: list at the top with + New costing..., Rename..., Delete, Save a copy... and Open a copy.... Each costing is kept by the program and saves itself, with its products, fixtures, materials and budget, so it no longer depends on the project that is open. You can still pull rooms, fixtures and sizes from the open project as before. Costings already inside older projects are picked up automatically.

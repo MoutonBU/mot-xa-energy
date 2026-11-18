@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton, QSizePo
                                QVBoxLayout, QWidget)
 
 # main tab index -> (rail label, icon name); order of the main tabs in the window
-SUBJECTS = [(0, "Overview", "home"), (6, "Drawing register", "clipboard"), (1, "Light && ventilation", "lightvent"), (2, "Energy (XA)", "bolt"),
+SUBJECTS = [(0, "Project", "home"), (6, "Drawing register", "clipboard"), (1, "Light && ventilation", "lightvent"), (2, "Energy (XA)", "bolt"),
             (3, "Coverage && FAR", "building"), (4, "Detail notes", "ruler"), (5, "Costing", "tag")]
 LV_SUBS = [(0, "Windows", "window"), (1, "Doors", "door"), (2, "Rooms", "room"), (3, "Results", "results"), (4, "Plan", "plan")]
 
@@ -61,6 +61,13 @@ class Rail(QFrame):
         self.sub = QLabel("")
         self.sub.setObjectName("railSub")
         self.sub.setWordWrap(True)
+        hb_ = QPushButton("\u2039  Home")
+        hb_.setObjectName("railNav")
+        hb_.setCursor(Qt.CursorShape.PointingHandCursor)
+        hb_.setToolTip("Back to the four squares")
+        hb_.clicked.connect(lambda _c=False: win.main_tabs.setCurrentIndex(win.launcher_idx[0]))
+        v.addWidget(hb_)
+        v.addSpacing(6)
         v.addWidget(self.title)
         v.addWidget(self.sub)
         v.addSpacing(10)
@@ -409,7 +416,12 @@ def install_shell(win, make_icon, light_fn):
     def refresh():
         restyle()
         cur = mt.currentIndex()
+        lp = cur in (getattr(win, "launcher_idx", None) or ())
         ribbon.show_for(cur)
+        ribbon.setVisible(not lp)
+        ss = getattr(win, "step_strip", None)
+        if ss is not None:
+            ss.setVisible(not lp)
         rail.sync()
         rd = getattr(win, "rd", {}) or {}
         rail.title.setText((rd.get("project") or "").strip() or "Unnamed project")
@@ -420,7 +432,7 @@ def install_shell(win, make_icon, light_fn):
             rail.badge[1].setText("%d / %d" % (ok, len(res)))
         else:
             rail.badge[1].setText("")
-        rail.setVisible(win.width() >= 900)
+        rail.setVisible(win.width() >= 900 and not lp)
 
     mt.currentChanged.connect(lambda _i: refresh())
     win.tabs.currentChanged.connect(lambda _i: refresh())

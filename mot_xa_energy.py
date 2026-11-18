@@ -1,6 +1,6 @@
 import sys, json, csv, re, os, tempfile, html, datetime
 from dataclasses import dataclass
-from PySide6.QtWidgets import (QLayout, 
+from PySide6.QtWidgets import (QSizePolicy, QLayout, 
     QGroupBox, QListWidgetItem, QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
     QTableWidget, QTableWidgetItem, QPushButton, QLabel, QComboBox, QSplitter, QSplitterHandle,
     QFileDialog, QMessageBox, QHeaderView, QCheckBox, QProgressDialog, QDialog,
@@ -8790,6 +8790,7 @@ class MainWindow(QMainWindow):
             app_shell.install_shell(self, make_icon, light)
         except Exception:
             self.shell_rail = None
+        self._build_launcher()
         self.add_sched_row(["W01", "1200", "1200", "85", "50", "Window"])
         self.add_room_row(["Bedroom 1", "12.0", "W01:1", False])
         try:
@@ -8812,6 +8813,7 @@ class MainWindow(QMainWindow):
             lay.insertWidget(max(0, lay.indexOf(self.main_tabs)), self.step_strip)
         except Exception:
             lay.insertWidget(0, self.step_strip)
+        self.step_strip.setVisible(self.main_tabs.currentIndex() not in (getattr(self, "launcher_idx", None) or ()))
         self._steps_timer = QTimer(self)
         self._steps_timer.timeout.connect(self._update_steps)
         self._steps_timer.start(2000)
@@ -8986,6 +8988,7 @@ class MainWindow(QMainWindow):
 
     def _update_steps(self):
         try:
+            self.step_strip.setVisible(self.main_tabs.currentIndex() not in (getattr(self, "launcher_idx", None) or ()))
             self.step_strip.update_states(self._step_states())
         except Exception:
             pass
@@ -10316,9 +10319,7 @@ class MainWindow(QMainWindow):
         return True
 
     def start_on_launch(self):
-        if getattr(self, "current_file", None):
-            return
-        self.project_wizard(confirm=False)      # nothing of yours is open yet: do not ask "start a new project?"
+        return      # the program opens on the four squares; a project is only needed for the SANS tools, and File > New / Open is there
 
     def building_kind(self):
         n = len(self.floors)
@@ -12333,6 +12334,88 @@ class MainWindow(QMainWindow):
         self.main_tabs.setCurrentIndex(1)
         self.tabs.setCurrentIndex(step)
 
+    def _build_launcher(self):
+        """The start screen: four big squares and nothing else. The left bar and the ribbon only show once you are inside one."""
+        def tile(title, sub, ico, target):
+            b = QPushButton()
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            b.setMinimumSize(220, 150)
+            b.setToolTip("Open " + title.replace("&&", "&"))
+            lab = QLabel("<div align='center'><b style='font-size:20px'>%s</b><br><br>%s</div>" % (title.replace("&&", "&"), sub), b)
+            lab.setWordWrap(True)
+            lab.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+            lab.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            icl = QLabel()
+            icl.setPixmap(icon_pixmap(ico, "#ff4056", 72))
+            icl.setFixedSize(84, 84)
+            icl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            icl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            bl = QVBoxLayout(b)
+            bl.setContentsMargins(18, 18, 18, 18)
+            bl.setSpacing(6)
+            bl.addStretch(1)
+            bl.addWidget(icl, 0, Qt.AlignmentFlag.AlignHCenter)
+            bl.addWidget(lab, 0)
+            bl.addStretch(1)
+            b.clicked.connect(lambda _=False, t=target: self.main_tabs.setCurrentIndex(self._tab_index(t)))
+            return b
+
+        def page(title, back=None):
+            w = QWidget()
+            v = QVBoxLayout(w)
+            v.setContentsMargins(36, 24, 36, 36)
+            v.setSpacing(18)
+            if back is not None:
+                top = QHBoxLayout()
+                bb = QPushButton("\u2039  Back")
+                bb.setCursor(Qt.CursorShape.PointingHandCursor)
+                bb.clicked.connect(lambda _=False: self.main_tabs.setCurrentIndex(self._tab_index(back)))
+                top.addWidget(bb)
+                lt = QLabel("<span style='font-size:20px; font-weight:700;'>%s</span>" % title)
+                top.addWidget(lt)
+                top.addStretch(1)
+                v.addLayout(top)
+            return w, v
+
+        self.launch_page, v = page("")
+        g = QGridLayout()
+        g.setSpacing(24)
+        for i, (title, sub, ico, tgt) in enumerate((
+                ("Drawing register", "Issue drawings by email, with the sheet index and what is still to come.", "clipboard", "Drawing register"),
+                ("Detail Notes", "Add construction detail notes to an Archicad detail.", "ruler", "Detail Notes"),
+                ("Costing", "Fixtures, materials and the budget for a job.", "calc", "Costing"),
+                ("SANS", "Light and ventilation, energy and coverage checks for the building regulations.", "sun", "SANS"))):
+            g.addWidget(tile(title, sub, ico, tgt), i // 2, i % 2)
+        for k in (0, 1):
+            g.setRowStretch(k, 1)
+            g.setColumnStretch(k, 1)
+        v.addLayout(g, 1)
+        self.sans_page, v = page("SANS", back="Start")
+        g = QGridLayout()
+        g.setSpacing(24)
+        for i, (title, sub, ico, tgt) in enumerate((
+                ("Light && Ventilation", "SANS 10400-O<br><br>Windows and doors, rooms, natural light, ventilation and the glazing limit.", "lightvent", "Light &"),
+                ("Energy (XA)", "SANS 10400-XA and SANS 204<br><br>Walls, roof, floors, hot water pipes, windows and the rational design report.", "bolt", "Energy (XA)"),
+                ("Coverage && FAR", "Site coverage and floor area ratio<br><br>Coverage and bulk against the zoning limits.", "plan", "Coverage &"))):
+            t_ = tile(title, sub, ico, tgt)
+            t_.setMinimumHeight(300)
+            t_.setMaximumHeight(380)
+            g.addWidget(t_, 0, i)
+            g.setColumnStretch(i, 1)
+        v.addLayout(g)
+        v.addStretch(1)
+        self.main_tabs.addTab(self.launch_page, "Start")
+        self.main_tabs.addTab(self.sans_page, "SANS")
+        self.launcher_idx = (self.main_tabs.count() - 2, self.main_tabs.count() - 1)
+        self.main_tabs.setCurrentIndex(self.launcher_idx[0])
+
+    def _tab_index(self, prefix):
+        for i in range(self.main_tabs.count()):
+            if self.main_tabs.tabText(i).replace("&&", "&").startswith(prefix):
+                return i
+        return 0
+
     def _build_home(self):
         page = self.home_page
         outer = QVBoxLayout(page)
@@ -12357,68 +12440,6 @@ class MainWindow(QMainWindow):
                 vb.addWidget(lab)
             v.addWidget(box)
             return vb
-
-        def goto(prefix):
-            for i in range(self.main_tabs.count()):
-                if self.main_tabs.tabText(i).replace("&&", "&").startswith(prefix):
-                    self.main_tabs.setCurrentIndex(i)
-                    return
-
-        def tile(title, sub, ico, prefix, square):
-            b = QPushButton()
-            b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.setToolTip("Open " + title.replace("&&", "&"))
-            lab = QLabel("<b style='font-size:17px'>%s</b><br>%s" % (title.replace("&&", "&"), sub), b)
-            lab.setWordWrap(True)
-            lab.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-            icl = QLabel()
-            icl.setPixmap(icon_pixmap(ico, "#ff4056", 56))
-            icl.setFixedSize(64, 64)
-            icl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            icl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-            if square:
-                b.setMinimumHeight(190)
-                bl = QVBoxLayout(b)
-                bl.setContentsMargins(14, 16, 14, 16)
-                bl.setSpacing(8)
-                bl.addWidget(icl, 0, Qt.AlignmentFlag.AlignHCenter)
-                lab.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
-                bl.addWidget(lab, 1)
-            else:
-                b.setMinimumHeight(140)
-                bl = QHBoxLayout(b)
-                bl.setContentsMargins(18, 14, 18, 14)
-                bl.setSpacing(16)
-                bl.addWidget(icl, 0, Qt.AlignmentFlag.AlignVCenter)
-                bl.addWidget(lab, 1)
-            b.clicked.connect(lambda _=False, pf=prefix: goto(pf))
-            return b
-
-        # the launcher: big logo, then one tile for each tool, and the SANS tools together in their own box
-        self.home_logo = QLabel()
-        self.home_logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.home_logo.setPixmap(logo_pixmap().scaledToHeight(110, Qt.TransformationMode.SmoothTransformation))
-        v.addWidget(self.home_logo)
-        hello = QLabel("<span style='font-size:20px; font-weight:700; letter-spacing:2px;'>MCP ARCHITECTURE &amp; INTERIORS</span><br>"
-                       "<span>Pick what you want to work on. Everything you do is saved by the program or in your project.</span>")
-        hello.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        hello.setWordWrap(True)
-        v.addWidget(hello)
-        trow = QHBoxLayout()
-        trow.setSpacing(16)
-        for title, sub, ico, pf in (("Drawing register", "Issue drawings by email, with the sheet index and what is still to come.", "clipboard", "Drawing register"),
-                                    ("Detail Notes", "Add construction detail notes to an Archicad detail.", "ruler", "Detail Notes"),
-                                    ("Costing", "Fixtures, materials and the budget for a job.", "calc", "Costing")):
-            trow.addWidget(tile(title, sub, ico, pf, True))
-        v.addLayout(trow)
-        sans = group("SANS", "Light and ventilation, energy and coverage checks for the building regulations.")
-        srow = QHBoxLayout()
-        srow.setSpacing(16)
-        for title, sub, ico, pf in (("Light && Ventilation", "SANS 10400-O<br><br>Windows and doors, rooms, natural light, ventilation and the glazing limit.", "lightvent", "Light & Ventilation"),
-                                    ("Energy (XA)", "SANS 10400-XA and SANS 204<br><br>Walls, roof, floors, hot water pipes, windows and the rational design report.", "bolt", "Energy (XA)"),
-                                    ("Coverage && FAR", "Site coverage and floor area ratio<br><br>Coverage and bulk against the zoning limits.", "plan", "Coverage & FAR")):
-            srow.addWidget(tile(title, sub, ico, pf, False))
-        sans.addLayout(srow)
 
         g1 = group("Your project", "Where is it and what is it? The town sets the energy zone. Save your work here too.")
         self.home_summary = QLabel("")
