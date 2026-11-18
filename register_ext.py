@@ -690,7 +690,7 @@ class SendDialog(QDialog):
         if host is not None and hasattr(host, "_write_report_pdf"):
             rr = QHBoxLayout()
             rr.addWidget(QLabel("Also attach a report:"))
-            for kind, label in (("lv", "Light & Ventilation"), ("xa", "Energy XA"), ("rd", "Rational design")):
+            for kind, label in (("lv", "Light & Ventilation"), ("xa", "Energy XA"), ("rd", "Rational design"), ("cov", "Coverage and FAR")):
                 c = QCheckBox(label)
                 c.setToolTip("Makes the report from the project that is open now and adds it to the attachments.")
                 c.toggled.connect(lambda on, k=kind, l=label: self._report_toggled(k, l, on))
@@ -738,7 +738,7 @@ class SendDialog(QDialog):
             return
         host = self._page.host
         w, pre = {"lv": (host._write_report_pdf, host.run_check), "xa": (host._write_xa_pdf, host._run_xa),
-                  "rd": (host._write_rd_pdf, host._run_xa_quiet)}[kind]
+                  "rd": (host._write_rd_pdf, host._run_xa_quiet), "cov": (host._write_cov_pdf, lambda: None)}[kind]
         proj = re.sub(r'[\\/:*?"<>|]+', "-", self._page.project_name() or "Project")
         path = os.path.join(self.tmp, "%s - %s report.pdf" % (proj, label))
         QApplication.setOverrideCursor(_Qt.CursorShape.WaitCursor)
