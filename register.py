@@ -2002,27 +2002,31 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
                     bit += " [your email: %s%s]" % (x["req_subject"], ", " + short_date(x["req_date"]) if x.get("req_date") else "")
                 lines.append(bit)
             lines.append("")
-        lines.append("THE FULL LIST" if (last and kind == "revised") else "THE DRAWINGS")
-        for name, rows in gi:
-            lines.append(name.upper() + (" (%d drawings)" % len(rows)))
-            for r in rows:
-                bit = "  - %s  %s  Rev %s  (%s%s)" % (r.get("no") or "-", r.get("title", ""), r.get("rev") or "-", r.get("size", ""), ", " + r["scale"] if r.get("scale") else "")
-                bit += ": " + r["about"] if r.get("about") else ""
-                lines.append(bit.replace("  -  ", "  - "))
-            lines.append("")
         idx = self.sheet_index()
         if idx:
-            lines.append("SHEET INDEX: ISSUED AND STILL TO COME")
+            # one list for everything: what goes today (with its details) and what is still to come, block by block
+            lines.append("THE DRAWINGS: ISSUED TODAY AND STILL TO COME")
             now_ = ["%s (%d of %d)" % (nm, nt, len(rs)) for nm, rs, nt in idx if nt]
             later_ = [(nm, sum(1 for _r, st, _n in rs if st == "not")) for nm, rs, _nt in idx]
             later_ = ["%s (%d drawing%s)" % (nm, k, "" if k == 1 else "s") for nm, k in later_ if k]
             lines.append(("Issued today: %s. " % ", ".join(now_) if now_ else "") + ("Still to come: %s." % ", ".join(later_) if later_ else "Nothing else is outstanding."))
             lines.append("")
             for name, rows, nt in idx:
-                lines.append("%s (%d drawings) - %d ISSUED TODAY" % (name.upper(), len(rows), nt))
+                lines.append("%s (%d drawing%s) - %d ISSUED TODAY" % (name.upper(), len(rows), "" if len(rows) == 1 else "s", nt))
                 for r, st, note in rows:
                     lab = {"today": "ISSUED TODAY", "earlier": "ISSUED EARLIER" + ((" (%s)" % note) if note else ""), "not": "NOT YET ISSUED"}[st]
-                    lines.append("  - %s  %s  Rev %s  |  %s" % (r.get("no") or "-", r.get("title", ""), r.get("rev") or "-", lab))
+                    sz = "%s%s" % (r.get("size", ""), (", " + r["scale"]) if r.get("scale") else "")
+                    lines.append("  - %s | %s | Rev %s | %s | %s%s" % ((r.get("no") or "-").replace("|", "/"), (r.get("title", "") or "").replace("|", "/"), r.get("rev") or "-", sz or "-", lab,
+                                                                  (" | " + r["about"]) if (st == "today" and r.get("about")) else ""))
+                lines.append("")
+        else:
+            lines.append("THE FULL LIST" if (last and kind == "revised") else "THE DRAWINGS")
+            for name, rows in gi:
+                lines.append(name.upper() + (" (%d drawings)" % len(rows)))
+                for r in rows:
+                    bit = "  - %s  %s  Rev %s  (%s%s)" % (r.get("no") or "-", r.get("title", ""), r.get("rev") or "-", r.get("size", ""), ", " + r["scale"] if r.get("scale") else "")
+                    bit += ": " + r["about"] if r.get("about") else ""
+                    lines.append(bit.replace("  -  ", "  - "))
                 lines.append("")
         reps = self.reports_ticked()
         if reps:

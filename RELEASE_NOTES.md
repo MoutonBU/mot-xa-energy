@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.70.4**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.70.5**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **One list of everything in the email, 1.70.5**: when some drawings are still to come, the email no longer has two lists. It has one table per block or house listing every drawing by number and name, with its revision, size and scale, marked Issued today (red), Issued earlier or Not yet issued, under a line such as "Issued today: Block A (3 of 3). Still to come: Block B (5 drawings)". Drawing numbers with spaces (like A 101) and titles with extra spaces now also appear in the table.
 - **Sheet index fixes, 1.70.4**: when blocks use the same drawing numbers (for example 101 and 102 in Block A, C and D), loading the sheet indexes no longer skips the later blocks; each block now keeps its own list. A drawing PDF is matched to the block that is open first. If you changed the email text by hand it does not update itself, so an orange note now says so above the email, and loading drawings tells you to press Write it again to bring the sheet index in.
 - **Revised, new set or these drawings, 1.70.3**: under the email on the register page, "This email is:" lets you choose Revised drawings (shows what changed since the last issue), A new set of drawings, or These drawings. With the last two the email opens with "Please find attached a new set of drawings..." or "Please find attached the following drawings...", has no "what changed" part and just lists the drawings; the register PDF follows the same choice. Until you choose, it is Revised when something was sent before, otherwise a new set.
 - **Load sheet indexes from a folder, 1.70.2**: on the register page, "Load all sheet indexes from a folder..." lets you point at the folder where your sheet indexes are saved. Every sheet index inside it, also in the Block A, Block C, Block D... sub folders, is found at once (a file counts when its name has the word index, drawing list or register). The block or house is named from the file ("Block A sheet index.pdf" gives Block A) or, when the file is just called "Sheet index", from the folder it sits in. You can still change each name before adding. The file picker is still there as "Pick sheet index files...".

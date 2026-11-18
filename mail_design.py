@@ -44,7 +44,7 @@ DARK_CSS = """
 [data-ogsc] .tx{color:#D7D9DE !important;} [data-ogsc] .st{color:#FFFFFF !important;} [data-ogsc] .mu{color:#9DA1AA !important;}
 """
 
-INDEXROW = re.compile(r"^(\S+)\s{2,}(.*?)\s{2,}Rev (\S+)\s+\|\s+(.*)$")
+INDEXROW = re.compile(r"^(.*?) \| (.*?) \| Rev (.*?) \| (.*?) \| (ISSUED TODAY|ISSUED EARLIER[^|]*|NOT YET ISSUED)(?: \| (.*))?$")
 DRAWING = re.compile(r"^(\S+)\s{2,}(.*?)\s{2,}Rev (\S+)\s+\(([^)]*)\):?\s*(.*)$")
 
 
@@ -185,11 +185,11 @@ def _drawing_table(rows):
 
 
 def _index_table(rows):
-    """Sheet index: every drawing with its state (issued today / issued earlier / not yet issued)."""
+    """One list of every drawing of a block: its details and its state (issued today / issued earlier / not yet issued)."""
     head = "".join('<td class="mu bd" width="%s" style="padding:10px 12px;font-family:%s;font-size:11px;letter-spacing:1.5px;color:%s;border-bottom:1px solid %s;">%s</td>' % (w, FONT, MUTED, LINE, _e(t))
-                   for w, t in (("16%", "DRAWING"), ("40%", "TITLE"), ("9%", "REV"), ("35%", "STATUS")))
+                   for w, t in (("14%", "DRAWING"), ("33%", "TITLE"), ("8%", "REV"), ("17%", "SIZE / SCALE"), ("28%", "STATUS")))
     body = ""
-    for n, (no, title, rev, state) in enumerate(rows):
+    for n, (no, title, rev, size, state, about) in enumerate(rows):
         cls, bg = ("r1", ROW1) if n % 2 == 0 else ("r2", ROW2)
         cell = 'class="%s tx" style="padding:9px 12px;font-family:%s;font-size:13px;color:%s;background-color:%s;" bgcolor="%s"' % (cls, FONT, TXT, bg, bg)
         up = state.upper()
@@ -200,8 +200,9 @@ def _index_table(rows):
             chip = '<span class="mu" style="color:%s;font-size:12px;font-weight:700;">Issued earlier</span>%s' % (MUTED, ('<br><span class="mu" style="color:%s;font-size:11px;">%s</span>' % (MUTED, _e(extra.group(1).title()))) if extra else "")
         else:
             chip = '<span class="st" style="color:%s;font-size:12px;font-weight:700;border:1px solid %s;border-radius:10px;padding:1px 8px;">Not yet issued</span>' % (RED, RED)
-        body += ('<tr><td %s><b class="st" style="color:%s;">%s</b></td><td %s>%s</td><td %s>%s</td><td %s>%s</td></tr>'
-                 % (cell, STRONG, _e(no), cell, _e(title), cell, _e(rev), cell, chip))
+        sub = ('<br><span class="mu" style="color:%s;font-size:11px;">%s</span>' % (MUTED, _e(about))) if about else ""
+        body += ('<tr><td %s><b class="st" style="color:%s;">%s</b></td><td %s>%s%s</td><td %s>%s</td><td %s>%s</td><td %s>%s</td></tr>'
+                 % (cell, STRONG, _e(no), cell, _e(title), sub, cell, _e(rev), cell, _e(size if size != "-" else ""), cell, chip))
     if _pv["on"]:
         return _wrap('<table width="100%%" cellpadding="0" cellspacing="0" border="0"><tr>%s</tr>%s</table>' % (head, body), ROW1, 12)
     return ('<table class="bd" width="100%%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid %s;border-radius:14px;border-collapse:separate;overflow:hidden;table-layout:fixed;">'
@@ -255,7 +256,7 @@ def build(subject, body, logo_src="cid:mcplogo", attached="", logo_dark_src="", 
             parsed = [DRAWING.match(x) for x in val]
             ix = [INDEXROW.match(x) for x in val]
             if all(ix):
-                rows.append(("X", [m.groups() for m in ix]))
+                rows.append(("X", [tuple(g or "" for g in m.groups()) for m in ix]))
             elif all(parsed):
                 rows.append(("T", [m.groups() for m in parsed]))
             else:
