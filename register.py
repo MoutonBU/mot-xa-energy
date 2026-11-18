@@ -641,7 +641,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         for kind, label in (("lv", "Light & Ventilation"), ("xa", "Energy XA"), ("rd", "Rational design"), ("cov", "Coverage and FAR")):
             c = QCheckBox(label)
             c.setToolTip("Makes this report from the project that is open and sends it with the drawings.")
-            c.toggled.connect(self.refresh)
+            c.toggled.connect(self._reports_changed)
             self.rep_chk[kind] = c
             rr.addWidget(c)
         rr.addStretch(1)
@@ -1399,6 +1399,19 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         by, c = r.get("by") or "", self._clean(r)
         return (by + (": " if by and c else "") + c) if (by or c) else "no reason given"
 
+    REPORTS = (("lv", "Light & Ventilation report", "SANS 10400-O natural light and ventilation, room by room"),
+               ("xa", "Energy XA report", "SANS 10400-XA energy usage: walls, roofs and glazing"),
+               ("rd", "Rational design report", "SANS 10400-XA rational design"),
+               ("cov", "Coverage and FAR report", "site coverage and floor area ratio"))
+
+    def reports_ticked(self):
+        on = {k for k, c in getattr(self, "rep_chk", {}).items() if c.isChecked()}
+        return [(k, lab, d) for k, lab, d in self.REPORTS if k in on]
+
+    def _reports_changed(self, *_a):
+        """A report was ticked or unticked: the email and the register PDF list it, so write the email again (unless it was edited by hand)."""
+        self.update_mail()
+
     def write_mail(self):
         gi = self.groups_in_issue()
         to = self.info["to"].strip()
@@ -1450,6 +1463,12 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
                 bit = "  - %s  %s  Rev %s  (%s%s)" % (r.get("no") or "-", r.get("title", ""), r.get("rev") or "-", r.get("size", ""), ", " + r["scale"] if r.get("scale") else "")
                 bit += ": " + r["about"] if r.get("about") else ""
                 lines.append(bit.replace("  -  ", "  - "))
+            lines.append("")
+        reps = self.reports_ticked()
+        if reps:
+            lines.append("REPORTS SENT WITH THIS ISSUE (%d)" % len(reps))
+            for _k, lab, d in reps:
+                lines.append("  - %s: %s" % (lab, d))
             lines.append("")
         statuses = sorted({r.get("status", "") for _n, rows in gi for r in rows})
         if statuses:
@@ -1526,6 +1545,13 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             out.append('<table width="100%%" border="0.6" cellspacing="0" style="font-size:8pt;"><tr>%s</tr>%s</table>' %
                        ("".join((th("No.", 6), th("Drawing", 15), th("What it shows", 22), th("Size", 4), th("Scale", 5), th("Rev", 3), th("Rev date", 8),
                                  th("PDF'd", 8), th("What changed", 19), th("Status", 10))), body))
+        reps = self.reports_ticked()
+        if reps:
+            out.append('<h3 style="color:%s;margin-bottom:3px;">Reports issued with this register</h3>' % RED)
+            out.append('<table width="100%%" border="0.6" cellspacing="0" style="font-size:8.5pt;"><tr>%s</tr>%s</table>' % (
+                "".join((th("Report", 30), th("What it covers", 52), th("Revision", 8), th("Date", 10))),
+                "".join("<tr>%s%s%s%s</tr>" % (td("<b>%s</b>" % e(lab)), td(e(d[:1].upper() + d[1:])), td(e(self.info["issue_no"] or "0"), "center"),
+                                               td(e(self.issue_date()), "center")) for _k, lab, d in reps)))
         if self.history:
             out.append('<p style="font-size:7.5pt;color:#666;">Earlier revisions: %s.</p>' % e("; ".join("revision %s, %s (%d drawings)" % (h.get("issue", ""), h.get("date", ""), len(h.get("rows", {}))) for h in self.history)))
         out.append('<p style="font-size:7.5pt;color:#666;">Revision, revision date and drawing number are read from the title block of each drawing; PDF\'d is the date the PDF was made. '

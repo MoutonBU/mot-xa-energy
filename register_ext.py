@@ -726,12 +726,28 @@ class SendDialog(QDialog):
         bar.addWidget(self.send)
         v.addLayout(bar)
         self._size()
+        self._auto_body = self.body.toPlainText()
         for k, c in getattr(self, "_rep_boxes", {}).items():     # the ones ticked on the register page start ticked here
             pc = getattr(page, "rep_chk", {}).get(k)
             if pc is not None and pc.isChecked():
                 c.setChecked(True)
 
     def _report_toggled(self, kind, label, on):
+        self._report_toggled2(kind, label, on)
+        # keep the register page in step, so the email text and the register PDF list the same reports
+        pc = getattr(self._page, "rep_chk", {}).get(kind)
+        ok = (kind in self._rep) == bool(on)
+        if pc is not None and ok and pc.isChecked() != bool(on):
+            pc.setChecked(bool(on))
+            if self.body.toPlainText() == getattr(self, "_auto_body", None):
+                try:
+                    sub, txt = self._page._mail_parts()
+                    self.body.setPlainText(txt)
+                    self._auto_body = self.body.toPlainText()
+                except Exception:
+                    pass
+
+    def _report_toggled2(self, kind, label, on):
         """Make the report when it is ticked and put it in the attachment list; take it out again when unticked."""
         from PySide6.QtWidgets import QApplication
         from PySide6.QtCore import Qt as _Qt
