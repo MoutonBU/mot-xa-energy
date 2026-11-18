@@ -285,12 +285,12 @@ def build(subject, body, logo_src="cid:mcplogo", attached="", logo_dark_src="", 
                     tds += '<td width="%.3f%%" style="padding:0;font-size:0;line-height:0;">%s</td>' % ((x1 - x0) * 100.0 / 1875.0, img)
                 tb += '<table width="100%%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;table-layout:fixed;"><tr>%s</tr></table>' % tds
             sections += ('<tr><td style="padding:26px 0 0 0;font-family:%s;font-size:12px;letter-spacing:3px;font-weight:700;color:%s;">REGARDS</td></tr>' % (FONT, RED)
-                         + '<tr><td style="padding:10px 0 0 0;"><div class="sgd" style="max-width:640px;border-radius:12px;overflow:hidden;">%s</div>%s</td></tr>' % (tb, mob))
+                         + '<tr><td style="padding:10px 0 0 0;"><div class="sgd" style="max-width:680px;border-radius:12px;overflow:hidden;">%s</div>%s</td></tr>' % (tb, mob))
         elif r[0] == "G" and sig_src:
             # the finished signature banner (picture): "Regards," above it, scaled to the width of the phone
             sections += ('<tr><td style="padding:26px 0 0 0;font-family:%s;font-size:12px;letter-spacing:3px;font-weight:700;color:%s;">REGARDS</td></tr>'
                          '<tr><td style="padding:10px 0 0 0;"><img src="%s" width="%d" alt="Signature" style="display:block;width:100%%;%sheight:auto;border:0;border-radius:12px;"></td></tr>'
-                         % (FONT, RED, sig_src, 600 if _pv["on"] else 640, "" if _pv["on"] else "max-width:640px;"))
+                         % (FONT, RED, sig_src, 600 if _pv["on"] else 680, "" if _pv["on"] else "max-width:680px;"))
         elif r[0] == "G":
             sig = r[1]
             name = sig[0] if sig else ""
@@ -326,7 +326,7 @@ def build(subject, body, logo_src="cid:mcplogo", attached="", logo_dark_src="", 
             '<title>%(title)s</title><style>%(css)s</style></head>'
             '<body class="pg" style="margin:0;padding:0;background-color:%(page)s;" bgcolor="%(page)s">'
             '<table class="pg" width="100%%" cellpadding="0" cellspacing="0" border="0" bgcolor="%(page)s" style="background-color:%(page)s;"><tr><td align="center" style="padding:22px 12px;">'
-            '<table width="640" cellpadding="0" cellspacing="0" border="0" style="width:100%%;max-width:640px;">'
+            '<table width="680" cellpadding="0" cellspacing="0" border="0" style="width:100%%;max-width:680px;">'
             # the logo: white and red for dark mode (the default), black and red for light mode
             '<tr><td align="center" style="padding:10px 0 0 0;">'
             '<img class="lgl" src="%(logo)s" width="150" alt="MCP" style="display:block;border:0;margin:0 auto;">'
