@@ -1958,6 +1958,19 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
     def want_log(self, kind):
         return self.info.get("show_orders" if kind == "Order" else "show_changes") == "1"
 
+    def _sent_in(self, h, group, r):
+        """The entry of drawing r (of this block or house) in an issue that was sent, or None. Older issues only know the drawing number."""
+        lk = self._loose(self.key(r))
+        gs = h.get("groups") or []
+        if gs:
+            for g in gs:
+                if str(g.get("name", "")).strip().lower() == str(group).strip().lower():
+                    for d in g.get("drawings") or []:
+                        if self._loose((d.get("no") or d.get("title", "")).strip().lower()) == lk:
+                            return d
+            return None
+        return (h.get("rows") or {}).get(self.key(r))
+
     def sheet_index(self):
         """Every drawing of every block/house: [(group name, [(row, state, note)], n_today)], or [] when there is nothing more than today's issue to show.
         state is 'today', 'earlier' or 'not'."""
@@ -1971,9 +1984,8 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
                     rows.append((r, "today", ""))
                     today += 1
                 else:
-                    note = ""
                     for h in reversed(self.history):
-                        o = (h.get("rows") or {}).get(self.key(r))
+                        o = self._sent_in(h, g["name"], r)
                         if o is not None:
                             note = "REV %s, %s" % (o.get("rev") or "-", h.get("date", "")) if (o.get("rev") or h.get("date")) else ""
                             rows.append((r, "earlier", note))
@@ -2047,7 +2059,9 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             now_ = ["%s (%d of %d)" % (nm, nt, len(rs)) for nm, rs, nt in idx if nt]
             later_ = [(nm, sum(1 for _r, st, _n in rs if st == "not")) for nm, rs, _nt in idx]
             later_ = ["%s (%d drawing%s)" % (nm, k, "" if k == 1 else "s") for nm, k in later_ if k]
-            lines.append(("Issued today: %s. " % ", ".join(now_) if now_ else "") + ("Still to come: %s." % ", ".join(later_) if later_ else "Nothing else is outstanding."))
+            early_ = ["%s (%d)" % (nm, sum(1 for _r, st, _n in rs if st == "earlier")) for nm, rs, _nt in idx if any(st == "earlier" for _r, st, _n in rs)]
+            lines.append(("Issued today: %s. " % ", ".join(now_) if now_ else "") + ("Issued earlier: %s. " % ", ".join(early_) if early_ else "")
+                         + ("Still to come: %s." % ", ".join(later_) if later_ else "Nothing else is outstanding."))
             lines.append("")
             for name, rows, nt in idx:
                 lines.append("%s (%d drawing%s) - %d ISSUED TODAY" % (name.upper(), len(rows), "" if len(rows) == 1 else "s", nt))
