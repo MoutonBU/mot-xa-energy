@@ -83,8 +83,8 @@ def render(S, photo_path=None):
         _fit(p, role, 25, 660)
         p.drawText(QPointF(851, 199), role)
     p.setPen(INK)
-    if phone or name:
-        line = ("%s: %s" % (name, phone)) if phone else name
+    if phone:
+        line = phone
         _fit(p, line, 21.5, 322)
         p.drawText(QPointF(890, 257), line)
     if email:
@@ -94,7 +94,7 @@ def render(S, photo_path=None):
     return img
 
 
-def jpeg_bytes(S, width=1250, quality=92):
+def _rounded(S, width):
     img = render(S).convertToFormat(QImage.Format.Format_RGB32)
     img = img.scaledToWidth(width, Qt.TransformationMode.SmoothTransformation)
     # rounded corners like the cards in the email (the corners are white, the email page is white)
@@ -107,12 +107,50 @@ def jpeg_bytes(S, width=1250, quality=92):
     p.setClipPath(path)
     p.drawImage(0, 0, img)
     p.end()
-    img = out
+    return out
+
+
+def _jpg(img, quality):
     ba = QByteArray()
     buf = QBuffer(ba)
     buf.open(QIODevice.OpenModeFlag.WriteOnly)
     img.save(buf, "JPG", quality)
     return bytes(ba)
+
+
+def jpeg_bytes(S, width=1250, quality=92):
+    return _jpg(_rounded(S, width), quality)
+
+
+def link_text(S):
+    g = lambda k: str(S.get(k, "") or "").strip()
+    phone = g("sig_phone")
+    tel = "".join(ch for ch in phone if ch.isdigit() or ch == "+")
+    return {"phone": phone, "tel": tel, "email": g("sig_email") or g("mail_address")}
+
+
+def slices(S, width=1250, quality=92):
+    """The banner cut into pieces so the phone, the email and the website can each be a real link.
+    Returns (rows, jpegs): rows is a list of (height_px, [(index, x0, x1, kind), ...]) in the 1875 wide design;
+    kind is "", "tel", "mail" or "web"."""
+    lt = link_text(S)
+    full = _rounded(S, width)
+    k = width / float(W)
+    ymap = lambda y: int(round(y * k))
+    spec = [(0, 232, [(0, W, "")]),
+            (232, 274, [(0, 840, ""), (840, 1215, "tel" if lt["tel"] else ""), (1215, 1862, "mail" if lt["email"] else ""), (1862, W, "")]),
+            (274, 332, [(0, 840, ""), (840, 1180, "web"), (1180, W, "")]),
+            (332, H, [(0, W, "")])]
+    rows, jp = [], []
+    for y0, y1, cells in spec:
+        r = []
+        for x0, x1, kind in cells:
+            ix0, ix1 = ymap(x0), (width if x1 >= W else ymap(x1))
+            piece = full.copy(ix0, ymap(y0), ix1 - ix0, (full.height() if y1 >= H else ymap(y1)) - ymap(y0))
+            r.append((len(jp), ix0, ix1, kind))
+            jp.append(_jpg(piece, quality))
+        rows.append((y1 - y0, r))
+    return rows, jp
 
 
 def prepare_photo(src_path, dest_path):

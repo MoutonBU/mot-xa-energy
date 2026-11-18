@@ -1544,6 +1544,17 @@ class MailMixin:
         except Exception:
             return False
 
+    def sig_parts(self):
+        import sig_banner
+        if not hasattr(self, "_sig_cache") or self._sig_cache[0] != str(self._sig_key()):
+            rows, jp = sig_banner.slices(self._M().SETTINGS)
+            self._sig_cache = (str(self._sig_key()), rows, jp)
+        return self._sig_cache[1], sig_banner.link_text(self._M().SETTINGS)
+
+    def _sig_key(self):
+        S = self._M().SETTINGS
+        return tuple(str(S.get(k, "")) for k in ("sig_name", "sig_role", "sig_phone", "sig_email", "mail_address", "sig_photo"))
+
     def sig_bytes(self):
         import sig_banner
         return sig_banner.jpeg_bytes(self._M().SETTINGS)
@@ -1551,7 +1562,8 @@ class MailMixin:
     def design_html(self, subject, body, src="cid:mcplogo", attached="", both=False, preview=False):
         import mail_design
         return mail_design.build(subject, body, logo_src=src, logo_dark_src=("cid:mcplogod" if both else ""), preview=preview, attached=attached,
-                                 company=self._M().SETTINGS.get("sig_company") or "MCP Architecture & Interiors", sig_src=("cid:mcpsig" if self.sig_picture_on() else ""))
+                                 company=self._M().SETTINGS.get("sig_company") or "MCP Architecture & Interiors", sig_src=("cid:mcpsig" if self.sig_picture_on() else ""),
+                                 sig_parts=(self.sig_parts() if (both and self.sig_picture_on()) else None))
 
     def designed_on(self):
         try:
@@ -1679,7 +1691,9 @@ class MailMixin:
                     m.get_payload()[1].add_related(self.design_png(), maintype="image", subtype="png", cid="<mcplogo>", filename="mcp-logo.png", disposition="inline")
                     m.get_payload()[1].add_related(self.design_png(True), maintype="image", subtype="png", cid="<mcplogod>", filename="mcp-logo-dark.png", disposition="inline")
                     if self.sig_picture_on():
-                        m.get_payload()[1].add_related(self.sig_bytes(), maintype="image", subtype="jpeg", cid="<mcpsig>", filename="signature.jpg", disposition="inline")
+                        self.sig_parts()
+                        for _i, _b in enumerate(self._sig_cache[2]):
+                            m.get_payload()[1].add_related(_b, maintype="image", subtype="jpeg", cid="<mcpsig%d>" % _i, filename="signature%d.jpg" % _i, disposition="inline")
                 except Exception:
                     pass
             for p in files:

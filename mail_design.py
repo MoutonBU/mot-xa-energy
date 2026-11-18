@@ -208,7 +208,7 @@ def _title_parts(subject):
     return (subject or "Drawing register").strip(), ""
 
 
-def build(subject, body, logo_src="cid:mcplogo", attached="", logo_dark_src="", company="MCP Architecture & Interiors", preview=False, sig_src=""):
+def build(subject, body, logo_src="cid:mcplogo", attached="", logo_dark_src="", company="MCP Architecture & Interiors", preview=False, sig_src="", sig_parts=None):
     _pv["on"] = bool(preview)
     _pv["res"] = {}
     project, strip = _title_parts(subject)
@@ -259,6 +259,22 @@ def build(subject, body, logo_src="cid:mcplogo", attached="", logo_dark_src="", 
                 pill = ('<tr><td align="center" style="padding:0 0 22px 0;"><span style="font-family:%s;font-size:16px;font-weight:700;color:#FFFFFF;background-color:%s;border-radius:18px;padding:7px 22px;" bgcolor="%s">%s</span></td></tr>'
                         % (FONT, RED, RED, _e(r[1])))
             sections += ('<tr><td align="center" class="mu" style="padding:28px 0 16px 0;font-family:%s;font-size:12px;letter-spacing:3px;color:%s;">STATUS OF THIS REVISION</td></tr>' % (FONT, MUTED)) + pill
+        elif r[0] == "G" and sig_src and sig_parts and not _pv["on"]:
+            # the banner in pieces, so the phone, email and website are real links; the pieces scale with the width
+            rows, lt = sig_parts
+            href = {"tel": "tel:" + lt.get("tel", ""), "mail": "mailto:" + lt.get("email", ""), "web": "https://www.mcparchitecture.co.za"}
+            alt = {"tel": lt.get("phone", ""), "mail": lt.get("email", ""), "web": "www.mcparchitecture.co.za"}
+            tb = ""
+            for _h, cells in rows:
+                tds = ""
+                for idx, x0, x1, kind in cells:
+                    img = ('<img src="cid:mcpsig%d" width="100%%" alt="%s" style="display:block;width:100%%;height:auto;border:0;">' % (idx, _e(alt.get(kind, "")) or "Signature"))
+                    if kind:
+                        img = '<a href="%s" style="text-decoration:none;">%s</a>' % (_e(href[kind]), img)
+                    tds += '<td width="%.3f%%" style="padding:0;font-size:0;line-height:0;">%s</td>' % ((x1 - x0) * 100.0 / 1875.0, img)
+                tb += '<table width="100%%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;table-layout:fixed;"><tr>%s</tr></table>' % tds
+            sections += ('<tr><td style="padding:26px 0 0 0;font-family:%s;font-size:12px;letter-spacing:3px;font-weight:700;color:%s;">REGARDS</td></tr>' % (FONT, RED)
+                         + '<tr><td style="padding:10px 0 0 0;"><div style="max-width:640px;border-radius:12px;overflow:hidden;">%s</div></td></tr>' % tb)
         elif r[0] == "G" and sig_src:
             # the finished signature banner (picture): "Regards," above it, scaled to the width of the phone
             sections += ('<tr><td style="padding:26px 0 0 0;font-family:%s;font-size:12px;letter-spacing:3px;font-weight:700;color:%s;">REGARDS</td></tr>'
