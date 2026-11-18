@@ -1549,9 +1549,10 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         lay = self.blocks_l
         while lay.count():
             it = lay.takeAt(0)
-            if it.widget():
-                it.widget().setParent(None)
-                it.widget().deleteLater()
+            w_ = it.widget()
+            if w_ is not None:
+                w_.setParent(None)
+                w_.deleteLater()
         multi = len(self.groups) > 1
         lay.addWidget(QLabel("<b>Send now:</b>"))
         for gi_, g in enumerate(self.groups):
