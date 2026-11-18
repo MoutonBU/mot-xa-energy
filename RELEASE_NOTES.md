@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.77.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.78.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Guided steps in every tool, 1.78.0**: Energy (XA), Light & Ventilation and Coverage & FAR now work like the drawing register: a numbered step bar with a one-line hint, one step shown at a time, and Back / Next buttons. Energy (XA) shows one section at a time (Walls, Roof and ceiling, Floors, Hot water pipes, Windows, Air infiltration, Lighting, Hot water and solar, Run the check, Rational design report); the ribbon's Sections menu still jumps to any of them. Light & Ventilation steps through Windows, Doors, Rooms, Results and Plan. Coverage & FAR has three steps (the stand and its limits, the buildings, the result and reports) with where the floor areas come from under More options. The left bar and the ribbon now have rounded corners.
 - **A simpler drawing register, 1.77.0**: the Drawings page is now three short steps with a step bar and Back / Next buttons: 1 Who is it for, 2 The drawings, 3 Check and send. Step 2 shows only Add drawing PDFs, Add a whole folder, Remove selected and the list; the sheet index, blocks and houses, Select all, Remove all, all details and the status for many drawings are under More options (which opens by itself when you have several blocks or a sheet index loaded). Step 3 shows the email, what kind of email it is and the sheet index button; reports, orders and client changes are under More email options. A line above the buttons says in plain words whether you are ready to send (a drawing is ticked and the client has an email address), or what is missing.
 - **Costing report, 1.76.0**: a combined PDF for the whole costing: the whole-building estimate (cost per m2, the share of each part, and the budget with over / under when you set a target), the building materials by block, and then the full sanitary ware and fixtures schedule with the product photos and totals. Open it from the ribbon (Costing report: Preview, Export PDF) or from the buttons on the Whole building and budget section.
 - **Sections in the left bar, 1.76.0**: the Drawing register (Drawings, Orders, Client changes, Sent and revisions) and the Costing (Fixtures, Building materials, Whole building and budget) now list their sections in the left bar instead of tabs along the top.

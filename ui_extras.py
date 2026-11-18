@@ -489,3 +489,96 @@ class LinkBar(QWidget):
         except Exception:
             pass
         self.refresh()
+
+
+# ---------------------------------------------------------------- guided steps (a step bar on top, Back / Next at the bottom)
+from PySide6.QtCore import Signal as _Signal
+
+
+class StepBar(QObject):
+    """The same guided look in every tool: numbered step buttons, a one-line hint for the step, and Back / Next buttons.
+    `top` goes above the content, `bottom` below it. Connect `changed(int)` to show the step."""
+    changed = _Signal(int)
+
+    def __init__(self, names, hints=None, parent=None):
+        super().__init__(parent)
+        from flow_layout import FlowLayout
+        self.names, self.hints, self.i = list(names), list(hints or []), 0
+        self.top = QWidget()
+        tv = QVBoxLayout(self.top)
+        tv.setContentsMargins(0, 0, 0, 4)
+        tv.setSpacing(4)
+        row = QWidget()
+        fl = FlowLayout(row, 6, 6)
+        self.btns = []
+        for k, t in enumerate(self.names):
+            b = QPushButton("%d   %s" % (k + 1, t))
+            b.setCheckable(True)
+            b.setMinimumHeight(32)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setStyleSheet("QPushButton:checked{background:#c0182c;color:#ffffff;font-weight:700;border:1px solid #e0243a;}")
+            b.clicked.connect(lambda _=False, k=k: self.go(k))
+            fl.addWidget(b)
+            self.btns.append(b)
+        tv.addWidget(row)
+        self.hint = QLabel("")
+        self.hint.setWordWrap(True)
+        self.hint.setStyleSheet("color: gray;")
+        tv.addWidget(self.hint)
+        self.bottom = QWidget()
+        bl = QHBoxLayout(self.bottom)
+        bl.setContentsMargins(0, 4, 0, 0)
+        self.back = QPushButton("‹  Back")
+        self.back.setMinimumHeight(34)
+        self.back.clicked.connect(lambda: self.go(self.i - 1))
+        self.next = QPushButton("Next  ›")
+        self.next.setMinimumHeight(34)
+        self.next.setStyleSheet("font-weight:700; padding: 0 24px;")
+        self.next.clicked.connect(lambda: self.go(self.i + 1))
+        bl.addWidget(self.back)
+        bl.addStretch(1)
+        bl.addWidget(self.next)
+        self.go(0, emit=True)
+
+    def go(self, i, emit=True):
+        i = max(0, min(int(i), len(self.names) - 1))
+        self.i = i
+        for k, b in enumerate(self.btns):
+            b.setChecked(k == i)
+        self.back.setVisible(i > 0)
+        self.next.setVisible(i < len(self.names) - 1)
+        if i < len(self.names) - 1:
+            self.next.setText("Next: %s  ›" % self.names[i + 1].lower())
+        self.hint.setText(self.hints[i] if i < len(self.hints) else "")
+        self.hint.setVisible(bool(self.hint.text()))
+        if emit:
+            self.changed.emit(i)
+
+
+class BoxSteps(StepBar):
+    """A long page made of framed boxes, shown one box at a time. `boxes` are the group boxes in order."""
+
+    def __init__(self, boxes, names, hints=None, parent=None):
+        self.boxes = list(boxes)
+        super().__init__(names, hints, parent)
+        self.changed.connect(self._show)
+        self._show(0)
+
+    def _show(self, i):
+        for k, b in enumerate(self.boxes):
+            b.setVisible(k == i)
+        from PySide6.QtWidgets import QScrollArea
+        p = self.boxes[0].parentWidget() if self.boxes else None
+        while p is not None and not isinstance(p, QScrollArea):
+            p = p.parentWidget()
+        if p is not None:
+            p.verticalScrollBar().setValue(0)
+
+    def reveal(self, w):
+        """Show the step that holds widget w (used by the ribbon's Sections menu). True when it was one of ours."""
+        while w is not None:
+            if w in self.boxes:
+                self.go(self.boxes.index(w))
+                return True
+            w = w.parentWidget()
+        return False

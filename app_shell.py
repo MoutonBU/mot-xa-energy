@@ -25,8 +25,8 @@ def _palette(is_light):
 
 def _qss(p):
     return f"""
-    QFrame#shellRail {{ background:{p['rail']}; border-right:1px solid {p['line']}; }}
-    QFrame#shellRibbon {{ background:{p['ribbon']}; border-bottom:1px solid {p['line']}; }}
+    QFrame#shellRail {{ background:{p['rail']}; border:1px solid {p['line']}; border-radius:14px; }}
+    QFrame#shellRibbon {{ background:{p['ribbon']}; border:1px solid {p['line']}; border-radius:14px; }}
     QLabel#railTitle {{ font-size:17px; font-weight:700; color:{p['text']}; }}
     QLabel#railSub {{ font-size:12px; color:{p['muted']}; }}
     QPushButton#railNav {{ text-align:left; padding:0 12px; height:40px; border-radius:10px; border:0; background:transparent;
@@ -343,8 +343,9 @@ class Ribbon(QFrame):
             def fill():
                 m.clear()
                 page = w.main_tabs.widget(tab_index)
-                for g in page.findChildren(QGroupBox):
-                    if not g.title() or not g.isVisibleTo(page):
+                st_ = getattr(w, "xa_steps", None) if tab_index == 2 else None
+                for g in (st_.boxes if st_ is not None else page.findChildren(QGroupBox)):
+                    if not g.title() or (st_ is None and not g.isVisibleTo(page)):
                         continue
                     a = m.addAction(g.title().replace("&&", "&"))
                     a.triggered.connect(lambda _c=False, gb=g: self._jump(gb))
@@ -435,6 +436,9 @@ class Ribbon(QFrame):
 
     def _jump(self, gb):
         from PySide6.QtWidgets import QScrollArea
+        st_ = getattr(self.win, "xa_steps", None)
+        if st_ is not None and st_.reveal(gb):
+            return
         p = gb.parentWidget()
         while p is not None and not isinstance(p, QScrollArea):
             p = p.parentWidget()
@@ -457,12 +461,12 @@ def install_shell(win, make_icon, light_fn):
     body = QWidget()
     hb = QHBoxLayout(body)
     hb.setContentsMargins(0, 0, 0, 0)
-    hb.setSpacing(0)
+    hb.setSpacing(8)
     rail = Rail(win, make_icon, light_fn)
     right = QWidget()
     rv = QVBoxLayout(right)
     rv.setContentsMargins(0, 0, 0, 0)
-    rv.setSpacing(0)
+    rv.setSpacing(8)
     ribbon = Ribbon(win, make_icon, light_fn)
     rv.addWidget(ribbon)
     rv.addWidget(mt, 1)

@@ -1,6 +1,6 @@
 import sys, json, csv, re, os, tempfile, html, datetime
 from dataclasses import dataclass
-from PySide6.QtWidgets import (QSizePolicy, QLayout, 
+from PySide6.QtWidgets import (QStackedWidget, QSizePolicy, QLayout, 
     QGroupBox, QListWidgetItem, QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
     QTableWidget, QTableWidgetItem, QPushButton, QLabel, QComboBox, QSplitter, QSplitterHandle,
     QFileDialog, QMessageBox, QHeaderView, QCheckBox, QProgressDialog, QDialog,
@@ -8791,6 +8791,22 @@ class MainWindow(QMainWindow):
         except Exception:
             self.shell_rail = None
         self._build_launcher()
+        try:
+            import ui_extras as ux_
+            names_ = [re.sub(r"^\d+\s+", "", self.tabs.tabText(i_).replace("&&", "&").strip()) for i_ in range(self.tabs.count())]
+            hints_ = {"Windows": "List your windows: import the window schedule (a screenshot or PDF) or type them in.",
+                      "Doors": "The same for the doors. Doors with no glass are skipped.",
+                      "Rooms": "Import the floor plan or type the rooms, their areas and window tags.",
+                      "Results": "Permissible against actual for light, ventilation and the glazing limit.",
+                      "Plan": "Your floor plan coloured by result (needs an IFC model)."}
+            self.lv_steps = ux_.StepBar(names_, [hints_.get(n_, "") for n_ in names_])
+            lvl_ = self.tabs.parentWidget().layout()
+            lvl_.insertWidget(lvl_.indexOf(self.tabs), self.lv_steps.top)
+            lvl_.addWidget(self.lv_steps.bottom)
+            self.lv_steps.changed.connect(self.tabs.setCurrentIndex)
+            self.tabs.currentChanged.connect(lambda i_: self.lv_steps.go(i_, emit=False))
+        except Exception as e_:
+            print("light & ventilation steps not started:", e_)
         self.add_sched_row(["W01", "1200", "1200", "85", "50", "Window"])
         self.add_room_row(["Bedroom 1", "12.0", "W01:1", False])
         try:
@@ -12999,7 +13015,26 @@ class MainWindow(QMainWindow):
         page = QWidget()
         lay = QVBoxLayout(page)
         lay.setContentsMargins(10, 10, 10, 10)
+        import ui_extras as ux_
+        self.cov_steps = ux_.StepBar(["The stand and its limits", "The buildings", "The result and reports"],
+                                     ["Type the size of the stand and the limits from the zoning scheme or title deed. Leave a limit empty if there is none.",
+                                      "Add the buildings on the stand. Press Fill the blocks from the Rooms list, or add each block by hand.",
+                                      "The coverage and FAR against your limits. Preview or export the report."])
+        cov_stack = QStackedWidget()
+        lay.addWidget(self.cov_steps.top)
+        lay.addWidget(cov_stack, 1)
+        lay.addWidget(self.cov_steps.bottom)
+        self.cov_steps.changed.connect(cov_stack.setCurrentIndex)
+
+        def cov_page_():
+            w_ = QWidget()
+            l_ = QVBoxLayout(w_)
+            l_.setContentsMargins(0, 8, 0, 0)
+            cov_stack.addWidget(w_)
+            return l_
+        lay = cov_page_()
         top = QHBoxLayout()
+        top2 = QHBoxLayout()
         self.cov_stand = QDoubleSpinBox(); self.cov_stand.setRange(0, 10_000_000); self.cov_stand.setDecimals(2)
         self.cov_stand.setSuffix(" m2"); self.cov_stand.setMinimumWidth(140)
         self.cov_maxcov = QDoubleSpinBox(); self.cov_maxcov.setRange(0, 100); self.cov_maxcov.setDecimals(1)
@@ -13020,10 +13055,21 @@ class MainWindow(QMainWindow):
                                   "allowance.\n2: the gross area the IFC gives for its rooms (GrossFloorArea).\n3: the "
                                   "whole-building gross floor area typed on the Energy XA tab.\nOptions 2 and 3 are shared "
                                   "over the levels in proportion to their room areas.")
-        top.addWidget(QLabel("Areas from:")); top.addWidget(self.cov_basis); top.addSpacing(10)
-        top.addWidget(QLabel("Add for walls:")); top.addWidget(self.cov_walls)
+        top2.addWidget(QLabel("Areas from:")); top2.addWidget(self.cov_basis); top2.addSpacing(10)
+        top2.addWidget(QLabel("Add for walls:")); top2.addWidget(self.cov_walls)
+        top2.addStretch()
         top.addStretch()
         lay.addLayout(top)
+        cov_more = QWidget()
+        cov_more.setLayout(top2)
+        cov_more.setVisible(False)
+        cov_mb = QPushButton("More options (where the floor areas come from)  \u25BE")
+        cov_mb.setCheckable(True)
+        cov_mb.toggled.connect(lambda on: (cov_more.setVisible(on), cov_mb.setText("More options (where the floor areas come from)  " + ("\u25B4" if on else "\u25BE"))))
+        lay.addWidget(cov_mb, 0, Qt.AlignmentFlag.AlignLeft)
+        lay.addWidget(cov_more)
+        lay.addStretch(1)
+        lay = cov_page_()
         fill = QHBoxLayout()
         bf = QPushButton("Fill the blocks from the Rooms list")
         bf.setToolTip("Adds up the rooms on the Rooms tab per level: the footprint is the biggest level, "
@@ -13068,6 +13114,7 @@ class MainWindow(QMainWindow):
             hl.addWidget(b1); hl.addWidget(b2)
             lay.addLayout(hl)
             lay.addWidget(t_)
+        lay = cov_page_()
         self.cov_result = QLabel("")
         self.cov_result.setWordWrap(True)
         self.cov_result.setTextFormat(Qt.TextFormat.RichText)
@@ -13936,6 +13983,22 @@ class MainWindow(QMainWindow):
         self.xa_note.setWordWrap(True)
         v.addWidget(self.xa_note)
         outer_v.addStretch()
+        try:
+            import ui_extras as ux_
+            skip_ = (getattr(self, "_where_box", None), getattr(self, "_details_box", None))
+            boxes_ = [outer_v.itemAt(i_).widget() for i_ in range(outer_v.count())]
+            boxes_ = [b_ for b_ in boxes_ if b_ is not None and isinstance(b_, IconGroupBox) and b_ not in skip_]
+
+            def short_(t_):
+                t_ = re.sub(r"^\d+\.\s*", "", t_.replace("&&", "&").strip()).split(" (")[0].strip()
+                return "Run the check" if t_.startswith("Run the check") else t_
+            self.xa_steps = ux_.BoxSteps(boxes_, [short_(b_.title()) for b_ in boxes_])
+            for b_ in boxes_:                                  # the step bar numbers them now: the old "2." "3." in the titles would disagree
+                b_.setTitle(re.sub(r"^\s*\d+\.\s*", "", b_.title()))
+            outer.insertWidget(0, self.xa_steps.top)
+            outer.addWidget(self.xa_steps.bottom)
+        except Exception as e_:
+            print("energy steps not started:", e_)
         self.xa_page = page
         self.main_tabs.addTab(page, "Energy (XA)")
 
