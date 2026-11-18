@@ -136,11 +136,128 @@ def _revision_field(page):
     return ""
 
 
+def _label_value(page, label):
+    """The text under a title block label such as 'Drawing Name' or 'Layout ID' (the value sits on the line below the label)."""
+    words = page.get_text("words") or []
+    W, H = page.rect.width, page.rect.height
+    parts = label.lower().split()
+    for i, w in enumerate(words):
+        if w[0] < W * 0.5 or w[1] < H * 0.4 or w[4].lower() != parts[0]:
+            continue
+        line = [w]
+        for p_ in parts[1:]:
+            nx = next((v for v in words if abs(v[1] - w[1]) < 3 and 0 < v[0] - line[-1][2] < 12 and v[4].lower() == p_), None)
+            if nx is None:
+                break
+            line.append(nx)
+        if len(line) != len(parts):
+            continue
+        x0 = line[0][0]
+        below = [v for v in words if 3 < v[1] - w[1] < 22 and x0 - 6 <= v[0] < x0 + 160]
+        if not below:
+            continue
+        y = min(v[1] for v in below)
+        txt = " ".join(v[4] for v in sorted([v for v in below if abs(v[1] - y) < 3], key=lambda v: v[0]))
+        return txt.strip()
+    return ""
+
+
+def _revision_grid(page):
+    """The Archicad title block table with the columns RevID | ChID | Change Name | Date. The RevID and the date are merged cells that
+    cover all the changes of one revision, so the table's ruled lines are used to see which changes belong to which revision.
+    Returns [(change id, date, description)]; when change IDs repeat from one revision to the next they become '<rev>.<id>'."""
+    words = page.get_text("words") or []
+    W, H = page.rect.width, page.rect.height
+    cand = [w for w in words if w[0] > W * 0.4 and w[1] > H * 0.3]
+    chid = next((w for w in cand if w[4].lower() == "chid"), None)
+    if chid is None:
+        return []
+    hl = sorted([v for v in cand if abs(v[1] - chid[1]) < 4], key=lambda v: v[0])
+    low = [v[4].lower() for v in hl]
+    try:
+        rev = next(v for v in hl if v[4].lower() in ("revid", "rev") and v[0] < chid[0])
+        ch = next(v for v in hl if v[4].lower() == "change")
+        nm = next((v for v in hl if v[4].lower() == "name" and v[0] > ch[0]), ch)
+        dt = next(v for v in hl if v[4].lower() == "date")
+    except StopIteration:
+        return []
+    hl = [v for v in hl if v[0] >= rev[0] - 1 and v[0] < dt[2] + 5]
+    hy1 = max(v[3] for v in hl)
+    b1 = (rev[2] + chid[0]) / 2 if rev[4].lower() == "revid" else (chid[0] - 3)
+    b2 = (chid[2] + ch[0]) / 2
+    b3 = (nm[2] + dt[0]) / 2
+    left, right = rev[0] - 6, dt[2] + 14
+    # ruled lines across the whole table = the edges of the revisions
+    ys = []
+    try:
+        for d in page.get_drawings():
+            rc = d["rect"]
+            if rc.height < 1.0 and rc.width > (right - left) * 0.8 and abs(rc.x0 - left) < 14 and rc.y0 > hy1 - 12 and rc.y0 < hy1 + 500:
+                ys.append(round(rc.y0, 1))
+    except Exception:
+        ys = []
+    ys = sorted(set(ys))
+    chain = []
+    for y in ys:
+        if not chain:
+            if y > hy1 - 6:
+                chain.append(y)
+        elif y - chain[-1] < 40:
+            if y - chain[-1] > 1.5:
+                chain.append(y)
+        else:
+            break
+    if len(chain) < 2:
+        return []
+
+    def col(v):
+        return "rev" if v[0] < b1 else "ch" if v[0] < b2 else "desc" if v[0] < b3 else "date"
+
+    out = []
+    for ya, yb in zip(chain, chain[1:]):
+        blk = [v for v in words if left <= v[0] <= right and ya < (v[1] + v[3]) / 2 < yb]
+        if not blk:
+            continue
+        revt = " ".join(v[4] for v in sorted([v for v in blk if col(v) == "rev"], key=lambda v: (v[1], v[0])))
+        dts = [v[4] for v in sorted([v for v in blk if col(v) == "date"], key=lambda v: (v[1], v[0]))]
+        date = ""
+        for k in (3, 2, 1):
+            if len(dts) >= k and norm_date(" ".join(dts[:k])):
+                date = norm_date(" ".join(dts[:k]))
+                break
+        rows, lastmid = [], None
+        for v in sorted([v for v in blk if col(v) in ("ch", "desc")], key=lambda v: ((v[1] + v[3]) / 2, v[0])):
+            mid = (v[1] + v[3]) / 2
+            if lastmid is None or abs(mid - lastmid) > 3.5:
+                rows.append({"id": [], "desc": [], "mid": mid})
+                lastmid = mid
+            rows[-1]["id" if col(v) == "ch" else "desc"].append(v[4])
+        cur = None
+        for r_ in rows:
+            idt = " ".join(r_["id"]).strip()
+            dsc = " ".join(r_["desc"]).strip(" -:")
+            if idt and re.match(r"^[A-Za-z]?\d{1,3}$", idt):
+                cur = [revt.upper(), idt.upper(), date, dsc]
+                out.append(cur)
+            elif not idt and dsc and cur is not None:
+                cur[3] = (cur[3] + " " + dsc).strip()          # the description runs on to a second line
+    out = [x for x in out if x[3]]                              # a change with no description is not a described change
+    ids = [x[1] for x in out]
+    dup = len(set(ids)) != len(ids)
+    return [(("%s.%s" % (x[0], x[1])) if dup and x[0] else x[1], x[2], x[3]) for x in out]
+
+
 def _revision_table(page):
     """Rows of the title block's revision history table: [(rev, date, description)].
     The heading (Rev ID / Change Name / Date) fixes the columns; only words inside those columns are read, a row counts only when it
     has a change ID in the ID column and a date in the date column, and reading stops at the first line that is not part of the table,
     so neighbouring title block boxes (drawn by, checked, project, ...) are never mistaken for changes."""
+    try:
+        g = _revision_grid(page)
+    except Exception:
+        g = []
+    if g:
+        return g
     words = page.get_text("words") or []
     if not words:
         return []
@@ -306,6 +423,14 @@ def read_pdf(path):
                         break
             if tb:
                 out.update({k: tb[k] for k in ("no", "title", "revs", "rev", "rdate", "rdesc")})
+            try:
+                lid, lname = _label_value(pg, "Layout ID"), _label_value(pg, "Drawing Name")
+            except Exception:
+                lid = lname = ""
+            if lid and re.match(r"^[A-Za-z]{0,3}[\d.\-]{1,8}[A-Za-z]?$", lid) and not out["no"]:
+                out["no"] = lid
+            if lname and not out["title"]:
+                out["title"] = lname
             if rt:      # the revision history table, read by position, is the most reliable
                 cur = max(rt, key=lambda x: (x[1], x[0]))
                 out.update({"revs": rt, "rev": cur[0], "rdate": cur[1], "rdesc": cur[2]})
@@ -351,6 +476,8 @@ def guess_row(path):
     except OSError:
         fdate = datetime.date.today().isoformat()
     desc = info["rdesc"]
+    if len(info["revs"]) > 1 and all(len(x) >= 3 for x in info["revs"]):
+        desc = "; ".join(x[2] for x in info["revs"] if x[2]) or desc
     by = ""
     if re.search(r"client|owner|eienaar|kliënt", desc, re.I):
         by = "Client request"
@@ -1190,7 +1317,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
                 continue
             if o:
                 if odate and dt:
-                    if dt <= odate:
+                    if dt < odate or (dt == odate and (not o.get("maxid") or rv <= o["maxid"])):
                         continue
                 elif (o.get("maxid") or orev) and rv <= (o.get("maxid") or orev):
                     continue
