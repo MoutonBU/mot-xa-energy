@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.67.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.67.1**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Signature follows the width, rounded edges, 1.67.1**: the signature banner now stretches and shrinks with the email preview window, and with the email on a phone or a wide screen (up to a sensible maximum), and has rounded corners like the other cards.
 - **Email signature banner, 1.67.0**: register emails now end with the MCP signature banner (background, logo, divider and website are fixed). Under Issued by > My email signature... each user enters their own name, position, phone and email and chooses their own photo once; a live preview shows the banner. The banner is a picture, so its text is not clickable.
 - **Command search, tidier toolbar, tables, 1.66.0**: press Ctrl+K and type what you want (send, IFC, export, register, dark mode ...) to jump to a tab or run any command from the menus. The Light & Ventilation toolbar is grouped: the rules on the first line, "Model source" (the two IFC tick boxes) on the second, with less used settings under More options and the importers under Import. The left menu scrolls on a short window and keeps the Build submission pack button in view. Tables: column widths you set are remembered, each table shows its row count, right-click copies the selected rows (and removes them, or opens the PDF or its folder in the drawings list), and clicking a heading in the drawings list sorts it (click again to reverse).
 - **Sharper, smoother zone map, 1.65.1**: the energy-zone map is shaded from the nearest listed town at every screen pixel (it used to be a coarse grid of blocks), so the zone areas have clean soft edges and stay crisp when you zoom in. The province borders and the coast are rounded off and drawn with smooth, anti-aliased lines.

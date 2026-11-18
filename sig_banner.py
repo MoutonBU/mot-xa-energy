@@ -97,6 +97,17 @@ def render(S, photo_path=None):
 def jpeg_bytes(S, width=1250, quality=92):
     img = render(S).convertToFormat(QImage.Format.Format_RGB32)
     img = img.scaledToWidth(width, Qt.TransformationMode.SmoothTransformation)
+    # rounded corners like the cards in the email (the corners are white, the email page is white)
+    out = QImage(img.size(), QImage.Format.Format_RGB32)
+    out.fill(QColor("#FFFFFF"))
+    p = QPainter(out)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    path = QPainterPath()
+    path.addRoundedRect(QRectF(0, 0, img.width(), img.height()), width * 0.022, width * 0.022)
+    p.setClipPath(path)
+    p.drawImage(0, 0, img)
+    p.end()
+    img = out
     ba = QByteArray()
     buf = QBuffer(ba)
     buf.open(QIODevice.OpenModeFlag.WriteOnly)

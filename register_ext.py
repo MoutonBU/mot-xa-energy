@@ -1508,7 +1508,34 @@ class MailMixin:
                 view.document().addResource(QTextDocument.ResourceType.ImageResource, QUrl("cid:mcpsig"), QImage.fromData(self.sig_bytes()))
             except Exception:
                 pass
-        view.setHtml(html_text)
+        view._corner_html = html_text
+        self._fit_sig(view)
+        if not getattr(view, "_sig_fit_on", False):
+            view._sig_fit_on = True
+            from PySide6.QtCore import QObject, QEvent, QTimer
+            page = self
+
+            class _F(QObject):
+                def eventFilter(s, o, e):
+                    if e.type() == QEvent.Type.Resize and getattr(view, "_corner_html", None):
+                        if not hasattr(view, "_sig_t"):
+                            view._sig_t = QTimer(view)
+                            view._sig_t.setSingleShot(True)
+                            view._sig_t.timeout.connect(lambda: page._fit_sig(view))
+                        view._sig_t.start(120)
+                    return False
+            view._sig_f = _F(view)
+            view.viewport().installEventFilter(view._sig_f)
+
+    def _fit_sig(self, view):
+        """Make the signature banner as wide as the cards (it follows the preview width)."""
+        h = view._corner_html
+        if 'alt="Signature"' in h:
+            w = max(260, view.viewport().width() - 32)
+            h = h.replace('width="600" alt="Signature"', 'width="%d" alt="Signature"' % w)
+        sb = view.verticalScrollBar().value()
+        view.setHtml(h)
+        view.verticalScrollBar().setValue(sb)
 
     def sig_picture_on(self):
         try:

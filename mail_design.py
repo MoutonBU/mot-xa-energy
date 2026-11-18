@@ -262,8 +262,8 @@ def build(subject, body, logo_src="cid:mcplogo", attached="", logo_dark_src="", 
         elif r[0] == "G" and sig_src:
             # the finished signature banner (picture): "Regards," above it, scaled to the width of the phone
             sections += ('<tr><td style="padding:26px 0 0 0;font-family:%s;font-size:12px;letter-spacing:3px;font-weight:700;color:%s;">REGARDS</td></tr>'
-                         '<tr><td style="padding:10px 0 0 0;"><img src="%s" width="%d" alt="Signature" style="display:block;width:100%%;max-width:640px;height:auto;border:0;border-radius:10px;"></td></tr>'
-                         % (FONT, RED, sig_src, 600 if _pv["on"] else 640))
+                         '<tr><td style="padding:10px 0 0 0;"><img src="%s" width="%d" alt="Signature" style="display:block;width:100%%;%sheight:auto;border:0;border-radius:12px;"></td></tr>'
+                         % (FONT, RED, sig_src, 600 if _pv["on"] else 640, "" if _pv["on"] else "max-width:640px;"))
         elif r[0] == "G":
             sig = r[1]
             name = sig[0] if sig else ""
