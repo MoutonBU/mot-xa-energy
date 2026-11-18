@@ -163,34 +163,58 @@ SIGK = (("sig_name", "Your name", "Mouton Burger"), ("sig_role", "Your position"
 def signature_text(S, fallback=""):
     """The email signature of the person using this program (each person fills in their own)."""
     g = lambda k: str(S.get(k, "") or "").strip()
-    lines = [g("sig_name"), g("sig_role"), g("sig_company")]
-    contact = " | ".join(x for x in (("Tel: " + g("sig_phone")) if g("sig_phone") else "", g("sig_email") or g("mail_address"), g("sig_web")) if x)
+    lines = [g("sig_name"), g("sig_role"), g("sig_company") or "MCP Architecture & Interiors"]
+    contact = " | ".join(x for x in (("Tel: " + g("sig_phone")) if g("sig_phone") else "", g("sig_email") or g("mail_address"), g("sig_web") or "www.mcparchitecture.co.za") if x)
     lines += [contact, g("sig_address")]
     lines = [x for x in lines if x]
     return "\n".join(lines) if g("sig_name") or g("sig_company") else fallback
 
 
 class SignatureDialog(QDialog):
+    """Your own details for the signature at the bottom of the register email. The background, logo and website are fixed;
+    you type your name, position, phone and email and choose your photo."""
+
+    FIELDS = (("sig_name", "Your name", "Mouton Burger"), ("sig_role", "Your position", "Director"),
+              ("sig_phone", "Phone", "082 000 0000"), ("sig_email", "Email", "name@company.co.za"))
+
     def __init__(self, M, parent=None):
         super().__init__(parent)
+        from PySide6.QtCore import QTimer as _QT
         self.M, self.S = M, M.SETTINGS
+        self.photo = str(self.S.get("sig_photo", "") or "")
+        self._new_photo = ""
         self.setWindowTitle("My email signature")
-        self.resize(520, 440)
+        self.resize(780, 640)
         v = QVBoxLayout(self)
-        v.addWidget(QLabel("Fill in your own details. They are added to the bottom of every register email you send from this computer."))
+        v.addWidget(QLabel("Fill in your own details and choose your photo. The background, logo and website are the same for everyone. "
+                           "This goes at the bottom of every register email you send from this computer."))
         f = QFormLayout()
         self.ed = {}
-        for k, label, ph in SIGK:
+        for k, label, ph in self.FIELDS:
             w = QLineEdit(str(self.S.get(k, "") or (self.S.get("mail_address", "") if k == "sig_email" else "")))
             w.setPlaceholderText(ph)
-            w.textChanged.connect(self._prev)
+            w.textChanged.connect(self._prev_soon)
             f.addRow(label, w)
             self.ed[k] = w
         v.addLayout(f)
+        pr = QHBoxLayout()
+        pr.addWidget(QLabel("Your photo"))
+        self.photo_btn = QPushButton("Choose my photo...")
+        self.photo_btn.clicked.connect(self.choose_photo)
+        pr.addWidget(self.photo_btn)
+        self.photo_clear = QPushButton("Remove photo")
+        self.photo_clear.clicked.connect(self.clear_photo)
+        pr.addWidget(self.photo_clear)
+        pr.addStretch(1)
+        v.addLayout(pr)
         v.addWidget(QLabel("<b>How it will look</b>"))
-        self.prev = QPlainTextEdit()
-        self.prev.setReadOnly(True)
+        self.prev = QLabel()
+        self.prev.setAlignment(Qt.AlignmentFlag.AlignCenter)
         v.addWidget(self.prev, 1)
+        self.note = QLabel("Use a head-and-shoulders photo with a plain background. It is cut to the slanted shape on the left.")
+        self.note.setStyleSheet("color:gray;")
+        self.note.setWordWrap(True)
+        v.addWidget(self.note)
         bar = QHBoxLayout()
         bar.addStretch(1)
         ok = QPushButton("Save")
@@ -198,17 +222,51 @@ class SignatureDialog(QDialog):
         ok.clicked.connect(self.save)
         bar.addWidget(ok)
         v.addLayout(bar)
+        self._t = _QT(self)
+        self._t.setSingleShot(True)
+        self._t.timeout.connect(self._prev)
         self._prev()
 
     def _vals(self):
         return {k: w.text().strip() for k, w in self.ed.items()}
 
+    def _prev_soon(self, *_a):
+        self._t.start(250)
+
     def _prev(self, *_a):
-        t = signature_text(dict(self._vals(), mail_address=self.S.get("mail_address", "")))
-        self.prev.setPlainText("Regards,\n" + (t or "(type your name)"))
+        import sig_banner
+        from PySide6.QtGui import QPixmap
+        d = dict(self._vals(), sig_photo=self.photo, mail_address=self.S.get("mail_address", ""))
+        if not d.get("sig_name"):
+            d["sig_name"] = "Your name"
+        img = sig_banner.render(d)
+        self.prev.setPixmap(QPixmap.fromImage(img).scaledToWidth(720, Qt.TransformationMode.SmoothTransformation))
+        self.photo_clear.setEnabled(bool(self.photo))
+
+    def choose_photo(self):
+        p, _ = QFileDialog.getOpenFileName(self, "Your photo", "", "Pictures (*.jpg *.jpeg *.png *.webp *.bmp)")
+        if not p:
+            return
+        import sig_banner
+        dest = os.path.join(self.M._user_data_dir(), "signature_photo.png")
+        try:
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+        except Exception:
+            pass
+        if not sig_banner.prepare_photo(p, dest):
+            QMessageBox.information(self, "My email signature", "That picture could not be opened. Try a JPG or PNG.")
+            return
+        self.photo = self._new_photo = dest
+        self._prev()
+
+    def clear_photo(self):
+        self.photo = ""
+        self._prev()
 
     def save(self):
         self.S.update(self._vals())
+        self.S["sig_photo"] = self.photo
+        self.S.setdefault("sig_company", "MCP Architecture & Interiors")
         self.M.save_settings()
         self.accept()
 
@@ -1445,11 +1503,28 @@ class MailMixin:
         from PySide6.QtGui import QImage, QTextDocument
         for name, png in mail_design.preview_resources():
             view.document().addResource(QTextDocument.ResourceType.ImageResource, QUrl(name), QImage.fromData(png))
+        if self.sig_picture_on():
+            try:
+                view.document().addResource(QTextDocument.ResourceType.ImageResource, QUrl("cid:mcpsig"), QImage.fromData(self.sig_bytes()))
+            except Exception:
+                pass
         view.setHtml(html_text)
+
+    def sig_picture_on(self):
+        try:
+            import sig_banner
+            return sig_banner.available(self._M().SETTINGS)
+        except Exception:
+            return False
+
+    def sig_bytes(self):
+        import sig_banner
+        return sig_banner.jpeg_bytes(self._M().SETTINGS)
 
     def design_html(self, subject, body, src="cid:mcplogo", attached="", both=False, preview=False):
         import mail_design
-        return mail_design.build(subject, body, logo_src=src, logo_dark_src=("cid:mcplogod" if both else ""), preview=preview, attached=attached, company=self._M().SETTINGS.get("sig_company") or "MCP Architecture & Interiors")
+        return mail_design.build(subject, body, logo_src=src, logo_dark_src=("cid:mcplogod" if both else ""), preview=preview, attached=attached,
+                                 company=self._M().SETTINGS.get("sig_company") or "MCP Architecture & Interiors", sig_src=("cid:mcpsig" if self.sig_picture_on() else ""))
 
     def designed_on(self):
         try:
@@ -1576,6 +1651,8 @@ class MailMixin:
                     m.add_alternative(self.design_html(dlg.sub.text().strip(), dlg.body.toPlainText(), attached=note, both=True), subtype="html")
                     m.get_payload()[1].add_related(self.design_png(), maintype="image", subtype="png", cid="<mcplogo>", filename="mcp-logo.png", disposition="inline")
                     m.get_payload()[1].add_related(self.design_png(True), maintype="image", subtype="png", cid="<mcplogod>", filename="mcp-logo-dark.png", disposition="inline")
+                    if self.sig_picture_on():
+                        m.get_payload()[1].add_related(self.sig_bytes(), maintype="image", subtype="jpeg", cid="<mcpsig>", filename="signature.jpg", disposition="inline")
                 except Exception:
                     pass
             for p in files:

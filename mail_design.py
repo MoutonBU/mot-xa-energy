@@ -208,7 +208,7 @@ def _title_parts(subject):
     return (subject or "Drawing register").strip(), ""
 
 
-def build(subject, body, logo_src="cid:mcplogo", attached="", logo_dark_src="", company="MCP Architecture & Interiors", preview=False):
+def build(subject, body, logo_src="cid:mcplogo", attached="", logo_dark_src="", company="MCP Architecture & Interiors", preview=False, sig_src=""):
     _pv["on"] = bool(preview)
     _pv["res"] = {}
     project, strip = _title_parts(subject)
@@ -259,6 +259,11 @@ def build(subject, body, logo_src="cid:mcplogo", attached="", logo_dark_src="", 
                 pill = ('<tr><td align="center" style="padding:0 0 22px 0;"><span style="font-family:%s;font-size:16px;font-weight:700;color:#FFFFFF;background-color:%s;border-radius:18px;padding:7px 22px;" bgcolor="%s">%s</span></td></tr>'
                         % (FONT, RED, RED, _e(r[1])))
             sections += ('<tr><td align="center" class="mu" style="padding:28px 0 16px 0;font-family:%s;font-size:12px;letter-spacing:3px;color:%s;">STATUS OF THIS REVISION</td></tr>' % (FONT, MUTED)) + pill
+        elif r[0] == "G" and sig_src:
+            # the finished signature banner (picture): "Regards," above it, scaled to the width of the phone
+            sections += ('<tr><td style="padding:26px 0 0 0;font-family:%s;font-size:12px;letter-spacing:3px;font-weight:700;color:%s;">REGARDS</td></tr>'
+                         '<tr><td style="padding:10px 0 0 0;"><img src="%s" width="%d" alt="Signature" style="display:block;width:100%%;max-width:640px;height:auto;border:0;border-radius:10px;"></td></tr>'
+                         % (FONT, RED, sig_src, 600 if _pv["on"] else 640))
         elif r[0] == "G":
             sig = r[1]
             name = sig[0] if sig else ""
