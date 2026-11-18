@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.65.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.65.1**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Sharper, smoother zone map, 1.65.1**: the energy-zone map is shaded from the nearest listed town at every screen pixel (it used to be a coarse grid of blocks), so the zone areas have clean soft edges and stay crisp when you zoom in. The province borders and the coast are rounded off and drawn with smooth, anti-aliased lines.
 - **A calmer, quicker interface, 1.65.0**: a slim progress line under the title (Project, Model, Light & Ventilation, Energy XA, Drawing register, Sent) with a coloured dot for each step; click a step to go there. Empty lists tell you what to do, and you can drag drawing PDFs (or a folder), an IFC model or a project file onto the window. Removing drawings or revisions no longer asks first: a message at the bottom offers Undo. "PDF saved" messages are now small notes with an Open folder button. Keyboard: Ctrl+N, Ctrl+O, Ctrl+S, Ctrl+Shift+S, Ctrl+P (report PDF), F1 (release notes), Ctrl+1 to Ctrl+9 for the tabs, Ctrl+PageUp/PageDown to move between tabs, Delete removes the selected drawings, Esc closes a message. The drawing register page scrolls on a small screen instead of squashing, and Windows scaling of 125% and 150% is used exactly. After an update this window ("What's new") shows what changed.
 - **Report tick boxes and the .mcplv project file, 1.64.4**: the drawing register can attach the Light & Ventilation, Energy XA, Rational design and Coverage and FAR reports; they are listed in the email and in the register PDF. Projects now save as .mcplv and open the program on double-click (older .mcplv.json files still open from File > Open). The competent person declaration is no longer printed in the rational design report. The IFC plan is always shown level and upright.
 - **IFC import fills the other tabs, 1.63.6**: importing the IFC now puts its windows, doors and rooms straight into Light & Ventilation and refreshes Energy XA, without ticking boxes or answering questions.

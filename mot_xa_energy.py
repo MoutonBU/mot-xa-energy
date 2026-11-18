@@ -7513,8 +7513,18 @@ class ZaZoneMap(QWidget):
                 ch, n = tok[0], tok[1:]
                 runs.append(("5H" if ch == "h" else ch, int(n)))
             self.rows.append(runs)
-        self.provs = d["provs"]
+        self.provs = {n: [[self._smooth_ring(r, 2) for r in rings] for rings in polys] for n, polys in d["provs"].items()}
         self.towns = d["towns"]
+        try:                                                  # the zone of every listed town, for the pixel-exact shading
+            import numpy as _np
+            names = [t for t in self.towns if (XA_TOWNS.get(t) or XA_TOWNS.get(t.rstrip(" *")))]
+            self._tn_lat = _np.array([self.towns[t][0] for t in names])
+            self._tn_lon = _np.array([self.towns[t][1] for t in names])
+            zs = [XA_TOWNS.get(t) or XA_TOWNS.get(t.rstrip(" *")) for t in names]
+            self._tn_zone = _np.array([list(ZA_ZONE_COLOURS).index(z) if z in ZA_ZONE_COLOURS else 0 for z in zs])
+            self._zone_rgb = _np.array([[int(ZA_ZONE_COLOURS[k][i:i + 2], 16) for i in (1, 3, 5)] for k in ZA_ZONE_COLOURS], dtype=_np.uint8)
+        except Exception:
+            self._tn_lat = None
         self.town_pv = {t: next((k for k, v in XA_PROVINCES.items() if t in v), "") for t in self.towns}
         self.sel_pv = ""
         self.sel_town = ""
@@ -7545,6 +7555,44 @@ class ZaZoneMap(QWidget):
                             "QPushButton:hover{background:#c8102e;border-color:#ff4056;}")
             b.clicked.connect(lambda _=False, f=fn: f())
             self._btns.append(b)
+
+    @staticmethod
+    def _smooth_ring(ring, rounds=2):
+        """Round off the jagged corners of a border (corner cutting), keeping the shape."""
+        pts = [(float(x), float(y)) for x, y in ring]
+        if rounds <= 0 or len(pts) < 5:
+            return pts
+        for _ in range(rounds):
+            out = []
+            n = len(pts)
+            for i in range(n):
+                a, b = pts[i], pts[(i + 1) % n]
+                out.append((0.75 * a[0] + 0.25 * b[0], 0.75 * a[1] + 0.25 * b[1]))
+                out.append((0.25 * a[0] + 0.75 * b[0], 0.25 * a[1] + 0.75 * b[1]))
+            pts = out
+        return pts
+
+    def _zone_image(self, w, h, scale):
+        """The energy-zone colours for the whole widget, worked out for every few pixels from the nearest listed town
+        (not from the coarse grid), then enlarged smoothly: crisp, with soft straight borders between zones."""
+        import numpy as np
+        from PySide6.QtGui import QImage
+        k = max(1, int(round(scale)))                         # one sample per widget pixel
+        gw, gh = max(2, int(w * scale / k)), max(2, int(h * scale / k))
+        sc, ox, oy = self._tf()
+        xs = (np.arange(gw) + 0.5) * k / scale
+        ys = (np.arange(gh) + 0.5) * k / scale
+        lon = self.lon0 + (xs - ox) / (self.cosk * sc)
+        lat = self.lat1 - (ys - oy) / sc
+        idx = np.empty((gh, gw), dtype=np.int16)
+        tl, to = self._tn_lat, self._tn_lon
+        for r0 in range(0, gh, 24):
+            la = lat[r0:r0 + 24][:, None, None]
+            d2 = (la - tl[None, None, :]) ** 2 + ((lon[None, :, None] - to[None, None, :]) * self.cosk) ** 2
+            idx[r0:r0 + 24] = np.argmin(d2, axis=2)
+        rgb = np.ascontiguousarray(self._zone_rgb[self._tn_zone[idx]])
+        img = QImage(rgb.data, gw, gh, gw * 3, QImage.Format.Format_RGB888).copy()
+        return img.scaled(int(w * scale), int(h * scale), Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
 
     def sizeHint(self):
         return QSize(640, 540)
@@ -7681,14 +7729,26 @@ class ZaZoneMap(QWidget):
         pm.fill(Qt.transparent)
         p = QPainter(pm)
         p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
         if not self._paths:
             self._build_paths()
         sc = self._tf()[0]
         cell = self.step * sc
+        zimg = None
+        if getattr(self, "_tn_lat", None) is not None:
+            try:
+                zimg = self._zone_image(self.width(), self.height(), dpr)
+            except Exception:
+                zimg = None
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
         for name, path in self._paths.items():
             p.save()
             p.setClipPath(path)
             p.setPen(Qt.NoPen)
+            if zimg is not None:
+                p.drawImage(QRectF(0, 0, self.width(), self.height()), zimg)
+                p.restore()
+                continue
             for r, runs in enumerate(self.rows):
                 lat = self.lat1 - r * self.step
                 c = 0
@@ -7700,7 +7760,10 @@ class ZaZoneMap(QWidget):
                     c += n
             p.restore()
         p.setBrush(Qt.NoBrush)
-        p.setPen(QPen(QColor(12, 12, 16, 230), 1.2))
+        bp = QPen(QColor(12, 12, 16, 215), 1.1)
+        bp.setJoinStyle(Qt.RoundJoin)
+        bp.setCapStyle(Qt.RoundCap)
+        p.setPen(bp)
         for path in self._paths.values():
             p.drawPath(path)
         p.setPen(Qt.NoPen)
