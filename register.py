@@ -1517,9 +1517,12 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
     def issuer(self):
         """Who the register is issued by: the signature of the person using the program."""
         try:
+            nm = str(self._M().SETTINGS.get("sig_name", "") or "").strip()
+            if nm:
+                return nm
             from register_ext import signature_text
-            t = signature_text(self._M().SETTINGS, "").split("\n")
-            return ", ".join(x for x in t[:3] if x)
+            t = [x for x in signature_text(self._M().SETTINGS, "").split("\n") if x.strip()]
+            return t[0] if t else ""
         except Exception:
             return self.info.get("issued_by", "")
 
