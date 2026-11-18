@@ -9,7 +9,7 @@ import time
 
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication
-from PySide6.QtWidgets import (QCheckBox, QGridLayout, QMenu, QTabWidget, QAbstractItemView, QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
+from PySide6.QtWidgets import (QStackedWidget, QCheckBox, QGridLayout, QMenu, QTabWidget, QAbstractItemView, QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
                                QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 STATUSES = ["For information", "For comment", "For approval", "For council submission", "For tender", "For construction", "As built", "Superseded"]
@@ -602,8 +602,34 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         self.link_bar = LinkBar(self)
         v.addWidget(self.link_bar)
         v.addSpacing(4)
+        # the three steps: one at a time, with Back / Next
+        outer_v = v
+        self.steps = QStackedWidget()
+        sbar = QHBoxLayout()
+        self.step_btns = []
+        for i_, t_ in enumerate(("1   Who is it for", "2   The drawings", "3   Check and send")):
+            sbn = QPushButton(t_)
+            sbn.setCheckable(True)
+            sbn.setMinimumHeight(34)
+            sbn.setStyleSheet("QPushButton:checked{background:#c0182c;color:#ffffff;font-weight:700;border:1px solid #e0243a;}")
+            sbn.setCursor(Qt.CursorShape.PointingHandCursor)
+            sbn.clicked.connect(lambda _=False, i=i_: self.go_step(i))
+            sbar.addWidget(sbn, 1)
+            self.step_btns.append(sbn)
+        outer_v.addLayout(sbar)
+        outer_v.addWidget(self.steps, 1)
+
+        def newpage():
+            w_ = QWidget()
+            lay_ = QVBoxLayout(w_)
+            lay_.setContentsMargins(0, 8, 0, 0)
+            self.steps.addWidget(w_)
+            return lay_
+
+        v = newpage()
         # 1  who is it for
-        v.addWidget(step("1.  Who is it for?"))
+        v.addWidget(step("Who is it for?"))
+        v.addWidget(self._hint("Who should get these drawings? Fill in the name and email, then press Next."))
         self.f = {}
         g1 = QGridLayout()
         for i, (key, label, ph) in enumerate((("project", "Project", "taken from Project details if empty"), ("client", "Client", ""),
@@ -650,17 +676,18 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         self.more_w.setVisible(False)
         self.more_chk.toggled.connect(self.more_w.setVisible)
         v.addWidget(self.more_w)
+        v.addStretch(1)
         # 2  the drawings
-        v.addSpacing(6)
-        v.addWidget(step("2.  Add the drawings (PDFs)"))
-        hint = QLabel("How it works: first load the list of every drawing in the job (the Archicad sheet index), then add the PDFs you are sending today. "
-                      "Whatever you do not send is listed for the client as still to come.")
-        hint.setWordWrap(True)
-        hint.setStyleSheet("color: gray;")
-        v.addWidget(hint)
+        v = newpage()
+        v.addWidget(step("The drawings"))
+        v.addWidget(self._hint("Add the PDFs you want to send: press Add drawing PDFs, or drag them into the list. "
+                               "Block A, Block B or a sheet index to show what is still to come? Open More options."))
+        self.more2_w = QWidget()
+        m2 = QVBoxLayout(self.more2_w)
+        m2.setContentsMargins(0, 0, 0, 0)
         # a) the whole job
         la = QHBoxLayout()
-        la.addWidget(QLabel("<b>A.</b> The whole job:"))
+        la.addWidget(QLabel("<b>Whole job list</b> (optional):"))
         fi = QPushButton("Load all sheet indexes from a folder...")
         fi.setStyleSheet("font-weight:700;")
         fi.setToolTip("Pick the folder where your sheet indexes are saved. Every sheet index inside it, also in the Block A, Block B... folders, is found at once.")
@@ -675,10 +702,10 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         pb.clicked.connect(self.add_planned)
         la.addWidget(pb)
         la.addStretch(1)
-        v.addLayout(la)
+        m2.addLayout(la)
         # b) what goes today
         gl = QHBoxLayout()
-        gl.addWidget(QLabel("<b>B.</b> What I am sending today:"))
+        gl2 = QHBoxLayout()
         self.add_btn = QPushButton("Add drawing PDFs...")
         self.add_btn.setStyleSheet("font-weight:700;")
         self.add_btn.setToolTip("Pick the PDFs you are sending. Each one is matched to the sheet index by its drawing number and ticked to send. Anything else stays as still to come.")
@@ -687,20 +714,21 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         fb = QPushButton("Add a whole folder...")
         fb.clicked.connect(self.add_folder)
         gl.addWidget(fb)
-        gl.addSpacing(16)
         sb = QPushButton("Select all")
         sb.setToolTip("Highlights every drawing in the list (Ctrl+A does the same). Click a row to highlight just that one; Ctrl or Shift click picks several.")
         sb.clicked.connect(lambda: (self.tab.setFocus(), self.tab.selectAll()))
-        gl.addWidget(sb)
+        gl2.addWidget(sb)
         rb = QPushButton("Remove selected")
         rb.clicked.connect(self.remove_row)
         gl.addWidget(rb)
         ra = QPushButton("Remove all")
         ra.setToolTip("Takes every drawing out of this block's list (asks first).")
         ra.clicked.connect(self.remove_all)
-        gl.addWidget(ra)
+        gl2.addWidget(ra)
+        gl2.addStretch(1)
         gl.addStretch(1)
         v.addLayout(gl)
+        m2.addLayout(gl2)
         # c) the blocks and houses
         gb = QHBoxLayout()
         gb.addWidget(QLabel("<b>Block or house shown below:</b>"))
@@ -720,11 +748,11 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         dl.clicked.connect(self.del_group)
         gb.addWidget(dl)
         gb.addStretch(1)
-        v.addLayout(gb)
+        m2.addLayout(gb)
         self.blocks_w = QWidget()
         self.blocks_l = QHBoxLayout(self.blocks_w)
         self.blocks_l.setContentsMargins(0, 2, 0, 0)
-        v.addWidget(self.blocks_w)
+        m2.addWidget(self.blocks_w)
         self.plan_lbl = QLabel("")
         self.plan_lbl.setWordWrap(True)
         v.addWidget(self.plan_lbl)
@@ -751,7 +779,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         v.addWidget(self.tab, 2)
         self.all_chk = QCheckBox("Show all details (size, scale, dates, who asked, status, file)")
         self.all_chk.toggled.connect(self._columns)
-        v.addWidget(self.all_chk)
+        m2.addWidget(self.all_chk)
         sr = QHBoxLayout()
         sr.addWidget(QLabel("<b>Status for many drawings at once:</b>"))
         self.status_all = QComboBox()
@@ -768,10 +796,17 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             b.clicked.connect(lambda _=False, m=mode: self.set_status_all(m))
             sr.addWidget(b)
         sr.addStretch(1)
-        v.addLayout(sr)
+        m2.addLayout(sr)
+        self.more2_btn = QPushButton("More options  \u25BE")
+        self.more2_btn.setCheckable(True)
+        self.more2_btn.setToolTip("The sheet index, blocks and houses, selecting, removing and the status of many drawings at once.")
+        self.more2_btn.toggled.connect(self._more2_toggled)
+        v.addWidget(self.more2_btn, 0, Qt.AlignmentFlag.AlignLeft)
+        self.more2_w.setVisible(False)
+        v.addWidget(self.more2_w)
         # 3  the email and send
-        v.addSpacing(6)
-        v.addWidget(step("3.  Check the email and send it"))
+        v = newpage()
+        v.addWidget(step("Check the email and send it"))
         head = QHBoxLayout()
         self.to_lbl = QLabel("")
         head.addWidget(self.to_lbl, 1)
@@ -794,6 +829,9 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         self.att_lbl.setWordWrap(True)
         self.att_lbl.setStyleSheet("color: gray;")
         v.addWidget(self.att_lbl)
+        self.opt3_w = QWidget()
+        o3 = QVBoxLayout(self.opt3_w)
+        o3.setContentsMargins(0, 0, 0, 0)
         rr = QHBoxLayout()
         rr.addWidget(QLabel("<b>Also attach a report:</b>"))
         self.rep_chk = {}
@@ -804,7 +842,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             self.rep_chk[kind] = c
             rr.addWidget(c)
         rr.addStretch(1)
-        v.addLayout(rr)
+        o3.addLayout(rr)
         rk = QHBoxLayout()
         rk.addWidget(QLabel("<b>This email is:</b>"))
         self.kind_box = QComboBox()
@@ -835,7 +873,17 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             c.toggled.connect(lambda on, k=k: self._opt_changed(k, on))
             rx.addWidget(c)
         rx.addStretch(1)
-        v.addLayout(rx)
+        o3.addLayout(rx)
+        self.opt3_btn = QPushButton("More email options (reports, orders, client changes)  \u25BE")
+        self.opt3_btn.setCheckable(True)
+        self.opt3_btn.toggled.connect(lambda on: (self.opt3_w.setVisible(on), self.opt3_btn.setText("More email options (reports, orders, client changes)  " + ("\u25B4" if on else "\u25BE"))))
+        v.addWidget(self.opt3_btn, 0, Qt.AlignmentFlag.AlignLeft)
+        self.opt3_w.setVisible(False)
+        v.addWidget(self.opt3_w)
+        self.ready_lbl = QLabel("")
+        self.ready_lbl.setWordWrap(True)
+        self.ready_lbl.setStyleSheet("font-weight:700; padding:4px 0;")
+        v.addWidget(self.ready_lbl)
         bar = QHBoxLayout()
         self.send_btn = QPushButton("Send to the client...")
         self.send_btn.setMinimumHeight(38)
@@ -865,15 +913,32 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         self.count = QLabel("")
         bar.addWidget(self.count)
         v.addLayout(bar)
+        nav = QHBoxLayout()
+        self.back_btn = QPushButton("\u2039  Back")
+        self.back_btn.setMinimumHeight(34)
+        self.back_btn.clicked.connect(lambda: self.go_step(self.steps.currentIndex() - 1))
+        self.next_btn = QPushButton("Next  \u203A")
+        self.next_btn.setMinimumHeight(34)
+        self.next_btn.setStyleSheet("font-weight:700; padding: 0 24px;")
+        self.next_btn.clicked.connect(lambda: self.go_step(self.steps.currentIndex() + 1))
+        nav.addWidget(self.back_btn)
+        nav.addStretch(1)
+        nav.addWidget(self.next_btn)
+        self.go_step(0)
         from PySide6.QtWidgets import QScrollArea
-        self.draw_w.setMinimumHeight(900)                  # on a small screen the page scrolls instead of squashing its rows together
+        self.draw_w.setMinimumHeight(520)                  # on a small screen the page scrolls instead of squashing its rows together
         sc = QScrollArea()
         sc.setWidgetResizable(True)
         sc.setFrameShape(QScrollArea.Shape.NoFrame)
         sc.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         sc.setStyleSheet("QScrollArea{background:transparent;} QScrollArea > QWidget > QWidget{background:transparent;}")
         sc.setWidget(self.draw_w)
-        self.sub.addTab(sc, "Drawings")
+        wrap = QWidget()
+        wl = QVBoxLayout(wrap)
+        wl.setContentsMargins(0, 0, 0, 0)
+        wl.addWidget(sc, 1)
+        wl.addLayout(nav)                      # Back / Next stay in view at the bottom
+        self.sub.addTab(wrap, "Drawings")
         self.sub.addTab(self.build_log("Order"), "Orders")
         self.sub.addTab(self.build_log("Change"), "Client changes")
         self.sub.addTab(self.build_history(), "Sent and revisions")
@@ -897,6 +962,10 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
     def update_mail(self):
         """Keep the email under the list up to date: written from the drawings, orders and changes unless you have edited it yourself."""
         self._autosave()
+        try:
+            self._ready()
+        except Exception:
+            pass
         if getattr(self, "_mail_setting", None) is None or not hasattr(self, "att_lbl"):
             return
         if hasattr(self, "stale_lbl"):
@@ -925,6 +994,50 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             "  That is too big for one email: the send window can make the PDFs smaller or send them in several emails." if mb > 17 else ""))
 
     SIMPLE = ("on", "no", "title", "rev", "comment")
+
+    def _hint(self, text):
+        lb = QLabel(text)
+        lb.setWordWrap(True)
+        lb.setStyleSheet("color: gray;")
+        return lb
+
+    STEP_NAMES = ("Who is it for", "The drawings", "Check and send")
+
+    def go_step(self, i):
+        i = max(0, min(int(i), self.steps.count() - 1))
+        self.steps.setCurrentIndex(i)
+        for k, b in enumerate(self.step_btns):
+            b.setChecked(k == i)
+        self.back_btn.setVisible(i > 0)
+        self.next_btn.setVisible(i < self.steps.count() - 1)
+        if i < self.steps.count() - 1:
+            self.next_btn.setText("Next: %s  \u203A" % self.STEP_NAMES[i + 1].lower())
+        if i == 2:
+            self.update_mail()
+
+    def _more2_toggled(self, on):
+        self.more2_w.setVisible(on)
+        self.more2_btn.setText("More options  " + ("\u25B4" if on else "\u25BE"))
+        self._more2_user_closed = not on
+
+    def _auto_more(self):
+        """Show the advanced step 2 options by themselves once there is more than one block or a sheet index is loaded."""
+        want = len(self.groups) > 1 or any(not r.get("path") for g in self.groups for r in g["rows"])
+        if want and not self.more2_btn.isChecked() and not getattr(self, "_more2_user_closed", False):
+            self.more2_btn.setChecked(True)
+
+    def _ready(self):
+        n = sum(1 for g in self.groups for r in g["rows"] if r.get("on"))
+        email = (self.info.get("email") or "").strip()
+        if n == 0:
+            t, c = "No drawing is ticked to send yet. Go back to step 2 and add the PDFs.", "#d9a21b"
+        elif "@" not in email:
+            t, c = "Add the client's email address in step 1 (or save the PDF and send it yourself).", "#d9a21b"
+        else:
+            who = (self.info.get("to") or "").strip()
+            t, c = "Ready: %d drawing%s to %s%s." % (n, "" if n == 1 else "s", who + " " if who else "", email), "#2e9e5b"
+        self.ready_lbl.setText(t)
+        self.ready_lbl.setStyleSheet("font-weight:700; padding:4px 0; color:%s;" % c)
 
     def _columns(self, *_a):
         full = self.all_chk.isChecked()
@@ -1664,6 +1777,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             for k, e in self.f.items():
                 e.setText(self.info.get(k, ""))
             self._sync_issuer()
+            self._auto_more()
             self.gbox.clear()
             self.gbox.addItems([g["name"] for g in self.groups])
             self.gbox.setCurrentIndex(self.cur)

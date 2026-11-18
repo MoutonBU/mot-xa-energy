@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.76.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.77.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **A simpler drawing register, 1.77.0**: the Drawings page is now three short steps with a step bar and Back / Next buttons: 1 Who is it for, 2 The drawings, 3 Check and send. Step 2 shows only Add drawing PDFs, Add a whole folder, Remove selected and the list; the sheet index, blocks and houses, Select all, Remove all, all details and the status for many drawings are under More options (which opens by itself when you have several blocks or a sheet index loaded). Step 3 shows the email, what kind of email it is and the sheet index button; reports, orders and client changes are under More email options. A line above the buttons says in plain words whether you are ready to send (a drawing is ticked and the client has an email address), or what is missing.
 - **Costing report, 1.76.0**: a combined PDF for the whole costing: the whole-building estimate (cost per m2, the share of each part, and the budget with over / under when you set a target), the building materials by block, and then the full sanitary ware and fixtures schedule with the product photos and totals. Open it from the ribbon (Costing report: Preview, Export PDF) or from the buttons on the Whole building and budget section.
 - **Sections in the left bar, 1.76.0**: the Drawing register (Drawings, Orders, Client changes, Sent and revisions) and the Costing (Fixtures, Building materials, Whole building and budget) now list their sections in the left bar instead of tabs along the top.
 - **Status line, 1.76.0**: the thin line at the bottom shows the open project (saved or unsaved changes), the register and the costing in use (saved automatically) and whether each is linked to the project. The project link is now only set when you save the project, not just by looking at it.
