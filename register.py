@@ -138,8 +138,9 @@ def _revision_field(page):
 
 def _revision_table(page):
     """Rows of the title block's revision history table: [(rev, date, description)].
-    Found by its heading (Rev / ID / Change / Name / Date, or Revision History), then read by position so other text on the same line is ignored.
-    The rows may run down or up from the heading; each row has a rev, a date and a description in any column order."""
+    The heading (Rev ID / Change Name / Date) fixes the columns; only words inside those columns are read, a row counts only when it
+    has a change ID in the ID column and a date in the date column, and reading stops at the first line that is not part of the table,
+    so neighbouring title block boxes (drawn by, checked, project, ...) are never mistaken for changes."""
     words = page.get_text("words") or []
     if not words:
         return []
@@ -147,67 +148,92 @@ def _revision_table(page):
     cand = [w for w in words if w[0] > W * 0.4 and w[1] > H * 0.3]
     head = None
     for w in cand:
-        if w[4].lower() == "rev":
-            near = [v for v in cand if abs(v[1] - w[1]) < 6 and v[0] >= w[0] and v[0] - w[0] < 400]
+        if w[4].lower() in ("rev", "id", "rev."):
+            near = [v for v in cand if abs(v[1] - w[1]) < 6 and v[0] >= w[0] - 1 and v[0] - w[0] < 400]
             txt = " ".join(v[4].lower() for v in sorted(near, key=lambda v: v[0]))
-            if re.search(r"\bid\b|\bchange\b|\bdate\b|\bdescription\b|\bdetails?\b", txt):
+            if re.search(r"\bdate\b", txt) and re.search(r"\bchange\b|\bdescription\b|\bdetails?\b|\bname\b|\bnote", txt):
                 head = (w, near)
                 break
     if head is None:
         return []
     w0, near = head
-    x0 = w0[0] - 8
-    x1 = max(v[2] for v in near) + 60
+    near = sorted(near, key=lambda v: v[0])
     hy0, hy1 = min(v[1] for v in near), max(v[3] for v in near)
-    band = [v for v in words if v[0] >= x0 - 2 and v[2] <= x1 + 200]
+    lh = max(6.0, sorted(v[3] - v[1] for v in near)[len(near) // 2])
+    # column starts from the heading words
+    id_x = w0[0]
+    date_x = next((v[0] for v in near if v[4].lower().startswith("date")), None)
+    desc_x = next((v[0] for v in near if re.match(r"change|description|details?|name|note", v[4].lower()) and v[0] > id_x + 1), None)
+    if date_x is None or desc_x is None:
+        return []
+    starts = sorted({id_x, date_x, desc_x})
+    right = {id_x: "id", date_x: "date", desc_x: "desc"}
+    last_col = right[starts[-1]]
+    x_left = id_x - 6
+    x_right = near[-1][2] + (420 if last_col == "desc" else 40)
 
-    def rows_in(sel):
-        rows = {}
-        for v in sel:
-            rows.setdefault(round((v[1] + v[3]) / 2 / 3), []).append(v)
-        return [sorted(r, key=lambda v: v[0]) for _k, r in sorted(rows.items())]
+    def cell(v):
+        col = right[starts[0]]
+        for st in starts:
+            if v[0] >= st - 4:
+                col = right[st]
+        return col
 
-    def parse(rws):
-        out = []
-        for r in rws:
-            toks = [v[4] for v in r]
-            di = next((i for i, t in enumerate(toks) if norm_date(t)), None)
-            if di is None:
-                if out and toks and not re.match(r"^([A-Z]\d?|\d{1,3})$", toks[0]):
-                    out[-1] = (out[-1][0], out[-1][1], (out[-1][2] + " " + " ".join(toks)).strip())
-                continue
-            dt = norm_date(toks[di])
-            rest = toks[:di] + toks[di + 1:]
-            rv = ""
-            if rest and re.match(r"^(?:rev\.?)?([A-Z]\d?|\d{1,3})$", rest[0], re.I):
-                rv = re.sub(r"^rev\.?", "", rest[0], flags=re.I).upper()
-                rest = rest[1:]
-            elif rest and re.match(r"^(?:rev\.?)?([A-Z]\d?|\d{1,3})$", rest[-1], re.I):
-                rv = re.sub(r"^rev\.?", "", rest[-1], flags=re.I).upper()
-                rest = rest[:-1]
-            out.append((rv, dt, " ".join(rest).strip(" -:")))
-        return out
+    def lines(sel):
+        ls = []
+        for v in sorted(sel, key=lambda v: ((v[1] + v[3]) / 2, v[0])):
+            mid = (v[1] + v[3]) / 2
+            if ls and abs(ls[-1][0] - mid) < lh * 0.6:
+                ls[-1][1].append(v)
+            else:
+                ls.append([mid, [v]])
+        return [(m, sorted(ws, key=lambda v: v[0])) for m, ws in ls]
 
-    # below the heading, down to the first big empty gap; if nothing is there, the rows are above it
-    below = sorted([v for v in band if v[1] > hy1 - 1 and v[1] < hy1 + 260], key=lambda v: v[1])
-    keep, last = [], hy1
-    for v in below:
-        if v[1] - last > 40:
-            break
-        keep.append(v)
-        last = max(last, v[3])
-    res = parse(rows_in(keep))
-    if not res:
-        above = sorted([v for v in band if v[3] < hy0 + 1 and v[3] > hy0 - 260], key=lambda v: -v[3])
-        keep, last = [], hy0
-        for v in above:
-            if last - v[3] > 40:
+    def read(rows_lines):
+        out, prev = [], None
+        for mid, ws in rows_lines:
+            if prev is not None and abs(mid - prev) > lh * 3.2:
                 break
-            keep.append(v)
-            last = min(last, v[1])
-        res = parse(rows_in(keep))
-    # give rows without a rev the next number in order
-    return [((rv or str(i)), dt, ds) for i, (rv, dt, ds) in enumerate(res)]
+            c = {"id": [], "date": [], "desc": []}
+            for v in ws:
+                c[cell(v)].append(v[4])
+            idt = " ".join(c["id"]).strip()
+            dts = ""
+            toks = c["date"]
+            for k in (1, 2, 3):                                   # the date is the last 1-3 words of the date column; any words before it are description that ran over
+                if len(toks) >= k and norm_date(" ".join(toks[-k:])):
+                    dts = " ".join(toks[-k:])
+                    c["desc"] += toks[:-k]
+                    break
+            else:
+                c["desc"] += toks
+            dsc = " ".join(c["desc"]).strip(" -:")
+            dt = norm_date(dts) if dts else ""
+            if re.match(r"^(?:rev\.?\s*)?([A-Za-z]|[A-Za-z]?\d{1,3})$", idt, re.I) and dt:
+                out.append([re.sub(r"^rev\.?\s*", "", idt, flags=re.I).upper(), dt, dsc])
+            elif not idt and not dts and dsc and out and abs(mid - prev) < lh * 1.9:
+                out[-1][2] = (out[-1][2] + " " + dsc).strip()      # a description that runs on to a second line
+            elif idt and not dt and not dsc:
+                pass                                              # an empty numbered row
+            else:
+                break                                             # something else: the table is over
+            prev = mid
+        return [tuple(x) for x in out]
+
+    sel = [v for v in words if x_left <= v[0] <= x_right]
+    below = [v for v in sel if (v[1] + v[3]) / 2 > hy1 + 1]
+    res = read(lines(below))
+    if not res:
+        above = [v for v in sel if (v[1] + v[3]) / 2 < hy0 - 1]
+        res = read(list(reversed(lines(above))))                  # nearest the heading first
+        res.reverse()
+    seen, out = set(), []
+    for rv, dt, ds in res:
+        if (rv, dt, ds) in seen:
+            continue
+        seen.add((rv, dt, ds))
+        out.append((rv, dt, ds))
+    return out
 
 
 def pdf_date(meta):
