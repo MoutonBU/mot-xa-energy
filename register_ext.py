@@ -908,18 +908,28 @@ class LogMixin:
 
     LOG_SIMPLE = ("group", "order", "text", "kinds", "by_name", "by_email", "req_subject", "sent_subject")
 
-    def build_log(self):
+    def build_log(self, kind="Order"):
+        """One of the two lists: the client's orders, or the client's changes. They share the log behind them, so the email and the PDF still find everything."""
         from PySide6.QtWidgets import QWidget
         w = QWidget()
         v = QVBoxLayout(w)
         v.setContentsMargins(0, 6, 0, 0)
-        n = QLabel("Keep track of what the client ordered or asked to change, house by house. Add the line, attach the client's email as proof, "
-                   "and when you send the drawings the rest is filled in for you.")
+        if not hasattr(self, "ltabs"):
+            self.ltabs, self.lpages, self.lall = {}, {}, {}
+        if kind == "Order":
+            note = "The orders the client placed, house by house. Add the line, attach the client's email as proof, and when you send the drawings the rest is filled in for you."
+            btns = (("+ New order", lambda: self.add_log("Order"), True), ("Attach the client's email...", self.attach_ref, False), ("Open the client's email", self.open_ref, False),
+                    ("Open the email I sent", self.open_sent, False), ("Remove line", self.remove_log, False))
+        else:
+            note = "The changes the client asked for, house by house. Add a change, or let the program make them from the revision rows of the drawings."
+            btns = (("+ Client change", lambda: self.add_log("Change"), True), ("Get changes from the drawings", self.changes_from_drawings, True),
+                    ("Attach the client's email...", self.attach_ref, False), ("Open the client's email", self.open_ref, False), ("Open the email I sent", self.open_sent, False),
+                    ("Remove line", self.remove_log, False))
+        n = QLabel(note)
         n.setWordWrap(True)
         v.addWidget(n)
         bar = QHBoxLayout()
-        for text, fn, bold in (("+ New order", lambda: self.add_log("Order"), True), ("+ Client change", lambda: self.add_log("Change"), True),
-                               ("Get changes from the drawings", self.changes_from_drawings, True), ("Attach the client's email...", self.attach_ref, False), ("Open the client's email", self.open_ref, False), ("Open the email I sent", self.open_sent, False), ("Remove line", self.remove_log, False)):
+        for text, fn, bold in btns:
             b = QPushButton(text)
             if bold:
                 b.setStyleSheet("font-weight:700;")
@@ -927,22 +937,40 @@ class LogMixin:
             bar.addWidget(b)
         bar.addStretch(1)
         v.addLayout(bar)
-        self.ltab = QTableWidget(0, len(LOGK))
-        self.ltab.setHorizontalHeaderLabels(LOGC)
-        self.ltab.verticalHeader().setVisible(False)
-        self.ltab.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.ltab.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        self.ltab.horizontalHeader().setStretchLastSection(True)
+        t = QTableWidget(0, len(LOGK))
+        t.setHorizontalHeaderLabels(LOGC)
+        t.verticalHeader().setVisible(False)
+        t.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        t.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        t.horizontalHeader().setStretchLastSection(True)
         for i, wd in enumerate((150, 70, 40, 85, 110, 360, 660, 130, 300, 85, 170, 85, 200, 80, 150, 200, 320)):
-            self.ltab.setColumnWidth(i, wd)
-        self.ltab.itemChanged.connect(self._log_cell)
-        self.ltab.cellDoubleClicked.connect(lambda r, c: self.open_sent() if LOGK[c] == "sent_subject" else self.open_ref() if LOGK[c] == "req_subject" else None)
-        v.addWidget(self.ltab, 1)
-        self.log_all = QCheckBox("Show all details (rev, dates, who asked, sent to, status)")
-        self.log_all.toggled.connect(self._log_columns)
-        v.addWidget(self.log_all)
+            t.setColumnWidth(i, wd)
+        t.itemChanged.connect(self._log_cell)
+        t.cellDoubleClicked.connect(lambda r, c: self.open_sent() if LOGK[c] == "sent_subject" else self.open_ref() if LOGK[c] == "req_subject" else None)
+        v.addWidget(t, 1)
+        chk = QCheckBox("Show all details (rev, dates, who asked, sent to, status)")
+        chk.toggled.connect(self._log_columns)
+        v.addWidget(chk)
+        self.ltabs[kind], self.lpages[kind], self.lall[kind] = t, w, chk
+        self._lrows = getattr(self, "_lrows", {})
+        self._lrows[kind] = []
         self._log_columns()
         return w
+
+    @staticmethod
+    def log_kind(e):
+        return "Order" if e.get("type") == "Order" else "Change"
+
+    def _cur_log(self):
+        """(entry, kind) of the selected line in the tab that is open, or (None, None)."""
+        kinds = list(self.ltabs)
+        cur = self.sub.currentWidget() if hasattr(self, "sub") else None
+        mine = [k for k in kinds if cur is not None and (self.lpages[k] is cur or self.lpages[k].isAncestorOf(cur))]
+        for k in (mine or kinds):
+            r = self.ltabs[k].currentRow()
+            if 0 <= r < len(self._lrows.get(k, [])):
+                return self._lrows[k][r], k
+        return None, None
 
     def _kinds_box(self, e):
         """Tick boxes for the kind of change: Minor changes, Major changes, Masters, Final plans, SDP."""
@@ -964,9 +992,10 @@ class LogMixin:
         self.update_mail()
 
     def _log_columns(self, *_a):
-        full = self.log_all.isChecked()
-        for i, k in enumerate(LOGK):
-            self.ltab.setColumnHidden(i, not (full or k in self.LOG_SIMPLE))
+        for kind, t in getattr(self, "ltabs", {}).items():
+            full = self.lall[kind].isChecked()
+            for i, k in enumerate(LOGK):
+                t.setColumnHidden(i, not (full or k in self.LOG_SIMPLE))
 
     # ----- fill the log from the drawings' revision rows -----
     MAJOR = re.compile(r"\b(add|added|new|remov|delet|mov|reloc|redesign|re-?design|enlarg|resiz|extend|extension|re-?lay|stair|structur|wall|roof|window|door|room|bedroom|kitchen|bathroom|garage|floor|level|coverage|building line)", re.I)
@@ -1314,24 +1343,24 @@ class LogMixin:
                   "by_name": self.info.get("to", ""), "by_email": self.info.get("email", "")})
         self.log.append(e)
         self.refresh_log()
-        self.ltab.selectRow(len(self.log) - 1)
+        k = self.log_kind(e)
+        self.ltabs[k].selectRow(len(self._lrows[k]) - 1)
 
     def remove_log(self):
-        r = self.ltab.currentRow()
-        if 0 <= r < len(self.log):
-            self.log.pop(r)
+        e, _k = self._cur_log()
+        if e is not None and e in self.log:
+            self.log.remove(e)
             self.refresh_log()
 
     def attach_ref(self):
-        r = self.ltab.currentRow()
-        if not (0 <= r < len(self.log)):
+        e, _k = self._cur_log()
+        if e is None:
             QMessageBox.information(self, "Drawing register", "Add an order or a change first, select it, then attach the email.")
             return
         p, _ = QFileDialog.getOpenFileName(self, "The client's email (.eml, .msg, .pdf or a screenshot)", "", "Email or document (*.eml *.msg *.pdf *.png *.jpg *.jpeg *.txt);;All files (*)")
         if not p:
             return
         ref = read_reference(p)
-        e = self.log[r]
         e["req_path"], e["req_subject"], e["req_from"], e["req_date"] = p, ref["subject"], ref["from"], ref["date"]
         from email.utils import parseaddr
         nm, ad = parseaddr(ref["from"] or "")
@@ -1347,54 +1376,60 @@ class LogMixin:
         self.refresh_log()
 
     def open_sent(self):
-        r = self.ltab.currentRow()
-        if 0 <= r < len(self.log):
-            p = self.log[r].get("sent_path")
+        e, _k = self._cur_log()
+        if e is not None:
+            p = e.get("sent_path")
             if p and os.path.exists(p):
                 QDesktopServices.openUrl(QUrl.fromLocalFile(p))
             else:
                 QMessageBox.information(self, "Drawing register", "That line has no sent email yet. It is linked when you send the drawings from the program.")
 
     def open_ref(self):
-        r = self.ltab.currentRow()
-        if 0 <= r < len(self.log):
-            p = self.log[r].get("req_path") or self.log[r].get("sent_path")
+        e, _k = self._cur_log()
+        if e is not None:
+            p = e.get("req_path") or e.get("sent_path")
             if p and os.path.exists(p):
                 QDesktopServices.openUrl(QUrl.fromLocalFile(p))
 
     def _log_cell(self, it):
-        if self._busy or not (0 <= it.row() < len(self.log)):
+        t = it.tableWidget()
+        kind = next((k for k, tt in self.ltabs.items() if tt is t), None)
+        if self._busy or kind is None or not (0 <= it.row() < len(self._lrows.get(kind, []))):
             return
-        k = LOGK[it.column()]
-        self.log[it.row()][k] = it.text().strip()
+        self._lrows[kind][it.row()][LOGK[it.column()]] = it.text().strip()
         self.update_mail()
 
     def refresh_log(self):
         self._busy = True
         try:
-            t = self.ltab
-            t.setRowCount(0)
-            t.setRowCount(len(self.log))
-            for i, e in enumerate(self.log):
-                for c, k in enumerate(LOGK):
-                    it = QTableWidgetItem("" if k == "kinds" else str(e.get(k, "")))
-                    if k == "kinds":
-                        it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                    if k in ("req_subject",) and e.get("req_path"):
-                        it.setToolTip(e["req_path"])
-                    if e.get("status") == "Draft":
-                        it.setBackground(QColor(120, 90, 20, 90))
-                    t.setItem(i, c, it)
-                for k, vals in (("group", [g["name"] for g in self.groups]), ("type", TYPES), ("by", None), ("status", LSTAT)):
-                    cb = QComboBox()
-                    cb.setEditable(True)
-                    from register import BYS
-                    cb.addItems(vals if vals is not None else BYS)
-                    cb.setCurrentText(str(e.get(k, "")))
-                    cb.currentTextChanged.connect(lambda tx, ent=e, kk=k: ent.__setitem__(kk, tx))
-                    t.setCellWidget(i, LOGK.index(k), cb)
-                t.setCellWidget(i, LOGK.index("kinds"), self._kinds_box(e))
-            t.resizeRowsToContents()
+            for kind, t in getattr(self, "ltabs", {}).items():
+                keep_row = t.currentRow()
+                ents = [e for e in self.log if self.log_kind(e) == kind]
+                self._lrows[kind] = ents
+                t.setRowCount(0)
+                t.setRowCount(len(ents))
+                for i, e in enumerate(ents):
+                    for c, k in enumerate(LOGK):
+                        it = QTableWidgetItem("" if k == "kinds" else str(e.get(k, "")))
+                        if k == "kinds":
+                            it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                        if k in ("req_subject",) and e.get("req_path"):
+                            it.setToolTip(e["req_path"])
+                        if e.get("status") == "Draft":
+                            it.setBackground(QColor(120, 90, 20, 90))
+                        t.setItem(i, c, it)
+                    for k, vals in (("group", [g["name"] for g in self.groups]), ("type", TYPES), ("by", None), ("status", LSTAT)):
+                        cb = QComboBox()
+                        cb.setEditable(True)
+                        from register import BYS
+                        cb.addItems(vals if vals is not None else BYS)
+                        cb.setCurrentText(str(e.get(k, "")))
+                        cb.currentTextChanged.connect(lambda tx, ent=e, kk=k: ent.__setitem__(kk, tx))
+                        t.setCellWidget(i, LOGK.index(k), cb)
+                    t.setCellWidget(i, LOGK.index("kinds"), self._kinds_box(e))
+                t.resizeRowsToContents()
+                if 0 <= keep_row < len(ents):
+                    t.selectRow(keep_row)
         finally:
             self._busy = False
         self.update_mail()
@@ -1436,14 +1471,15 @@ class LogMixin:
         self.refresh_log()
 
     # ----- the log as it prints (the layout of the register you use now) -----
-    def log_html(self, e_, td, th, RED):
-        if not self.log:
+    def log_html(self, e_, td, th, RED, only=None):
+        ents_all = [x for x in self.log if only is None or self.log_kind(x) == only]
+        if not ents_all:
             return ""
-        out = ['<h3 style="color:%s;margin-bottom:3px;">Orders and revisions</h3>' % RED]
+        out = ['<h3 style="color:%s;margin-bottom:3px;">%s</h3>' % (RED, {"Order": "Orders", "Change": "Client changes"}.get(only, "Orders and revisions"))]
         names = [g["name"] for g in self.groups] + sorted({x.get("group") for x in self.log} - {g["name"] for g in self.groups})
         body = ""
         for name in names:
-            ents = [x for x in self.log if x.get("group") == name]
+            ents = [x for x in ents_all if x.get("group") == name]
             ents.sort(key=lambda x: (x.get("sent_date") or "9999", x.get("date", "")))
             for x in ents:
                 head = ("New order" if x.get("type") == "Order" else "Change on" if x.get("type") == "Change" else "Issue") 

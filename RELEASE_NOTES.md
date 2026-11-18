@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.68.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.69.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Send one block, tell the client the rest, orders and changes apart, 1.69.0**: on the register page there is now a tick box for each block or house under "Send now". Tick the blocks you are sending today; the ones you leave unticked are listed in the email and the PDF as still to come, with a line such as "Issued today: Block A. Still to come: Block B (3 drawings), Block C (2 drawings)". New button "Drawings still to come...": type the drawings that are not ready yet (number and name, one per line) and they show as Not yet issued until you add their PDFs. The sheet index is now automatic (no tick box). The Orders and changes tab is split into two tabs, Orders and Client changes, and each can be listed in the email and the PDF with its own tick box (off by default).
 - **Sheet index, orders and changes on their own, 1.68.0**: the register email and the register PDF can now carry a sheet index, listing every drawing of every block or house as Issued today, Issued earlier (with its revision and date) or Not yet issued, so the builder or client sees what has been sent and what is still to come. It works for a single house as well (it only shows when there is more than what is issued today). Tick or untick it on the register page. The orders and changes list is no longer put into the email and the PDF unless you tick "Also list orders and changes"; it stays in its own list.
 - **Wider email, 1.67.4**: the whole register email is about 6% wider (680 instead of 640 pixels) on a computer, so the cards, tables and the signature banner are all a little bigger, and the portrait with them. The text inside the banner keeps its size relative to the banner.
 - **Smarter signature, 1.67.3**: the text in the signature banner is larger so it stays readable when the banner shrinks, and the email address now sits right next to the phone number. On a narrow screen (a phone, or a small preview window) the banner is replaced by plain readable text with the same clickable phone, email and website.

@@ -503,7 +503,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         self.host = host
         self.groups = []     # {name, rows:[...]}
         self.history = []    # issues already sent: {issue, date, rows:{key: {rev, rdate, title, comment}}}
-        self.info = {"project": "", "client": "", "issued_by": "", "to": "", "email": "", "note": "", "issue_no": "0", "date": "", "cc": "", "client_logo": "", "sheet_index": "1", "show_log": "0"}
+        self.info = {"project": "", "client": "", "issued_by": "", "to": "", "email": "", "note": "", "issue_no": "0", "date": "", "cc": "", "client_logo": "", "sheet_index": "1", "show_orders": "0", "show_changes": "0"}
         self.log = []        # orders and revisions, see register_ext
         self.cur = 0
         self._busy = False
@@ -575,6 +575,10 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         nb = QPushButton("+ Another block or house")
         nb.clicked.connect(self.add_group)
         gl.addWidget(nb)
+        pb = QPushButton("Drawings still to come...")
+        pb.setToolTip("Type the drawings that are not ready yet, so the client can see what is still to come. They are listed as not yet issued until you add their PDFs.")
+        pb.clicked.connect(self.add_planned)
+        gl.addWidget(pb)
         gl.addSpacing(16)
         self.add_btn = QPushButton("Add drawing PDFs...")
         self.add_btn.setStyleSheet("font-weight:700;")
@@ -597,6 +601,13 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         gl.addWidget(ra)
         gl.addStretch(1)
         v.addLayout(gl)
+        self.blocks_w = QWidget()
+        self.blocks_l = QHBoxLayout(self.blocks_w)
+        self.blocks_l.setContentsMargins(0, 2, 0, 0)
+        v.addWidget(self.blocks_w)
+        self.plan_lbl = QLabel("")
+        self.plan_lbl.setWordWrap(True)
+        v.addWidget(self.plan_lbl)
         self.tab = QTableWidget(0, len(COLS))
         self.tab.setMinimumHeight(170)
         self.tab.horizontalHeader().setSectionsClickable(True)
@@ -653,11 +664,11 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         rr.addStretch(1)
         v.addLayout(rr)
         rx = QHBoxLayout()
-        self.idx_chk = QCheckBox("Add a sheet index (what is issued today and what is still to come)")
-        self.idx_chk.setToolTip("Lists every drawing in every block or house, marked as issued today, issued earlier or not yet issued. Only shown when there is more than what is issued today.")
-        self.log_chk = QCheckBox("Also list orders and changes")
-        self.log_chk.setToolTip("Adds the orders and changes covered by this revision to the email and the register PDF. Off: they stay in their own list.")
-        for c, k in ((self.idx_chk, "sheet_index"), (self.log_chk, "show_log")):
+        rx.addWidget(QLabel("<b>Also list in the email and the PDF:</b>"))
+        self.ord_chk = QCheckBox("Orders")
+        self.chg_chk = QCheckBox("Client changes")
+        for c, k in ((self.ord_chk, "show_orders"), (self.chg_chk, "show_changes")):
+            c.setToolTip("Off: they stay in their own tab and are not put in the email or the register PDF.")
             c.setChecked(self.info.get(k) == "1")
             c.toggled.connect(lambda on, k=k: self._opt_changed(k, on))
             rx.addWidget(c)
@@ -701,7 +712,8 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         sc.setStyleSheet("QScrollArea{background:transparent;} QScrollArea > QWidget > QWidget{background:transparent;}")
         sc.setWidget(self.draw_w)
         self.sub.addTab(sc, "Drawings")
-        self.sub.addTab(self.build_log(), "Orders and changes")
+        self.sub.addTab(self.build_log("Order"), "Orders")
+        self.sub.addTab(self.build_log("Change"), "Client changes")
         self.sub.addTab(self.build_history(), "Sent and revisions")
         self.mail_done.connect(self._mail_finished)
         self.add_group("House / Block 1", quiet=True)
@@ -1320,6 +1332,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
                 self.tab.setCellWidget(i, KEYS.index("by"), cb2)
             self.tab.resizeRowsToContents()
             self._counts()
+            self._blocks_panel()
             self.refresh_log()
         finally:
             self._busy = False
@@ -1489,6 +1502,83 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         on = {k for k, c in getattr(self, "rep_chk", {}).items() if c.isChecked()}
         return [(k, lab, d) for k, lab, d in self.REPORTS if k in on]
 
+    def _blocks_panel(self):
+        """One tick box per block or house: tick it to send it now, leave it unticked to tell the client it is still to come."""
+        lay = self.blocks_l
+        while lay.count():
+            it = lay.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        multi = len(self.groups) > 1
+        lay.addWidget(QLabel("<b>Send now:</b>"))
+        for gi_, g in enumerate(self.groups):
+            n = len(g["rows"])
+            on = sum(1 for r in g["rows"] if r.get("on", True))
+            c = QCheckBox("%s (%d)" % (g["name"], n))
+            c.setEnabled(n > 0)
+            c.setCheckState(Qt.CheckState.Checked if on == n and n else Qt.CheckState.PartiallyChecked if on else Qt.CheckState.Unchecked)
+            c.setToolTip("Tick to send every drawing of this block or house in this issue. Untick to hold it back: it is then listed as still to come.")
+            c.clicked.connect(lambda _x=False, g=g, all_on=(on == n): self._block_toggle(g, not all_on))
+            lay.addWidget(c)
+        lay.addStretch(1)
+        now = [(g["name"], sum(1 for r in g["rows"] if r.get("on", True))) for g in self.groups]
+        later = [(g["name"], sum(1 for r in g["rows"] if not r.get("on", True))) for g in self.groups]
+        now = [(n, k) for n, k in now if k]
+        later = [(n, k) for n, k in later if k]
+        if not later:
+            txt = "Sending now: all %d drawings." % sum(k for _n, k in now) if now else "Nothing is ticked to send yet."
+        else:
+            txt = "<b>Sending now:</b> %s.  <b>Not in this issue (listed for the client as still to come):</b> %s." % (
+                ", ".join("%s (%d)" % x for x in now) or "nothing", ", ".join("%s (%d)" % x for x in later))
+        self.plan_lbl.setText(txt if now or later else "")
+
+    def _block_toggle(self, g, on):
+        for r in g["rows"]:
+            r["on"] = bool(on)
+        self.refresh()
+        self.update_mail()
+
+    def add_planned(self):
+        """Type drawings that are not ready yet (one per line, number then title) so they show as still to come."""
+        from PySide6.QtWidgets import QDialog, QDialogButtonBox, QPlainTextEdit
+        d = QDialog(self)
+        d.setWindowTitle("Drawings still to come")
+        v = QVBoxLayout(d)
+        v.addWidget(QLabel("Which block or house are they for?"))
+        box = QComboBox()
+        box.addItems([g["name"] for g in self.groups])
+        box.setCurrentIndex(self.cur)
+        v.addWidget(box)
+        v.addWidget(QLabel("One drawing per line: the drawing number, then its name. For example:\n101  Ground floor plan\n102  First floor plan"))
+        te = QPlainTextEdit()
+        te.setMinimumSize(420, 160)
+        v.addWidget(te)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        bb.accepted.connect(d.accept)
+        bb.rejected.connect(d.reject)
+        v.addWidget(bb)
+        if not d.exec():
+            return
+        g = self.groups[box.currentIndex()]
+        added = 0
+        for line in te.toPlainText().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = re.split(r"\t|\s{2,}|\s+-\s+", line, maxsplit=1)
+            if len(parts) < 2:
+                parts = line.split(None, 1) if re.match(r"^[A-Za-z]*[\d.-]+\S*\s+\S", line) else ["", line]
+            no, title = parts[0].strip(), parts[1].strip() if len(parts) > 1 else ""
+            row = {"on": False, "no": no, "title": title, "about": "", "size": "", "scale": "", "rev": "", "rdate": "", "pdfdate": "", "by": "", "comment": "", "status": "For information", "file": "", "path": "", "revs": []}
+            if self.find_row(self.key(row)) is not None:
+                continue
+            g["rows"].append(row)
+            added += 1
+        g["rows"].sort(key=lambda r: (r.get("no") or "~", r.get("title", "").lower()))
+        self.refresh()
+        self.update_mail()
+        self.count.setText("%d drawing%s added as still to come." % (added, "" if added == 1 else "s"))
+
     def _opt_changed(self, k, on):
         self.info[k] = "1" if on else "0"
         self.update_mail()
@@ -1497,8 +1587,8 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         except Exception:
             pass
 
-    def want_log(self):
-        return self.info.get("show_log") == "1"
+    def want_log(self, kind):
+        return self.info.get("show_orders" if kind == "Order" else "show_changes") == "1"
 
     def sheet_index(self):
         """Every drawing of every block/house: [(group name, [(row, state, note)], n_today)], or [] when there is nothing more than today's issue to show.
@@ -1559,9 +1649,11 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         elif last:
             lines += ["No drawing has changed since revision %s." % last.get("issue", ""), ""]
         names = {n for n, _r in gi}
-        pend = [x for x in self.log if not x.get("sent_date") and x.get("group") in names]
-        if pend and self.want_log():
-            lines.append("ORDERS AND CHANGES COVERED BY THIS REVISION")
+        for kind_, head_ in (("Order", "ORDERS COVERED BY THIS REVISION"), ("Change", "CLIENT CHANGES COVERED BY THIS REVISION")):
+            pend = [x for x in self.log if not x.get("sent_date") and x.get("group") in names and self.log_kind(x) == kind_]
+            if not (pend and self.want_log(kind_)):
+                continue
+            lines.append(head_)
             for x in pend:
                 bit = "  - %s" % x.get("group", "")
                 bit += (" (order no. %s)" % x["order"]) if x.get("order") else ""
@@ -1588,6 +1680,11 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         idx = self.sheet_index()
         if idx:
             lines.append("SHEET INDEX: ISSUED AND STILL TO COME")
+            now_ = ["%s (%d of %d)" % (nm, nt, len(rs)) for nm, rs, nt in idx if nt]
+            later_ = [(nm, sum(1 for _r, st, _n in rs if st == "not")) for nm, rs, _nt in idx]
+            later_ = ["%s (%d drawing%s)" % (nm, k, "" if k == 1 else "s") for nm, k in later_ if k]
+            lines.append(("Issued today: %s. " % ", ".join(now_) if now_ else "") + ("Still to come: %s." % ", ".join(later_) if later_ else "Nothing else is outstanding."))
+            lines.append("")
             for name, rows, nt in idx:
                 lines.append("%s (%d drawings) - %d ISSUED TODAY" % (name.upper(), len(rows), nt))
                 for r, st, note in rows:
@@ -1644,8 +1741,9 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         new, rev = self.changes()
         out = ['<p style="font-size:9pt;color:#444;">%d drawings in this issue.%s</p>' %
                (n, (" %d revised and %d new since revision %s." % (len(rev), len(new), e(last.get("issue", "")))) if last else "")]
-        if self.want_log():
-            out.append(self.log_html(e, td, th, RED))
+        for kind_ in ("Order", "Change"):
+            if self.want_log(kind_):
+                out.append(self.log_html(e, td, th, RED, only=kind_))
         if last and (rev or new):
             body = ""
             for r in rev:
