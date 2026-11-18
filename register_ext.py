@@ -928,14 +928,14 @@ class LogMixin:
         v.addLayout(bar)
         sp = QSplitter(Qt.Orientation.Vertical)
         self.htab = QTableWidget(0, 6)
-        self.htab.setHorizontalHeaderLabels(["Revision", "Date", "Sent to", "Drawings", "What changed", "Email subject"])
+        self.htab.setHorizontalHeaderLabels(["Revision", "Date", "Sent to", "Drawings", "Sheets changed", "Email subject"])
         self.htab.verticalHeader().setVisible(False)
         self.htab.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.htab.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.htab.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.htab.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.htab.horizontalHeader().setStretchLastSection(True)
-        for i, wd in enumerate((80, 130, 220, 80, 300, 400)):
+        for i, wd in enumerate((80, 130, 200, 70, 420, 300)):
             self.htab.setColumnWidth(i, wd)
         self.htab.itemSelectionChanged.connect(self._h_show)
         sp.addWidget(self.htab)
@@ -959,7 +959,7 @@ class LogMixin:
         for i, h in enumerate(self._h_rows):
             sent = h.get("sent") or {}
             vals = ["Revision %s" % h.get("issue", ""), "%s%s" % (self._long_date(h.get("date", "")), (" " + h["time"]) if h.get("time") else ""),
-                    sent.get("to") or "(recorded, not sent from here)", str(len(h.get("rows", {}))), h.get("summary") or self._h_summary(h, hist), sent.get("subject", "")]
+                    sent.get("to") or "(recorded, not sent from here)", str(len(h.get("rows", {}))), self._h_where(h, hist), sent.get("subject", "")]
             for c, val in enumerate(vals):
                 t.setItem(i, c, QTableWidgetItem(val))
         t.blockSignals(False)
@@ -969,6 +969,25 @@ class LogMixin:
         else:
             self.hview.setHtml("<p>Nothing has been sent from this project yet. When you send a register (or record one as issued), it is kept here.</p>")
         self._h_buttons()
+
+    def _h_where(self, h, hist):
+        """The sheets the changes were made on: '3 revised: 001 Ground Floor, 002 First Floor, ...' (the sheet numbers, not just a count)."""
+        i = hist.index(h) if h in hist else -1
+        sheets = []
+        if h.get("groups"):
+            for g in h["groups"]:
+                for d in g.get("drawings", []):
+                    if d.get("kind") in ("new", "revised"):
+                        sheets.append((d.get("no", ""), d.get("title", ""), d.get("kind")))
+        elif i > 0:
+            new, rev = self._h_diff(hist[i - 1], h)
+            sheets = [(r.get("no", ""), r.get("title", ""), "revised") for r in rev] + [(r.get("no", ""), r.get("title", ""), "new") for r in new]
+        if not sheets:
+            return h.get("summary") or self._h_summary(h, hist)
+        if h.get("first"):
+            return "First issue: all %d sheets" % len(h.get("rows", {}))
+        txt = ", ".join(("%s %s" % (n, t)).strip() + (" (new)" if k == "new" else "") for n, t, k in sheets)
+        return "%d sheet%s: %s" % (len(sheets), "" if len(sheets) == 1 else "s", txt)
 
     def _h_summary(self, h, hist):
         """A short line for an issue recorded without the full memory: compare its drawings with the issue before it."""
@@ -1040,7 +1059,7 @@ class LogMixin:
                 e(", ".join(sent.get("files", [])) or "the drawing register and the drawing PDFs")))
         else:
             out.append('<p><i>Recorded in the project without an email from here (sent another way, or carried on from an earlier issue).</i></p>')
-        out.append('<h3 style="color:%s;margin-bottom:2px;">What changed%s</h3>' % (RED, (" since revision %s" % e(str(prev.get("issue", "")))) if prev else ""))
+        out.append('<h3 style="color:%s;margin-bottom:2px;">What changed, by sheet%s</h3>' % (RED, (" (since revision %s)" % e(str(prev.get("issue", "")))) if prev else ""))
         groups = h.get("groups")
         shown = False
         if groups:
@@ -1053,7 +1072,7 @@ class LogMixin:
                     out.append('<p style="margin-bottom:0px;"><b>%s</b></p>' % e(g.get("name", "")))
                 for d in ch:
                     tag = " (new drawing)" if d.get("kind") == "new" and not h.get("first") else ""
-                    out.append('<p style="margin:4px 0 0 0;"><b>%s %s</b>%s%s</p>' % (e(d.get("no", "")), e(d.get("title", "")), (" (Revision %s)" % e(d["rev"])) if d.get("rev") else "", tag))
+                    out.append('<p style="margin:6px 0 0 0;"><b>Sheet %s &nbsp;%s</b>%s%s</p>' % (e(d.get("no", "")), e(d.get("title", "")), (" &nbsp;(Revision %s)" % e(d["rev"])) if d.get("rev") else "", tag))
                     its = d.get("changes") or []
                     if its:
                         out.append("<ul style='margin-top:0px;'>%s</ul>" % "".join("<li>%s</li>" % e(x) for x in its))
