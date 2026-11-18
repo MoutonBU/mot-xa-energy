@@ -1,9 +1,11 @@
 """Drawing register: feed in PDFs per block or house, get a register (PDF / CSV) and the text of the issue email."""
 import datetime
 import html as _html
+import json
 import os
 import re
 import sys
+import time
 
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QGuiApplication
@@ -493,6 +495,64 @@ def guess_row(path):
 from register_ext import LogMixin, MailMixin, short_date
 
 
+# ----- the registers the program keeps for you (one file each, saved by itself, independent of any project)
+REG_DIR = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "MCP_LightVent", "registers")
+
+
+def reg_list():
+    out = []
+    try:
+        for fn in os.listdir(REG_DIR):
+            if fn.endswith(".json"):
+                try:
+                    with open(os.path.join(REG_DIR, fn), encoding="utf-8") as f:
+                        d = json.load(f)
+                    out.append((fn[:-5], str(d.get("name", fn[:-5]))))
+                except Exception:
+                    pass
+    except OSError:
+        pass
+    return sorted(out, key=lambda x: x[1].lower())
+
+
+def reg_load(rid):
+    try:
+        with open(os.path.join(REG_DIR, rid + ".json"), encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def reg_save(rid, name, state):
+    try:
+        os.makedirs(REG_DIR, exist_ok=True)
+        tmp = os.path.join(REG_DIR, rid + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"name": name, "saved": time.time(), "state": state}, f, ensure_ascii=False)
+        os.replace(tmp, os.path.join(REG_DIR, rid + ".json"))
+        return True
+    except Exception:
+        return False
+
+
+def reg_last(set_to=None):
+    fp = os.path.join(REG_DIR, "_last.txt")
+    try:
+        if set_to is not None:
+            os.makedirs(REG_DIR, exist_ok=True)
+            with open(fp, "w", encoding="utf-8") as f:
+                f.write(set_to)
+            return set_to
+        with open(fp, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def _empty_register(name=""):
+    return {"groups": [{"name": "Main house", "rows": []}], "info": {"project": name}, "cur": 0, "mail": "", "history": [], "log": [], "reports": []}
+
+
 class RegisterPage(LogMixin, MailMixin, QWidget):
     mail_done = Signal(bool, str)
     is_costing = True
@@ -507,6 +567,9 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         self.log = []        # orders and revisions, see register_ext
         self.cur = 0
         self._busy = False
+        self.rid, self.rname, self._loaded, self._saving = "", "", False, False
+        self._info0 = dict(self.info)
+        QTimer.singleShot(0, lambda: None if self._loaded else self.set_state({}))
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         self.sub = QTabWidget()
@@ -515,6 +578,26 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         v = QVBoxLayout(self.draw_w)
         v.setContentsMargins(0, 6, 0, 0)
         step = lambda t: QLabel('<span style="font-size:14px; font-weight:700;">%s</span>' % t)
+        # 0  which register (kept by the program, saves itself, works without a project)
+        rb = QHBoxLayout()
+        rb.addWidget(QLabel("<b>Register:</b>"))
+        self.rbox = QComboBox()
+        self.rbox.setMinimumWidth(240)
+        self.rbox.setToolTip("Every register is kept by the program and saves itself, also when you press Send. It does not depend on the project that is open.")
+        self.rbox.activated.connect(self._reg_picked)
+        rb.addWidget(self.rbox)
+        for txt, tip, fn in (("+ New register...", "Starts a new, empty register, for example for a new job.", self.reg_new),
+                             ("Rename...", "Changes the name of this register.", self.reg_rename),
+                             ("Delete", "Removes this register and its issue history (asks first).", self.reg_delete),
+                             ("Save a copy...", "Writes this register to a file, as a backup or to open on another computer.", self.reg_export),
+                             ("Open a copy...", "Brings in a register from a file saved with Save a copy.", self.reg_import)):
+            b = QPushButton(txt)
+            b.setToolTip(tip)
+            b.clicked.connect(lambda _=False, f=fn: f())
+            rb.addWidget(b)
+        rb.addStretch(1)
+        v.addLayout(rb)
+        v.addSpacing(4)
         # 1  who is it for
         v.addWidget(step("1.  Who is it for?"))
         self.f = {}
@@ -809,6 +892,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
 
     def update_mail(self):
         """Keep the email under the list up to date: written from the drawings, orders and changes unless you have edited it yourself."""
+        self._autosave()
         if getattr(self, "_mail_setting", None) is None or not hasattr(self, "att_lbl"):
             return
         if hasattr(self, "stale_lbl"):
@@ -845,14 +929,152 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
 
     # ----- state -----
     def state(self):
+        d = self._state()
+        d["rid"], d["rname"] = self.rid, self.rname
+        return d
+
+    def _state(self):
         return {"groups": self.groups, "info": self.info, "cur": self.cur, "mail": self.mail.toPlainText(), "mail_manual": bool(self._mail_manual), "history": self.history, "log": self.log,
                 "reports": [k for k, c in getattr(self, "rep_chk", {}).items() if c.isChecked()]}
 
     def set_state(self, d):
+        """From a project (or empty). The register kept by the program wins over the copy inside the project, so the history is never behind."""
+        d = d or {}
+        if self._loaded:
+            self.save_register()
+        rid, name, st = d.get("rid") or "", "", None
+        if rid:
+            rec = reg_load(rid)
+            if rec:
+                st, name = rec.get("state"), rec.get("name", "")
+        if st is None and (d.get("history") or d.get("log") or any(g.get("rows") for g in d.get("groups", []) if isinstance(g, dict))):
+            rid = rid or "r%d" % int(time.time() * 1000)
+            name = d.get("rname") or (d.get("info") or {}).get("project") or "Imported register"
+            st = d
+        if st is None:
+            last = reg_last()
+            rec = reg_load(last) if last else None
+            if rec:
+                rid, name, st = last, rec.get("name", ""), rec.get("state")
+            elif self._loaded and self.rid:
+                return          # nothing to change: keep working in the register that is open
+            else:
+                rid, name, st = "r%d" % int(time.time() * 1000), "My register", _empty_register()
+        self._switch(rid, name, st)
+
+    def _switch(self, rid, name, st):
+        self.rid, self.rname = rid, name
+        self._loaded = False
+        self._apply_state(st)
+        self._loaded = True
+        reg_last(rid)
+        self.save_register()
+        self._reg_combo()
+
+    def _reg_combo(self):
+        self.rbox.blockSignals(True)
+        self.rbox.clear()
+        for rid, nm in reg_list():
+            self.rbox.addItem(nm, rid)
+        i = self.rbox.findData(self.rid)
+        if i >= 0:
+            self.rbox.setCurrentIndex(i)
+        self.rbox.blockSignals(False)
+
+    def save_register(self):
+        if self.rid and self._loaded and not self._saving:
+            self._saving = True
+            try:
+                reg_save(self.rid, self.rname, self._state())
+            finally:
+                self._saving = False
+
+    def _autosave(self):
+        if not getattr(self, "_save_timer", None):
+            self._save_timer = QTimer(self)
+            self._save_timer.setSingleShot(True)
+            self._save_timer.timeout.connect(self.save_register)
+        self._save_timer.start(500)
+
+    def _reg_picked(self, i):
+        rid = self.rbox.itemData(i)
+        if not rid or rid == self.rid:
+            return
+        self.save_register()
+        rec = reg_load(rid)
+        if rec:
+            self._switch(rid, rec.get("name", ""), rec.get("state"))
+        else:
+            self._reg_combo()
+
+    def reg_new(self):
+        name, ok = QInputDialog.getText(self, "New register", "Name of the register (for example the job number, ODN 14243):")
+        name = name.strip()
+        if not ok or not name:
+            return
+        self.save_register()
+        self._switch("r%d" % int(time.time() * 1000), name, _empty_register(name))
+
+    def reg_rename(self):
+        name, ok = QInputDialog.getText(self, "Rename register", "New name:", text=self.rname)
+        name = name.strip()
+        if not ok or not name:
+            return
+        if self.info.get("project", "").strip() in ("", self.rname):
+            self.info["project"] = name
+            self.f["project"].setText(name)
+        self.rname = name
+        self.save_register()
+        self._reg_combo()
+
+    def reg_delete(self):
+        if QMessageBox.question(self, "Delete register", "Delete the register \"%s\" with all its issues and history? This cannot be undone." % self.rname) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            os.remove(os.path.join(REG_DIR, self.rid + ".json"))
+        except OSError:
+            pass
+        rest = reg_list()
+        self._loaded = False
+        if rest:
+            rec = reg_load(rest[0][0])
+            self._switch(rest[0][0], rec.get("name", ""), rec.get("state"))
+        else:
+            self._switch("r%d" % int(time.time() * 1000), "My register", _empty_register())
+
+    def reg_export(self):
+        fn, _ = QFileDialog.getSaveFileName(self, "Save a copy of this register", (self.rname or "register") + ".mcpreg", "Drawing register (*.mcpreg)")
+        if not fn:
+            return
+        try:
+            with open(fn, "w", encoding="utf-8") as f:
+                json.dump({"name": self.rname, "state": self._state()}, f, ensure_ascii=False)
+        except OSError as ex:
+            QMessageBox.warning(self, "Save a copy", "Could not save the file: %s" % ex)
+
+    def reg_import(self):
+        fn, _ = QFileDialog.getOpenFileName(self, "Open a copy of a register", "", "Drawing register (*.mcpreg)")
+        if not fn:
+            return
+        try:
+            with open(fn, encoding="utf-8") as f:
+                d = json.load(f)
+            st, name = d["state"], str(d.get("name") or "Register")
+        except Exception:
+            QMessageBox.warning(self, "Open a copy", "That file is not a drawing register.")
+            return
+        if name in [n for _i, n in reg_list()]:
+            name += " (copy)"
+        self.save_register()
+        self._switch("r%d" % int(time.time() * 1000), name, st)
+
+    def _apply_state(self, d):
         d = d or {}
         self.groups = [dict(name=g.get("name", "Group"), rows=[dict(r, revs=[tuple(x) for x in (r.get("revs") or []) if isinstance(x, (list, tuple))]) for r in g.get("rows", [])]) for g in d.get("groups", []) if isinstance(g, dict)]
         if not self.groups:
             self.groups = [{"name": "Main house", "rows": []}]
+        self.info.clear()
+        self.info.update(self._info0)
         self.info.update({k: str(v) for k, v in (d.get("info") or {}).items() if k in self.info})
         for k, c in getattr(self, "rep_chk", {}).items():
             c.blockSignals(True)
@@ -1272,6 +1494,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         self.refresh()
         self.refresh_history()
         self.count.setText("Issue recorded. Add the revised PDFs (or press Re-read the PDFs) to see the changes.")
+        self.save_register()
 
     def pick_logo(self):
         p, _ = QFileDialog.getOpenFileName(self, "Client logo", "", "Images (*.png *.jpg *.jpeg *.bmp)")
