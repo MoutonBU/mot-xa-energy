@@ -820,7 +820,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
 
     # ----- state -----
     def state(self):
-        return {"groups": self.groups, "info": self.info, "cur": self.cur, "mail": self.mail.toPlainText(), "history": self.history, "log": self.log,
+        return {"groups": self.groups, "info": self.info, "cur": self.cur, "mail": self.mail.toPlainText(), "mail_manual": bool(self._mail_manual), "history": self.history, "log": self.log,
                 "reports": [k for k, c in getattr(self, "rep_chk", {}).items() if c.isChecked()]}
 
     def set_state(self, d):
@@ -836,9 +836,20 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         self.log = [dict(x) for x in d.get("log", []) if isinstance(x, dict)]
         self.history = [dict(h) for h in d.get("history", []) if isinstance(h, dict)]
         self.cur = min(int(d.get("cur", 0) or 0), len(self.groups) - 1)
-        self.mail.setPlainText(d.get("mail", "") or "")
+        # the email is written again from the drawings when the project opens, unless you had changed the text by hand
+        keep = bool(d.get("mail_manual")) and bool((d.get("mail") or "").strip())
+        self._mail_setting = True
+        try:
+            self.mail.setPlainText(d.get("mail", "") or "" if keep else "")
+        finally:
+            self._mail_setting = False
+        self._mail_manual = keep
+        if hasattr(self, "stale_lbl"):
+            self.stale_lbl.setVisible(keep)
         self.refresh()
         self.refresh_history()
+        if not keep:
+            self.update_mail()
 
     def project_name(self):
         return self.info["project"].strip() or (getattr(self.host, "rd", {}) or {}).get("project", "").strip() or "Project"
