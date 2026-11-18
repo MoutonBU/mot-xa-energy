@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.67.4**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.68.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Sheet index, orders and changes on their own, 1.68.0**: the register email and the register PDF can now carry a sheet index, listing every drawing of every block or house as Issued today, Issued earlier (with its revision and date) or Not yet issued, so the builder or client sees what has been sent and what is still to come. It works for a single house as well (it only shows when there is more than what is issued today). Tick or untick it on the register page. The orders and changes list is no longer put into the email and the PDF unless you tick "Also list orders and changes"; it stays in its own list.
 - **Wider email, 1.67.4**: the whole register email is about 6% wider (680 instead of 640 pixels) on a computer, so the cards, tables and the signature banner are all a little bigger, and the portrait with them. The text inside the banner keeps its size relative to the banner.
 - **Smarter signature, 1.67.3**: the text in the signature banner is larger so it stays readable when the banner shrinks, and the email address now sits right next to the phone number. On a narrow screen (a phone, or a small preview window) the banner is replaced by plain readable text with the same clickable phone, email and website.
 - **Clickable signature, 1.67.2**: the phone number, email address and website in the signature banner are now real links in the sent email (tap the number to call, the email to write, the website to open it). The name is no longer repeated in front of the phone number.

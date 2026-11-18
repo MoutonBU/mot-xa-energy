@@ -503,7 +503,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         self.host = host
         self.groups = []     # {name, rows:[...]}
         self.history = []    # issues already sent: {issue, date, rows:{key: {rev, rdate, title, comment}}}
-        self.info = {"project": "", "client": "", "issued_by": "", "to": "", "email": "", "note": "", "issue_no": "0", "date": "", "cc": "", "client_logo": ""}
+        self.info = {"project": "", "client": "", "issued_by": "", "to": "", "email": "", "note": "", "issue_no": "0", "date": "", "cc": "", "client_logo": "", "sheet_index": "1", "show_log": "0"}
         self.log = []        # orders and revisions, see register_ext
         self.cur = 0
         self._busy = False
@@ -652,6 +652,17 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             rr.addWidget(c)
         rr.addStretch(1)
         v.addLayout(rr)
+        rx = QHBoxLayout()
+        self.idx_chk = QCheckBox("Add a sheet index (what is issued today and what is still to come)")
+        self.idx_chk.setToolTip("Lists every drawing in every block or house, marked as issued today, issued earlier or not yet issued. Only shown when there is more than what is issued today.")
+        self.log_chk = QCheckBox("Also list orders and changes")
+        self.log_chk.setToolTip("Adds the orders and changes covered by this revision to the email and the register PDF. Off: they stay in their own list.")
+        for c, k in ((self.idx_chk, "sheet_index"), (self.log_chk, "show_log")):
+            c.setChecked(self.info.get(k) == "1")
+            c.toggled.connect(lambda on, k=k: self._opt_changed(k, on))
+            rx.addWidget(c)
+        rx.addStretch(1)
+        v.addLayout(rx)
         bar = QHBoxLayout()
         self.send_btn = QPushButton("Send to the client...")
         self.send_btn.setMinimumHeight(38)
@@ -1478,6 +1489,46 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         on = {k for k, c in getattr(self, "rep_chk", {}).items() if c.isChecked()}
         return [(k, lab, d) for k, lab, d in self.REPORTS if k in on]
 
+    def _opt_changed(self, k, on):
+        self.info[k] = "1" if on else "0"
+        self.update_mail()
+        try:
+            self.refresh()
+        except Exception:
+            pass
+
+    def want_log(self):
+        return self.info.get("show_log") == "1"
+
+    def sheet_index(self):
+        """Every drawing of every block/house: [(group name, [(row, state, note)], n_today)], or [] when there is nothing more than today's issue to show.
+        state is 'today', 'earlier' or 'not'."""
+        if self.info.get("sheet_index") != "1":
+            return []
+        out, total, today = [], 0, 0
+        for g in self.groups:
+            rows = []
+            for r in g["rows"]:
+                if r.get("on", True):
+                    rows.append((r, "today", ""))
+                    today += 1
+                else:
+                    note = ""
+                    for h in reversed(self.history):
+                        o = (h.get("rows") or {}).get(self.key(r))
+                        if o is not None:
+                            note = "REV %s, %s" % (o.get("rev") or "-", h.get("date", "")) if (o.get("rev") or h.get("date")) else ""
+                            rows.append((r, "earlier", note))
+                            break
+                    else:
+                        rows.append((r, "not", ""))
+                total += 1
+            if rows:
+                out.append((g["name"], rows, sum(1 for _r, st, _n in rows if st == "today")))
+        if total <= today and len(out) <= 1:
+            return []
+        return out
+
     def _reports_changed(self, *_a):
         """A report was ticked or unticked: the email and the register PDF list it, so write the email again (unless it was edited by hand)."""
         self.update_mail()
@@ -1509,7 +1560,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             lines += ["No drawing has changed since revision %s." % last.get("issue", ""), ""]
         names = {n for n, _r in gi}
         pend = [x for x in self.log if not x.get("sent_date") and x.get("group") in names]
-        if pend:
+        if pend and self.want_log():
             lines.append("ORDERS AND CHANGES COVERED BY THIS REVISION")
             for x in pend:
                 bit = "  - %s" % x.get("group", "")
@@ -1534,6 +1585,15 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
                 bit += ": " + r["about"] if r.get("about") else ""
                 lines.append(bit.replace("  -  ", "  - "))
             lines.append("")
+        idx = self.sheet_index()
+        if idx:
+            lines.append("SHEET INDEX: ISSUED AND STILL TO COME")
+            for name, rows, nt in idx:
+                lines.append("%s (%d drawings) - %d ISSUED TODAY" % (name.upper(), len(rows), nt))
+                for r, st, note in rows:
+                    lab = {"today": "ISSUED TODAY", "earlier": "ISSUED EARLIER" + ((" (%s)" % note) if note else ""), "not": "NOT YET ISSUED"}[st]
+                    lines.append("  - %s  %s  Rev %s  |  %s" % (r.get("no") or "-", r.get("title", ""), r.get("rev") or "-", lab))
+                lines.append("")
         reps = self.reports_ticked()
         if reps:
             lines.append("REPORTS SENT WITH THIS ISSUE (%d)" % len(reps))
@@ -1584,7 +1644,8 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         new, rev = self.changes()
         out = ['<p style="font-size:9pt;color:#444;">%d drawings in this issue.%s</p>' %
                (n, (" %d revised and %d new since revision %s." % (len(rev), len(new), e(last.get("issue", "")))) if last else "")]
-        out.append(self.log_html(e, td, th, RED))
+        if self.want_log():
+            out.append(self.log_html(e, td, th, RED))
         if last and (rev or new):
             body = ""
             for r in rev:
@@ -1615,6 +1676,17 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             out.append('<table width="100%%" border="0.6" cellspacing="0" style="font-size:8pt;"><tr>%s</tr>%s</table>' %
                        ("".join((th("No.", 6), th("Drawing", 15), th("What it shows", 22), th("Size", 4), th("Scale", 5), th("Rev", 3), th("Rev date", 8),
                                  th("PDF'd", 8), th("What changed", 19), th("Status", 10))), body))
+        idx = self.sheet_index()
+        if idx:
+            out.append('<h3 style="color:%s;margin-bottom:3px;">Sheet index: issued today and still to come</h3>' % RED)
+            for name, rows, nt in idx:
+                body = ""
+                for i, (r, st, note) in enumerate(rows):
+                    bg, lab = {"today": ("#DDF3E4", "Issued today"), "earlier": ("#F6F6F6", "Issued earlier" + ((" (%s)" % note.title()) if note else "")), "not": ("#FFF1CC", "Not yet issued")}[st]
+                    body += "<tr>%s%s%s%s</tr>" % (td(e(r.get("no", "")), bg=bg), td("<b>%s</b>" % e(r.get("title", "")), bg=bg), td(e(r.get("rev", "") or "-"), "center", bg), td(lab, bg=bg))
+                out.append('<p style="font-size:9pt;"><b>%s</b>: %d drawings, %d issued today.</p>' % (e(name), len(rows), nt))
+                out.append('<table width="100%%" border="0.6" cellspacing="0" style="font-size:8.5pt;"><tr>%s</tr>%s</table>' %
+                           ("".join((th("No.", 12), th("Drawing", 50), th("Rev", 8), th("Status", 30))), body))
         reps = self.reports_ticked()
         if reps:
             out.append('<h3 style="color:%s;margin-bottom:3px;">Reports issued with this register</h3>' % RED)
