@@ -900,6 +900,200 @@ class LogMixin:
         else:
             QMessageBox.information(self, "Drawing register", "No drawing has a described change in its revision column since the last issue. Add the revised PDFs or press Re-read the PDFs first.")
 
+    # ----- the memory: every issue that went out, with what changed -----
+    @staticmethod
+    def _long_date(d):
+        try:
+            return datetime.date.fromisoformat(d).strftime("%d %B %Y").lstrip("0")
+        except Exception:
+            return d or ""
+
+    def build_history(self):
+        from PySide6.QtWidgets import QSplitter, QTextBrowser, QWidget
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(0, 6, 0, 0)
+        n = QLabel("Every register that went out from this project, with the date, who it went to, and what changed since the one before. "
+                   "It is kept in the project file, so it is here when you open the project again.")
+        n.setWordWrap(True)
+        v.addWidget(n)
+        bar = QHBoxLayout()
+        self.h_open_mail = QPushButton("Open the email that was sent")
+        self.h_open_dir = QPushButton("Open the drawings folder")
+        self.h_open_mail.clicked.connect(self._h_open_mail)
+        self.h_open_dir.clicked.connect(self._h_open_dir)
+        bar.addWidget(self.h_open_mail)
+        bar.addWidget(self.h_open_dir)
+        bar.addStretch(1)
+        v.addLayout(bar)
+        sp = QSplitter(Qt.Orientation.Vertical)
+        self.htab = QTableWidget(0, 6)
+        self.htab.setHorizontalHeaderLabels(["Revision", "Date", "Sent to", "Drawings", "What changed", "Email subject"])
+        self.htab.verticalHeader().setVisible(False)
+        self.htab.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.htab.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.htab.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.htab.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.htab.horizontalHeader().setStretchLastSection(True)
+        for i, wd in enumerate((80, 130, 220, 80, 300, 400)):
+            self.htab.setColumnWidth(i, wd)
+        self.htab.itemSelectionChanged.connect(self._h_show)
+        sp.addWidget(self.htab)
+        self.hview = QTextBrowser()
+        self.hview.setOpenLinks(False)
+        sp.addWidget(self.hview)
+        sp.setSizes([220, 500])
+        v.addWidget(sp, 1)
+        self._h_rows = []
+        return w
+
+    def refresh_history(self):
+        if not hasattr(self, "htab"):
+            return
+        keep = self.htab.currentRow()
+        hist = list(self.history)
+        self._h_rows = list(reversed(hist))             # newest first
+        t = self.htab
+        t.blockSignals(True)
+        t.setRowCount(len(self._h_rows))
+        for i, h in enumerate(self._h_rows):
+            sent = h.get("sent") or {}
+            vals = ["Revision %s" % h.get("issue", ""), "%s%s" % (self._long_date(h.get("date", "")), (" " + h["time"]) if h.get("time") else ""),
+                    sent.get("to") or "(recorded, not sent from here)", str(len(h.get("rows", {}))), h.get("summary") or self._h_summary(h, hist), sent.get("subject", "")]
+            for c, val in enumerate(vals):
+                t.setItem(i, c, QTableWidgetItem(val))
+        t.blockSignals(False)
+        if self._h_rows:
+            t.selectRow(min(max(keep, 0), len(self._h_rows) - 1))
+            self._h_show()
+        else:
+            self.hview.setHtml("<p>Nothing has been sent from this project yet. When you send a register (or record one as issued), it is kept here.</p>")
+        self._h_buttons()
+
+    def _h_summary(self, h, hist):
+        """A short line for an issue recorded without the full memory: compare its drawings with the issue before it."""
+        i = hist.index(h) if h in hist else -1
+        if i <= 0:
+            return "First issue" if h.get("rows") else ""
+        new, rev = self._h_diff(hist[i - 1], h)
+        bits = []
+        if rev:
+            bits.append("%d revised" % len(rev))
+        if new:
+            bits.append("%d new" % len(new))
+        return ", ".join(bits) or "No drawing changed"
+
+    @staticmethod
+    def _h_diff(prev, cur):
+        p, c = prev.get("rows", {}), cur.get("rows", {})
+        new = [c[k] for k in c if k not in p]
+        rev = [c[k] for k in c if k in p and (c[k].get("rev") or "") != (p[k].get("rev") or "")]
+        return new, rev
+
+    def _h_current(self):
+        r = self.htab.currentRow() if hasattr(self, "htab") else -1
+        return self._h_rows[r] if 0 <= r < len(self._h_rows) else None
+
+    def _h_buttons(self):
+        h = self._h_current()
+        p = ((h or {}).get("sent") or {}).get("path", "")
+        self.h_open_mail.setEnabled(bool(p and os.path.exists(p)))
+        self.h_open_dir.setEnabled(bool(self._h_folder(h)))
+
+    def _h_folder(self, h):
+        for g in (h or {}).get("groups", []):
+            for d in g.get("drawings", []):
+                p = d.get("path", "")
+                if p and os.path.isdir(os.path.dirname(p)):
+                    return os.path.dirname(p)
+        return ""
+
+    def _h_open_mail(self):
+        h = self._h_current()
+        p = ((h or {}).get("sent") or {}).get("path", "")
+        if p and os.path.exists(p):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(p))
+
+    def _h_open_dir(self):
+        d = self._h_folder(self._h_current())
+        if d:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(d))
+
+    def _h_show(self):
+        h = self._h_current()
+        self._h_buttons()
+        if h is not None:
+            self.hview.setHtml(self.history_html(h))
+
+    def history_html(self, h):
+        from html import escape as e
+        RED = "#C8102E"
+        hist = list(self.history)
+        i = hist.index(h) if h in hist else -1
+        prev = hist[i - 1] if i > 0 else None
+        sent = h.get("sent") or {}
+        out = ['<h2 style="margin-bottom:2px;">Revision %s <span style="font-size:11pt;font-weight:400;">&nbsp;%s%s</span></h2>' % (
+            e(str(h.get("issue", ""))), e(self._long_date(h.get("date", ""))), (" at " + e(h["time"])) if h.get("time") else "")]
+        if sent:
+            out.append('<p><b>Sent to:</b> %s%s<br><b>Subject:</b> %s<br><b>Attached:</b> %s</p>' % (
+                e(sent.get("to", "")), (" &nbsp;(cc %s)" % e(sent["cc"])) if sent.get("cc") else "", e(sent.get("subject", "")),
+                e(", ".join(sent.get("files", [])) or "the drawing register and the drawing PDFs")))
+        else:
+            out.append('<p><i>Recorded in the project without an email from here (sent another way, or carried on from an earlier issue).</i></p>')
+        out.append('<h3 style="color:%s;margin-bottom:2px;">What changed%s</h3>' % (RED, (" since revision %s" % e(str(prev.get("issue", "")))) if prev else ""))
+        groups = h.get("groups")
+        shown = False
+        if groups:
+            for g in groups:
+                ch = [d for d in g.get("drawings", []) if d.get("kind") in ("new", "revised")]
+                if not ch:
+                    continue
+                shown = True
+                if len(groups) > 1:
+                    out.append('<p style="margin-bottom:0px;"><b>%s</b></p>' % e(g.get("name", "")))
+                for d in ch:
+                    tag = " (new drawing)" if d.get("kind") == "new" and not h.get("first") else ""
+                    out.append('<p style="margin:4px 0 0 0;"><b>%s %s</b>%s%s</p>' % (e(d.get("no", "")), e(d.get("title", "")), (" (Revision %s)" % e(d["rev"])) if d.get("rev") else "", tag))
+                    its = d.get("changes") or []
+                    if its:
+                        out.append("<ul style='margin-top:0px;'>%s</ul>" % "".join("<li>%s</li>" % e(x) for x in its))
+        elif prev:
+            new, rev = self._h_diff(prev, h)
+            for r in rev:
+                shown = True
+                out.append("<p style='margin:4px 0 0 0;'><b>%s %s</b>: Revision %s to %s</p>" % (e(r.get("no", "")), e(r.get("title", "")), e(str(prev["rows"].get(next((k for k, v in h["rows"].items() if v is r), ""), {}).get("rev", "-"))), e(r.get("rev", "-"))))
+            for r in new:
+                shown = True
+                out.append("<p style='margin:4px 0 0 0;'><b>%s %s</b>: new drawing</p>" % (e(r.get("no", "")), e(r.get("title", ""))))
+        if h.get("first") or (not prev and not shown):
+            out.append("<p>First issue of this project: all %d drawings were sent.</p>" % len(h.get("rows", {})))
+        elif not shown:
+            out.append("<p>No drawing changed.</p>")
+        # the orders and changes of that day
+        day = [x for x in self.log if x.get("sent_date") == h.get("date") and x.get("type") in ("Order", "Change") and x.get("text")]
+        if day:
+            out.append('<h3 style="color:%s;margin-bottom:2px;">Orders and changes that day</h3><ul style="margin-top:0px;">' % RED)
+            for x in day:
+                out.append("<li><b>%s</b>: %s%s%s</li>" % (e(x.get("group", "")), e((x.get("text") or "").replace("\n", " / ")),
+                                                           (" [%s]" % e(x["kinds"])) if x.get("kinds") else "", (" (asked by %s)" % e(x["by_name"])) if x.get("by_name") else ""))
+            out.append("</ul>")
+        # the drawings in this revision
+        rows = []
+        for g in (groups or []):
+            for d in g.get("drawings", []):
+                rows.append((g.get("name", ""), d.get("no", ""), d.get("title", ""), d.get("rev", ""), (d.get("size", "") + " " + d.get("scale", "")).strip(), d.get("kind", "")))
+        if not rows:
+            rows = [("", r.get("no", ""), r.get("title", ""), r.get("rev", ""), "", "") for r in h.get("rows", {}).values()]
+        if rows:
+            out.append('<h3 style="color:%s;margin-bottom:2px;">The %d drawings in this revision</h3><table cellspacing="0" cellpadding="3" width="100%%">' % (RED, len(rows)))
+            for gname, no, title, rv, sz, kind in rows:
+                mark = {"new": " NEW", "revised": " CHANGED"}.get(kind, "")
+                out.append("<tr><td width='60'>%s</td><td>%s</td><td width='70'>Rev %s</td><td width='110'>%s</td><td width='90'><b>%s</b></td></tr>" % (e(no), e(title), e(rv or "-"), e(sz), e(mark.strip())))
+            out.append("</table>")
+        if sent.get("body"):
+            out.append('<h3 style="color:%s;margin-bottom:2px;">The email as it was sent</h3><pre style="font-family:Segoe UI,Arial;">%s</pre>' % (RED, e(sent["body"])))
+        return "".join(out)
+
     def add_log(self, typ):
         e = {k: "" for k in LOGK}
         e.update({"group": self.groups[self.cur]["name"], "type": typ, "date": datetime.date.today().isoformat(), "status": "Draft",
@@ -1238,7 +1432,9 @@ class MailMixin:
         S["mail_designed"] = bool(dlg.design_chk.isChecked())
         self._M().save_settings()
         self.info["email"], self.info["cc"] = dlg.to.text().strip(), dlg.cc.text().strip()
-        self._sending = {"to": ", ".join(to + cc), "subject": dlg.sub.text().strip(), "msg": msgs[0]}
+        self._sending = {"to": ", ".join(to + cc), "subject": dlg.sub.text().strip(), "msg": msgs[0], "body": dlg.body.toPlainText(),
+                         "cc": ", ".join(cc), "to_only": ", ".join(to), "emails": n,
+                         "files": [os.path.basename(p) for fl in parts for p in fl], "designed": bool(dlg.design_chk.isChecked())}
         self.count.setText("Sending %d email%s..." % (n, "s" if n > 1 else ""))
         self.setEnabled(False)
 
@@ -1291,5 +1487,6 @@ class MailMixin:
         except Exception:
             path = ""
         self.count.setText("Sent to %s" % s["to"])
-        self.mark_issued(sent={"to": s["to"], "subject": s["subject"], "path": path}, ask=False)
+        self.mark_issued(sent={"to": s["to"], "subject": s["subject"], "path": path, "body": s.get("body", ""), "cc": s.get("cc", ""),
+                               "files": s.get("files", []), "emails": s.get("emails", 1)}, ask=False)
         QMessageBox.information(self, "Drawing register", "Sent to %s.\nThe issue is recorded in the log; a copy of the email is saved with it." % s["to"])

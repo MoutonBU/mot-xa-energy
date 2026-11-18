@@ -500,6 +500,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         v.addLayout(bar)
         self.sub.addTab(self.draw_w, "Drawings")
         self.sub.addTab(self.build_log(), "Orders and changes")
+        self.sub.addTab(self.build_history(), "Sent and revisions")
         self.mail_done.connect(self._mail_finished)
         self.add_group("House / Block 1", quiet=True)
         self._columns()
@@ -560,6 +561,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         self.cur = min(int(d.get("cur", 0) or 0), len(self.groups) - 1)
         self.mail.setPlainText(d.get("mail", "") or "")
         self.refresh()
+        self.refresh_history()
 
     def project_name(self):
         return self.info["project"].strip() or (getattr(self.host, "rd", {}) or {}).get("project", "").strip() or "Project"
@@ -843,6 +845,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         self._mail_manual = False
         self.mail.setPlainText("")
         self.refresh()
+        self.refresh_history()
         return len(rows)
 
     # ----- what changed since the last issue -----
@@ -861,6 +864,46 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             return "revised", "Revised: Rev %s to Rev %s" % (o.get("rev") or "-", r.get("rev") or "-")
         return "same", "No change"
 
+    def issue_record(self, gi, changes, first, sent, rows):
+        """Everything worth remembering about one issue, kept in the project file: what was sent, when, to whom, the drawings with their revisions,
+        and what changed since the issue before it."""
+        now = datetime.datetime.now()
+        groups, changed = [], []
+        for name, rs in gi:
+            drs = []
+            for r in rs:
+                kind = "new" if first else (changes.get(id(r)) or "")
+                its = [d for d, _rv in self.change_items(r)]
+                if kind in ("new", "revised") and not its:
+                    its = [self._why(r)] if (r.get("comment") or r.get("by")) else []
+                d = {"no": r.get("no", ""), "title": r.get("title", ""), "rev": r.get("rev", ""), "rdate": r.get("rdate", ""), "size": r.get("size", ""), "scale": r.get("scale", ""),
+                     "about": r.get("about", ""), "file": r.get("file", ""), "path": r.get("path", ""), "kind": kind, "changes": its}
+                drs.append(d)
+                if kind in ("new", "revised"):
+                    changed.append(dict(d, group=name))
+            groups.append({"name": name, "drawings": drs})
+        n_new = sum(1 for c in changed if c["kind"] == "new")
+        n_rev = sum(1 for c in changed if c["kind"] == "revised")
+        total = sum(len(g["drawings"]) for g in groups)
+        if first:
+            summary = "First issue: %d drawings" % total
+        else:
+            bits = []
+            if n_rev:
+                bits.append("%d revised" % n_rev)
+            if n_new:
+                bits.append("%d new" % n_new)
+            summary = ", ".join(bits) if bits else "No drawing changed"
+        rec = {"issue": self.info["issue_no"] or "0", "date": now.date().isoformat(), "time": now.strftime("%H:%M"), "rows": rows,
+               "groups": groups, "summary": summary, "first": bool(first), "project": self.project_name(), "client": self.info.get("client", ""),
+               "register_pdf": ""}
+        if sent:
+            rec["sent"] = {"to": sent.get("to", ""), "cc": sent.get("cc", ""), "subject": sent.get("subject", ""), "path": sent.get("path", ""),
+                           "body": sent.get("body", ""), "files": list(sent.get("files", [])), "emails": sent.get("emails", 1)}
+        else:
+            rec["sent"] = {}
+        return rec
+
     def mark_issued(self, sent=None, ask=True):
         gi = self.groups_in_issue()
         if not gi:
@@ -878,7 +921,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
                 rows[self.key(r)] = {"rev": r.get("rev", ""), "rdate": r.get("rdate", ""), "title": r.get("title", ""), "no": r.get("no", ""),
                                      "comment": r.get("comment", ""), "by": r.get("by", ""),
                                      "maxid": max((str(x[0]) for x in (r.get("revs") or []) if len(x) >= 3), default="")}
-        self.history.append({"issue": self.info["issue_no"] or "0", "date": datetime.date.today().isoformat(), "rows": rows})
+        self.history.append(self.issue_record(gi, changes, first, sent, rows))
         try:
             self.info["issue_no"] = str(int(self.info["issue_no"] or "0") + 1)
         except ValueError:
@@ -889,6 +932,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         self._mail_manual = False
         self.mail.setPlainText("")
         self.refresh()
+        self.refresh_history()
         self.count.setText("Issue recorded. Add the revised PDFs (or press Re-read the PDFs) to see the changes.")
 
     def pick_logo(self):
