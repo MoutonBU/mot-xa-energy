@@ -1547,6 +1547,8 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         """[(number, title, rev)] from a sheet index exported by Archicad (.csv, .txt, .tsv or .xlsx). The columns are found by their headings."""
         import csv, io
         rows = []
+        if path.lower().endswith(".pdf"):
+            return RegisterPage.read_sheet_index_pdf(path)
         if path.lower().endswith((".xlsx", ".xlsm")):
             import openpyxl
             ws = openpyxl.load_workbook(path, read_only=True, data_only=True).worksheets[0]
@@ -1586,8 +1588,70 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
                 out.append((no, title, g("rev")))
         return out
 
+    @staticmethod
+    def read_sheet_index_pdf(path):
+        """[(number, title, rev)] from a sheet index that is a PDF (a table of drawing numbers and names). Rows are rebuilt from the position of the words;
+        the columns are found from the heading row when there is one."""
+        import fitz
+        NUM = re.compile(r"^[A-Za-z]{0,6}[-_./]?\d[\w.\-/]*$")
+        REV = re.compile(r"^([A-Za-z]{1,2}|\d{1,2}|-)$")
+        doc = fitz.open(path)
+        out, seen = [], set()
+        for page in doc:
+            words = sorted(page.get_text("words"), key=lambda w: ((w[1] + w[3]) / 2, w[0]))
+            lines, cur, cy = [], [], None
+            for w in words:
+                y = (w[1] + w[3]) / 2
+                if cy is None or abs(y - cy) <= 3.5:
+                    cur.append(w)
+                    cy = y if cy is None else (cy + y) / 2
+                else:
+                    lines.append(cur)
+                    cur, cy = [w], y
+            if cur:
+                lines.append(cur)
+            cells_of = []
+            for ln in lines:
+                ln.sort(key=lambda w: w[0])
+                cells = []
+                for w in ln:
+                    if cells and w[0] - cells[-1][2] < 9:
+                        cells[-1][2] = w[2]
+                        cells[-1][3] += " " + w[4]
+                    else:
+                        cells.append([w[0], w[0], w[2], w[4]])
+                cells_of.append([(c[0], c[3]) for c in cells])
+            head = None
+            for cells in cells_of:
+                low = [t.lower() for _x, t in cells]
+                if any(re.search(r"^(no\.?|number|nr\.?|id|sheet|drawing|layout)\b|\bno\b|number", t) for t in low) and any(re.search(r"name|title|description", t) for t in low):
+                    head = {"no": next(i for i, t in enumerate(low) if re.search(r"^(no\.?|number|nr\.?|id|sheet|drawing|layout)\b|\bno\b|number", t)),
+                            "title": next(i for i, t in enumerate(low) if re.search(r"name|title|description", t)),
+                            "rev": next((i for i, t in enumerate(low) if t.startswith("rev")), None), "x": [x for x, _t in cells]}
+                    break
+            for cells in cells_of:
+                if head:
+                    if cells and cells[0][1].lower() == "" :
+                        continue
+                    cols = {}
+                    for x, t in cells:
+                        ci = max([i for i, hx in enumerate(head["x"]) if hx <= x + 4] or [0])
+                        cols[ci] = (cols.get(ci, "") + " " + t).strip()
+                    no, title, rev = cols.get(head["no"], ""), cols.get(head["title"], ""), cols.get(head["rev"], "") if head["rev"] is not None else ""
+                else:
+                    texts = [t for _x, t in cells]
+                    if len(texts) < 2:
+                        continue
+                    no, title = texts[0], texts[1]
+                    rev = next((t for t in texts[2:] if REV.match(t)), "")
+                if not NUM.match(no) or not title or (no, title) in seen:
+                    continue
+                seen.add((no, title))
+                out.append((no, title, rev))
+        return out
+
     def import_sheet_index(self):
-        files, _ = QFileDialog.getOpenFileNames(self, "Sheet index from Archicad (one per block or house)", "", "Sheet index (*.csv *.txt *.tsv *.xlsx);;All files (*)")
+        files, _ = QFileDialog.getOpenFileNames(self, "Sheet index from Archicad (one per block or house)", "", "Sheet index (*.pdf *.csv *.txt *.tsv *.xlsx);;All files (*)")
         if not files:
             return
         total = 0
