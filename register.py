@@ -583,15 +583,28 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         fb = QPushButton("Add a whole folder...")
         fb.clicked.connect(self.add_folder)
         gl.addWidget(fb)
+        gl.addSpacing(16)
+        sb = QPushButton("Select all")
+        sb.setToolTip("Highlights every drawing in the list (Ctrl+A does the same). Click a row to highlight just that one; Ctrl or Shift click picks several.")
+        sb.clicked.connect(lambda: (self.tab.setFocus(), self.tab.selectAll()))
+        gl.addWidget(sb)
         rb = QPushButton("Remove selected")
         rb.clicked.connect(self.remove_row)
         gl.addWidget(rb)
+        ra = QPushButton("Remove all")
+        ra.setToolTip("Takes every drawing out of this block's list (asks first).")
+        ra.clicked.connect(self.remove_all)
+        gl.addWidget(ra)
         gl.addStretch(1)
         v.addLayout(gl)
         self.tab = QTableWidget(0, len(COLS))
         self.tab.setHorizontalHeaderLabels(COLS)
         self.tab.verticalHeader().setVisible(False)
         self.tab.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.tab.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        # the selected drawing(s) show clearly: a red band across the whole row
+        self.tab.setStyleSheet("QTableWidget::item:selected{background:rgba(200,16,46,150);color:white;}"
+                               "QTableWidget::item:selected:!active{background:rgba(200,16,46,110);color:white;}")
         h = self.tab.horizontalHeader()
         h.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         h.setStretchLastSection(True)
@@ -1116,10 +1129,26 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         return out
 
     def remove_row(self):
-        r = self.tab.currentRow()
-        if 0 <= r < len(self.rows()):
-            self.rows().pop(r)
+        picked = sorted({i.row() for i in self.tab.selectedIndexes()}, reverse=True)
+        if not picked:
+            r = self.tab.currentRow()
+            picked = [r] if r >= 0 else []
+        n = 0
+        for r in picked:
+            if 0 <= r < len(self.rows()):
+                self.rows().pop(r)
+                n += 1
+        if n:
             self.refresh()
+
+    def remove_all(self):
+        n = len(self.rows())
+        if not n:
+            return
+        if QMessageBox.question(self, "Drawing register", "Take all %d drawings out of this list? (The PDF files themselves are not touched.)" % n) != QMessageBox.StandardButton.Yes:
+            return
+        self.rows().clear()
+        self.refresh()
 
     def move(self, d):
         r, rows = self.tab.currentRow(), self.rows()
