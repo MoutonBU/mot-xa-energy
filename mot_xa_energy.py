@@ -11109,17 +11109,40 @@ class MainWindow(QMainWindow):
                 if res.get("excluded"):
                     msg += (" Gates and garage doors (G1, G2 ... and anything named gate or garage) were left out: %d."
                             % res["excluded"])
-                msg += ("\n\nIt is used for Energy (XA) and the rational design report. Light & Ventilation "
-                        "can use its windows and doors too: tick the IFC box in that tab.\n\n"
+                msg += ("\n\nIt is used for Energy (XA) and the rational design report, and its windows, doors and rooms "
+                        "were put into Light & Ventilation as well (the two IFC boxes in that tab are ticked; untick them "
+                        "if you want to type your own).\n\n"
                         "Hover over a window in the Energy (XA) windows table to see its back view.")
-                if self.rd.get("lv_ifc"):
-                    self._apply_ifc_to_lv()
-                if self.rd.get("lv_ifc_rooms"):
-                    self._apply_ifc_rooms_to_lv()
+                try:
+                    self._ifc_to_lv_auto()
+                except Exception as e_:
+                    msg += "\n\n(Could not fill Light & Ventilation by itself: %s. Tick the IFC boxes in that tab to try again.)" % e_
                 msg += "\n\nThe next window lets you check the glazed and opening percentages, and mark glazed doors."
                 QMessageBox.information(self, APP_NAME, msg)
                 QTimer.singleShot(0, self.review_ifc)
         self._run_bg(lambda: read_ifc_model(path), done, "Reading the IFC model...")
+
+    def _ifc_to_lv_auto(self):
+        """After an IFC import: put the windows, doors and rooms into Light & Ventilation and refresh Energy (XA),
+        so nothing has to be ticked by hand. Quiet: no pop-ups and no jumping between tabs."""
+        self._ifc_quiet = True
+        self._lv_busy = True
+        try:
+            for key, chk in (("lv_ifc", getattr(self, "lv_ifc_chk", None)), ("lv_ifc_rooms", getattr(self, "lv_ifc_rooms_chk", None))):
+                self.rd[key] = "1"
+                if chk is not None:
+                    chk.blockSignals(True)
+                    chk.setChecked(True)
+                    chk.blockSignals(False)
+            self._apply_ifc_to_lv()            # the schedule first: the rooms use it to leave out internal doors
+            self._apply_ifc_rooms_to_lv()
+        finally:
+            self._ifc_quiet = False
+            self._lv_busy = False
+        try:
+            self._run_xa_quiet()
+        except Exception:
+            pass
 
     def _lv_ifc_rooms_toggled(self, on):
         self.rd["lv_ifc_rooms"] = "1" if on else ""
@@ -11464,6 +11487,8 @@ class MainWindow(QMainWindow):
                             T.item(r, c).setBackground(YELLOW)
         has_doors = any(i.get("kind") == "Door" for i in items)
         has_wins = any(i.get("kind") != "Door" for i in items)
+        if getattr(self, "_ifc_quiet", False):
+            return
         self._goto_lv(1 if has_doors and not has_wins else 0)
         msg = (f"Read {len(items)} windows/doors from the {source}: {n_new} added to your "
                f"schedule" + (f", {n_upd} already there and updated" if n_upd else "") + ".")
@@ -11544,6 +11569,14 @@ class MainWindow(QMainWindow):
                     self.floors.append(fl)
             self._refresh_floor_widgets(select="All floors")
         mine = [r for r in range(self.room_table.rowCount()) if self._floor_of_row(r) in targets]
+        blank = [r for r in mine if not (self.room_table.item(r, 0) and self.room_table.item(r, 0).text().strip())]
+        for r in sorted(blank, reverse=True):           # an empty starting row is not a room worth asking about
+            self.room_table.removeRow(r)
+        mine = [r for r in range(self.room_table.rowCount()) if self._floor_of_row(r) in targets]
+        if mine and source == "IFC model" and getattr(self, "_ifc_quiet", False):
+            for r in reversed(mine):                    # a new IFC import replaces the rooms of the same floors
+                self.room_table.removeRow(r)
+            mine = []
         if mine:
             ans = QMessageBox.question(
                 self, APP_NAME,
@@ -11584,6 +11617,8 @@ class MainWindow(QMainWindow):
                 self._set_units_mode(True)
             except Exception:
                 pass
+        if getattr(self, "_ifc_quiet", False):
+            return
         self._goto_lv(2)
         if multi:
             per = ", ".join(f"{sum(1 for r in rooms if r['floor'] == t)} on '{t}'" for t in targets)
