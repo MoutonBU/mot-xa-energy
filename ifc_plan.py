@@ -817,20 +817,38 @@ def render_levels(plan, status, combined=None, width=1100, max_h=900, only_with_
 
 
 def square_angle(plan):
-    """Degrees to turn the plan so the long side of the walls' bounding rectangle is level."""
+    """Degrees to turn the plan so its walls run exactly level and upright, whatever angle the model was drawn at.
+    The angle comes from every wall edge on every level (longer edges count more), folded into quarter turns, so one
+    odd angled wall cannot tip the plan. The long side of the building ends up horizontal."""
     if "_angle" in plan:
         return plan["_angle"]
     ang = 0.0
     try:
-        from shapely.geometry import Polygon
-        from shapely.ops import unary_union
-        st = max(plan["storeys"], key=lambda s: len(s["layers"].get("wall", [])))
-        u = unary_union([Polygon(p[0]).buffer(0) for p in st["layers"].get("wall", []) if len(p[0]) > 3])
-        c = list(u.minimum_rotated_rectangle.exterior.coords)
-        e1, e2 = (c[1][0] - c[0][0], c[1][1] - c[0][1]), (c[2][0] - c[1][0], c[2][1] - c[1][1])
-        e = e1 if math.hypot(*e1) >= math.hypot(*e2) else e2
-        ang = -math.degrees(math.atan2(e[1], e[0]))
-        ang = (ang + 90) % 180 - 90
+        sx = sy = 0.0
+        pts = []
+        for st in plan["storeys"]:
+            for poly in st["layers"].get("wall", []):
+                for ring in [poly[0]] + list(poly[1]):
+                    n = len(ring)
+                    for i in range(n):
+                        x1, y1 = ring[i][0], ring[i][1]
+                        x2, y2 = ring[(i + 1) % n][0], ring[(i + 1) % n][1]
+                        dx, dy = x2 - x1, y2 - y1
+                        ln = math.hypot(dx, dy)
+                        if ln < 0.05:
+                            continue
+                        t = 4 * math.atan2(dy, dx)
+                        sx += ln * math.cos(t)
+                        sy += ln * math.sin(t)
+                    pts += [(p[0], p[1]) for p in ring]
+        if sx or sy:
+            dom = math.degrees(math.atan2(sy, sx)) / 4.0          # the walls' main direction, within +-45 degrees
+            ang = -dom
+            c, s_ = math.cos(math.radians(ang)), math.sin(math.radians(ang))
+            xs = [x * c - y * s_ for x, y in pts]
+            ys = [x * s_ + y * c for x, y in pts]
+            if pts and (max(ys) - min(ys)) > (max(xs) - min(xs)) * 1.0001:
+                ang += 90.0 if ang <= 0 else -90.0                  # long side level
     except Exception:
         ang = 0.0
     plan["_angle"] = ang
@@ -865,7 +883,7 @@ class PlanPage(QWidget):
         self.straight.setChecked(True)
         self.straight.setToolTip("Turn the plan so its main walls run level and upright. Untick for the model's own angle.")
         self.straight.toggled.connect(self._draw)
-        top.addWidget(self.straight)
+        self.straight.setVisible(False)      # the plan is always shown level; there is no reason to turn it off
         self.tags_cb = QCheckBox("Tags")
         self.tags_cb.setChecked(True)
         self.tags_cb.setToolTip("Show the window and door tags (W1, D2...) on the plan.")
@@ -1009,7 +1027,7 @@ class PlanPage(QWidget):
         st = self._plan["storeys"][max(0, self.combo.currentIndex())]
         is_l = bool(self.win.shell_is_light()) if hasattr(self.win, "shell_is_light") else False
         pal = _palette(is_l)
-        self.view.rot = square_angle(self._plan) if self.straight.isChecked() else 0.0
+        self.view.rot = square_angle(self._plan)
         self._asg = self._assigned(st)
         self.view.show_storey(st, pal, {k: room_status(r) for k, r in self._asg.items()})
         fg, bg = ("#1c1f24", "#ffffff") if is_l else ("#eceef0", "#17171b")
