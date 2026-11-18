@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.71.2**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.71.3**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Status for many drawings at once, 1.71.3**: under the drawing list, "Status for many drawings at once": pick or type a status (For information, For approval, ...) and press Set for ticked drawings, Set for this block, or Set for everything. You can still change a single drawing in the Status column (Show all details).
 - **Earlier issues remembered per block, 1.71.2**: drawings you sent in an earlier issue stay in the sheet index as Issued earlier, with their revision and date, even when you only send other blocks today. This is now matched block by block, so the same drawing number in two blocks (for example 101 in Block A and in Block C) is not mixed up. The line above the tables also says which blocks were issued earlier.
 - **Sheet index on/off button, 1.71.1**: under the email there is a blue button, "Sheet index (what is still to come): ON". Click it to turn the sheet index off when you only want to send one batch of drawings; the email then lists just the drawings you are sending. Click again to bring it back. It is on by default.
 - **Shorter email, grey tabs, rounded labels, 1.71.0**: the list of drawings in the email now runs in two columns, so a block of 9 drawings takes about half the height, with the revision and size under each title. The Issued today, Issued earlier and Not yet issued labels are rounded. Each report (and other list item) now sits on a light grey tab with the red edge. On a phone the two columns stack under each other.

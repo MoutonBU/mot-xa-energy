@@ -665,6 +665,23 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         self.all_chk = QCheckBox("Show all details (size, scale, dates, who asked, status, file)")
         self.all_chk.toggled.connect(self._columns)
         v.addWidget(self.all_chk)
+        sr = QHBoxLayout()
+        sr.addWidget(QLabel("<b>Status for many drawings at once:</b>"))
+        self.status_all = QComboBox()
+        self.status_all.addItems(STATUSES)
+        self.status_all.setEditable(True)
+        self.status_all.setMinimumWidth(190)
+        self.status_all.setToolTip("Pick or type a status, then press one of the buttons.")
+        sr.addWidget(self.status_all)
+        for txt, tip, mode in (("Set for ticked drawings", "Changes the status of every drawing that is ticked to be sent.", "ticked"),
+                               ("Set for this block", "Changes the status of every drawing in the block or house shown above.", "block"),
+                               ("Set for everything", "Changes the status of every drawing in every block or house.", "all")):
+            b = QPushButton(txt)
+            b.setToolTip(tip)
+            b.clicked.connect(lambda _=False, m=mode: self.set_status_all(m))
+            sr.addWidget(b)
+        sr.addStretch(1)
+        v.addLayout(sr)
         # 3  the email and send
         v.addSpacing(6)
         v.addWidget(step("3.  Check the email and send it"))
@@ -1380,6 +1397,21 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         else:
             row[k] = it.text().strip()
         QTimer.singleShot(0, self._counts)
+
+    def set_status_all(self, mode):
+        t = self.status_all.currentText().strip()
+        if not t:
+            return
+        if mode == "ticked":
+            rs = [r for g in self.groups for r in g["rows"] if r.get("on")]
+        elif mode == "block":
+            rs = list(self.rows())
+        else:
+            rs = [r for g in self.groups for r in g["rows"]]
+        for r in rs:
+            r["status"] = t
+        self.refresh()
+        self._counts()
 
     def _counts(self):
         self.update_mail()
