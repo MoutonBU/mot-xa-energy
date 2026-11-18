@@ -1,12 +1,11 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.67.4**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.67.3**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
-- **Slightly larger signature text, 1.67.4**: the name, position, phone, email and website in the signature banner are about 6% larger. The banner still lines up with the cards above it.
 - **Smarter signature, 1.67.3**: the text in the signature banner is larger so it stays readable when the banner shrinks, and the email address now sits right next to the phone number. On a narrow screen (a phone, or a small preview window) the banner is replaced by plain readable text with the same clickable phone, email and website.
 - **Clickable signature, 1.67.2**: the phone number, email address and website in the signature banner are now real links in the sent email (tap the number to call, the email to write, the website to open it). The name is no longer repeated in front of the phone number.
 - **Signature follows the width, rounded edges, 1.67.1**: the signature banner now stretches and shrinks with the email preview window, and with the email on a phone or a wide screen (up to a sensible maximum), and has rounded corners like the other cards.
