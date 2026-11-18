@@ -3940,6 +3940,7 @@ ICON_SVG = {
     "orientation": '<circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v2.5M12 18v2.5M3.5 12H6M18 12h2.5"/><path d="m12 7.5 2.2 4.5H9.8z" fill="currentColor"/>',
     "glass": '<rect x="5" y="3" width="14" height="18" rx="1.5"/><path d="m9 8 6-2.5M9 13.5l6-2.5"/>',
     "leaf": '<path d="M5 19c0-8 4-13.5 14-14.5 0 9-5 14.5-12.5 14.5"/><path d="M5 19c2.5-4 5-6.5 9-8.5"/>',
+    "mail": '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3.5 7 8.5 6 8.5-6"/>',
     "star": '<path d="m12 3.5 2.6 5.4 5.9.8-4.3 4.1 1 5.9L12 16.9l-5.2 2.8 1-5.9-4.3-4.1 5.9-.8z"/>',
 }
 
@@ -4001,11 +4002,40 @@ ICON_KEYS = [
     ("liquid glass", "eye"), ("restart", "refresh"), ("update", "refresh"), ("reload", "refresh"),
     ("quit", "close"), ("cancel", "close"), ("done", "check_circle"), ("tools", "settings"),
     ("reports", "pdf"), ("select all", "check_circle"), ("set...", "edit"),
+    # --- fallbacks, so that nearly every button carries an icon ---
+    ("check and send", "mail"), ("who is it for", "user"), ("the drawings", "plan"), ("stand and its limits", "pin"),
+    ("the buildings", "building"), ("result and reports", "results"), ("walls", "wall"), ("roof", "roof"),
+    ("floors", "floor"), ("hot water pipes", "drop"), ("hot water", "sun"), ("air infiltration", "wind"),
+    ("lighting", "bolt"), ("windows", "window"), ("doors", "door"), ("rooms", "room"), ("results", "results"),
+    ("set frame", "glass"), ("set glass", "glass"), ("set for", "check_circle"), ("reset", "refresh"),
+    ("bring back", "refresh"), ("write it again", "refresh"), ("delete", "trash"), ("start fresh", "trash"),
+    ("load", "import"), ("get changes", "import"), ("get weather", "sun"), ("read quantities", "import"),
+    ("pick", "folder"), ("folder", "folder"), ("attach", "file_plus"), ("copy", "copy"), ("email", "mail"),
+    ("send", "mail"), ("pdf", "pdf"), ("csv", "export"), ("logo", "image"), ("signature", "user"),
+    ("client", "user"), ("order", "clipboard"), ("new ", "file_plus"), ("type drawings", "edit"),
+    ("find", "search"), ("web search", "globe"), ("google earth", "globe"), ("weather", "sun"), (".epw", "sun"),
+    ("comply", "shield"), ("compliance", "shield"), ("check", "check_circle"), ("use ", "check_circle"),
+    ("default", "star"), ("choose", "layers"), ("build", "building"), ("block", "building"), ("carport", "roof"),
+    ("fill the blocks", "building"), ("more", "settings"), ("options", "settings"), ("fit", "search"),
+    ("edit", "edit"), ("calc", "calc"), ("schedule", "clipboard"), ("sheet", "clipboard"), ("update", "refresh"),
+    ("rates", "tag"), ("price", "tag"), ("site plan", "plan"), ("southern cape", "pin"), ("plan", "plan"),
+    ("row", "add"), ("whole", "layers"), ("home", "home"), ("switch", "layers"),
+]
+TAB_KEYS = [
+    ("sent and revisions", "mail"), ("client changes", "edit"), ("orders", "clipboard"), ("drawing register", "plan"),
+    ("drawings", "plan"), ("fixtures", "tag"), ("building materials", "cube"), ("whole building", "building"),
+    ("bill of materials", "clipboard"), ("price build-up", "calc"), ("allowances", "shield"), ("extra items", "add"),
+    ("quantities", "ruler"), ("tally", "results"), ("cost by level", "layers"), ("schedule", "clipboard"),
+    ("home", "home"), ("light", "lightvent"), ("energy", "bolt"), ("coverage", "building"), ("detail notes", "edit"),
+    ("costing", "calc"), ("start", "home"), ("sans", "building"), ("rates", "tag"), ("windows", "window"),
+    ("doors", "door"), ("rooms", "room"), ("results", "results"), ("plan", "plan"),
 ]
 
 
 def _icon_for(text):
-    t = (text or "").lower().replace("&", "&")
+    t = (text or "").strip().lower()
+    if not t or not (t[0].isalnum() or t[0] == "("):    # text already led by a glyph (arrow, + sign, sun...)
+        return None
     for k, n in ICON_KEYS:
         if k in t:
             return n
@@ -4087,6 +4117,16 @@ class _IconFilter(QObject):
 
 def apply_icons(win, force=False):
     """Tab icons, button icons and big icons on the home cards."""
+    from PySide6.QtWidgets import QTabWidget as _TWd
+    for tw in win.findChildren(_TWd):
+        for i in range(tw.count()):
+            if tw.tabIcon(i).isNull() or force:
+                t_ = tw.tabText(i).replace("&&", "&").strip().lower()
+                n_ = next((n for k, n in TAB_KEYS if k in t_), None)
+                if n_:
+                    tw.setTabIcon(i, make_icon(n_, "#eceef0", 17))
+        if tw.count():
+            tw.setIconSize(QSize(17, 17))
     mt = getattr(win, "main_tabs", None)
     if mt is not None:
         for i, n in enumerate(("home", "lightvent", "bolt", "building", "ruler")):
@@ -4107,7 +4147,8 @@ GROUP_ICON_KEYS = [
     ("windows and glazed", "window"), ("air infiltration", "wind"), ("rational", "shield"), ("where is the building", "pin"),
     ("building details", "building"), ("building type", "building"), ("what kind of building", "building"),
     ("project", "folder"), ("model", "cube"), ("light", "lightvent"), ("energy", "bolt"), ("reports", "pdf"),
-    ("who", "user"), ("location", "pin"), ("details", "edit"),
+    ("who", "user"), ("location", "pin"), ("details", "edit"), ("blocks", "building"),
+    ("fixture", "tag"), ("product", "tag"),
 ]
 
 
@@ -13994,7 +14035,7 @@ class MainWindow(QMainWindow):
                 return "Run the check" if t_.startswith("Run the check") else t_
             self.xa_steps = ux_.BoxSteps(boxes_, [short_(b_.title()) for b_ in boxes_])
             for b_ in boxes_:                                  # the step bar numbers them now: the old "2." "3." in the titles would disagree
-                b_.setTitle(re.sub(r"^\s*\d+\.\s*", "", b_.title()))
+                b_.setTitle(("        " if getattr(b_, "_icon", None) else "") + re.sub(r"^\s*\d+\.\s*", "", b_.title().strip()))
             outer.insertWidget(0, self.xa_steps.top)
             outer.addWidget(self.xa_steps.bottom)
         except Exception as e_:

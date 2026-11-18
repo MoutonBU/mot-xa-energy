@@ -131,7 +131,7 @@ class Rail(QFrame):
                 self.psubs[idx] = []
                 for ti in range(tw.count()):
                     lbl = tw.tabText(ti)
-                    sb = QPushButton(lbl.replace("&&", "&"))
+                    sb = QPushButton({"Fixtures and sanitary ware": "Fixtures", "Whole building and budget": "Whole building"}.get(lbl, lbl).replace("&&", "&"))
                     sb.setObjectName("railSubItem")
                     sb.setProperty("iconName", PSUB_ICONS.get(lbl, "folder"))
                     sb.setIconSize(QSize(16, 16))
@@ -405,12 +405,12 @@ class Ribbon(QFrame):
                 getattr(c, name)(*a)
             return f
         self.pages[5] = self._page([
-            ("Schedule", [T("Build from rooms", "room", cost("build_from_rooms"), hot=True), T("Add line", "add", cost("add_line"))]),
+            ("Schedule", [T("Rooms", "room", cost("build_from_rooms"), hot=True), T("Add line", "add", cost("add_line"))]),
             ("Products", [T("From link", "import", cost("add_from_link")), T("Manual", "edit", cost("add_product")),
-                          T("Find product", "search", cost("find_ai"), hot=True)]),
+                          T("Find (AI)", "search", cost("find_ai"), hot=True)]),
             ("Building materials", [T("Read IFC", "cube", cost("mat_read")), T("Preview", "eye", cost("mat_preview")), T("Export", "pdf", cost("mat_export"))]),
-            ("Costing report", [T("Preview", "eye", cost("cost_report_preview"), hot=True), T("Export PDF", "pdf", cost("cost_report_export"))]),
-            ("Fixture schedule", [T("Preview PDF", "eye", cost("preview_pdf")), T("Export PDF", "pdf", cost("export_pdf")), T("Export CSV", "export", cost("export_csv"))])])
+            ("Costing report", [T("Preview", "eye", cost("cost_report_preview"), hot=True), T("PDF", "pdf", cost("cost_report_export"))]),
+            ("Fixture schedule", [T("Preview", "eye", cost("preview_pdf")), T("PDF", "pdf", cost("export_pdf")), T("CSV", "export", cost("export_csv"))])])
         def reg(name, *a):
             def f():
                 c = getattr(w, "register_page", None)

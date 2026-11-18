@@ -458,24 +458,24 @@ class CostingPage(QWidget):
         # products
         gp = QGroupBox("Products")
         pv = QVBoxLayout(gp)
-        pb = QHBoxLayout()
+        from flow_layout import FlowLayout
+        pb = FlowLayout()
+        ai = QPushButton("Find product (AI)...")
         for text, fn in (("Add from link...", self.add_from_link), ("Add manually...", self.add_product), ("Edit", self.edit_product),
                          ("Remove", self.remove_product), ("Use as default", self.set_default)):
             b = QPushButton(text)
             b.clicked.connect(fn)
             pb.addWidget(b)
-        pb.addSpacing(16)
+        pb.addWidget(ai)
         pb.addWidget(QLabel("Or open the shops:"))
         self.find_cat = QComboBox()
         self.find_cat.addItems(CATEGORIES[:-1])
         self.find_shop = QComboBox()
         for n, _s in RETAILERS:
             self.find_shop.addItem(n)
-        ai = QPushButton("Find product (AI)...")
         ai.setToolTip("Describe the item or give a picture of the look you want. The program searches South African online shops and "
                       "lists real products with their name, code, price and photo.")
         ai.clicked.connect(self.find_ai)
-        pb.insertWidget(0, ai)
         fb = QPushButton("Web search")
         fb.setToolTip("Opens a web search in your browser for the chosen item at the chosen shop. Copy the link of a product "
                       "you like and use Add from link.")
