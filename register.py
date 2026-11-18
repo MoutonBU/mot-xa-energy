@@ -1937,8 +1937,6 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
     def sheet_index(self):
         """Every drawing of every block/house: [(group name, [(row, state, note)], n_today)], or [] when there is nothing more than today's issue to show.
         state is 'today', 'earlier' or 'not'."""
-        if self.info.get("sheet_index") != "1":
-            return []
         out, total, today = [], 0, 0
         for g in self.groups:
             rows = []

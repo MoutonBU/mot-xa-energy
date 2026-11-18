@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.70.7**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.70.8**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Sheet index always on, 1.70.8**: the sheet index and the still-to-come drawings are now always put into the email whenever something is not in the issue. A project saved while the old "Add a sheet index" tick box was switched off kept it off with no way to turn it back on; that setting is gone.
 - **Email written fresh when a project opens, 1.70.7**: when you open a saved project the email is now written again from the drawings (so the sheet index and the still-to-come drawings appear), unless you had changed the text by hand. Before, an opened project kept the old saved email text and never updated it.
 - **Issued by shows only the name, 1.70.6**: in the drawing register (the page and the PDF), Issued by now shows just your name, without your position and the rest of the signature.
 - **One list of everything in the email, 1.70.5**: when some drawings are still to come, the email no longer has two lists. It has one table per block or house listing every drawing by number and name, with its revision, size and scale, marked Issued today (red), Issued earlier or Not yet issued, under a line such as "Issued today: Block A (3 of 3). Still to come: Block B (5 drawings)". Drawing numbers with spaces (like A 101) and titles with extra spaces now also appear in the table.
