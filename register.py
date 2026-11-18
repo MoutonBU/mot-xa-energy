@@ -599,6 +599,9 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         v.addLayout(gl)
         self.tab = QTableWidget(0, len(COLS))
         self.tab.setMinimumHeight(170)
+        self.tab.horizontalHeader().setSectionsClickable(True)
+        self.tab.horizontalHeader().sectionClicked.connect(self.sort_by_column)
+        self.tab.horizontalHeader().setToolTip("Click a heading to sort the list by it; click again to reverse.")
         self.tab.setHorizontalHeaderLabels(COLS)
         self.tab.verticalHeader().setVisible(False)
         self.tab.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -1174,6 +1177,44 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         if n:
             self.refresh()
             self._toast_undo("%d drawing%s taken out of the list" % (n, "" if n == 1 else "s"), snap)
+
+    def open_pdf_of_selected(self, folder=False):
+        """Open the PDF of the selected drawing, or the folder it is in."""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        r = self.tab.currentRow()
+        rows = self.rows()
+        if not (0 <= r < len(rows)):
+            return
+        p = rows[r].get("path") or ""
+        if not p or not os.path.exists(p):
+            QMessageBox.information(self, "Drawing register", "That drawing's file was not found on this computer.")
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(p) if folder else p))
+
+    def sort_by_column(self, col):
+        """Click a column heading to sort the list by it; click again to reverse."""
+        if not (0 <= col < len(KEYS)):
+            return
+        k = KEYS[col]
+        asc = not (getattr(self, "_sort", (None, True))[0] == col and getattr(self, "_sort", (None, True))[1])
+        self._sort = (col, asc)
+
+        def keyf(r):
+            v = r.get(k, "")
+            if k == "on":
+                return (0 if v else 1,)
+            t = str(v or "").strip().lower()
+            digits = re.sub(r"[^0-9.]", "", t)
+            try:
+                return (0, float(digits), t) if digits and k in ("no", "rev", "size") and digits.replace(".", "", 1).isdigit() else (1, 0.0, t)
+            except ValueError:
+                return (1, 0.0, t)
+        self.rows().sort(key=keyf, reverse=not asc)
+        self.refresh()
+        hd = self.tab.horizontalHeader()
+        hd.setSortIndicatorShown(True)
+        hd.setSortIndicator(col, Qt.SortOrder.AscendingOrder if asc else Qt.SortOrder.DescendingOrder)
 
     def remove_all(self):
         n = len(self.rows())

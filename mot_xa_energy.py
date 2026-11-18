@@ -8539,12 +8539,10 @@ class MainWindow(QMainWindow):
             "are internal doors - they are not imported from a schedule and are left out of "
             "the light and ventilation sums.")
         self.skip_chk.toggled.connect(lambda on: SKIP_UNGLAZED.__setitem__(0, bool(on)))
-        top.addWidget(self.skip_chk)
         self.sash_chk = QCheckBox("Manual sash size")
         self.sash_chk.setToolTip("Show the sash W/H/No. columns to type an exact opening size "
                                  "by hand. Not needed when the openings are read from the drawing.")
         self.sash_chk.toggled.connect(self._toggle_sash_cols)
-        top.addWidget(self.sash_chk)
         top.addWidget(QLabel("Glazing limit %"))
         self.glaze_spin = QDoubleSpinBox()
         self.glaze_spin.setRange(1, 100)
@@ -8554,26 +8552,46 @@ class MainWindow(QMainWindow):
                                    "rational design is needed.")
         self.glaze_spin.valueChanged.connect(lambda v: GLAZE_LIMIT.__setitem__(0, float(v)))
         top.addWidget(self.glaze_spin)
+        from PySide6.QtWidgets import QMenu as _QM, QWidgetAction as _WA
+        _TB = QPushButton
+        more_btn = _TB()
+        more_btn.setText("More options")
+        more_btn.setToolTip("Less used settings: skip internal doors, manual sash size.")
+        more_menu = _QM(more_btn)
+        for chk_ in (self.skip_chk, self.sash_chk):
+            wa_ = _WA(more_menu)
+            wa_.setDefaultWidget(chk_)
+            more_menu.addAction(wa_)
+        more_btn.setMenu(more_menu)
+        top.addWidget(more_btn)
         top.addStretch()
+        top2 = FlowLayout()
+        mlab = QLabel("<b>Model source:</b>")
+        top2.addWidget(mlab)
         self.lv_ifc_chk = QCheckBox("Use IFC model for windows and doors")
         self.lv_ifc_chk.setToolTip("Brings the windows and doors from your IFC model into the schedules below, "
                                    "with sizes, glass and opening areas. Rooms still come from your floor plan.")
         self.lv_ifc_chk.toggled.connect(self._lv_ifc_toggled)
-        top.addWidget(self.lv_ifc_chk)
+        top2.addWidget(self.lv_ifc_chk)
         self.lv_ifc_rooms_chk = QCheckBox("Use IFC model for rooms and floors")
         self.lv_ifc_rooms_chk.setToolTip("Creates the floors (Ground Floor, First Floor ...) and their rooms in the "
                                          "Rooms tab from the zones in your IFC model.")
         self.lv_ifc_rooms_chk.toggled.connect(self._lv_ifc_rooms_toggled)
-        top.addWidget(self.lv_ifc_rooms_chk)
+        top2.addWidget(self.lv_ifc_rooms_chk)
+        top2.addStretch()
+        imp_btn = _TB()
+        imp_btn.setText("Import")
+        imp_btn.setToolTip("Bring in windows or a floor plan from a PDF or a screenshot.")
+        imp_menu = _QM(imp_btn)
         for label, fn in [
             ("Import windows (PDF / screenshot)...", self.import_schedule_any),
             ("Paste windows screenshot", self.paste_schedule_clipboard),
             ("Import floor plan (PDF / screenshot)...", self.import_rooms_any),
             ("Paste floor plan screenshot", self.paste_rooms_clipboard),
         ]:
-            b = QPushButton(label)
-            b.clicked.connect(fn)
-            top.addWidget(b)
+            imp_menu.addAction(label, fn)
+        imp_btn.setMenu(imp_menu)
+        top2.addWidget(imp_btn)
         self.main_tabs = QTabWidget()
         layout.addWidget(self.main_tabs)
         self.home_page = QWidget()
@@ -8582,6 +8600,7 @@ class MainWindow(QMainWindow):
         lv_lay = QVBoxLayout(lv_page)
         lv_lay.setContentsMargins(0, 6, 0, 0)
         lv_lay.addLayout(top)
+        lv_lay.addLayout(top2)
         self.tabs = QTabWidget()
         lv_lay.addWidget(self.tabs)
         lv_page.setMinimumSize(980, 640)                 # a small screen scrolls this page instead of crushing its rows together
@@ -8820,6 +8839,9 @@ class MainWindow(QMainWindow):
                     walk(a_.menu())
         except Exception:
             pass
+        # command search, table features
+        QShortcut(QKeySequence("Ctrl+K"), self, activated=self.open_command_search)
+        self._ui_tables(ux)
         # drop files on the window
         self._drop = ux.DropFilter(self, (".mcplv", ".json", ".ifc", ".ifczip", ".pdf"), self._dropped)
         # empty states
@@ -8837,6 +8859,72 @@ class MainWindow(QMainWindow):
                         ux.EmptyHint(t, title, hint, lambda: bool(light()))
                     except Exception:
                         pass
+
+    def _ui_tables(self, ux):
+        """Remembered column widths and a right-click menu on the main tables."""
+        store = SETTINGS.setdefault("col_widths", {})
+        if not isinstance(store, dict):
+            store = SETTINGS["col_widths"] = {}
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(save_settings)
+        save = lambda: timer.start(800)
+        light_fn = lambda: bool(light())
+        rp = getattr(self, "register_page", None)
+        spec = [("windows", getattr(self, "sched_table", None), [("Remove selected", lambda: self._remove_selected(self.sched_table))]),
+                ("doors", getattr(self, "door_table", None), [("Remove selected", lambda: self._remove_selected(self.door_table))]),
+                ("rooms", getattr(self, "room_table", None), [("Remove selected", lambda: self._remove_selected(self.room_table))])]
+        if rp is not None:
+            spec += [("reg_drawings", getattr(rp, "tab", None),
+                      [("-", None), ("Remove selected", rp.remove_row), ("Open the PDF", lambda: rp.open_pdf_of_selected()),
+                       ("Show the PDF in its folder", lambda: rp.open_pdf_of_selected(folder=True))]),
+                     ("reg_log", getattr(rp, "ltab", None), []), ("reg_history", getattr(rp, "htab", None), [])]
+        for key, t, extras in spec:
+            if t is None:
+                continue
+            try:
+                ux.remember_columns(t, key, store, save)
+                ux.table_menu(t, light_fn, extras)
+            except Exception as e_:
+                print("table helper", key, e_)
+
+    def command_list(self):
+        """Everything the command search can do: the tabs and every command in the menus."""
+        out = []
+        for i in range(self.main_tabs.count()):
+            nm = self.main_tabs.tabText(i).replace("&&", "&")
+            out.append(("Go to  \u203A  " + nm, lambda i=i: self.main_tabs.setCurrentIndex(i), "Ctrl+%d" % (i + 1) if i < 9 else ""))
+        for i in range(self.tabs.count()):
+            nm = self.tabs.tabText(i)
+            out.append(("Light & Ventilation  \u203A  " + nm, lambda i=i: (self.main_tabs.setCurrentIndex(1), self.tabs.setCurrentIndex(i)), ""))
+        rp = getattr(self, "register_page", None)
+        if rp is not None:
+            for i in range(rp.sub.count()):
+                out.append(("Drawing register  \u203A  " + rp.sub.tabText(i),
+                            lambda i=i: (self.goto_main_tab("Drawing register"), rp.sub.setCurrentIndex(i)), ""))
+            for label, meth in (("Add drawing PDFs", "add_pdfs"), ("Add a whole folder of drawings", "add_folder"), ("Send the register to the client", "send_mail"),
+                                ("Preview the register PDF", "preview_pdf"), ("Preview and edit the email", "preview_email"), ("Email account", "email_account"),
+                                ("My signature", "my_signature")):
+                if hasattr(rp, meth):
+                    out.append(("Drawing register  \u203A  " + label, lambda m=meth: (self.goto_main_tab("Drawing register"), getattr(rp, m)()), ""))
+
+        def walk(menu, path):
+            for a in menu.actions():
+                if a.isSeparator():
+                    continue
+                t = a.text().replace("&&", "&").replace("&", "").replace("...", "").strip()
+                if a.menu():
+                    walk(a.menu(), path + [t])
+                elif a.isEnabled() and t:
+                    out.append(("  \u203A  ".join(path + [t]), lambda a=a: a.trigger(), a.shortcut().toString() if not a.shortcut().isEmpty() else ""))
+        for ma in self.menuBar().actions():
+            if ma.menu():
+                walk(ma.menu(), [ma.text().replace("&", "")])
+        return out
+
+    def open_command_search(self):
+        d = self._ux.CommandPalette(self, self.command_list(), lambda: bool(light()))
+        d.exec()
 
     def toast(self, text, action_text="", action=None, ms=9000):
         """A short message at the bottom of the window (instead of a pop-up), with an optional button such as Undo."""
@@ -8961,6 +9049,11 @@ class MainWindow(QMainWindow):
             xb.clicked.connect(lambda _c=False, f=fn: f())
             h.addWidget(xb)
         h.addStretch()
+        try:
+            import ui_extras as _ux
+            h.addWidget(_ux.count_label(table, "rows"))
+        except Exception:
+            pass
         v.addLayout(h)
         return w
 

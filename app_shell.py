@@ -64,6 +64,19 @@ class Rail(QFrame):
         v.addWidget(self.title)
         v.addWidget(self.sub)
         v.addSpacing(10)
+        from PySide6.QtWidgets import QScrollArea
+        navw = QWidget()
+        navw.setObjectName("railNavBox")
+        nv = QVBoxLayout(navw)
+        nv.setContentsMargins(0, 0, 0, 0)
+        nv.setSpacing(3)
+        navsc = QScrollArea()                       # on a short window the menu scrolls; the pack button below stays in view
+        navsc.setWidgetResizable(True)
+        navsc.setFrameShape(QFrame.Shape.NoFrame)
+        navsc.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        navsc.setStyleSheet("QScrollArea{background:transparent;} #railNavBox{background:transparent;} QScrollBar:vertical{width:6px;}")
+        navsc.setWidget(navw)
+        v.addWidget(navsc, 1)
         self.nav, self.badge, self.subs = {}, {}, {}
         for idx, label, _icon in SUBJECTS:
             row = QWidget()
@@ -80,7 +93,7 @@ class Rail(QFrame):
             bd.setObjectName("railBadge")
             hl.addWidget(b, 1)
             hl.addWidget(bd)
-            v.addWidget(row)
+            nv.addWidget(row)
             self.nav[idx], self.badge[idx] = b, bd
             if idx == 1:
                 for si, sl, sic in LV_SUBS:
@@ -90,9 +103,9 @@ class Rail(QFrame):
                     sb.setIconSize(QSize(16, 16))
                     sb.setCursor(Qt.CursorShape.PointingHandCursor)
                     sb.clicked.connect(lambda _c=False, i=si: self._lv_sub(i))
-                    v.addWidget(sb)
+                    nv.addWidget(sb)
                     self.subs[si] = sb
-        v.addStretch(1)
+        nv.addStretch(1)
         self.pack = QPushButton("Build submission pack")
         self.pack.setObjectName("railPack")
         self.pack.setCursor(Qt.CursorShape.PointingHandCursor)

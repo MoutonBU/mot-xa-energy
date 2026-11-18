@@ -253,3 +253,178 @@ def whats_new_dialog(win, items, current):
     row.addWidget(ok)
     v.addLayout(row)
     d.exec()
+
+
+# ---------------------------------------------------------------- command search (Ctrl+K)
+class CommandPalette(QDialog):
+    """Type a few letters, press Enter: jump to a tab or run a command from any menu."""
+
+    def __init__(self, win, commands, is_light):
+        super().__init__(win, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        from PySide6.QtWidgets import QLineEdit, QListWidget, QListWidgetItem
+        self.win, self.commands = win, commands
+        self._Item = QListWidgetItem
+        bg, tx, mu, bd = palette_for(is_light())
+        self.setObjectName("cmdPalette")
+        self.setStyleSheet(
+            "#cmdPalette{background:%s;border:1px solid %s;border-radius:12px;}"
+            "QLineEdit{background:transparent;border:none;border-bottom:1px solid %s;color:%s;font-size:16px;padding:10px 14px;}"
+            "QListWidget{background:transparent;border:none;color:%s;font-size:13px;outline:0;}"
+            "QListWidget::item{padding:7px 14px;}"
+            "QListWidget::item:selected{background:rgba(200,16,46,60);color:%s;}" % (bg, bd, bd, tx, tx, tx))
+        v = QVBoxLayout(self)
+        v.setContentsMargins(4, 4, 4, 8)
+        self.edit = QLineEdit()
+        self.edit.setPlaceholderText("Type what you want to do: send, IFC, export, register, dark mode ...")
+        self.edit.textChanged.connect(self._filter)
+        v.addWidget(self.edit)
+        self.list = QListWidget()
+        self.list.itemActivated.connect(self._run)
+        self.list.itemClicked.connect(self._run)
+        v.addWidget(self.list)
+        self.hint = QLabel("Enter to run  ·  Up / Down to choose  ·  Esc to close")
+        self.hint.setStyleSheet("color:%s;font-size:11px;padding:0 14px;" % mu)
+        v.addWidget(self.hint)
+        self.resize(min(640, max(420, win.width() - 80)), 420)
+        self.edit.installEventFilter(self)
+        self._filter("")
+
+    def showEvent(self, e):
+        w = self.win
+        self.move(w.x() + (w.width() - self.width()) // 2, w.y() + 90)
+        self.edit.setFocus()
+        super().showEvent(e)
+
+    def _filter(self, text):
+        words = [x for x in text.lower().split() if x]
+        scored = []
+        for label, fn, sc in self.commands:
+            low = label.lower()
+            if all(w in low for w in words):
+                pos = min((low.find(w) for w in words), default=0)
+                scored.append((pos, len(label), label, fn, sc))
+        scored.sort(key=lambda t: (t[0], t[1]))
+        self.list.clear()
+        for _p, _l, label, fn, sc in scored[:60]:
+            it = self._Item(label + (("      " + sc) if sc else ""))
+            it.setData(Qt.ItemDataRole.UserRole, fn)
+            self.list.addItem(it)
+        if self.list.count():
+            self.list.setCurrentRow(0)
+
+    def _run(self, it):
+        fn = it.data(Qt.ItemDataRole.UserRole)
+        self.accept()
+        if fn:
+            QTimer.singleShot(60, fn)
+
+    def eventFilter(self, o, e):
+        if o is self.edit and e.type() == QEvent.Type.KeyPress:
+            k = e.key()
+            if k in (Qt.Key.Key_Down, Qt.Key.Key_Up):
+                r = self.list.currentRow() + (1 if k == Qt.Key.Key_Down else -1)
+                self.list.setCurrentRow(max(0, min(self.list.count() - 1, r)))
+                return True
+            if k in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                it = self.list.currentItem()
+                if it:
+                    self._run(it)
+                return True
+        return False
+
+
+# ---------------------------------------------------------------- tables: remembered column widths, row count, right-click menu
+def _cell_text(table, r, c):
+    from PySide6.QtWidgets import QAbstractButton, QComboBox, QDoubleSpinBox, QSpinBox
+    w = table.cellWidget(r, c)
+    if w is not None:
+        if isinstance(w, QComboBox):
+            return w.currentText()
+        if isinstance(w, (QDoubleSpinBox, QSpinBox)):
+            return w.text()
+        if isinstance(w, QAbstractButton):
+            return w.text() or ("yes" if w.isChecked() else "")
+        inner = w.findChild(QAbstractButton)
+        if inner is not None:
+            return inner.text() or ("yes" if inner.isChecked() else "")
+    it = table.item(r, c)
+    return it.text() if it is not None else ""
+
+
+class _HeaderRelease(QObject):
+    def __init__(self, header, cb):
+        super().__init__(header)
+        self.cb = cb
+        header.viewport().installEventFilter(self)
+
+    def eventFilter(self, o, e):
+        if e.type() == QEvent.Type.MouseButtonRelease:
+            QTimer.singleShot(0, self.cb)
+        return False
+
+
+def remember_columns(table, key, store, save):
+    """Column widths you set by dragging are kept (in `store`, a dict) and put back next time."""
+    from PySide6.QtWidgets import QHeaderView
+    hd = table.horizontalHeader()
+    saved = store.get(key)
+    if isinstance(saved, list) and len(saved) == table.columnCount():
+        for c, wd in enumerate(saved):
+            try:
+                if hd.sectionResizeMode(c) == QHeaderView.ResizeMode.Interactive and int(wd) > 12:
+                    table.setColumnWidth(c, int(wd))
+            except Exception:
+                pass
+
+    def grab():
+        try:
+            store[key] = [table.columnWidth(c) for c in range(table.columnCount())]
+            save()
+        except RuntimeError:
+            pass
+    _HeaderRelease(hd, grab)
+
+
+def count_label(table, noun="rows"):
+    """A small 'N rows' label that follows the table."""
+    lb = QLabel("")
+    lb.setStyleSheet("color:#8a8f98;padding:0 8px;")
+
+    def sync(*_a):
+        try:
+            n = table.rowCount() - sum(1 for r in range(table.rowCount()) if table.isRowHidden(r))
+            lb.setText("%d %s" % (n, noun if n != 1 else noun.rstrip("s")))
+        except RuntimeError:
+            pass
+    m = table.model()
+    for sig in (m.rowsInserted, m.rowsRemoved, m.modelReset, m.layoutChanged):
+        sig.connect(sync)
+    sync()
+    return lb
+
+
+def table_menu(table, is_light, extras=None):
+    """Right-click menu on a table: copy the selected cells, select all, plus the actions in extras [(label, fn)]."""
+    from PySide6.QtWidgets import QApplication, QMenu
+
+    def show(pos):
+        m = QMenu(table)
+        rows = sorted({i.row() for i in table.selectedIndexes()})
+        a = m.addAction("Copy the selected rows" if len(rows) != 1 else "Copy the selected row")
+        a.setEnabled(bool(rows))
+
+        def copy():
+            lines = ["\t".join(_cell_text(table, r, c) for c in range(table.columnCount())) for r in rows]
+            QApplication.clipboard().setText("\n".join(lines))
+        a.triggered.connect(copy)
+        m.addAction("Select all", table.selectAll)
+        for label, fn in (extras or []):
+            if label == "-":
+                m.addSeparator()
+                continue
+            x = m.addAction(label)
+            x.setEnabled(bool(rows) or not label.lower().startswith(("remove selected", "open", "show")))
+            x.triggered.connect(lambda _c=False, f=fn: f())
+        m.exec(table.viewport().mapToGlobal(pos))
+    table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+    table.customContextMenuRequested.connect(show)
