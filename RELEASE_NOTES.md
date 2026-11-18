@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.70.1**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.70.2**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Load sheet indexes from a folder, 1.70.2**: on the register page, "Load all sheet indexes from a folder..." lets you point at the folder where your sheet indexes are saved. Every sheet index inside it, also in the Block A, Block C, Block D... sub folders, is found at once (a file counts when its name has the word index, drawing list or register). The block or house is named from the file ("Block A sheet index.pdf" gives Block A) or, when the file is just called "Sheet index", from the folder it sits in. You can still change each name before adding. The file picker is still there as "Pick sheet index files...".
 - **Simpler drawings step, 1.70.1**: step 2 of the register is now two plain actions. A: "Load the sheet index(es)..." lets you pick the sheet index file of every block or house at once (PDF, csv or xlsx) and name each one; every drawing in them is listed as still to come. B: "Add drawing PDFs..." for what you are sending today; each PDF is matched to the sheet index by its drawing number (even if the dashes or spaces differ) and ticked to send automatically. Whatever you do not send is listed for the client as still to come. Blocks and houses now have your own names: "+ Add a block or house..." asks for the name, there are Rename and Delete buttons, and the starting block is called Main house (and takes the name of the first sheet index you load).
 - **Sheet index as a PDF, 1.69.2**: "Import a sheet index..." now also reads a sheet index that is a PDF. It finds the rows and columns from the position of the text (drawing number, name, revision), with or without a heading row. A scanned PDF (a picture) cannot be read.
 - **Import a sheet index, 1.69.1**: on the register page, "Import a sheet index..." reads the sheet index (list of layouts) you export from Archicad for another block or house (.csv, .txt, .tsv or .xlsx), finds the number, name and revision columns by their headings, and adds those drawings as still to come for the block you choose. The email and PDF then tell the client what is coming.

@@ -574,8 +574,12 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         # a) the whole job
         la = QHBoxLayout()
         la.addWidget(QLabel("<b>A.</b> The whole job:"))
-        ib = QPushButton("Load the sheet index(es)...")
-        ib.setStyleSheet("font-weight:700;")
+        fi = QPushButton("Load all sheet indexes from a folder...")
+        fi.setStyleSheet("font-weight:700;")
+        fi.setToolTip("Pick the folder where your sheet indexes are saved. Every sheet index inside it, also in the Block A, Block B... folders, is found at once.")
+        fi.clicked.connect(self.import_sheet_index_folder)
+        la.addWidget(fi)
+        ib = QPushButton("Pick sheet index files...")
         ib.setToolTip("Pick the sheet index PDF (or csv/xlsx) from Archicad. Pick one for each block or house, all at once. Every drawing in them is added and listed as still to come.")
         ib.clicked.connect(self.import_sheet_index)
         la.addWidget(ib)
@@ -1696,6 +1700,35 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         files, _ = QFileDialog.getOpenFileNames(self, "Sheet index from Archicad: pick one for each block or house (you can pick several)", "", "Sheet index (*.pdf *.csv *.txt *.tsv *.xlsx);;All files (*)")
         if not files:
             return
+        self._load_indexes(files)
+
+    def import_sheet_index_folder(self):
+        """Point to the folder that holds the block folders; every sheet index inside it (also in the sub folders) is found and named from its file or folder name."""
+        top = QFileDialog.getExistingDirectory(self, "Pick the folder that holds your sheet indexes (the block folders can be inside it)")
+        if not top:
+            return
+        files = []
+        for root, _dirs, names in os.walk(top):
+            for n in sorted(names):
+                if n.lower().endswith((".pdf", ".csv", ".txt", ".tsv", ".xlsx")) and re.search(r"index|drawing list|sheet list|layout list|register", n, re.I):
+                    files.append(os.path.join(root, n))
+        if not files:
+            QMessageBox.information(self, "Drawing register", "No sheet index found in that folder. A sheet index file has the word index in its name, for example \"Block A sheet index.pdf\" or a file called \"Sheet index.pdf\" inside a folder called Block A.")
+            return
+        self._load_indexes(files)
+
+    @staticmethod
+    def _block_name_of(path):
+        """Block or house name from the file name ("Block A sheet index.pdf" -> Block A); when the file only says "Sheet index", from the folder it is in."""
+        stem = os.path.splitext(os.path.basename(path))[0]
+        name = re.sub(r"(?i)[\s_.-]*\b(sheet|drawing|layout)?[\s_-]*(index|list|register)\b[\s_-]*", " ", stem).strip(" _-.")
+        name = re.sub(r"(?i)\b(rev|revision)\s*\w*$", "", name).strip(" _-.")
+        if not name:
+            name = os.path.basename(os.path.dirname(os.path.abspath(path))) or stem
+        return name
+
+    def _load_indexes(self, files):
+        from PySide6.QtWidgets import QDialog, QDialogButtonBox
         found = []
         for f in files:
             try:
@@ -1724,7 +1757,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             ck.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
             ck.setCheckState(Qt.CheckState.Checked)
             t.setItem(i, 0, ck)
-            stem = re.sub(r"(?i)[\s_-]*(sheet|drawing)?[\s_-]*(index|list|register)\b", "", os.path.splitext(os.path.basename(f))[0]).strip(" _-") or os.path.splitext(os.path.basename(f))[0]
+            stem = self._block_name_of(f)
             cb = QComboBox()
             cb.setEditable(True)
             cb.addItems(names)
