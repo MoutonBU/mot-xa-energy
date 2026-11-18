@@ -57,7 +57,7 @@ def _icon(kind):
     return _ICONS[kind]
 
 
-ROW1, ROW2, FS = 252, 312, 30
+ROW1, ROW2, FS = 254, 315, 32
 
 
 def _tw(text, px, maxw):
@@ -81,14 +81,14 @@ def layout(S):
     x = 850
     if phone:
         w, px = _tw(phone, FS, 420)
-        L["phone"] = {"text": phone, "x0": x, "tx": x + 42, "px": px, "maxw": 420, "base": ROW1, "end": x + 42 + w}
-        x = x + 42 + w + 44
+        L["phone"] = {"text": phone, "x0": x, "tx": x + 44, "px": px, "maxw": 420, "base": ROW1, "end": x + 44 + w}
+        x = x + 44 + w + 44
     if email:
-        avail = right - (x + 42)
+        avail = right - (x + 44)
         w, px = _tw(email, FS, avail)
-        L["mail"] = {"text": email, "x0": x, "tx": x + 42, "px": px, "maxw": avail, "base": ROW1, "end": x + 42 + w}
+        L["mail"] = {"text": email, "x0": x, "tx": x + 44, "px": px, "maxw": avail, "base": ROW1, "end": x + 44 + w}
     w, px = _tw("www.mcparchitecture.co.za", FS, 900)
-    L["web"] = {"text": "www.mcparchitecture.co.za", "x0": 850, "tx": 892, "px": px, "maxw": 900, "base": ROW2, "end": 892 + w}
+    L["web"] = {"text": "www.mcparchitecture.co.za", "x0": 850, "tx": 894, "px": px, "maxw": 900, "base": ROW2, "end": 894 + w}
     return L
 
 
@@ -121,12 +121,12 @@ def render(S, photo_path=None):
     name, role = g("sig_name"), g("sig_role")
     L = layout(S)
     p.setPen(INK)
-    _fit(p, name, 46, 980)
-    p.drawText(QPointF(850, 150), name)
+    _fit(p, name, 49, 980)
+    p.drawText(QPointF(850, 152), name)
     if role:
         p.setPen(RED)
-        _fit(p, role, 31, 980)
-        p.drawText(QPointF(851, 192), role)
+        _fit(p, role, 33, 980)
+        p.drawText(QPointF(851, 195), role)
     p.setPen(INK)
     for key, kind in (("phone", "phone"), ("mail", "mail"), ("web", "web")):
         if key not in L:
@@ -134,7 +134,7 @@ def render(S, photo_path=None):
         txt, x0, tx, px, base = L[key]["text"], L[key]["x0"], L[key]["tx"], L[key]["px"], L[key]["base"]
         ic = _icon(kind)
         if not ic.isNull():
-            p.drawImage(QRectF(x0, base - 27, ic.width() * 1.05, ic.height() * 1.05), ic)
+            p.drawImage(QRectF(x0, base - 29, ic.width() * 1.12, ic.height() * 1.12), ic)
         _fit(p, txt, px, L[key]["maxw"])
         p.drawText(QPointF(tx, base), txt)
     p.end()
