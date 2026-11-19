@@ -12222,13 +12222,28 @@ class MainWindow(QMainWindow):
             self._reimport_notes = []
         if not self.combined:
             return rooms
-        def key(r):
-            return ((r.get("floor") or ""), (r.get("unit") or ""), str(r.get("name") or "").strip().lower())
-        by_key = {key(r): r for r in rooms}
-        out, used, rebuilt, frozen = list(rooms), set(), [], []
-        add = []
+        def nm(r):
+            return str(r.get("name") or "").strip().lower()
+        taken = set()
+
+        def find(p):
+            """The new room a combined part came from: same storey, unit and name; else the same unit and name on another storey
+            (storey renamed); else the only room with that name. Never the same room twice."""
+            fl, un, n_ = (p.get("floor") or ""), (p.get("unit") or ""), str(p.get("name") or "").strip().lower()
+            tests = [lambda r: (r.get("floor") or "") == fl and (r.get("unit") or "") == un and nm(r) == n_,
+                     lambda r: (r.get("unit") or "") == un and nm(r) == n_]
+            if not un:
+                tests.append(lambda r: nm(r) == n_)
+            for test in tests:
+                c = [r for r in rooms if id(r) not in taken and test(r)]
+                if c:
+                    c.sort(key=lambda r: abs(float(r.get("area") or 0) - self._num_text(p.get("area"))))   # the same name twice: closest area
+                    taken.add(id(c[0]))
+                    return c[0]
+            return None
+        used, rebuilt, frozen, add = set(), [], [], []
         for name, parts in list(self.combined.items()):
-            found = [by_key.get((p.get("floor") or "", p.get("unit") or "", str(p.get("name") or "").strip().lower())) for p in parts]
+            found = [find(p) for p in parts]
             hit = [f for f in found if f is not None]
             for f in hit:
                 used.add(id(f))
@@ -12243,8 +12258,8 @@ class MainWindow(QMainWindow):
                                      "internal": p.get("internal", False), "art": p.get("art", False),
                                      "floor": f.get("floor") or p.get("floor"), "unit": f.get("unit", ""), "facing": f.get("facing", "")})
                 self.combined[name] = newparts
-                add.append({"name": name, "area": area, "tags": tags, "floor": parts[0].get("floor"),
-                            "unit": parts[0].get("unit", ""), "facing": self._merge_facing(newparts), "_art": all(p.get("art") for p in parts)})
+                add.append({"name": name, "area": area, "tags": tags, "floor": newparts[0]["floor"],
+                            "unit": newparts[0]["unit"], "facing": self._merge_facing(newparts), "_art": all(p.get("art") for p in parts)})
                 rebuilt.append(name)
             else:                                                      # part renamed or gone: leave this combined room exactly as it was
                 tags = {}
