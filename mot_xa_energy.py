@@ -8971,6 +8971,8 @@ class MainWindow(QMainWindow):
                     vip.setChecked(bool(SETTINGS.get("vip")))
                     acl = a_.menu().addAction("Archicad link (WIP)...", self.open_archicad_link)
                     acl.setVisible(bool(SETTINGS.get("vip")))
+                    acl2 = a_.menu().addAction("Live design check (WIP)...", self.open_live_panel)
+                    acl2.setVisible(bool(SETTINGS.get("vip")))
 
                     def _write_app_path():
                         try:
@@ -8984,11 +8986,12 @@ class MainWindow(QMainWindow):
                     if SETTINGS.get("vip"):
                         _write_app_path()
 
-                    def _vip(on, acl=acl):
+                    def _vip(on, acl=acl, acl2=acl2):
                         if on:
                             _write_app_path()
                         SETTINGS["vip"] = bool(on)
                         acl.setVisible(bool(on))
+                        acl2.setVisible(bool(on))
                         try:
                             save_settings()
                         except Exception:
@@ -8997,6 +9000,7 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         QShortcut(QKeySequence("Ctrl+Shift+A"), self, activated=lambda: self.open_archicad_link() if SETTINGS.get("vip") else None)
+        QShortcut(QKeySequence("Ctrl+Shift+L"), self, activated=lambda: self.open_live_panel() if SETTINGS.get("vip") else None)
         if (not SETTINGS.get("welcomed") and os.environ.get("QT_QPA_PLATFORM") != "offscreen"
                 and not any(a in sys.argv for a in ("--restore", "--ready", "--after-update"))):
             QTimer.singleShot(1500, _tour)
@@ -9082,6 +9086,56 @@ class MainWindow(QMainWindow):
             if ma.menu():
                 walk(ma.menu(), [ma.text().replace("&", "")])
         return out
+
+    def open_live_panel(self):
+        import archicad_link
+        if getattr(self, "_live_panel", None) is None:
+            self._live_panel = archicad_link.LivePanel(self)
+        self._live_panel.show()
+        self._live_panel.raise_()
+
+    def apply_archicad_model(self, m):
+        """Make the Light & Ventilation windows, doors and rooms follow Archicad, then run the checks quietly."""
+        prev_t, prev_f = getattr(self, "_ac_tags", set()), getattr(self, "_ac_floors", set())
+        new_t = {i["tag"].upper() for i in m["items"]}
+        new_f = {r["floor"] for r in m["rooms"]}
+        if not getattr(self, "_ac_taken", False):                  # first time: Archicad becomes the source of rooms, windows and doors
+            self._ac_taken = True
+            for T in (self.sched_table, self.door_table, self.room_table):
+                T.setRowCount(0)
+        self._ifc_quiet = True
+        try:
+            for T in (self.sched_table, self.door_table):          # windows and doors that were deleted in Archicad
+                for r in reversed(range(T.rowCount())):
+                    it = T.item(r, 0)
+                    if it and it.text().strip().upper() in prev_t and it.text().strip().upper() not in new_t:
+                        T.removeRow(r)
+            for r in reversed(range(self.room_table.rowCount())):  # rooms of the floors Archicad filled
+                if self._floor_of_row(r) in prev_f | new_f:
+                    self.room_table.removeRow(r)
+            if m["items"]:
+                items = []
+                for it in m["items"]:
+                    c = dict(it)
+                    c["flag"] = []
+                    items.append(c)
+                self._fill_schedule(items, "IFC model")
+            if m["rooms"]:
+                self._fill_rooms([dict(r, tags=dict(r["tags"])) for r in m["rooms"]], 0, "IFC model")
+        finally:
+            self._ifc_quiet = False
+        self._ac_tags, self._ac_floors = new_t, new_f
+        try:
+            self._run_xa_quiet()
+        except Exception:
+            pass
+        ap = getattr(self, "area_page", None)
+        if ap is not None and m["rooms"]:
+            try:
+                ap.table.setRowCount(0)
+                ap._bulk_add([{"level": r["floor"], "room": r["name"], "area": r["area"]} for r in m["rooms"]])
+            except Exception:
+                pass
 
     def open_archicad_link(self):
         import archicad_link
