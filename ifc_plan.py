@@ -234,8 +234,25 @@ def build_plan(path):
     storeys = {}
     for s in ifc.by_type("IfcBuildingStorey"):
         storeys[s.id()] = {"name": s.Name or "Level", "elev": float(s.Elevation or 0) * sc, "items": []}
-    for cls, kind in kinds.items():
-        for el in ifc.by_type(cls):
+    def _proxy_kind(el):
+        # windows and doors Archicad exported as generic objects: they fill an opening and are named like one
+        try:
+            if getattr(el, "FillsVoids", None):
+                nm = (el.Name or "").strip()
+                if re.match(r"^(door|d\d)", nm, re.I):
+                    return "IfcDoor"
+                if re.match(r"^(window|w\d)", nm, re.I):
+                    return "IfcWindow"
+        except Exception:
+            pass
+        return None
+    todo = [(cls, el) for cls in kinds for el in ifc.by_type(cls)]
+    for el in ifc.by_type("IfcBuildingElementProxy"):
+        pc = _proxy_kind(el)
+        if pc:
+            todo.append((pc, el))
+    for cls, el in todo:
+        if True:
             try:
                 cont = UE.get_container(el)
                 if cont is None and cls == "IfcSpace":
@@ -255,7 +272,14 @@ def build_plan(path):
                     except Exception:
                         extra = None
                 try:
-                    sh = ifcopenshell.geom.create_shape(st, el)
+                    try:
+                        sh = ifcopenshell.geom.create_shape(st, el)
+                    except Exception:
+                        if not el.is_a("IfcBuildingElementProxy"):
+                            raise
+                        op = el.FillsVoids[0].RelatingOpeningElement          # no shape of its own: use the hole it fills
+                        sh = ifcopenshell.geom.create_shape(st, op)
+                        extra = None
                     v = np.array(sh.geometry.verts, dtype=float).reshape(-1, 3)      # already metres, in world coordinates
                     f = np.array(sh.geometry.faces, dtype=int).reshape(-1, 3)
                 except Exception:
@@ -320,6 +344,45 @@ def build_plan(path):
     return {"storeys": out}
 
 
+def _child(path, conn):
+    try:
+        conn.send(("ok", build_plan(path)))
+    except Exception as ex:
+        conn.send(("err", str(ex)))
+    conn.close()
+
+
+def _build_isolated(path, timeout=300):
+    """build_plan in a separate process: if the geometry library crashes on some element, only that process dies and the
+    program stays up. Falls back to reading in this process when a second process cannot be started."""
+    try:
+        import multiprocessing as mp
+        ctx = mp.get_context("spawn")
+        rx, tx = ctx.Pipe(False)
+        pr = ctx.Process(target=_child, args=(path, tx), daemon=True)
+        pr.start()
+    except Exception:
+        return build_plan(path)
+    tx.close()
+    got = None
+    try:
+        if rx.poll(timeout):
+            got = rx.recv()
+    except (EOFError, OSError):
+        got = None
+    try:
+        pr.join(2)
+        if pr.is_alive():
+            pr.terminate()
+    except Exception:
+        pass
+    if got is None:
+        raise RuntimeError("Reading the plan crashed or took too long. The rest of the program is fine. The model may hold an element the plan reader cannot draw.")
+    if got[0] == "err":
+        raise RuntimeError(got[1])
+    return got[1]
+
+
 def plan_for(path):
     """The plan for a file (cached by name and modification time)."""
     key = (path, os.path.getmtime(path))
@@ -327,7 +390,7 @@ def plan_for(path):
         hit = _CACHE.get(key)
     if hit is not None:
         return hit
-    plan = build_plan(path)
+    plan = _build_isolated(path)
     with _LOCK:
         _CACHE[key] = plan
     return plan
@@ -709,7 +772,7 @@ def _poly_area(sp):
     return abs(sum(o[i][0] * o[i + 1][1] - o[i + 1][0] * o[i][1] for i in range(len(o) - 1))) / 2.0
 
 
-def assign_results(storey, results, combined=None):
+def assign_results(storey, results, combined=None, alias=None):
     """Match every room of a level with a row of the results: {id(room): result row}.
     The program drops the unit prefix from room names (U3-Kitchen becomes Kitchen in unit U3), so rooms are matched
     on level, unit and bare name, then by closest area when a name repeats (several passages)."""
@@ -728,9 +791,13 @@ def assign_results(storey, results, combined=None):
                 rows.append(([r, pt.get("name")], _norm(r.get("floor") or pt.get("floor")),
                              (_norm(r.get("unit") or pt.get("unit")) or u).lower(), n, _norm(pt.get("name")), pa))
             continue
-        u, n = _split_unit(r.get("room"))
+        rname = r.get("room")
+        old = (alias or {}).get("%s||%s" % (r.get("floor") or "", rname))
+        if old:                         # a toilet or store renamed 'Public WC': the plan still has the model's own name
+            rname = old
+        u, n = _split_unit(rname)
         ru = _norm(r.get("unit")) or u
-        rows.append(([r, None], _norm(r.get("floor")), ru.lower(), n, _norm(r.get("room")), float(r.get("area") or 0)))
+        rows.append(([r, None], _norm(r.get("floor")), ru.lower(), n, _norm(rname), float(r.get("area") or 0)))
     used, out = set(), {}
     for sp_ in storey["spaces"]:
         sp_.pop("_part_of", None)
@@ -781,7 +848,7 @@ def print_palette():
     return p
 
 
-def render_levels(plan, status, combined=None, width=1100, max_h=900, only_with_rooms=True):
+def render_levels(plan, status, combined=None, width=1100, max_h=900, only_with_rooms=True, alias=None):
     """[(level name, QImage)] for the PDF report: the plan on white with rooms coloured by result."""
     from PySide6.QtGui import QImage
     out = []
@@ -795,7 +862,7 @@ def render_levels(plan, status, combined=None, width=1100, max_h=900, only_with_
             continue
         v = PlanView()
         v.rot = ang
-        v.show_storey(st, print_palette(), {k: room_status(r) for k, r in assign_results(st, status, combined).items()})
+        v.show_storey(st, print_palette(), {k: room_status(r) for k, r in assign_results(st, status, combined, alias).items()})
         r = v.scene().itemsBoundingRect().adjusted(-0.6, -0.6, 0.6, 0.6)
         if r.isEmpty():
             continue
@@ -1014,7 +1081,8 @@ class PlanPage(QWidget):
 
     # --- drawing
     def _assigned(self, st):
-        return assign_results(st, getattr(self.win, "results", None) or [], getattr(self.win, "combined", None))
+        return assign_results(st, getattr(self.win, "results", None) or [], getattr(self.win, "combined", None),
+                              (getattr(self.win, "ifc_data", None) or {}).get("aliases"))
 
     def _draw(self, *_):
         if not self._plan:

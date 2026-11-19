@@ -6189,6 +6189,38 @@ def _ifc_open_els(ifc, cls):
     return list(ifc.by_type(cls)) + [e for e in ifc.by_type("IfcBuildingElementProxy") if _proxy_open_kind(e) == kind]
 
 
+PUBLIC_WC_RE = re.compile(r"\b(toilets?|wc|w\.c\.?|vc|lavatory|loo|cloakroom|powder)\b", re.I)
+
+
+def ifc_label_public_rooms(rooms, items):
+    """A toilet or store that belongs to no unit and is reached only from outside is a public one: rename it 'Public WC' /
+    'Public store' so the light, ventilation and sun checks and the reports label it correctly. Returns {'floor||new name': old name}."""
+    out = {}
+    try:
+        if not any(r.get("unit") for r in rooms):
+            return out                                      # a single house: nothing is "outside the units"
+        ext = {i["tag"]: i.get("external") for i in items if i.get("kind") == "Door"}
+        for r in rooms:
+            if r.get("unit"):
+                continue
+            nm = r.get("name") or ""
+            kind = "WC" if PUBLIC_WC_RE.search(nm) else ("store" if STORAGE_RE.search(nm) else "")
+            if not kind or re.search(r"\bpublic\b", nm, re.I):
+                continue
+            de = r.get("_dext")
+            if de is None:                                   # no per-door answer: fall back on the door types
+                de = [ext[t] for t in (r.get("tags") or {}) if t in ext]
+            if not de or not all(x is True for x in de):
+                continue
+            new = "Public " + (PUBLIC_WC_RE.sub("WC", nm, count=1) if kind == "WC" else nm)
+            out[(r.get("floor") or "") + "||" + new] = nm
+            r["orig_name"] = nm
+            r["name"] = new
+    except Exception:
+        pass
+    return out
+
+
 def read_ifc_model(path):
     """Read rooms (IfcSpace), windows/doors and true north from an IFC file (ifcopenshell)."""
     import ifcopenshell, math
@@ -6405,6 +6437,7 @@ def read_ifc_model(path):
     # same tag, different size -> one tag (merged at the end; room links keep working because the tag is shared)
     # which way every window faces, from the model's walls and rooms
     face_of = {}
+    el_ext = {}                    # door element id -> True when it opens to the outside
     n_faced = 0
     try:
         space_tris = _ifc_space_tris(ifc)
@@ -6417,6 +6450,7 @@ def read_ifc_model(path):
                     ex_ = _ifc_is_external(el_, scale, space_tris)
                     if ex_ is not None:
                         it.setdefault("_ext", []).append(ex_)
+                        el_ext[el_.id()] = bool(ex_)
     except Exception:
         face_of = {}
     # link openings to rooms through space boundaries
@@ -6428,6 +6462,8 @@ def read_ifc_model(path):
         for it in items:
             if any(e.id() == el.id() for e in it["_els"]):
                 t = gid2room[sp.GlobalId]["tags"]; t[it["tag"]] = t.get(it["tag"], 0) + 1
+                if el.id() in el_ext:
+                    gid2room[sp.GlobalId].setdefault("_dext", []).append(el_ext[el.id()])
                 if el.id() in face_of:
                     gid2room[sp.GlobalId].setdefault("_face", {}).setdefault(it["tag"], []).append(face_of[el.id()])
     # IfcZone groups named like "Unit 2" / "U2" give the rooms in them their unit
@@ -6472,6 +6508,8 @@ def read_ifc_model(path):
                 if dd < bd: best, bd = gid, dd
             if best:
                 t = gid2room[best]["tags"]; t[it["tag"]] = t.get(it["tag"], 0) + 1; placed += 1
+                if el.id() in el_ext:
+                    gid2room[best].setdefault("_dext", []).append(el_ext[el.id()])
                 if el.id() in face_of:
                     gid2room[best].setdefault("_face", {}).setdefault(it["tag"], []).append(face_of[el.id()])
             else:
@@ -6527,11 +6565,12 @@ def read_ifc_model(path):
             it["external"] = sum(1 for x in ex_ if x) * 2 > len(ex_)
         it.pop("_els", None); it.pop("_pos", None); it.pop("_fl", None)
     items = ifc_merge_variants(items)
+    aliases = ifc_label_public_rooms(rooms, items)
     floor_order = [n_ for n_, _e in storeys]
     for it in items:
         for f_ in it.get("by_floor", {}):
             if f_ not in floor_order: floor_order.append(f_)
-    return {"floors": floor_order, "rooms": rooms, "items": items, "north": north, "gross": round(gross, 2), "solid_doors": ext_noglass,
+    return {"aliases": aliases, "floors": floor_order, "rooms": rooms, "items": items, "north": north, "gross": round(gross, 2), "solid_doors": ext_noglass,
             "excluded": excluded_n, "dups": dup_n, "n_spaces": n_spaces, "geo_area": geo_area_n,
             "no_area": no_area_n, "no_area_names": no_area_names, "room_report": rep_lines, "n_zones": len(ifc.by_type("IfcZone")), "n_storeys": len(ifc.by_type("IfcBuildingStorey")),
             "n_win": len(_ifc_open_els(ifc, "IfcWindow")), "n_door": len(_ifc_open_els(ifc, "IfcDoor")), "placed": placed, "unplaced": unplaced, "faced": n_faced,
@@ -11887,7 +11926,7 @@ class MainWindow(QMainWindow):
             self.ifc_path = path
             self.ifc_data = {"rooms": res["rooms"], "items": res["items"], "path": path,
                              "floors": res.get("floors") or [], "north": res.get("north"), "air": res.get("air") or {},
-                             "latlon": res.get("latlon")}
+                             "latlon": res.get("latlon"), "aliases": res.get("aliases") or {}}
             ll = res.get("latlon")
             if ll and -36.0 <= ll[0] <= -21.0 and 15.0 <= ll[1] <= 34.0 and not getattr(self, "_lat_manual", False):
                 self.xa_lat.setText(f"{abs(ll[0]):.4f}")          # the model's own site position (inside South Africa) drives the sun
@@ -18639,7 +18678,7 @@ Glazing limit: glazing may not exceed {GLAZE_LIMIT[0]:g}% of the net floor area,
                 QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
                 try:
                     plan_ = ifc_plan.plan_for(ipath)
-                    lvls = ifc_plan.render_levels(plan_, self.results, getattr(self, "combined", None))
+                    lvls = ifc_plan.render_levels(plan_, self.results, getattr(self, "combined", None), alias=(getattr(self, "ifc_data", None) or {}).get("aliases"))
                 finally:
                     QApplication.restoreOverrideCursor()
                 sw_ = lambda c: '<span style="color:%s; font-size:11pt;">&#9632;</span>' % c
@@ -19801,4 +19840,6 @@ def main():
 
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()
     main()
