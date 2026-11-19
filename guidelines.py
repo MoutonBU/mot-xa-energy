@@ -236,10 +236,11 @@ class GuidelinesPage(ToolBase):
         except Exception as e:
             QMessageBox.warning(self, self.TITLE, "The PDF could not be opened: %s" % e)
             return
-        if not dr.confirm_send(self, dr.main_mod(self.win), "Read the rules from %d PDF(s)." % len(paths), n):
+        mode = dr.choose_mode(self, dr.main_mod(self.win), "Read the rules from %d PDF(s)." % len(paths), n)
+        if mode is None:
             return
         try:
-            found = dr.run_busy(self, "Reading the guidelines...", lambda: dr.extract_rules(self.win, paths))
+            found = dr.run_busy(self, "Reading the guidelines...", lambda: dr.extract_rules(self.win, paths, mode == "offline"))
         except RuntimeError as e:
             QMessageBox.warning(self, self.TITLE, str(e))
             return
@@ -292,11 +293,12 @@ class GuidelinesPage(ToolBase):
             QMessageBox.warning(self, self.TITLE, "Cannot find: " + ", ".join(os.path.basename(p) for p in miss))
             return
         n = dr.n_plan_pages(self.plans) * ((len(todo) + 19) // 20)
-        if not dr.confirm_send(self, dr.main_mod(self.win), "Review the plans against %d rule(s)." % len(todo), n):
+        mode = dr.choose_mode(self, dr.main_mod(self.win), "Review the plans against %d rule(s)." % len(todo), n)
+        if mode is None:
             return
         sub = [self.rules[i] for i in todo]
         try:
-            res = dr.run_busy(self, "Reading the plans...", lambda: dr.review_plans(self.win, sub, self.plans))
+            res = dr.run_busy(self, "Reading the plans...", lambda: dr.review_plans(self.win, sub, self.plans, mode == "offline"))
         except RuntimeError as e:
             QMessageBox.warning(self, self.TITLE, str(e))
             return
@@ -306,7 +308,7 @@ class GuidelinesPage(ToolBase):
         self.changed()
         self.refresh_review()
         bad = sum(1 for j in res.values() if j["result"] == "fail")
-        QMessageBox.information(self, self.TITLE, "Done. %d rule(s) flagged as not according to the rules. The AI can be wrong: read each flagged line "
+        QMessageBox.information(self, self.TITLE, "Done. %d rule(s) flagged as not according to the rules. The reader (AI or offline) can be wrong: read each flagged line "
                                 "and the page it points to before you rely on it." % bad)
 
     @staticmethod

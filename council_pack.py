@@ -489,10 +489,11 @@ class CouncilPage(ToolBase):
         except Exception as e:
             QMessageBox.warning(self, "Council pack", "The PDF could not be opened: %s" % e)
             return
-        if not dr.confirm_send(self, dr.main_mod(self.win), "Read what the council asks for from %d PDF(s)." % len(paths), n):
+        mode = dr.choose_mode(self, dr.main_mod(self.win), "Read what the council asks for from %d PDF(s)." % len(paths), n)
+        if mode is None:
             return
         try:
-            found = dr.run_busy(self, "Reading the requirements...", lambda: dr.extract_rules(self.win, paths))
+            found = dr.run_busy(self, "Reading the requirements...", lambda: dr.extract_rules(self.win, paths, mode == "offline"))
         except RuntimeError as e:
             QMessageBox.warning(self, "Council pack", str(e))
             return
@@ -534,10 +535,11 @@ class CouncilPage(ToolBase):
             else:
                 rules.append({"rule": it["what"] + ((" - " + it["hint"]) if it["hint"] and not it.get("rule") else ""), "kind": "check", "limit": 0, "unit": ""})
         n = dr.n_plan_pages(files) * ((len(rules) + 19) // 20)
-        if not dr.confirm_send(self, dr.main_mod(self.win), "Check the plans against %d item(s) of the list." % len(rules), n):
+        mode = dr.choose_mode(self, dr.main_mod(self.win), "Check the plans against %d item(s) of the list." % len(rules), n)
+        if mode is None:
             return
         try:
-            res = dr.run_busy(self, "Reading the plans...", lambda: dr.review_plans(self.win, rules, files))
+            res = dr.run_busy(self, "Reading the plans...", lambda: dr.review_plans(self.win, rules, files, mode == "offline"))
         except RuntimeError as e:
             QMessageBox.warning(self, "Council pack", str(e))
             return
@@ -554,7 +556,7 @@ class CouncilPage(ToolBase):
         self.refresh_table()
         self.changed()
         QMessageBox.information(self, "Council pack", "Done. %d item(s) flagged as missing or not according to the requirements (red notes). "
-                                "The AI can be wrong: read each note and the page it points to, then mark the item done yourself." % bad)
+                                "The reader (AI or offline) can be wrong: read each note and the page it points to, then mark the item done yourself." % bad)
 
     # ---- state
     def state(self):
