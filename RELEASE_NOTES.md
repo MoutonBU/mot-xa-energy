@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.8**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.9**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Shade devices drawn as objects are measured, 1.86.9**: the overhang scan now also reads louvres, screens, pergola slats and hoods that Archicad exports as accessories or generic objects (not only slabs, roofs and beams), including a louvre made of several slats stepped out from the wall. Only pieces sitting within 600 mm above the glass count, so columns, fittings and distant roof objects are ignored. On the Block A model this picks up the louvre in front of the unit 2 main bedroom windows (909 mm projection over a glass height of 1983 mm).
 - **Size limits tab (Energy XA, Windows and glazed doors), 1.86.8**: next to the problem windows and fixes there is a new tab showing, for every window, how far it can be reduced (smallest size in mm, same proportions) or whether it can be taken out while its room keeps the daylight requirement and 5% ventilation, what limits it (daylight or ventilation, and how much fixed glass can go if you keep the opening part), and the solar heat gain that saves. When a unit or storey fails solar heat gain or conductance it also works out a combined set of size changes that makes it comply, and shows each room's daylight and ventilation afterwards, or says plainly when size changes alone are not enough. Rooms ticked for artificial light, WCs and passages have no daylight limit.
 - **Freeze watchdog and plan progress, 1.86.7**: the Plan tab now counts the seconds while the floor plan is read (the program stays usable), and if the window ever stops answering for 6 seconds the program writes what it was doing to `mot_freeze.log` in the Windows temp folder (type %TEMP% in File Explorer), together with how long the plan reader took. Send that file if it still freezes.
 - **Frame and glass schedule in the reports, 1.86.6**: the Energy XA report and the rational design report now carry a table of every window and glazed door with its type, size, quantity, glazed area, rooms, the frame and glass chosen, glass U, solar gain S, exposure E, window U, overhang P and whether it is a common South African product (OK) or needs a supplier check, with a note under it for each choice to confirm and the SANS 10400-XA 5.3 certification wording.

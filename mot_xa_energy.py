@@ -6142,10 +6142,19 @@ def ifc_shading_scan(path):
         scale = float(_u.calculate_unit_scale(ifc))
     except Exception:
         pass
-    under = []
-    for cls in ("IfcSlab", "IfcRoof", "IfcBeam", "IfcCovering", "IfcMember", "IfcPlate"):
-        for el in ifc.by_type(cls):
+    under, under_acc = [], []
+    for cls in ("IfcSlab", "IfcRoof", "IfcBeam", "IfcCovering", "IfcMember", "IfcPlate", "IfcDiscreteAccessory", "IfcBuildingElementProxy",
+                "IfcShadingDevice"):
+        try:
+            _els = ifc.by_type(cls)
+        except Exception:                                   # IfcShadingDevice does not exist in IFC2X3
+            continue
+        for el in _els:
             try:
+                if cls in ("IfcDiscreteAccessory", "IfcBuildingElementProxy"):
+                    nm_ = ((el.Name or "") + " " + str(getattr(el, "ObjectType", "") or "")).lower()
+                    if re.search(r"column|post|bracket|toilet|basin|sink|bath|shower", nm_) or _proxy_open_kind(el):
+                        continue                                    # shade devices (louvres, screens, hoods) drawn as objects count; fittings do not
                 if cls == "IfcCovering" and str(getattr(el, "PredefinedType", "")).upper() in ("FLOORING", "CLADDING"):
                     continue
                 sh = ifcopenshell.geom.create_shape(st, el)
@@ -6163,11 +6172,13 @@ def ifc_shading_scan(path):
                 keep = n[:, 2] < -0.5
                 if keep.any():
                     under.append(P[keep])
+                    under_acc.append(np.full(int(keep.sum()), cls in ("IfcDiscreteAccessory", "IfcBuildingElementProxy", "IfcShadingDevice")))
             except Exception:
                 continue
     if not under:
         return {}
     T = np.vstack(under)                              # N x 3 x 3 triangles that face down
+    ACC = np.concatenate(under_acc)                   # True for shade devices drawn as objects (louvres, screens)
     tz = T[:, :, 2]
     spaces = _ifc_space_tris(ifc)
     per = {}
@@ -6197,9 +6208,17 @@ def ifc_shading_scan(path):
             tmin, tmax = float((v[:, :2] @ t).min()), float((v[:, :2] @ t).max())
             D = T[:, :, :2] @ o - dref                         # outward distance from the glass plane, per vertex
             TT = T[:, :, :2] @ t
-            ok = ((tz.min(axis=1) >= z1 - 0.03) & (tz.min(axis=1) <= z1 + 3.0)
-                  & (TT.max(axis=1) >= tmin + 0.05) & (TT.min(axis=1) <= tmax - 0.05)
-                  & (D.max(axis=1) > 0.05) & (D.min(axis=1) <= 0.35))
+            base_ok = ((tz.min(axis=1) >= z1 - 0.03) & (tz.min(axis=1) <= z1 + 3.0)
+                       & (TT.max(axis=1) >= tmin + 0.05) & (TT.min(axis=1) <= tmax - 0.05)
+                       & (D.max(axis=1) > 0.05) & (~ACC | (tz.min(axis=1) <= z1 + 0.6)))     # a shade device sits right above the glass
+            ok = base_ok & (D.min(axis=1) <= 0.35)
+            if ok.any():                                       # louvres and slats: keep adding pieces that follow on within 150 mm of the reach so far
+                for _i in range(40):
+                    reach = float(D[ok].max())
+                    more = base_ok & ACC & ~ok & (D.min(axis=1) <= reach + 0.15)
+                    if not more.any():
+                        break
+                    ok = ok | more
             Pm = 0.0; Hm = 0.0; Gm = 0.0
             if ok.any():
                 Dk, Zk = D[ok], tz[ok]
