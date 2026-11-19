@@ -1,4 +1,4 @@
-"""Archicad link (VIP, experimental).
+"""Archicad link (WIP, work in progress).
 
 Talks to a running Archicad through its JSON command interface on this computer (the same one the official Python
 package uses; no extra package needed). Tapir, the free community add-on, is used when it is installed, for the
@@ -206,7 +206,7 @@ class ArchicadDialog(QDialog):
     def __init__(self, win):
         super().__init__(win)
         self.win = win
-        self.setWindowTitle("Archicad link (VIP, experimental)")
+        self.setWindowTitle("Archicad link (WIP, work in progress)")
         self.resize(640, 520)
         self.link = ACLink(self.say)
         v = QVBoxLayout(self)

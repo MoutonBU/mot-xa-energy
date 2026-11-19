@@ -1,6 +1,6 @@
 // MCP Tools launcher: adds  MCP Tools > Open MCP Architecture & Interiors  to Archicad's menu bar.
 // It only starts the separate program (path read from %APPDATA%\MCP_XA_Energy\app_path.txt, written by the program
-// when VIP mode is on). It does not read or change the Archicad model; the program does that through the JSON link.
+// when WIP mode is on). It does not read or change the Archicad model; the program does that through the JSON link.
 // STATUS: source only. Not built or tested yet. Build it with the Archicad API Development Kit that matches your Archicad.
 #include "APIEnvir.h"
 #include "ACAPinc.h"

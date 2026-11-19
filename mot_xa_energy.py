@@ -8966,10 +8966,10 @@ class MainWindow(QMainWindow):
                     a_.menu().addSeparator()
                     a_.menu().addAction("Quick tour...", _tour)
                     a_.menu().addSeparator()
-                    vip = a_.menu().addAction("VIP mode (experimental features)")
+                    vip = a_.menu().addAction("WIP mode (work in progress features)")
                     vip.setCheckable(True)
                     vip.setChecked(bool(SETTINGS.get("vip")))
-                    acl = a_.menu().addAction("Archicad link (VIP)...", self.open_archicad_link)
+                    acl = a_.menu().addAction("Archicad link (WIP)...", self.open_archicad_link)
                     acl.setVisible(bool(SETTINGS.get("vip")))
 
                     def _write_app_path():
