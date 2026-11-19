@@ -6079,7 +6079,7 @@ def ifc_shading_scan(path):
     spaces = _ifc_space_tris(ifc)
     per = {}
     for cls in ("IfcWindow", "IfcDoor"):
-        for el in ifc.by_type(cls):
+        for el in _ifc_open_els(ifc, cls):
             tag = re.sub(r"_\d+$", "", (el.Name or "").strip().upper())
             if not tag:
                 continue
@@ -6123,6 +6123,55 @@ def ifc_shading_scan(path):
         out[tag] = {"n": len(lst), "P_mm": round(w[0]), "H_mm": round(w[1]), "G_mm": round(w[2]), "glass_mm": round(w[3]),
                     "face": round(w[4]), "per": [[round(r[0]), round(r[1]), round(r[4])] for r in lst]}
     return out
+
+
+def _ifc_opening_size(el, scale=1.0):
+    """(width mm, height mm) of the opening a window / door fills, from the opening's own shape. None when there is none."""
+    try:
+        import numpy as np, ifcopenshell.geom as G
+        for rel in getattr(el, "FillsVoids", None) or []:
+            op = rel.RelatingOpeningElement
+            if not getattr(op, "Representation", None):
+                continue
+            st = G.settings()
+            try: st.set("use-world-coords", True)
+            except Exception:
+                try: st.set(st.USE_WORLD_COORDS, True)
+                except Exception: pass
+            v = np.array(G.create_shape(st, op).geometry.verts, float).reshape(-1, 3)
+            if not len(v):
+                continue
+            xy = v[:, :2] - v[:, :2].mean(axis=0)
+            _u, _s, vt = np.linalg.svd(xy, full_matrices=False)
+            wd = float((xy @ vt[0]).max() - (xy @ vt[0]).min())
+            ht = float(v[:, 2].max() - v[:, 2].min())
+            if wd > 0.05 and ht > 0.05:
+                return (round(wd * 1000.0, 1), round(ht * 1000.0, 1))
+    except Exception:
+        pass
+    return None
+
+
+def _proxy_open_kind(el):
+    """Windows and doors that Archicad exported as IfcBuildingElementProxy (it does that when the tool is an Object or the IFC type is
+    overridden): 'Window' / 'Door' when the proxy fills an opening and is named like one (W1, D3, Window...), else None."""
+    try:
+        if not el.is_a("IfcBuildingElementProxy") or not getattr(el, "FillsVoids", None):
+            return None
+        nm = (el.Name or "").strip()
+        if re.match(r"^(door|d\d)", nm, re.I):
+            return "Door"
+        if re.match(r"^(window|w\d)", nm, re.I):
+            return "Window"
+    except Exception:
+        pass
+    return None
+
+
+def _ifc_open_els(ifc, cls):
+    """IfcWindow or IfcDoor elements plus the proxies that are really windows / doors."""
+    kind = "Window" if cls == "IfcWindow" else "Door"
+    return list(ifc.by_type(cls)) + [e for e in ifc.by_type("IfcBuildingElementProxy") if _proxy_open_kind(e) == kind]
 
 
 def read_ifc_model(path):
@@ -6256,8 +6305,9 @@ def read_ifc_model(path):
     excluded_n = 0
     dup_n = 0
     cache = {}
+    known_sz = {}
     for kind, cls in (("Window", "IfcWindow"), ("Door", "IfcDoor")):
-        for el in ifc.by_type(cls):
+        for el in _ifc_open_els(ifc, cls):
             w = getattr(el, "OverallWidth", None); h = getattr(el, "OverallHeight", None)
             w = float(w) * scale * 1000 if w else 0.0
             h = float(h) * scale * 1000 if h else 0.0
@@ -6276,7 +6326,12 @@ def read_ifc_model(path):
             bv = cache[ck]
             if (not w or not h) and bv:
                 w, h = (bv[1], bv[2]) if bv[0] == "noglass" else (bv[5], bv[6])
+            if not w or not h:                       # a proxy with no shape of its own: size of the same tag, else of the opening it fills
+                sz = known_sz.get((kind, tag.upper())) or _ifc_opening_size(el, scale)
+                if sz:
+                    w, h = sz
             if not w or not h: continue
+            known_sz.setdefault((kind, tag.upper()), (w, h))
             key = (kind, tag, round(w), round(h))
             pos = _ifc_world_pos(el, scale)
             stn = storey_of(el)
@@ -6354,7 +6409,7 @@ def read_ifc_model(path):
     for rel in ifc.by_type("IfcRelSpaceBoundary"):
         sp, el = rel.RelatingSpace, rel.RelatedBuildingElement
         if sp is None or el is None or sp.GlobalId not in gid2room: continue
-        if not (el.is_a("IfcWindow") or el.is_a("IfcDoor")): continue
+        if not (el.is_a("IfcWindow") or el.is_a("IfcDoor") or _proxy_open_kind(el)): continue
         for it in items:
             if any(e.id() == el.id() for e in it["_els"]):
                 t = gid2room[sp.GlobalId]["tags"]; t[it["tag"]] = t.get(it["tag"], 0) + 1
@@ -6464,7 +6519,7 @@ def read_ifc_model(path):
     return {"floors": floor_order, "rooms": rooms, "items": items, "north": north, "gross": round(gross, 2), "solid_doors": ext_noglass,
             "excluded": excluded_n, "dups": dup_n, "n_spaces": n_spaces, "geo_area": geo_area_n,
             "no_area": no_area_n, "no_area_names": no_area_names, "room_report": rep_lines, "n_zones": len(ifc.by_type("IfcZone")), "n_storeys": len(ifc.by_type("IfcBuildingStorey")),
-            "n_win": len(ifc.by_type("IfcWindow")), "n_door": len(ifc.by_type("IfcDoor")), "placed": placed, "unplaced": unplaced, "faced": n_faced,
+            "n_win": len(_ifc_open_els(ifc, "IfcWindow")), "n_door": len(_ifc_open_els(ifc, "IfcDoor")), "placed": placed, "unplaced": unplaced, "faced": n_faced,
             "latlon": ifc_site_latlon(ifc), "air": air, "shading": _safe_shading(path)}
 
 
@@ -6671,7 +6726,7 @@ def ifc_door_external(path):
         pass
     spaces = _ifc_space_tris(ifc)
     votes = {}
-    for el in ifc.by_type("IfcDoor"):
+    for el in _ifc_open_els(ifc, "IfcDoor"):
         tag = re.sub(r"_\d+$", "", (el.Name or "").strip().upper())
         if not tag:
             continue
@@ -6987,7 +7042,7 @@ def ifc_health_check(path, res):
     try:
         import ifcopenshell
         ifc = ifcopenshell.open(path)
-        noname = [e for cls in ("IfcDoor", "IfcWindow") for e in ifc.by_type(cls) if not (e.Name or "").strip()]
+        noname = [e for cls in ("IfcDoor", "IfcWindow") for e in _ifc_open_els(ifc, cls) if not (e.Name or "").strip()]
         if noname:
             add("warn", f"{len(noname)} window/door(s) with no name or tag", "", "Give every opening an ID (W1, D1...) in Archicad so the schedule can group them.")
         if not ifc.by_type("IfcBuildingStorey"):
@@ -8150,7 +8205,7 @@ def sim_read_geometry(path, north_deg=0.0, external_re=None):
                        "external": bool(external_re and external_re.search(nm))})
     openings = []
     for cls, kind in (("IfcWindow", "Window"), ("IfcDoor", "Door")):
-        for el in ifc.by_type(cls):
+        for el in _ifc_open_els(ifc, cls):
             try:
                 v, _f = mesh(el)
             except Exception:
