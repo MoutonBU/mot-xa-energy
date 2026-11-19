@@ -811,6 +811,11 @@ class LivePanel(QDialog):
         self.ignore.setToolTip("Zones that are not rooms: gross areas, the site, totals. They are left out of every check.")
         self.ignore.editingFinished.connect(self._ignore_changed)
         v.addWidget(self.ignore)
+        lb = QPushButton("Take glass and opening from an IFC file...")
+        lb.setToolTip("Archicad's live link cannot see the glass. Pick an IFC export of the same project once: every window and door\n"
+                      "with the same ID then gets its glass area and which panes open from the IFC, and stays live for everything else.")
+        lb.clicked.connect(lambda *_: self.win.ac_learn_ifc())
+        v.addWidget(lb)
         dg = QPushButton("Diagnose what Archicad offers")
         dg.setToolTip("Lists what the link can see. Save the log and send it if windows or doors do not come through.")
         dg.clicked.connect(self.diagnose)

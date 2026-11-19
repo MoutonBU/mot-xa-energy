@@ -9099,6 +9099,63 @@ class MainWindow(QMainWindow):
         self._live_panel.show()
         self._live_panel.raise_()
 
+    def ac_learn_ifc(self, path=None):
+        """Read an IFC export once, only for the glass and opening of each window / door type (the live link cannot see glass)."""
+        try:
+            import ifcopenshell  # noqa
+        except Exception:
+            self._install_ifcopenshell(lambda: self.ac_learn_ifc(path))
+            return
+        if not isinstance(path, str):
+            path, _ = QFileDialog.getOpenFileName(self, "IFC export of the same Archicad project", "", "IFC model (*.ifc *.ifczip)")
+        if not path:
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            res = read_ifc_model(path)
+        except Exception as e:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, APP_NAME, "The IFC could not be read: %s" % e)
+            return
+        QApplication.restoreOverrideCursor()
+        self._ac_ifc_items = [{k: v for k, v in it.items() if not k.startswith("_")} for it in res["items"]]
+        self._ac_sig = {}                                            # make the next refresh re-read every window and door
+        self.toast("Glass and opening read for %d window/door types from %s. The live link uses them by ID." % (
+            len(self._ac_ifc_items), os.path.basename(path)))
+        try:
+            self._live_panel.tick(force=True)
+        except Exception:
+            pass
+
+    def _ac_take_ifc(self, c):
+        """Copy glass and opening from the learned IFC items onto a live item. True when one matched."""
+        pool = getattr(self, "_ac_ifc_items", None) or (getattr(self, "ifc_data", None) or {}).get("items") or []
+        if not pool:
+            return False
+        base = re.sub(r"_\d+$", "", c["tag"].upper())
+        area = c["width"] * c["height"] / 1e6
+        near = lambda x: abs(x["width"] - c["width"]) + abs(x["height"] - c["height"])
+        same = [x for x in pool if x.get("kind") == c.get("kind") and re.sub(r"_\d+$", "", x["tag"].upper()) == base]
+        if same:
+            x = min(same, key=near)
+        else:
+            sz = [x for x in pool if x.get("kind") == c.get("kind") and near(x) <= 10]
+            if len(sz) != 1:
+                return False
+            x = sz[0]
+        ar_x = x["width"] * x["height"] / 1e6
+        k = (area / ar_x) if ar_x else 1.0
+        gm2 = (x.get("glazed_m2") or 0.0) * (k if abs(k - 1) > 0.02 else 1.0)
+        c["glazed_m2"] = round(min(gm2, area), 3)
+        c["glazed"] = round(100.0 * c["glazed_m2"] / area, 1) if area else 0.0
+        for f in ("openable", "style", "panes", "geom"):
+            if x.get(f) is not None:
+                c[f] = x[f]
+        c["ac_panels"] = c["ac_word"] = None
+        c["from_ifc"] = True
+        c["note"] = "Glass and opening taken from your IFC model (%s). The size and the count follow Archicad live." % x["tag"]
+        return True
+
     def apply_archicad_model(self, m):
         """Make the Light & Ventilation windows, doors and rooms follow Archicad, then run the checks quietly."""
         prev_t, prev_f = getattr(self, "_ac_tags", set()), getattr(self, "_ac_floors", set())
@@ -9125,7 +9182,8 @@ class MainWindow(QMainWindow):
                     c = dict(it)
                     c["flag"] = []
                     tg = c["tag"].upper()
-                    if c.get("kind") == "Window" and (c.get("ac_panels") or c.get("ac_word")):
+                    got_ifc = self._ac_take_ifc(c)
+                    if not got_ifc and c.get("kind") == "Window" and (c.get("ac_panels") or c.get("ac_word")):
                         try:                                    # opening panes read from the Archicad library part
                             n_ = max(1, min(6, int(c.get("ac_panels") or 1)))
                             wd = c.get("ac_word") or ""
