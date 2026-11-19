@@ -346,20 +346,103 @@ class ACLink:
                     self.log("   glazed area from %s: %s" % (nm, [v for v in glz if v is not None][:6]))
                     if any(v for v in glz):
                         break
+        libn = [(dn[1] or str(lb or "")) for dn, lb in zip(dnames, libs)]
+        gdl = {}
+        try:
+            gdl = self._gdl_by_libpart(els, libn)
+        except Exception as ex:
+            self.log("   library settings failed: %s" % ex)
         out = []
-        for e, (w, h), nid, lib, gl, dn, pos, fl in zip(els, wh, ids_, libs, glz, dnames, dpos, dfloor):
+        for e, (w, h), nid, lib, gl, dn, pos, fl, ln in zip(els, wh, ids_, libs, glz, dnames, dpos, dfloor, libn):
             nid = dn[0] or nid
             lib = dn[1] or lib
             g = (e.get("elementId") or {}).get("guid")
             if g and w and h:
                 # Archicad reports lengths in metres
-                out.append({"guid": g, "w": int(round(float(w) * 1000)), "h": int(round(float(h) * 1000)),
+                wm, hm = int(round(float(w) * 1000)), int(round(float(h) * 1000))
+                src = "model"
+                if not (isinstance(gl, (int, float)) and gl > 0):
+                    gl, npan, word = self._gdl_read(gdl.get(ln), wm, hm)
+                    src = "library part"
+                else:
+                    _g, npan, word = self._gdl_read(gdl.get(ln), wm, hm)
+                out.append({"guid": g, "w": wm, "h": hm,
                             "name": (str(nid or "").strip() or str(lib or "").strip()),
                             "glazed_m2": float(gl) if isinstance(gl, (int, float)) and gl > 0 else None,
+                            "glazed_src": src, "panels": npan, "open_word": word, "lib": ln,
                             "xy": pos, "floor": fl})
         self.log("   %d of %d %s elements had a size; %d named; %d with a glazed area" % (
             len(out), len(els), etype, sum(1 for o in out if o["name"]), sum(1 for o in out if o["glazed_m2"])))
         return out
+
+    # ---- library part (GDL) settings: glass and how the window opens
+    def _gdl_by_libpart(self, els, names):
+        """{libpart name: {parameter name/description (lower): value}} using one element per library part."""
+        first = {}
+        for e, n in zip(els, names):
+            if n and n not in first:
+                first[n] = e
+        out = {}
+        if not first or not self.tapir_ok:
+            return out
+        keys = list(first)
+        for i in range(0, len(keys), 50):
+            ks = keys[i:i + 50]
+            try:
+                r = self.tapir("GetGDLParametersOfElements", {"elements": [first[k] for k in ks]})
+            except Exception as e:
+                self.log("   GDL parameters failed: %s" % e)
+                return out
+            lst = r.get("gdlParametersOfElements") or r.get("parametersOfElements") or []
+            for k, entry in zip(ks, lst):
+                flat = {}
+
+                def walk(o):
+                    if isinstance(o, dict):
+                        if "name" in o and "value" in o and not isinstance(o["value"], (dict, list)):
+                            for key in (o.get("name"), o.get("description")):
+                                if key:
+                                    flat[str(key).lower()] = o["value"]
+                        for v in o.values():
+                            if isinstance(v, (dict, list)):
+                                walk(v)
+                    elif isinstance(o, list):
+                        for v in o:
+                            walk(v)
+                walk(entry)
+                out[k] = flat
+        self.log("   library part settings read for %d type(s): %s" % (len(out), ", ".join("%s (%d)" % (k, len(v)) for k, v in out.items())[:300]))
+        return out
+
+    @staticmethod
+    def _gdl_read(par, w_mm, h_mm):
+        """From one library part's settings: (glazed m2 or None, panels, opening word) - an estimate, noted as such."""
+        if not par:
+            return None, None, ""
+
+        def num(*words, bad=()):
+            for k, v in par.items():
+                if all(w in k for w in words) and not any(b in k for b in bad) and isinstance(v, (int, float)) and not isinstance(v, bool):
+                    return float(v)
+            return None
+        gl = num("glass", "area") or num("glazing", "area") or num("glazed", "area")
+        n = num("number", "panel") or num("number", "sash") or num("number", "leaf") or num("panel", "count") or num("sash", "count")
+        f = num("frame", "width", bad=("height",)) or num("frame", "thickness") or num("frame", "wid")
+        word = ""
+        for k, v in par.items():
+            if isinstance(v, str) and any(t in k for t in ("opening", "operation", "type", "style", "sash")) and any(t in v.lower() for t in ("fixed", "casement", "tilt", "slid", "hung", "turn", "awning", "open")):
+                word = v.lower()
+                break
+        w, h = w_mm / 1000.0, h_mm / 1000.0
+        if gl is not None:
+            gl = gl if gl < 100 else gl / 1e6
+            return gl, (int(n) if n else None), word
+        if f:
+            f = f / 1000.0 if f > 1 else f
+            nn = max(1, int(n)) if n else 1
+            g = max(0.0, (w - 2 * f - (nn - 1) * f)) * max(0.0, (h - 2 * f))
+            return (g if g > 0 else None), (nn if n else None), word
+        return None, (int(n) if n else None), word
 
     @staticmethod
     def _find_xy(o, depth=0):
@@ -440,11 +523,12 @@ class ACLink:
         used = {}
         opos = {}
         for etype, kind, pre in (("Window", "Window", "W"), ("Door", "Door", "D")):
-            groups = {}
+            groups, meta = {}, {}
             for o in self._openings(etype):
                 opos[o["guid"]] = (o["xy"], o["floor"], etype)
                 gz = round(o["glazed_m2"], 2) if o["glazed_m2"] else None
                 groups.setdefault((o["name"], o["w"], o["h"], gz), []).append(o["guid"])
+                meta[(o["name"], o["w"], o["h"], gz)] = (o["glazed_src"], o["panels"], o["open_word"], o["lib"])
             for (nm, w, h, gz), guids in groups.items():
                 base = re.sub(r"[,:;]", "-", (nm or "%s%dx%d" % (pre, w, h))).strip().upper()
                 n = used[base] = used.get(base, 0) + 1
@@ -456,7 +540,10 @@ class ACLink:
                 else:
                     pct = 85.0 if kind == "Window" else 0.0
                     note = "From Archicad: the size is read from the model; the glazed % is typical. Hover the row to change it."
-                items[tag] = {"tag": tag, "width": float(w), "height": float(h), "kind": kind, "qty": len(guids), "style": "Custom",
+                src, npan, word, lib = meta[(nm, w, h, gz)]
+                if gz and src == "library part":
+                    note = "From Archicad: size from the model; glazed area (%.2f m2) estimated from the library part '%s'. Hover the row to check how it opens." % (gz, lib)
+                items[tag] = {"ac_panels": npan, "ac_word": word, "tag": tag, "width": float(w), "height": float(h), "kind": kind, "qty": len(guids), "style": "Custom",
                               "glazed": pct, "glazed_m2": float(gz or 0.0), "openable": 50.0 if kind == "Window" else 100.0,
                               "flag": [], "note": note, "from_ac_glazed": bool(gz)}
                 for g in guids:

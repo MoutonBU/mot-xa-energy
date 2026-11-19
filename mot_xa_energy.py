@@ -9125,6 +9125,30 @@ class MainWindow(QMainWindow):
                     c = dict(it)
                     c["flag"] = []
                     tg = c["tag"].upper()
+                    if c.get("kind") == "Window" and (c.get("ac_panels") or c.get("ac_word")):
+                        try:                                    # opening panes read from the Archicad library part
+                            n_ = max(1, min(6, int(c.get("ac_panels") or 1)))
+                            wd = c.get("ac_word") or ""
+                            if any(t in wd for t in ("fixed",)):
+                                k_ = ("fixed", "")
+                            elif "slid" in wd:
+                                k_ = ("slide", "")
+                            elif "tilt" in wd or "awning" in wd or "top" in wd:
+                                k_ = ("hinged", "T")
+                            else:
+                                k_ = ("hinged", "L")
+                            gw = 0.88 / n_
+                            c["geom"] = {"aspect": c["width"] / max(c["height"], 1.0),
+                                         "panes": [(0.06 + i * gw, 0.06, 0.06 + (i + 1) * gw, 0.94, k_[0], k_[1]) for i in range(n_)]}
+                            keep_g = c.get("glazed_m2")
+                            _ifc_apply_ops(c, [k_] * n_)
+                            if keep_g:
+                                c["glazed_m2"] = keep_g
+                                ar = c["width"] * c["height"] / 1e6
+                                c["glazed"] = round(100.0 * keep_g / ar, 1) if ar else c["glazed"]
+                            c["note"] = (c.get("note") or "") + " Opening panes read from the library part (%d pane(s), %s): check them." % (n_, k_[0])
+                        except Exception:
+                            pass
                     sig = (round(c["width"]), round(c["height"]), round(c.get("glazed_m2") or 0, 2))
                     row = next(((T, r) for T, r in self._sched_rows_for(tg)), None)
                     if row is not None and seen.get(tg) == sig:
