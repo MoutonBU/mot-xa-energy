@@ -1298,6 +1298,37 @@ def xa_table4_row(pct):
             return row
     return XA_TABLE4[-1]
 
+# SANS 204:2011 Table C.1 (climatic zone 1): solar exposure factor E by P/H and facing, order N NE E SE S SW W NW.
+# Used as a RELATIVE curve, E(P/H) / E(0), on top of the E typed for the glass, for every zone (the other zones' tables are not loaded).
+XA_E_CURVE = [
+    (0.00, (0.84, 1.08, 1.15, 0.87, 0.61, 1.05, 1.40, 1.24)), (0.05, (0.71, 0.97, 1.05, 0.78, 0.52, 0.96, 1.30, 1.13)),
+    (0.10, (0.65, 0.90, 0.99, 0.74, 0.49, 0.91, 1.25, 1.04)), (0.15, (0.58, 0.83, 0.93, 0.69, 0.47, 0.86, 1.18, 0.97)),
+    (0.20, (0.52, 0.77, 0.88, 0.65, 0.44, 0.82, 1.12, 0.91)), (0.25, (0.48, 0.72, 0.84, 0.62, 0.42, 0.78, 1.06, 0.85)),
+    (0.30, (0.44, 0.68, 0.80, 0.59, 0.40, 0.75, 1.01, 0.80)), (0.35, (0.40, 0.63, 0.75, 0.57, 0.38, 0.71, 0.95, 0.75)),
+    (0.40, (0.36, 0.58, 0.71, 0.54, 0.36, 0.67, 0.90, 0.69)), (0.50, (0.33, 0.51, 0.66, 0.49, 0.33, 0.63, 0.83, 0.60)),
+    (0.60, (0.30, 0.43, 0.61, 0.45, 0.31, 0.58, 0.76, 0.51)), (0.70, (0.28, 0.39, 0.56, 0.42, 0.29, 0.54, 0.71, 0.45)),
+    (0.80, (0.26, 0.35, 0.50, 0.38, 0.26, 0.50, 0.66, 0.40)), (0.90, (0.24, 0.32, 0.46, 0.35, 0.25, 0.46, 0.61, 0.38)),
+    (1.00, (0.22, 0.29, 0.42, 0.32, 0.23, 0.42, 0.56, 0.36)), (1.10, (0.21, 0.26, 0.40, 0.30, 0.23, 0.41, 0.52, 0.32)),
+    (1.20, (0.20, 0.24, 0.37, 0.29, 0.23, 0.39, 0.48, 0.29)), (1.30, (0.19, 0.23, 0.34, 0.27, 0.21, 0.36, 0.45, 0.27)),
+    (1.40, (0.18, 0.22, 0.32, 0.26, 0.19, 0.34, 0.42, 0.26)), (1.50, (0.17, 0.21, 0.30, 0.25, 0.19, 0.32, 0.40, 0.24)),
+    (1.60, (0.16, 0.19, 0.28, 0.24, 0.18, 0.31, 0.38, 0.21)), (1.70, (0.16, 0.19, 0.27, 0.23, 0.18, 0.29, 0.36, 0.20)),
+    (1.80, (0.15, 0.18, 0.26, 0.22, 0.17, 0.28, 0.34, 0.20)), (1.90, (0.15, 0.18, 0.25, 0.21, 0.17, 0.27, 0.32, 0.19)),
+    (2.00, (0.14, 0.17, 0.24, 0.21, 0.17, 0.26, 0.31, 0.17))]
+
+
+def xa_shade_relief(sector, p_over_h):
+    """Factor (0..1) by which a projection of P/H lowers the solar exposure factor of a window facing `sector`. 1.0 when unknown."""
+    if sector not in FACE_SECTORS or p_over_h is None or p_over_h <= 0:
+        return 1.0
+    k = FACE_SECTORS.index(sector)
+    x = min(float(p_over_h), 2.0)
+    base = XA_E_CURVE[0][1][k]
+    for (a, va), (b, vb) in zip(XA_E_CURVE, XA_E_CURVE[1:]):
+        if a <= x <= b:
+            v = va[k] + (vb[k] - va[k]) * ((x - a) / (b - a) if b > a else 0.0)
+            return max(0.05, min(1.0, v / base))
+    return XA_E_CURVE[-1][1][k] / base
+
 
 def xa_shade_multiplier(lat_south):
     for lim, m in XA_SHADE_MULT:
@@ -6119,14 +6150,14 @@ def ifc_excluded(tag, *names):
     return any(n and IFC_EXCLUDE_RE.search(str(n)) for n in (tag,) + names)
 
 
-def _safe_shading(path):
+def _safe_shading(path, byel=None):
     try:
-        return ifc_shading_scan(path)
+        return ifc_shading_scan(path, byel)
     except Exception:
         return {}
 
 
-def ifc_shading_scan(path):
+def ifc_shading_scan(path, byel=None):
     """Measure the real overhang above every window from the IFC geometry (roofs, slabs, beams, soffits).
     SANS 10400-XA 5.2: P = how far the projection sticks out horizontally from the glass, H = vertical distance from the
     underside of the projection down to the bottom of the glass (gap G above the glass + the glass height).
@@ -6228,6 +6259,8 @@ def ifc_shading_scan(path):
                 Gm = max(0.0, zed - z1)
                 Hm = Gm + (z1 - z0)
             per.setdefault(tag, []).append((Pm * 1000.0, Hm * 1000.0 if Pm > 0 else 0.0, Gm * 1000.0, (z1 - z0) * 1000.0, ang))
+            if byel is not None:
+                byel[el.GlobalId] = (round(Pm * 1000.0), round(Hm * 1000.0) if Pm > 0 else 0, round(ang))
     out = {}
     for tag, lst in per.items():
         # worst window of the tag = the smallest P compared with its H
@@ -6561,6 +6594,7 @@ def read_ifc_model(path):
         for it in items:
             if any(e.id() == el.id() for e in it["_els"]):
                 t = gid2room[sp.GlobalId]["tags"]; t[it["tag"]] = t.get(it["tag"], 0) + 1
+                gid2room[sp.GlobalId].setdefault("_wel", []).append((it["tag"], el.GlobalId))
                 if el.id() in el_ext:
                     gid2room[sp.GlobalId].setdefault("_dext", []).append(el_ext[el.id()])
                 if el.id() in face_of:
@@ -6629,6 +6663,7 @@ def read_ifc_model(path):
 
     def _put(it, el, gid):
         t = gid2room[gid]["tags"]; t[it["tag"]] = t.get(it["tag"], 0) + 1
+        gid2room[gid].setdefault("_wel", []).append((it["tag"], el.GlobalId))
         if el.id() in el_ext:
             gid2room[gid].setdefault("_dext", []).append(el_ext[el.id()])
         if el.id() in face_of:
@@ -6706,11 +6741,18 @@ def read_ifc_model(path):
     for it in items:
         for f_ in it.get("by_floor", {}):
             if f_ not in floor_order: floor_order.append(f_)
+    byel = {}
+    _shd = _safe_shading(path, byel)
+    _shade_rooms = {}
+    for r in rooms:                              # the overhang measured over each window, kept by room so a shaded window gets its own credit
+        for tg_, gid_ in r.pop("_wel", []) or []:
+            if gid_ in byel:
+                _shade_rooms.setdefault("%s||%s||%s||%s" % (r.get("floor", ""), r.get("unit", ""), r.get("name", ""), str(tg_).upper()), []).append(list(byel[gid_]))
     return {"aliases": aliases, "floors": floor_order, "rooms": rooms, "items": items, "north": north, "gross": round(gross, 2), "solid_doors": ext_noglass,
             "excluded": excluded_n, "dups": dup_n, "n_spaces": n_spaces, "geo_area": geo_area_n,
             "no_area": no_area_n, "no_area_names": no_area_names, "room_report": rep_lines, "n_zones": len(ifc.by_type("IfcZone")), "n_storeys": len(ifc.by_type("IfcBuildingStorey")),
             "n_win": len(_ifc_open_els(ifc, "IfcWindow")), "n_door": len(_ifc_open_els(ifc, "IfcDoor")), "placed": placed, "unplaced": unplaced, "faced": n_faced,
-            "latlon": ifc_site_latlon(ifc), "air": air, "shading": _safe_shading(path)}
+            "latlon": ifc_site_latlon(ifc), "air": air, "shading": _shd, "shade_by_room": _shade_rooms}
 
 
 
@@ -12079,6 +12121,7 @@ class MainWindow(QMainWindow):
             self.ifc_info = "(%d rooms, %d window/door types)" % (len(res["rooms"]), len(res["items"]))
             self._ifc_counts = {k: res.get(k) for k in ("no_area_names", "unplaced", "faced", "n_win", "n_door", "dups")}
             self.ifc_data["shading"] = res.get("shading") or {}
+            self.ifc_data["shade_by_room"] = res.get("shade_by_room") or {}
             if res["north"] is not None:
                 cur = self.xa_north.text().strip()
                 try:
@@ -15511,6 +15554,53 @@ class MainWindow(QMainWindow):
             advice = "Choose which side of the plan each room's windows face to work out the orientation."
         return {"building": bld, "advice": advice, "main": main, "north": north, "lat": o["lat"], "mult": o["mult"]}
 
+    def _shade_credit(self, rm, tag, qty, base_side, over_side, north, e_base):
+        """The overhang measured over each window of this type in this room (louvres, slats, a cantilevered slab) lowers the exposure factor E.
+        Returns {"e_eff", "n", "p", "h", "ratio", "relief", "sector"} or None when nothing was measured or the typed P is in force."""
+        d = getattr(self, "ifc_data", None) or {}
+        if not d or (self.xa_glass.get(tag) or {}).get("P_src") == "manual":
+            return None
+        by = d.get("shade_by_room") or {}
+        names = [(rm.unit, rm.name)]
+        al = (d.get("aliases") or {}).get("%s||%s" % (rm.floor, rm.name))
+        if al:
+            names.append((rm.unit, al))
+        for pn in (self.combined.get(rm.name) or []):
+            names.append((pn.get("unit", rm.unit), pn.get("name", "")))
+        lst = []
+        for un, nm in dict.fromkeys(names):
+            lst += by.get("%s||%s||%s||%s" % (rm.floor, un, nm, str(tag).upper())) or []
+        if not lst:
+            return None
+        codes = facing_parts(base_side, over_side, tag, qty)
+        code = codes[0][0] if codes else ""
+        sec = compass_sector(code, north) if code else ""
+        if sec not in FACE_SECTORS:
+            return None
+        rel_l, ps, hs = [], [], []
+        for P, H, _a in lst:
+            r_ = xa_shade_relief(sec, (P / H) if (P and H) else 0.0)
+            rel_l.append(r_); ps.append(P); hs.append(H)
+        relief = sum(rel_l) / len(rel_l)
+        if relief >= 0.999:
+            return None
+        k = max(range(len(lst)), key=lambda i_: rel_l[i_] * -1)
+        return {"e_eff": e_base * relief, "n": len(lst), "p": min(p_ for p_, r_ in zip(ps, rel_l) if r_ < 0.999), "h": hs[k], "ratio": ps[k] / hs[k] if hs[k] else 0.0,
+                "relief": relief, "sector": sec, "shaded_n": sum(1 for r_ in rel_l if r_ < 0.999),
+                "all_ok": all(P_ > 0 and P_ + 1e-9 >= xa_shade_multiplier(self._xa_latitude()) * H_ for P_, H_, _a in lst)}
+
+    def _shade_credit_lines(self):
+        """Plain lines for the screen and the reports: which windows get a lower exposure factor E from an overhang measured in the model."""
+        out = []
+        for c in getattr(self, "xa_shade_credit", None) or []:
+            if c["relief"] >= 0.999:
+                continue
+            saved = c["area"] * c["s"] * (c["e_base"] - c["e_eff"])
+            out.append("%s, %s, %s (%s%s): projection %.0f mm over a glass height of %.0f mm (P/H %.2f, facing %s) lowers the exposure factor E from %.2f to %.2f and the solar heat gain by %.2f." % (
+                c["unit"], c["room"], c["tag"], ("%d of %d windows" % (c["shaded_n"], c["n"])) if c["shaded_n"] != c["n"] else ("%d window%s" % (c["n"], "" if c["n"] == 1 else "s")),
+                "", c["p"], c["h"], c["ratio"], c["sector"], c["e_base"], c["e_eff"], saved))
+        return out
+
     def _fill_size_tab(self):
         """Second tab of the fix box: how far each window can shrink or go while its room keeps daylight (SANS 10400-O) and ventilation."""
         import html as _h
@@ -15574,6 +15664,10 @@ class MainWindow(QMainWindow):
         if lab is None:
             return
         parts, n_bad = [], 0
+        sc_ = self._shade_credit_lines()
+        if sc_:
+            parts.append("<p><b style='color:#5ecb8a'>Shading already counted in the solar heat gain</b> (overhangs, slabs, louvres and slats measured in the IFC model):</p><ul>%s</ul>" %
+                         "".join("<li>%s</li>" % _h.escape(x) for x in sc_))
         for a in adv:
             if not a.get("issues"):
                 continue
@@ -15588,8 +15682,8 @@ class MainWindow(QMainWindow):
                 parts.append("<table><tr><td><i>Window</i></td><td><i>Room</i></td><td><i>Glass area</i></td><td><i>Faces</i></td><td><i>Share of the problem</i></td></tr>%s</table>" % rows)
                 parts.append("<ul>%s</ul>" % "".join("<li>%s</li>" % f for f in iss["fixes"]))
             n_bad += len(a.get("bad") or [])
-        if not parts:
-            lab.setText("<span style='color:#5ecb8a'><b>Nothing to fix:</b></span> every group is within the screening limit, and its "
+        if not any("Problem" in x or "style='color:#ff6b6b'" in x for x in parts):
+            lab.setText("".join(parts[:1]) + "<span style='color:#5ecb8a'><b>Nothing to fix:</b></span> every group is within the screening limit, and its "
                         "conductance, solar heat gain and facade (table 4) checks are met.") if adv else lab.setText(
                 "Run the XA check to see which windows are the problem.")
             return
@@ -17357,6 +17451,7 @@ class MainWindow(QMainWindow):
         ft.setRowCount(0)
         self.xa_fen_results = []
         self.xa_use = {}
+        self.xa_shade_credit = []
         self.xa_head_entries = {}
         north = self._north_deg()
         lat = self._xa_latitude()
@@ -17381,6 +17476,11 @@ class MainWindow(QMainWindow):
                     if rm.name not in u_["rooms"]:
                         u_["rooms"].append(rm.name)
                     u, sg, e = gval(tag)
+                    e_base = e
+                    cred = self._shade_credit(rm, tag, qty, base_side, over_side, north, e_base)
+                    if cred:
+                        e = cred["e_eff"]
+                        self.xa_shade_credit.append({**cred, "floor": rm.floor, "unit": fl, "room": rm.name, "tag": tag, "area": area, "s": sg, "e_base": e_base})
                     ops.append((area, u, sg, e))
                     try:
                         pmm = float(self.xa_glass.get(tag, {}).get("P") or 0.0)
@@ -17392,6 +17492,8 @@ class MainWindow(QMainWindow):
                         hmm = 0.0
                     hmm = hmm or o.height_mm                  # H = underside of the projection to the bottom of the glass
                     shaded = pmm > 0 and pmm + 1e-9 >= hmm * mult
+                    if cred:
+                        shaded = bool(cred["all_ok"])
                     for code, q_ in facing_parts(base_side, over_side, tag, qty):
                         og["wins"].append({"vent": o.openable_m2 * q_, "area": o.area_m2 * q_, "u": u, "s": sg,
                                            "sector": compass_sector(code, north) if code else "",
@@ -17771,6 +17873,8 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
             body.append(table(gp_[0], gp_[1], gp_[2]))
             for n_ in self._glazing_spec_notes():
                 body.append(f'<p style="font-size:8pt; color:#8a5a00; margin-left:10px;">{e(n_)}</p>')
+            for n_ in self._shade_credit_lines():
+                body.append(f'<p style="font-size:8pt; color:#1B7F3B; margin-left:10px;">Shading counted: {e(n_)}</p>')
         body.sec = 'Orientation and shading'
         op_ = self._orient_report_parts(cell, "#1B7F3B", RED)
         if op_:
@@ -18555,6 +18659,13 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
             s4.append(table(gp_[0], gp_[1], gp_[2], hbg=ACTBG))
             for n_ in self._glazing_spec_notes():
                 s4.append(para(e(n_), "8pt"))
+            _sc = self._shade_credit_lines()
+            if _sc:
+                s4.append(h2("Shading counted in the solar heat gain"))
+                s4.append(para("The overhang above each window (slab, roof, louvres, slats or screen) was measured from the IFC model. P is its projection from the glass and H the height from its underside to the bottom of the glass. "
+                               "The solar exposure factor E of the window is lowered by the SANS 204 Annex C curve for its facing and P/H.", "8pt"))
+                for n_ in _sc:
+                    s4.append(para(e(n_), "8pt"))
             s4.append(para(e(XA_AVAIL_NOTE.rsplit(" Hover", 1)[0]), "8pt"))
         op_ = self._orient_report_parts(cell, OKC, BADC)
         if op_:
