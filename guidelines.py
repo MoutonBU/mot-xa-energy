@@ -2,10 +2,11 @@
 guidelines. Rules are typed in once as sets. Where the program already knows the number (coverage, floor area ratio, building
 lines, light, ventilation, glazing, floor area) it is measured for you; the rest you tick by hand or type the design value."""
 import os
+import re
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton, QTableWidget,
+from PySide6.QtWidgets import (QAbstractItemView, QDialog, QFileDialog, QScrollArea, QComboBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton, QTableWidget,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
 import tool_base as tb
@@ -63,13 +64,22 @@ class GuidelinesPage(ToolBase):
         for i, w_ in enumerate((220, 0, 130, 80, 60, 260)):
             if w_:
                 self.rt.setColumnWidth(i, w_)
+        self.rt.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.rt.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.rt.setMinimumHeight(360)
         self.rt.itemChanged.connect(self._edited)
         bv.addWidget(self.rt)
+        from PySide6.QtGui import QKeySequence, QShortcut
+        sc = QShortcut(QKeySequence(Qt.Key.Key_Delete), self.rt)
+        sc.setContext(Qt.ShortcutContext.WidgetShortcut)
+        sc.activated.connect(self.remove_rule)
         row = QHBoxLayout()
         for text, fn, tip in (("Read rules from a PDF...", self.read_pdf_rules, "Pick the guidelines PDF (an estate's, a council's or a zoning scheme). The AI lists the rules in it; you can edit them."),
                               ("Add the usual rules", self.add_usual, "Adds a typical list for an estate's architectural guidelines and for a council."),
-                              ("Add a rule", self.add_rule, ""), ("Remove the rule", self.remove_rule, "Removes the selected rule.")):
+                              ("Add a rule", self.add_rule, ""),
+                              ("Select all", self.select_all_rules, "Selects every rule. Ctrl or Shift + click picks several."),
+                              ("Select one set", self.select_set, "Selects every rule of the same guidelines as the rule you clicked."),
+                              ("Remove selected", self.remove_rule, "Removes every selected rule (also the Delete key).")):
             b = QPushButton(text)
             if tip:
                 b.setToolTip(tip)
@@ -91,6 +101,7 @@ class GuidelinesPage(ToolBase):
         self.vt.setHorizontalHeaderLabels(["Guidelines", "Rule", "Required", "In the design", "Result", "Note"])
         self.vt.verticalHeader().setVisible(False)
         self.vt.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.vt.itemDoubleClicked.connect(lambda _i: self.show_on_plan())
         h = self.vt.horizontalHeader()
         h.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         h.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
@@ -108,6 +119,7 @@ class GuidelinesPage(ToolBase):
         pr = QHBoxLayout()
         for text, fn, tip in (("Add the plans to review...", self.add_plans, "The PDF sheets you are going to submit."),
                               ("Clear the plans", self.clear_plans, ""),
+                              ("Show the selected rule on the plan", self.show_on_plan, "Select a failed rule in the list: opens the plan page where it was found, with the spot marked in red. Double-click a row does the same."),
                               ("Review the plans against the rules", self.review_with_ai, "The AI reads the plans and marks each rule that the program cannot measure itself.")):
             b = QPushButton(text)
             if tip:
@@ -166,12 +178,39 @@ class GuidelinesPage(ToolBase):
         self.rt.scrollToBottom()
         self.changed()
 
-    def remove_rule(self):
+    def _sel_rows(self, t=None):
+        t = t or self.rt
+        rows = {i.row() for i in t.selectionModel().selectedRows()} or {i.row() for i in t.selectedIndexes()}
+        return sorted(r for r in rows if 0 <= r < len(self.rules))
+
+    def select_all_rules(self):
+        self.rt.selectAll()
+
+    def select_set(self):
         r = self.rt.currentRow()
-        if 0 <= r < len(self.rules):
+        if not (0 <= r < len(self.rules)):
+            return
+        name = self.rules[r]["set"]
+        self.rt.clearSelection()
+        mode = self.rt.selectionMode()
+        self.rt.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        for i, x in enumerate(self.rules):
+            if x["set"] == name:
+                self.rt.selectRow(i)
+        self.rt.setSelectionMode(mode)
+
+    def remove_rule(self):
+        rows = self._sel_rows()
+        if not rows:
+            return
+        if len(rows) > 1:
+            from PySide6.QtWidgets import QMessageBox
+            if QMessageBox.question(self, self.TITLE, "Remove %d rules?" % len(rows)) != QMessageBox.StandardButton.Yes:
+                return
+        for r in reversed(rows):
             del self.rules[r]
-            self.fill_rules()
-            self.changed()
+        self.fill_rules()
+        self.changed()
 
     def fill_rules(self):
         self._busy = True
@@ -310,6 +349,41 @@ class GuidelinesPage(ToolBase):
         bad = sum(1 for j in res.values() if j["result"] == "fail")
         QMessageBox.information(self, self.TITLE, "Done. %d rule(s) flagged as not according to the rules. The reader (AI or offline) can be wrong: read each flagged line "
                                 "and the page it points to before you rely on it." % bad)
+
+    def _plan_for(self, r):
+        """(path, page number) where this rule was found in the plans, or (None, 0)."""
+        a = r.get("ai") or {}
+        pg = str(a.get("page") or "")
+        m = re.search(r"(?:page|p\.?|sheet)\s*(\d+)", pg, re.I) or re.search(r"(\d+)\s*$", pg)
+        n = int(m.group(1)) if m else 0
+        path = None
+        for p in self.plans:
+            b = os.path.basename(p).lower()
+            if b and (b in pg.lower() or os.path.splitext(b)[0] in pg.lower()):
+                path = p
+                break
+        if path is None and self.plans and (n or len(self.plans) == 1):
+            path = self.plans[0]
+        return path, n
+
+    def show_on_plan(self):
+        from PySide6.QtWidgets import QMessageBox
+        rows = self._sel_rows(self.vt)
+        if not rows:
+            QMessageBox.information(self, self.TITLE, "Click a rule in the review list first (a failed one is the most useful).")
+            return
+        r = self.rules[rows[0]]
+        if not self.plans:
+            QMessageBox.information(self, self.TITLE, "Add the plans first, then review them: the page where the rule was found can be shown.")
+            return
+        path, n = self._plan_for(r)
+        if not path or not os.path.exists(path):
+            path = self.plans[0]
+        meas = self.measures()
+        shown, res, _c = self.judge(r, meas)
+        a = r.get("ai") or {}
+        key = " ".join(x for x in (a.get("found", ""), r["rule"]) if x)
+        _PlanView(self, path, n, r, shown, res, a.get("reason", ""), key).exec()
 
     @staticmethod
     def _ai_view(r):
@@ -470,3 +544,98 @@ class GuidelinesPage(ToolBase):
             self.add_usual()
         elif getattr(self, "rt", None) is not None:
             self.fill_rules()
+
+
+class _PlanView(QDialog):
+    """One plan page with the place a rule was found marked in red (text matches are boxed), and the rule above it."""
+
+    def __init__(self, parent, path, page, rule, shown, res, reason, key):
+        super().__init__(parent)
+        self.setWindowTitle("Rule on the plan")
+        self.resize(1100, 860)
+        self.path, self.key, self.zoom = path, key, 1.0
+        import fitz
+        with fitz.open(path) as d:
+            self.n = d.page_count
+        self.pg = min(max(page, 1), self.n) if page else 0
+        v = QVBoxLayout(self)
+        req = "tick by hand" if rule["kind"] == "check" else (("not more than " if rule["kind"] == "max" else "not less than ") +
+                                                              ("%g" % (_f(rule["limit"]) or 0)) + ((" " + rule["unit"]) if rule["unit"] else ""))
+        head = QLabel("<b>%s</b><br>Required: %s &nbsp; In the design: %s &nbsp; <b style='color:%s'>%s</b><br>%s" % (
+            rule["rule"], req, shown or "-", "#d83a4b" if res == "Fails" else "#2e9d5b" if res == "Passes" else "#c08a1c", res,
+            reason or ("Measured from the program: it is not on one plan page." if rule["measure"] else "")))
+        head.setWordWrap(True)
+        v.addWidget(head)
+        bar = QHBoxLayout()
+        self.lab = QLabel("")
+        for t, f in (("< Page", lambda: self.go(-1)), ("Page >", lambda: self.go(1)), ("Zoom in", lambda: self.zm(1.25)), ("Zoom out", lambda: self.zm(0.8)),
+                     ("Open the PDF", self.open_pdf), ("Save this page as a picture...", self.save_png)):
+            b = QPushButton(t)
+            b.clicked.connect(lambda _=False, fn=f: fn())
+            bar.addWidget(b)
+        bar.addWidget(self.lab, 1)
+        v.addLayout(bar)
+        self.sa = QScrollArea()
+        self.img = QLabel()
+        self.sa.setWidget(self.img)
+        self.sa.setWidgetResizable(False)
+        v.addWidget(self.sa, 1)
+        if not self.pg:
+            self.pg = self._find_page() or 1
+        self.draw()
+
+    def _words(self):
+        ws = [w for w in re.findall(r"[A-Za-z0-9.%]{4,}", self.key.lower()) if w not in ("that", "with", "must", "than", "from", "shall", "rule")]
+        return list(dict.fromkeys(ws))[:8]
+
+    def _find_page(self):
+        import fitz
+        best, bs = 0, 0
+        ws = self._words()
+        with fitz.open(self.path) as d:
+            for i, p in enumerate(d):
+                t = (p.get_text("text") or "").lower()
+                sc = sum(1 for w in ws if w in t)
+                if sc > bs:
+                    best, bs = i + 1, sc
+        return best
+
+    def draw(self):
+        import fitz
+        from PySide6.QtGui import QImage, QPixmap
+        with fitz.open(self.path) as d:
+            p = d[self.pg - 1]
+            hits = []
+            for w in self._words():
+                try:
+                    hits += p.search_for(w)
+                except Exception:
+                    pass
+            for rc in hits[:40]:
+                p.draw_rect(rc, color=(0.85, 0.15, 0.2), width=1.6)
+            p.draw_rect(p.rect + (4, 4, -4, -4), color=(0.85, 0.15, 0.2), width=3)
+            s = min(3.0, 1500 / max(p.rect.width, p.rect.height, 1.0)) * self.zoom
+            pm = p.get_pixmap(matrix=fitz.Matrix(s, s), alpha=False)
+            im = QImage(pm.samples, pm.width, pm.height, pm.stride, QImage.Format.Format_RGB888).copy()
+        self.img.setPixmap(QPixmap.fromImage(im))
+        self.img.resize(im.size())
+        self.lab.setText("%s - page %d of %d%s" % (os.path.basename(self.path), self.pg, self.n,
+                                                 ("  (%d marks)" % len(hits)) if hits else "  (nothing to mark: the rule is not written on this page)"))
+
+    def go(self, d):
+        self.pg = min(max(self.pg + d, 1), self.n)
+        self.draw()
+
+    def zm(self, f):
+        self.zoom = min(4.0, max(0.3, self.zoom * f))
+        self.draw()
+
+    def open_pdf(self):
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        QDesktopServices.openUrl(QUrl.fromLocalFile(self.path))
+
+    def save_png(self):
+        f, _ = QFileDialog.getSaveFileName(self, "Save picture", "rule_on_plan.png", "PNG (*.png)")
+        if f:
+            self.img.pixmap().save(f, "PNG")

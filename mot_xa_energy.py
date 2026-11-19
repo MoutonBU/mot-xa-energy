@@ -8988,7 +8988,6 @@ class MainWindow(QMainWindow):
             self.register_page = None
         for attr_, mod_, cls_, tab_ in (("area_page", "area_schedule", "AreaPage", "Area schedule"),
                                         ("site_page", "site_lines", "SitePage", "Building lines"),
-                                        ("council_page", "council_pack", "CouncilPage", "Council pack"),
                                         ("guidelines_page", "guidelines", "GuidelinesPage", "Guidelines review")):
             try:
                 pg_ = getattr(__import__(mod_), cls_)(self)
@@ -9088,8 +9087,8 @@ class MainWindow(QMainWindow):
                 return getattr(self, "xa_steps", None)
             if i_ == 3:
                 return getattr(self, "cov_steps", None)
-            if i_ in (7, 8, 9, 10):
-                return getattr(getattr(self, ("area_page", "site_page", "council_page", "guidelines_page")[i_ - 7], None), "steps", None)
+            if i_ in (7, 8, 9):
+                return getattr(getattr(self, ("area_page", "site_page", "guidelines_page")[i_ - 7], None), "steps", None)
             return None
 
         def _step_move(d_):
@@ -10900,7 +10899,7 @@ class MainWindow(QMainWindow):
             self.costing_page.set_state({})
         if getattr(self, "register_page", None):
             self.register_page.set_state({})
-        for pg_ in (getattr(self, "area_page", None), getattr(self, "site_page", None), getattr(self, "council_page", None), getattr(self, "guidelines_page", None)):
+        for pg_ in (getattr(self, "area_page", None), getattr(self, "site_page", None), getattr(self, "guidelines_page", None)):
             if pg_ is not None:
                 pg_.load_state({})
         self._rd_to_widgets()
@@ -10934,7 +10933,6 @@ class MainWindow(QMainWindow):
             "register": (self.register_page.state() if getattr(self, "register_page", None) else None),
             "areas": (self.area_page.state() if getattr(self, "area_page", None) else None),
             "site": (self.site_page.state() if getattr(self, "site_page", None) else None),
-            "council": (self.council_page.state() if getattr(self, "council_page", None) else None),
             "guidelines": (self.guidelines_page.state() if getattr(self, "guidelines_page", None) else None),
             "ifc": getattr(self, "ifc_data", None),
             "unit_mode": UNIT_MODE[0],
@@ -11458,7 +11456,7 @@ class MainWindow(QMainWindow):
             self.costing_page.set_state(data.get("costing"))
         if getattr(self, "register_page", None):
             self.register_page.set_state(data.get("register"))
-        for pg_, key_ in ((getattr(self, "area_page", None), "areas"), (getattr(self, "site_page", None), "site"), (getattr(self, "council_page", None), "council"), (getattr(self, "guidelines_page", None), "guidelines")):
+        for pg_, key_ in ((getattr(self, "area_page", None), "areas"), (getattr(self, "site_page", None), "site"), (getattr(self, "guidelines_page", None), "guidelines")):
             if pg_ is not None:
                 pg_.load_state(data.get(key_))
         self.sched_panes = {k: [tuple(p) for p in v] for k, v in (data.get("panes") or {}).items()}
@@ -12910,7 +12908,7 @@ class MainWindow(QMainWindow):
                 ("Costing", "Fixtures, materials and the budget for a job.", "calc", "Costing"),
                 ("SANS", "Light and ventilation, energy and coverage checks for the building regulations.", "sun", "SANS"),
                 ("Site and areas", "Building lines on the stand, and the area schedule with unit mix and floor area ratio.", "land", "Site and"),
-                ("Rules", "The council pack, and a review of the design against the architectural and council guidelines.", "folder", "Rules"))):
+                ("Guidelines review", "Check the plans against the estate's architectural guidelines and the council's or state's checklist.", "clipboard", "Guidelines review"))):
             g.addWidget(tile(title, sub, ico, tgt), i // 3, i % 3)
         for k in (0, 1):
             g.setRowStretch(k, 1)
@@ -12944,24 +12942,10 @@ class MainWindow(QMainWindow):
             g.setColumnStretch(i, 1)
         v.addLayout(g)
         v.addStretch(1)
-        self.rules_sub_page, v = page("Rules", back="Start")
-        g = QGridLayout()
-        g.setSpacing(24)
-        for i, (title, sub, ico, tgt) in enumerate((
-                ("Council pack", "The checklist for a building plan submission, and one folder with everything in it.", "folder", "Council pack"),
-                ("Guidelines review", "Review the design against the development's architectural guidelines and the council's guidelines or checklist.", "clipboard", "Guidelines review"))):
-            t_ = tile(title, sub, ico, tgt)
-            t_.setMinimumHeight(300)
-            t_.setMaximumHeight(380)
-            g.addWidget(t_, 0, i)
-            g.setColumnStretch(i, 1)
-        v.addLayout(g)
-        v.addStretch(1)
         self.main_tabs.addTab(self.launch_page, "Start")
         self.main_tabs.addTab(self.sans_page, "SANS")
         self.main_tabs.addTab(self.site_sub_page, "Site and areas")
-        self.main_tabs.addTab(self.rules_sub_page, "Rules")
-        self.launcher_idx = tuple(range(self.main_tabs.count() - 4, self.main_tabs.count()))
+        self.launcher_idx = tuple(range(self.main_tabs.count() - 3, self.main_tabs.count()))
         self.main_tabs.setCurrentIndex(self.launcher_idx[0])
 
     def _tab_index(self, prefix):
