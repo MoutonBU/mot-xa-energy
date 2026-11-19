@@ -44,6 +44,7 @@ class Underlay:
     def __init__(self, kind, path, role="site"):
         self.kind, self.file, self.role = kind, path, role
         self.k, self.ox, self.oy = 1.0, 0.0, 0.0
+        self.rot = 0.0               # radians, anticlockwise
         self.opacity = 0.75 if role == "site" else 0.6
         self.polys = []              # raw polylines (DXF)
         self.cands = []              # raw closed shapes that could be a stand or a building
@@ -57,10 +58,28 @@ class Underlay:
 
     # ---- geometry
     def to_world(self, p):
-        return (p[0] * self.k + self.ox, p[1] * self.k + self.oy)
+        c, sn = math.cos(self.rot), math.sin(self.rot)
+        x, y = p[0] * self.k, p[1] * self.k
+        return (x * c - y * sn + self.ox, x * sn + y * c + self.oy)
 
     def to_raw(self, p):
-        return ((p[0] - self.ox) / self.k, (p[1] - self.oy) / self.k)
+        c, sn = math.cos(self.rot), math.sin(self.rot)
+        x, y = p[0] - self.ox, p[1] - self.oy
+        return ((x * c + y * sn) / self.k, (-x * sn + y * c) / self.k)
+
+    def qt(self):
+        """QTransform from raw drawing coordinates to world metres."""
+        from PySide6.QtGui import QTransform
+        c, sn = self.k * math.cos(self.rot), self.k * math.sin(self.rot)
+        return QTransform(c, sn, -sn, c, self.ox, self.oy)
+
+    def rotate_about(self, a, cx, cy):
+        """Turn the whole drawing by a radians about the world point (cx, cy)."""
+        c, sn = math.cos(a), math.sin(a)
+        x, y = self.ox - cx, self.oy - cy
+        self.ox, self.oy = cx + x * c - y * sn, cy + x * sn + y * c
+        self.rot += a
+        self._snap = None
 
     def raw_bounds(self):
         if self.image is not None:
@@ -73,8 +92,8 @@ class Underlay:
 
     def world_bounds(self):
         x0, y0, x1, y1 = self.raw_bounds()
-        a, b = self.to_world((x0, y0)), self.to_world((x1, y1))
-        return a[0], a[1], b[0], b[1]
+        ps = [self.to_world(q) for q in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))]
+        return min(p[0] for p in ps), min(p[1] for p in ps), max(p[0] for p in ps), max(p[1] for p in ps)
 
     def centre_world(self):
         a = self.world_bounds()
@@ -123,7 +142,9 @@ class Underlay:
             self._snap = np.array(src, float) if src else np.zeros((0, 2))
         if not len(self._snap):
             return self._snap
-        return self._snap * self.k + np.array([self.ox, self.oy])
+        c, sn = math.cos(self.rot), math.sin(self.rot)
+        a = self._snap * self.k
+        return np.column_stack((a[:, 0] * c - a[:, 1] * sn + self.ox, a[:, 0] * sn + a[:, 1] * c + self.oy))
 
     def candidates(self, min_area=4.0):
         out = []
@@ -137,7 +158,7 @@ class Underlay:
 
     # ---- saving
     def state(self):
-        return {"kind": self.kind, "path": self.file, "k": self.k, "ox": self.ox, "oy": self.oy, "opacity": self.opacity,
+        return {"kind": self.kind, "path": self.file, "k": self.k, "ox": self.ox, "oy": self.oy, "rot": self.rot, "opacity": self.opacity,
                 "unit": self.unit, "scale_n": self.scale_n, "page": self.page}
 
 

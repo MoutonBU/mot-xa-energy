@@ -4,7 +4,7 @@ import math
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QBrush, QPolygonF, QImage
-from PySide6.QtWidgets import (QAbstractItemView, QDialog, QDialogButtonBox, QFileDialog, QInputDialog, QListWidget, QSlider, QProgressDialog, QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QHBoxLayout, QHeaderView, QLabel,
+from PySide6.QtWidgets import (QAbstractItemView, QGridLayout, QDialog, QDialogButtonBox, QFileDialog, QInputDialog, QListWidget, QSlider, QProgressDialog, QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QHBoxLayout, QHeaderView, QLabel,
                                QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QSizePolicy, QTableWidget, QTableWidgetItem,
                                QVBoxLayout, QWidget)
 
@@ -219,13 +219,13 @@ class PlanView(QWidget):
             have_under = True
             p.save()
             p.setOpacity(u.opacity)
+            from PySide6.QtGui import QTransform as _QT
+            scr = _QT(s, 0, 0, -s, W / 2 - v[1] * s, H / 2 + v[2] * s)
             if u.image is not None:
-                a = to(u.to_world((0, u.raw_h)))
-                b = to(u.to_world((u.raw_w, 0)))
-                p.drawImage(QRectF(a, b), u.image)
+                p.setTransform(_QT(1, 0, 0, -1, 0, u.raw_h) * u.qt() * scr)
+                p.drawImage(QRectF(0, 0, u.raw_w, u.raw_h), u.image)
             else:
-                xf = QTransform(u.k, 0, 0, u.k, u.ox, u.oy) * QTransform(s, 0, 0, -s, W / 2 - v[1] * s, H / 2 + v[2] * s)
-                p.setTransform(xf)
+                p.setTransform(u.qt() * scr)
                 p.setPen(QPen(QColor("#7d7d7d") if role == "site" else QColor("#3a7bd5"), 0))
                 p.drawPath(u.path())
             p.restore()
@@ -260,6 +260,8 @@ class PlanView(QWidget):
             p.setPen(QColor("#111111"))
             c = pl.boundingRect().center()
             p.drawText(QRectF(c.x() - 80, c.y() - 12, 160, 24), int(Qt.AlignmentFlag.AlignCenter), b["name"])
+        if 0 <= self.sel < len(blds):
+            self._dims(p, to, verts, bpoly(blds[self.sel]), big)
         f = QFont("Arial")
         f.setPixelSize(17 if big else 11)
         p.setFont(f)
@@ -280,6 +282,32 @@ class PlanView(QWidget):
             p.drawEllipse(a, r_, r_)
             p.drawText(QRectF(a.x() - r_, a.y() - r_, 2 * r_, 2 * r_), int(Qt.AlignmentFlag.AlignCenter), corner_name(i))
         self._v_done(p, W, H, to, s, big)
+
+    def _dims(self, p, to, verts, pts, big):
+        """Dimension lines from the selected building to each boundary, so you can see the distances as you place it."""
+        sg = 1.0 if signed_area(verts) >= 0 else -1.0
+        f = QFont("Arial")
+        f.setPixelSize(15 if big else 10)
+        f.setBold(True)
+        p.setFont(f)
+        for i in range(len(verts)):
+            a, b = verts[i], verts[(i + 1) % len(verts)]
+            ex, ey = b[0] - a[0], b[1] - a[1]
+            ln = math.hypot(ex, ey)
+            if ln < 1e-9:
+                continue
+            nx, ny = -ey / ln * sg, ex / ln * sg
+            q = min(pts, key=lambda r: nx * (r[0] - a[0]) + ny * (r[1] - a[1]))
+            d = nx * (q[0] - a[0]) + ny * (q[1] - a[1])
+            foot = (q[0] - nx * d, q[1] - ny * d)
+            t_ = ((foot[0] - a[0]) * ex + (foot[1] - a[1]) * ey) / (ln * ln)
+            if not (0 <= t_ <= 1):
+                continue
+            p.setPen(QPen(QColor("#d6209a"), 1.4, Qt.PenStyle.DashLine))
+            qa, qb = to(q), to(foot)
+            p.drawLine(qa, qb)
+            p.setPen(QColor("#d6209a"))
+            p.drawText(QRectF((qa.x() + qb.x()) / 2 - 40, (qa.y() + qb.y()) / 2 - 20, 80, 18), int(Qt.AlignmentFlag.AlignCenter), "%.2f m" % d)
 
     def _v_done(self, p, W, H, to, s, big=False):
         if self.highlight:
@@ -697,7 +725,7 @@ class SitePage(ToolBase):
         br_l = FlowLayout(br, 6, 6)
         br.setMinimumHeight(46)
         for text, fn in (("Add a building", lambda: self.add_building()), ("Remove selected", self.remove_building),
-                         ("Centre it on the stand", self.centre_building), ("Rotate...", self.rotate_selected),
+                         ("Centre it on the stand", self.centre_building), ("Place with a ruler...", self.place_with_ruler), ("Rotate...", self.rotate_selected),
                          ("Ungroup", self.ungroup_selected)):
             b = QPushButton(text)
             b.clicked.connect(lambda _=False, f=fn: f())
@@ -1134,7 +1162,7 @@ class SitePage(ToolBase):
         u.role = role
         u.opacity = 0.75 if role == "site" else 0.6
         if st:
-            u.k, u.ox, u.oy = st.get("k", u.k), st.get("ox", 0.0), st.get("oy", 0.0)
+            u.k, u.ox, u.oy, u.rot = st.get("k", u.k), st.get("ox", 0.0), st.get("oy", 0.0), st.get("rot", 0.0)
             u.opacity = st.get("opacity", u.opacity)
         elif role == "fp":
             v = self.verts()
@@ -1146,9 +1174,9 @@ class SitePage(ToolBase):
         self.plan.auto = True
         self.plan.update()
         self.changed()
-        if ask and role == "site" and u.candidates(20):
-            if QMessageBox.question(self, "Building lines", "Pick the stand from the closed outlines in this drawing now?") == QMessageBox.StandardButton.Yes:
-                self.pick_shape("site", "stand")
+        if ask and role == "site":
+            if not self.auto_stand():
+                self.set_hint("No outline that looks like the stand was found. Use Pick the stand from the drawing, or Trace the stand by clicking.")
         elif ask and role == "fp":
             self.set_hint("Footprint drawing placed at the middle of the stand. Use Move the drawing to put it where you want, then trace the outline.")
 
@@ -1245,7 +1273,7 @@ class SitePage(ToolBase):
             self.apply_stand_polygon(pts)
         else:
             self._grp_n += 1
-            self.add_building({"name": "Building %d" % (self.bt.rowCount() + 1), "poly": si.clean(pts)})
+            self.add_building({"name": "Building %d" % (self.bt.rowCount() + 1), "poly": self._level_group([si.clean(pts)])[0] if role == "fp" else si.clean(pts)})
             self.plan.fit()
             self.bt.selectRow(self.bt.rowCount() - 1)
             self.set_hint("Building traced. Drag it, or press Rotate... to turn it.")
@@ -1257,16 +1285,179 @@ class SitePage(ToolBase):
                 u.oy += dy
         self._translate_rows(list(range(self.bt.rowCount())), dx, dy)
 
+    @staticmethod
+    def _long_edge_angle(pts):
+        """Angle (radians, -90..90 degrees) of the longest edge, so that edge can be turned to horizontal."""
+        best, ang = -1.0, 0.0
+        for i in range(len(pts)):
+            a, b = pts[i], pts[(i + 1) % len(pts)]
+            ln = math.hypot(b[0] - a[0], b[1] - a[1])
+            if ln > best:
+                best, ang = ln, math.atan2(b[1] - a[1], b[0] - a[0])
+        d = math.degrees(ang)
+        while d > 90:
+            d -= 180
+        while d <= -90:
+            d += 180
+        return math.radians(d)
+
+    @staticmethod
+    def _rot_pts(pts, a, cx, cy):
+        c, s_ = math.cos(a), math.sin(a)
+        return [(cx + (x - cx) * c - (y - cy) * s_, cy + (x - cx) * s_ + (y - cy) * c) for x, y in pts]
+
+    def rotate_world(self, a, cx, cy):
+        """Turn the drawings and every building about a point. The stand is turned by the caller."""
+        for u in self.under.values():
+            if u is not None:
+                u.rotate_about(a, cx, cy)
+        bl = self.buildings()
+        for i, b in enumerate(bl):
+            self._set_poly(i, self._rot_pts(bpoly(b), a, cx, cy))
+
     def apply_stand_polygon(self, pts):
         pts = si.clean(pts)
         if len(pts) < 3:
             return
+        # always horizontal: turn the longest boundary to run left to right, whatever way the drawing came in
+        a = -self._long_edge_angle(pts)
+        cx, cy = sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts)
+        if abs(a) > 1e-6:
+            self.rotate_world(a, cx, cy)
+            pts = self._rot_pts(pts, a, cx, cy)
         mnx, mny = min(p[0] for p in pts), min(p[1] for p in pts)
         self.shift_world(-mnx, -mny)
         self.set_vertices([(x - mnx, y - mny) for x, y in pts])
         self.plan.fit()
-        self.set_hint("The stand is set. Now set which boundary is the street, a side or the rear in the building lines table, then press Apply to the boundaries.")
+        self.set_hint("The stand is drawn from the survey and turned so its longest boundary is horizontal. Set which boundary is the street, a side or the rear, "
+                      "then press Apply to the boundaries.")
         self._after_edit(True)
+
+    def auto_stand(self):
+        """Draw the stand from the survey: the biggest closed outline that is not the sheet border."""
+        u = self.under.get("site")
+        if u is None:
+            return False
+        x0, y0, x1, y1 = u.raw_bounds()
+        W_, H_ = max(x1 - x0, 1e-9), max(y1 - y0, 1e-9)
+        best = None
+        for c in u.cands:
+            xs, ys = [q[0] for q in c], [q[1] for q in c]
+            if (max(xs) - min(xs)) > 0.9 * W_ and (max(ys) - min(ys)) > 0.9 * H_:
+                continue
+            w = [u.to_world(q) for q in c]
+            ar = abs(si.poly_area(w))
+            if ar >= 20 and (best is None or ar > best[0]):
+                best = (ar, w)
+        if best is None:
+            return False
+        self.apply_stand_polygon(best[1])
+        return True
+
+    def _level_group(self, polys):
+        """Turn a set of shapes that belong together so the longest edge of the biggest one is horizontal."""
+        if not polys:
+            return polys
+        big = max(polys, key=lambda p: abs(si.poly_area(p)))
+        a = -self._long_edge_angle(big)
+        if abs(a) < 1e-6:
+            return polys
+        pts = [q for p in polys for q in p]
+        cx, cy = (min(q[0] for q in pts) + max(q[0] for q in pts)) / 2, (min(q[1] for q in pts) + max(q[1] for q in pts)) / 2
+        return [self._rot_pts(p, a, cx, cy) for p in polys]
+
+    # ---- place a building with a ruler
+    def _inward(self):
+        v = self.verts()
+        sg = 1.0 if signed_area(v) >= 0 else -1.0
+        out = []
+        for i in range(len(v)):
+            a, b = v[i], v[(i + 1) % len(v)]
+            ln = math.hypot(b[0] - a[0], b[1] - a[1]) or 1.0
+            out.append(((-(b[1] - a[1]) / ln) * sg, ((b[0] - a[0]) / ln) * sg, a))
+        return out
+
+    def edge_distance(self, pts, i):
+        """Shortest distance from the shape to boundary i, measured at a right angle (negative means over the line)."""
+        nx, ny, a = self._inward()[i]
+        return min(nx * (q[0] - a[0]) + ny * (q[1] - a[1]) for q in pts)
+
+    def place_with_ruler(self):
+        rows = sorted({i.row() for i in self.bt.selectedIndexes()})
+        v = self.verts()
+        if not rows or len(v) < 3:
+            QMessageBox.information(self, "Building lines", "Click a building in the list or in the plan first (and set the stand).")
+            return
+        grp = sorted({i for r in rows for i in self._group_rows(r)})
+        bl = self.buildings()
+        pts = [q for i in grp for q in bpoly(bl[i])]
+        n = len(v)
+        names = ["%s to %s  (%s)" % (corner_name(i), corner_name((i + 1) % n), (self.edges()[i]["kind"] if i < len(self.edges()) else "")) for i in range(n)]
+        kinds = [e["kind"] for e in self.edges()]
+        ia = kinds.index("Street") if "Street" in kinds else 0
+        inw = self._inward()
+
+        def par(i, j):
+            return abs(inw[i][0] * inw[j][1] - inw[i][1] * inw[j][0]) < 0.05
+        ib = next((j for j in range(n) if j != ia and not par(ia, j) and kinds[j] == "Side"), None)
+        if ib is None:
+            ib = next((j for j in range(n) if j != ia and not par(ia, j)), (ia + 1) % n)
+        d = QDialog(self)
+        d.setWindowTitle("Place with a ruler")
+        lay = QVBoxLayout(d)
+        lay.addWidget(QLabel("Say how far the building must be from two boundaries. It moves as you type.\n"
+                             "The distance is measured at a right angle from the boundary to the nearest part of the building."))
+        grid = QGridLayout()
+        lay.addLayout(grid)
+        cbs, sps = [], []
+        for r_, (ix, lab) in enumerate(((ia, "From boundary"), (ib, "and from boundary"))):
+            cb = QComboBox()
+            cb.addItems(names)
+            cb.setCurrentIndex(ix)
+            sp = QDoubleSpinBox()
+            sp.setRange(-50, 1000)
+            sp.setDecimals(2)
+            sp.setSingleStep(0.1)
+            sp.setSuffix(" m")
+            sp.setValue(round(self.edge_distance(pts, ix), 2))
+            grid.addWidget(QLabel(lab), r_, 0)
+            grid.addWidget(cb, r_, 1)
+            grid.addWidget(QLabel("is"), r_, 2)
+            grid.addWidget(sp, r_, 3)
+            cbs.append(cb)
+            sps.append(sp)
+        warn = QLabel("")
+        warn.setStyleSheet("color:#d9a21b;")
+        lay.addWidget(warn)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        bb.accepted.connect(d.accept)
+        bb.rejected.connect(d.reject)
+        lay.addWidget(bb)
+        applied = [0.0, 0.0]
+        base = [pts]
+
+        def apply(_=None):
+            i, j = cbs[0].currentIndex(), cbs[1].currentIndex()
+            det = inw[i][0] * inw[j][1] - inw[i][1] * inw[j][0]
+            if i == j or abs(det) < 0.05:
+                warn.setText("Choose two boundaries that are not parallel.")
+                return
+            warn.setText("")
+            ea = sps[0].value() - self.edge_distance(base[0], i)
+            eb = sps[1].value() - self.edge_distance(base[0], j)
+            tx = (ea * inw[j][1] - eb * inw[i][1]) / det
+            ty = (inw[i][0] * eb - inw[j][0] * ea) / det
+            self._translate_rows(grp, tx - applied[0], ty - applied[1])
+            applied[0], applied[1] = tx, ty
+            self._after_edit(True)
+        for w_ in cbs:
+            w_.currentIndexChanged.connect(apply)
+        for w_ in sps:
+            w_.valueChanged.connect(apply)
+        if not d.exec():
+            self._translate_rows(grp, -applied[0], -applied[1])
+            self._after_edit(True)
+        self.plan.update()
 
     def pick_shape(self, role, target):
         u = self._under(role)
@@ -1286,7 +1477,7 @@ class SitePage(ToolBase):
             if target == "stand":
                 self.apply_stand_polygon(dlg.chosen)
             else:
-                self.add_building({"name": "Building %d" % (self.bt.rowCount() + 1), "poly": si.clean(dlg.chosen)})
+                self.add_building({"name": "Building %d" % (self.bt.rowCount() + 1), "poly": self._level_group([si.clean(dlg.chosen)])[0] if role == "fp" else si.clean(dlg.chosen)})
                 self.plan.fit()
 
     def footprint_from_ifc(self):
@@ -1353,6 +1544,7 @@ class SitePage(ToolBase):
             return
         QApplication.restoreOverrideCursor()
         pd.close()
+        polys = self._level_group(polys)
         pts = [q for p in polys for q in p]
         mx, my = (min(q[0] for q in pts) + max(q[0] for q in pts)) / 2, (min(q[1] for q in pts) + max(q[1] for q in pts)) / 2
         v = self.verts()

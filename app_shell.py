@@ -440,19 +440,19 @@ class Ribbon(QFrame):
                     c.steps.go(i)
             return f
         self.pages[7] = self._page([
-            ("Rooms", [T("From project", "room", tool("area_page", "fill_project"), hot=True), T("From IFC", "cube", tool("area_page", "fill_ifc")),
+            ("Rooms", [T("From project", "room", tool("area_page", "fill_project"), hot=True), T("IFC", "cube", tool("area_page", "fill_ifc")),
                        T("Import", "import", tool("area_page", "import_csv")), T("Paste", "clipboard", tool("area_page", "paste_rows")),
                        T("Add", "add", tool("area_page", "add_row"))]),
             ("Totals", [T("Totals", "results", step("area_page", 1))]),
             ("Reports", [T("Preview", "eye", tool("area_page", "preview"), hot=True), T("PDF", "pdf", tool("area_page", "export")),
                          T("CSV", "export", tool("area_page", "export_csv"))])])
         self.pages[8] = self._page([
-            ("Survey", [T("Load survey", "land", tool("site_page", "load_drawing", "site"), hot=True), T("Pick stand", "land", tool("site_page", "pick_shape", "site", "stand")),
+            ("Survey", [T("Load", "land", tool("site_page", "load_drawing", "site"), hot=True), T("Pick", "land", tool("site_page", "pick_shape", "site", "stand")),
                         T("Trace", "land", tool("site_page", "start_trace", "trace_stand", "site"))]),
-            ("Footprint", [T("From IFC", "cube", tool("site_page", "footprint_from_ifc")), T("From drawing", "pdf", tool("site_page", "load_drawing", "fp")),
+            ("Footprint", [T("IFC", "cube", tool("site_page", "footprint_from_ifc")), T("Drawing", "pdf", tool("site_page", "load_drawing", "fp")),
                            T("Trace", "land", tool("site_page", "start_trace", "trace_building", "fp"))]),
             ("Stand", [T("Rectangle", "land", tool("site_page", "make_rect")), T("Apply lines", "check_circle", tool("site_page", "apply_quick"))]),
-            ("Buildings", [T("Add", "add", tool("site_page", "add_building")), T("Centre", "pin", tool("site_page", "centre_building")),
+            ("Buildings", [T("Add", "add", tool("site_page", "add_building")), T("Centre", "pin", tool("site_page", "centre_building")), T("Ruler", "ruler", tool("site_page", "place_with_ruler")),
                            T("Result", "results", step("site_page", 2))]),
             ("Reports", [T("Preview", "eye", tool("site_page", "preview"), hot=True), T("PDF", "pdf", tool("site_page", "export"))])])
         self.pages[9] = self._page([
