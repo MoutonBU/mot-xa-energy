@@ -25,6 +25,9 @@ PrivilegesRequired=lowest
 ChangesAssociations=yes
 [Files]
 Source: "dist\MCP_XA_Energy\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
+#ifexist "tapir\TapirInstaller.exe"
+Source: "tapir\*"; DestDir: "{app}\tapir"; Flags: ignoreversion
+#endif
 [Registry]
 Root: HKA; Subkey: "Software\Classes\.mcplv"; ValueType: string; ValueName: ""; ValueData: "MCP.Project"; Flags: uninsdeletevalue
 Root: HKA; Subkey: "Software\Classes\MCP.Project"; ValueType: string; ValueName: ""; ValueData: "MCP project"; Flags: uninsdeletekey
@@ -42,6 +45,9 @@ Name: "{autodesktop}\MCP Architecture and Interiors XA Energy"; Filename: "{app}
 [Run]
 Filename: "{app}\MCP_XA_Energy.exe"; Parameters: "--after-update"; Flags: nowait postinstall skipifsilent runasoriginaluser
 Filename: "{app}\MCP_XA_Energy.exe"; Parameters: "--after-update"; Flags: nowait runasoriginaluser; Check: WizardSilent
+#ifexist "tapir\TapirInstaller.exe"
+Filename: "{app}\tapir\TapirInstaller.exe"; Description: "Install the Tapir add-on into Archicad (needed for the Live design check)"; Flags: postinstall skipifsilent shellexec nowait
+#endif
 [Code]
 const
   BGC = $1A1716;      { #16171a }

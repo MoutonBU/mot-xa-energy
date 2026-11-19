@@ -40,6 +40,18 @@ jobs:
           key: pyi-${{ runner.os }}-${{ hashFiles('requirements.txt', 'mot_xa_energy.spec') }}
           restore-keys: pyi-${{ runner.os }}-
       - run: pyinstaller --noconfirm mot_xa_energy.spec
+      - name: Fetch the Tapir installer for Archicad (the Live design check needs it)
+        continue-on-error: true      # if GitHub or the file is not there, the build goes on without it
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p tapir
+          NAME="$(gh release view --repo ENZYME-APD/tapir-archicad-automation --json assets -q '.assets[].name' | grep -i -E '\.exe$' | head -1)"
+          echo "Tapir installer asset: ${NAME}"
+          gh release download --repo ENZYME-APD/tapir-archicad-automation --pattern "${NAME}" --dir tapir --clobber
+          mv "tapir/${NAME}" tapir/TapirInstaller.exe
+          echo "Tapir add-on for Archicad, by ENZYME-APD. https://github.com/ENZYME-APD/tapir-archicad-automation (installer: ${NAME})" > tapir/SOURCE.txt
       - run: choco install innosetup -y --no-progress
       - run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss'
       - uses: actions/upload-artifact@v4

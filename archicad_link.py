@@ -569,6 +569,10 @@ class LivePanel(QDialog):
         sc.setWidgetResizable(True)
         sc.setWidget(self.out)
         v.addWidget(sc, 1)
+        self.tp = QPushButton("Install the Tapir add-on...")
+        self.tp.setToolTip("Starts the Tapir installer that came with this program. Archicad must be closed.")
+        self.tp.clicked.connect(self.install_tapir)
+        v.addWidget(self.tp)
         sv = QPushButton("Save the log...")
         sv.clicked.connect(self.save_log)
         v.addWidget(sv)
@@ -606,6 +610,20 @@ class LivePanel(QDialog):
         self.th = _Fetch((), True)
         self.th.done.connect(self._got)
         self.th.start()
+
+    def install_tapir(self):
+        import os
+        import sys
+        from PySide6.QtWidgets import QMessageBox
+        p = os.path.join(os.path.dirname(sys.executable), "tapir", "TapirInstaller.exe")
+        if not os.path.exists(p):
+            QMessageBox.information(self, "Tapir", "The Tapir installer is not part of this build. Get it from github.com/ENZYME-APD/tapir-archicad-automation "
+                                    "(Releases), or in Archicad: Options > Add-On Manager.")
+            return
+        try:
+            os.startfile(p)
+        except Exception as e:
+            QMessageBox.warning(self, "Tapir", str(e))
 
     def _ontop(self, on):
         vis = self.isVisible()
