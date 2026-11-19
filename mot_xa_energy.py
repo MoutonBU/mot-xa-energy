@@ -1148,6 +1148,38 @@ XA_FRAMES = {"Not specified (glass U only)": None,
              "Custom frame U-value": None}
 
 
+# Availability in South Africa (web check, Nov 2026). Shown as a tooltip on each frame / glass choice. "Common" = standard local product;
+# "Check" = no South African supplier found, so confirm one before specifying it.
+XA_AVAIL = {
+    "Aluminium - no thermal break (U 5.9)": "Common in South Africa (standard aluminium window systems).",
+    "Aluminium - thermally broken (U 3.2)": "Check the supplier: thermally broken aluminium is sold in South Africa by the larger system houses, but ask for the tested Uw.",
+    "Aluminium - high-performance thermal break (U 2.2)": "Check: no South African supplier confirmed for this level; ask the fabricator for a test report.",
+    "uPVC - multi-chamber (U 1.8)": "Available: REHAU uPVC systems (ECOTEC, PURELINE) are sold through South African fabricators and state SANS 613.",
+    "Timber - hardwood, e.g. meranti / sapele (U 2.2)": "Common in South Africa (joinery).",
+    "Timber - softwood, e.g. SA pine (U 1.8)": "Common in South Africa (joinery).",
+    "Aluminium-clad timber (U 1.8)": "Check: no South African supplier found; usually imported. Confirm before specifying.",
+    "Steel - no thermal break (U 5.9)": "Common in South Africa (steel windows and doors).",
+    "Steel - thermally broken (U 3.5)": "Check: no South African supplier found for a thermally broken steel system; imported systems exist. Confirm before specifying.",
+    "Fibreglass / composite (U 1.6)": "Check: no South African window-frame manufacturer found. Confirm before specifying.",
+    "Single low-E coated (U 3.7, S 0.65)": "Not a normal product, and SANS 10400-XA 5.3.6 does not allow single low-E glass to meet the U-value in the Southern Cape Condensation Problem Area (Garden Route). Use double glazing instead.",
+    "Double glazed low-E, air (U 1.9, S 0.60)": "Available: South African double low-E units exist (for example McCoy's All Seasons Glass, made in South Africa, quoted U 1.66, S 0.38 to 0.40). Use the supplier's figures under Custom.",
+    "Double glazed low-E, argon (U 1.5, S 0.58)": "Check: argon fill is not stated by the South African suppliers found. Ask for a certified U-value.",
+    "Double glazed low-E solar control, argon (U 1.4, S 0.35)": "Check: argon fill not confirmed locally; ask the glazier for a certified U and S.",
+    "Triple glazed low-E, argon (U 0.8, S 0.50)": "Check: no South African triple glazing supplier found (imported, specialist). Not normally needed for SANS 204.",
+}
+XA_AVAIL_NOTE = ("Certification (SANS 10400-XA:2021 clause 5.3): glass and frame are assessed as one window; the U-value must come from ANSI/NFRC 100 "
+                 "and the solar heat gain from ANSI/NFRC 200, certified by the glazier or a competent person. Windows and doors must meet the air leakage "
+                 "requirements of SANS 613. Values here are typical, so use the supplier's certified figures (Custom). "
+                 "Hover over a frame or glass choice to see whether it is available in South Africa.")
+
+
+def _avail_tips(box):
+    for i in range(box.count()):
+        t = XA_AVAIL.get(box.itemText(i))
+        if t:
+            box.setItemData(i, t, Qt.ItemDataRole.ToolTipRole)
+
+
 def fenestration_storey(nfa, openings, zone2011):
     """SANS 204:2011 deemed-to-satisfy: aggregate conductance and solar heat gain against
     NFA x constants. openings: list of (area m2, U, S, E)."""
@@ -14655,6 +14687,7 @@ class MainWindow(QMainWindow):
                            "leave it as 'Not specified' to use the glass U-value alone. Values are typical - choose "
                            "Custom and type your supplier's figures when you have them. "
                            "E = solar exposure factor, 1.0 = no shading credit."))
+        _an = QLabel(XA_AVAIL_NOTE); _an.setWordWrap(True); v.addWidget(_an)
         self.xa_glass_table = QTableWidget(0, 8)
         self.xa_glass_table.setHorizontalHeaderLabels(["Tag", "Frame type", "Glass type", "Glass U-value",
                                                        "Solar gain S", "Exposure E", "Window U (glass + frame)",
@@ -14667,12 +14700,12 @@ class MainWindow(QMainWindow):
         bulk = QHBoxLayout()
         b_all = QPushButton("Select all")
         b_all.clicked.connect(lambda _=False: self.xa_glass_table.selectAll())
-        self.xa_bulk_frame = QComboBox(); self.xa_bulk_frame.addItems(list(XA_FRAMES))
+        self.xa_bulk_frame = QComboBox(); self.xa_bulk_frame.addItems(list(XA_FRAMES)); _avail_tips(self.xa_bulk_frame)
         b_fr = QPushButton("Set frame of selected")
         b_fr.setToolTip("Select windows/doors in the list below (Ctrl or Shift to pick several, or 'Select all'), "
                         "choose a frame type, then press this.")
         b_fr.clicked.connect(lambda _=False: self._xa_bulk_set(1, self.xa_bulk_frame.currentText()))
-        self.xa_bulk_glass = QComboBox(); self.xa_bulk_glass.addItems(list(XA_GLASS))
+        self.xa_bulk_glass = QComboBox(); self.xa_bulk_glass.addItems(list(XA_GLASS)); _avail_tips(self.xa_bulk_glass)
         b_gl = QPushButton("Set glass of selected")
         b_gl.setToolTip("Select windows/doors in the list below, choose a glass type, then press this.")
         b_gl.clicked.connect(lambda _=False: self._xa_bulk_set(2, self.xa_bulk_glass.currentText()))
@@ -17100,10 +17133,12 @@ class MainWindow(QMainWindow):
             fbox = QComboBox()
             fbox.addItems(list(XA_FRAMES))
             fbox.setCurrentText(g["frame"] if g["frame"] in XA_FRAMES else list(XA_FRAMES)[0])
+            _avail_tips(fbox)
             gt.setCellWidget(r, 1, fbox)
             box = QComboBox()
             box.addItems(list(XA_GLASS))
             box.setCurrentText(g["type"] if g["type"] in XA_GLASS else "Custom")
+            _avail_tips(box)
             gt.setCellWidget(r, 2, box)
             for c, k in ((3, "U"), (4, "S"), (5, "E")):
                 gt.setItem(r, c, QTableWidgetItem(f"{g[k]}"))
