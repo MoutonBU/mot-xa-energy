@@ -1,6 +1,6 @@
 # PyInstaller spec - builds the folder dist/MCP_XA_Energy
 from PyInstaller.utils.hooks import collect_all, collect_data_files
-datas, binaries, hidden = [("version.txt", "."), ("sig_template.png", "."), ("sig_icon_phone.png", "."), ("sig_icon_mail.png", "."), ("sig_icon_web.png", "."), ("app_config.json", "."), ("mail_client.json", "."), ("RELEASE_NOTES.md", ".")], [], ["contacts", "mail_oauth", "mail_autoconfig", "register_ext", "mail_design", "contacts", "sig_banner", "ui_extras", "tool_base", "area_schedule", "site_lines", "site_import", "archicad_link", "council_pack"]
+datas, binaries, hidden = [("version.txt", "."), ("sig_template.png", "."), ("sig_icon_phone.png", "."), ("sig_icon_mail.png", "."), ("sig_icon_web.png", "."), ("app_config.json", "."), ("mail_client.json", "."), ("RELEASE_NOTES.md", ".")], [], ["contacts", "mail_oauth", "mail_autoconfig", "register_ext", "mail_design", "contacts", "sig_banner", "ui_extras", "tool_base", "area_schedule", "site_lines", "site_import", "archicad_link", "council_pack", "guidelines"]
 # matplotlib has its own PyInstaller hook; ezdxf only needs its data files. Collecting every submodule of them only slows the build.
 try:
     datas += collect_data_files("ezdxf")

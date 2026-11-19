@@ -9,8 +9,8 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton, QSizePo
 # main tab index -> (rail label, icon name); order of the main tabs in the window
 SUBJECTS = [(0, "Project", "home"), (6, "Drawing register", "clipboard"), (1, "Light && ventilation", "lightvent"), (2, "Energy (XA)", "bolt"),
             (3, "Coverage && FAR", "building"), (4, "Detail notes", "ruler"), (5, "Costing", "tag"),
-            (7, "Area schedule", "layers"), (8, "Building lines", "land"), (9, "Council pack", "folder")]
-CTX = {1: "sans", 2: "sans", 3: "sans", 4: "detail", 5: "costing", 6: "register", 7: "site", 8: "site", 9: "council"}      # which tool a main tab belongs to
+            (7, "Area schedule", "layers"), (8, "Building lines", "land"), (9, "Council pack", "folder"), (10, "Guidelines review", "clipboard")]
+CTX = {1: "sans", 2: "sans", 3: "sans", 4: "detail", 5: "costing", 6: "register", 7: "site", 8: "site", 9: "council", 10: "council"}      # which tool a main tab belongs to
 PSUB_ICONS = {"Drawings": "clipboard", "Orders": "tag", "Client changes": "edit", "Sent and revisions": "export",
               "Fixtures and sanitary ware": "drop", "Building materials": "layers", "Whole building and budget": "calc"}
 LV_SUBS = [(0, "Windows", "window"), (1, "Doors", "door"), (2, "Rooms", "room"), (3, "Results", "results"), (4, "Plan", "plan")]
@@ -171,7 +171,7 @@ class Rail(QFrame):
         col = "#1c1f24" if self.light_fn() else "#eceef0"
         for label, idx, ico in (("Drawing register", 6, "clipboard"), ("Detail Notes", 4, "ruler"), ("Costing", 5, "calc"), (None, None, None),
                                 ("Light && Ventilation", 1, "lightvent"), ("Energy (XA)", 2, "bolt"), ("Coverage && FAR", 3, "building"), (None, None, None),
-                                ("Building lines", 8, "land"), ("Area schedule", 7, "layers"), ("Council pack", 9, "folder"), (None, None, None),
+                                ("Building lines", 8, "land"), ("Area schedule", 7, "layers"), ("Council pack", 9, "folder"), ("Guidelines review", 10, "clipboard"), (None, None, None),
                                 ("Home (the four squares)", -1, "home")):
             if label is None:
                 m.addSeparator()
@@ -460,6 +460,11 @@ class Ribbon(QFrame):
                            T("Done", "check_circle", tool("council_page", "set_status", "Done"))]),
             ("Pack", [T("Build pack", "folder", tool("council_page", "build"), hot=True), T("Index", "eye", tool("council_page", "preview")),
                       T("Open folder", "folder", tool("council_page", "open_folder"))])])
+        self.pages[10] = self._page([
+            ("Rules", [T("Usual rules", "add", tool("guidelines_page", "add_usual"), hot=True), T("Add", "add", tool("guidelines_page", "add_rule")),
+                       T("Remove", "trash", tool("guidelines_page", "remove_rule"))]),
+            ("Review", [T("Measure", "results", step("guidelines_page", 1), hot=True)]),
+            ("Reports", [T("Preview", "eye", tool("guidelines_page", "preview")), T("PDF", "pdf", tool("guidelines_page", "export"))])])
         for i in sorted(self.pages):
             self.stack.addWidget(self.pages[i])
         self.icon_names()

@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.83.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.83.1**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Guidelines review, 1.83.1**: inside Rules, the Stand rules and Council guidelines squares are now one tool: **Guidelines review**. Type the rules of the development's architectural guidelines and of the council once (Add the usual rules gives you a start), then Review: coverage, floor area ratio, building line encroachments, floor area, light, ventilation and glazing are measured from the program; the rest you type the design value for or tick by hand. Each rule shows Passes, Fails or To check, and the Report step makes a PDF. It is saved with the project.
 - **Rules, 1.83.0**: the sixth square on the start screen is now **Rules** (it was Council pack). It opens three squares: Council pack (as before), Stand rules and Council guidelines. The last two are marked WIP: the squares are in place, the checks themselves are still to be built.
 - **Live link with the glass of your IFC, 1.82.7**: Archicad's live link cannot see the glass or which panes open (the IFC reads it from the 3D model). New button in the live panel: **Take glass and opening from an IFC file...**. Pick an IFC export of the same project once: every window and door with the same ID then gets its glass area, panes and opening from the IFC, exactly as the IFC import does, while the ID, size, count and rooms keep following Archicad live. If you already imported the IFC with I have an IFC model, that is used too. What you set in the hover pop-up is still kept.
 - **Live link: one row per ID, 1.82.6**: every window or door with the same ID in Archicad (ID and categories > ID, like W3) is now one line in the schedule with the total count, instead of W3, W3_2, W3_3 when sizes or glass differ slightly. If they do differ, the most common size is used and the row's note says so.
