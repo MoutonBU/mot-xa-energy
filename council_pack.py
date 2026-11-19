@@ -134,13 +134,15 @@ class CouncilPage(ToolBase):
                               ("Mark as not needed", lambda: self.set_status("Not needed"), ""),
                               ("Add an item...", self.add_item, "Add something your municipality asks for."),
                               ("Remove item", self.remove_item, "Remove the selected item from the list."),
-                              ("Write a note...", lambda: self.edit_note(), "A short note on the selected item.")):
+                              ("Write a note...", lambda: self.edit_note(), "A short note on the selected item."),
+                              ("Read the requirements from a PDF...", self.read_requirements, "Pick the council's submission requirements (PDF). The AI adds what it asks for to the list."),
+                              ("Check the plans against the list...", self.check_plans, "Pick the plan PDFs you will submit. The AI marks what is missing or not according to the requirements.")):
             b = QPushButton(text)
             if tip:
                 b.setToolTip(tip)
             b.clicked.connect(lambda _=False, f=fn: f())
             fl.addWidget(b)
-        row.setMinimumHeight(84)
+        row.setMinimumHeight(110)
         bv.addWidget(row)
         self.only_left = QCheckBox("Show only what is left to do")
         self.only_left.toggled.connect(self.refresh_table)
@@ -232,6 +234,8 @@ class CouncilPage(ToolBase):
                     cell.setFont(f)
                 if c == 4 and not it["note"]:
                     cell.setForeground(QColor("#8a8f98"))
+                if c == 4 and it.get("ai"):
+                    cell.setForeground(QColor({"pass": "#2e9d5b", "fail": "#d83a4b"}.get(it["ai"], "#c08a1c")))
                 t.setItem(r, c, cell)
             cb = QComboBox()
             cb.addItems(STATUS)
@@ -473,6 +477,84 @@ class CouncilPage(ToolBase):
             sec = it["section"]
         body += "<h3>Contents</h3>" + tb.table(["Section", "Item", "Status", "File"], rows, [20, 40, 12, 28])
         return tb.report_doc_html("Building plan submission", self.pack_name() + " | Index of documents", body, rd)
+
+    # ---- the council's own PDF in, the plans checked against it
+    def read_requirements(self):
+        import doc_review as dr
+        paths, _ = QFileDialog.getOpenFileNames(self, "The council's requirements (PDF)", "", "PDF (*.pdf)")
+        if not paths:
+            return
+        try:
+            n = sum(min(dr.page_count(p), 12) for p in paths)
+        except Exception as e:
+            QMessageBox.warning(self, "Council pack", "The PDF could not be opened: %s" % e)
+            return
+        if not dr.confirm_send(self, dr.main_mod(self.win), "Read what the council asks for from %d PDF(s)." % len(paths), n):
+            return
+        try:
+            found = dr.run_busy(self, "Reading the requirements...", lambda: dr.extract_rules(self.win, paths))
+        except RuntimeError as e:
+            QMessageBox.warning(self, "Council pack", str(e))
+            return
+        have = {it["what"].strip().lower() for it in self.items}
+        add = 0
+        for r in found:
+            what = r["rule"] + ("" if r["kind"] == "check" else ": %s %g%s" % ("not more than" if r["kind"] == "max" else "not less than",
+                                                                                 r["limit"], (" " + r["unit"]) if r["unit"] else ""))
+            if what.strip().lower() in have:
+                continue
+            it = self._new_item(os.path.splitext(r["file"])[0], what, None, r["source"])
+            it["rule"] = r
+            self.items.append(it)
+            have.add(what.strip().lower())
+            add += 1
+        self.refresh_table()
+        self.changed()
+        QMessageBox.information(self, "Council pack", "%d item(s) added to the list from the council's PDF." % add)
+
+    def check_plans(self):
+        import doc_review as dr
+        paths, _ = QFileDialog.getOpenFileNames(self, "The plans and documents to check (PDF)", "", "PDF (*.pdf)")
+        files = list(paths)
+        for it in self.items:                                     # files already attached to the list count too
+            if it["file"] and it["file"].lower().endswith(".pdf") and os.path.exists(it["file"]) and it["file"] not in files:
+                files.append(it["file"])
+        if not files:
+            QMessageBox.information(self, "Council pack", "Pick the plan PDFs first.")
+            return
+        idx = [i for i, it in enumerate(self.items) if it["status"] not in ("Not needed",)]
+        if not idx:
+            return
+        rules = []
+        for i in idx:
+            it = self.items[i]
+            r = it.get("rule")
+            if isinstance(r, dict) and r.get("kind") in ("max", "min"):
+                rules.append({"rule": r["rule"], "kind": r["kind"], "limit": r.get("limit") or 0, "unit": r.get("unit") or ""})
+            else:
+                rules.append({"rule": it["what"] + ((" - " + it["hint"]) if it["hint"] and not it.get("rule") else ""), "kind": "check", "limit": 0, "unit": ""})
+        n = dr.n_plan_pages(files) * ((len(rules) + 19) // 20)
+        if not dr.confirm_send(self, dr.main_mod(self.win), "Check the plans against %d item(s) of the list." % len(rules), n):
+            return
+        try:
+            res = dr.run_busy(self, "Reading the plans...", lambda: dr.review_plans(self.win, rules, files))
+        except RuntimeError as e:
+            QMessageBox.warning(self, "Council pack", str(e))
+            return
+        bad = 0
+        for j, i in enumerate(idx):
+            a = res.get(j)
+            if not a:
+                continue
+            it = self.items[i]
+            it["ai"] = a["result"]
+            tag = {"pass": "Looks complete", "fail": "NOT OK", "unclear": "Could not tell"}[a["result"]]
+            it["note"] = ("AI: %s - %s %s [%s]" % (tag, a["reason"], ("(" + a["found"] + ")") if a["found"] else "", a["page"])).replace("  ", " ").strip()
+            bad += a["result"] == "fail"
+        self.refresh_table()
+        self.changed()
+        QMessageBox.information(self, "Council pack", "Done. %d item(s) flagged as missing or not according to the requirements (red notes). "
+                                "The AI can be wrong: read each note and the page it points to, then mark the item done yourself." % bad)
 
     # ---- state
     def state(self):

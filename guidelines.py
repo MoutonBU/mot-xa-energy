@@ -1,6 +1,8 @@
 """Guidelines review: check the design against the rules of the architectural development (estate guidelines) and the council's
 guidelines. Rules are typed in once as sets. Where the program already knows the number (coverage, floor area ratio, building
 lines, light, ventilation, glazing, floor area) it is measured for you; the rest you tick by hand or type the design value."""
+import os
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton, QTableWidget,
@@ -65,7 +67,8 @@ class GuidelinesPage(ToolBase):
         self.rt.itemChanged.connect(self._edited)
         bv.addWidget(self.rt)
         row = QHBoxLayout()
-        for text, fn, tip in (("Add the usual rules", self.add_usual, "Adds a typical list for an estate's architectural guidelines and for a council."),
+        for text, fn, tip in (("Read rules from a PDF...", self.read_pdf_rules, "Pick the guidelines PDF (an estate's, a council's or a zoning scheme). The AI lists the rules in it; you can edit them."),
+                              ("Add the usual rules", self.add_usual, "Adds a typical list for an estate's architectural guidelines and for a council."),
                               ("Add a rule", self.add_rule, ""), ("Remove the rule", self.remove_rule, "Removes the selected rule.")):
             b = QPushButton(text)
             if tip:
@@ -97,6 +100,22 @@ class GuidelinesPage(ToolBase):
         self.vt.setMinimumHeight(380)
         self.vt.itemChanged.connect(self._review_edited)
         bv.addWidget(self.vt)
+        self.plans = []
+        self.plan_lab = QLabel("")
+        self.plan_lab.setWordWrap(True)
+        self.plan_lab.setObjectName("xaSub")
+        bv.addWidget(self.plan_lab)
+        pr = QHBoxLayout()
+        for text, fn, tip in (("Add the plans to review...", self.add_plans, "The PDF sheets you are going to submit."),
+                              ("Clear the plans", self.clear_plans, ""),
+                              ("Review the plans against the rules", self.review_with_ai, "The AI reads the plans and marks each rule that the program cannot measure itself.")):
+            b = QPushButton(text)
+            if tip:
+                b.setToolTip(tip)
+            b.clicked.connect(lambda _=False, f=fn: f())
+            pr.addWidget(b)
+        pr.addStretch(1)
+        bv.addLayout(pr)
         rb = QPushButton("Measure again")
         rb.setToolTip("Reads coverage, floor area ratio, building lines, light, ventilation and glazing from the program again.")
         rb.clicked.connect(self.refresh_review)
@@ -120,6 +139,7 @@ class GuidelinesPage(ToolBase):
         v3.addWidget(bx)
         v3.addStretch(1)
         self.build_frame([p1, p2, p3])
+        self._plans_label()
         self.restore()
         if not self.rules:
             self.add_usual()
@@ -129,7 +149,7 @@ class GuidelinesPage(ToolBase):
     # ---- the rules
     @staticmethod
     def _new(sname, rule, kind="max", limit=0, unit="", measure=""):
-        return {"set": sname, "rule": rule, "kind": kind, "limit": limit, "unit": unit, "measure": measure, "value": "", "status": "To check", "note": ""}
+        return {"set": sname, "rule": rule, "kind": kind, "limit": limit, "unit": unit, "measure": measure, "value": "", "status": "To check", "note": "", "ai": None}
 
     def add_usual(self):
         have = {(r["set"], r["rule"]) for r in self.rules}
@@ -204,6 +224,100 @@ class GuidelinesPage(ToolBase):
             self.changed()
             self.refresh_review()
 
+    # ---- PDFs: rules in, plans reviewed
+    def read_pdf_rules(self):
+        import doc_review as dr
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
+        paths, _ = QFileDialog.getOpenFileNames(self, "Guidelines PDF", "", "PDF (*.pdf)")
+        if not paths:
+            return
+        try:
+            n = sum(min(dr.page_count(p), 12) for p in paths)
+        except Exception as e:
+            QMessageBox.warning(self, self.TITLE, "The PDF could not be opened: %s" % e)
+            return
+        if not dr.confirm_send(self, dr.main_mod(self.win), "Read the rules from %d PDF(s)." % len(paths), n):
+            return
+        try:
+            found = dr.run_busy(self, "Reading the guidelines...", lambda: dr.extract_rules(self.win, paths))
+        except RuntimeError as e:
+            QMessageBox.warning(self, self.TITLE, str(e))
+            return
+        have = {(r["set"], r["rule"]) for r in self.rules}
+        add = 0
+        for r in found:
+            sname = os.path.splitext(r["file"])[0]
+            if (sname, r["rule"]) in have:
+                continue
+            x = self._new(sname, r["rule"], r["kind"], r["limit"], r["unit"], r["measure"])
+            x["note"] = r["source"]
+            self.rules.append(x)
+            add += 1
+        self.fill_rules()
+        self.changed()
+        QMessageBox.information(self, self.TITLE, "%d rule(s) read. Check them and fix any limit that was read wrongly." % add)
+
+    def add_plans(self):
+        from PySide6.QtWidgets import QFileDialog
+        paths, _ = QFileDialog.getOpenFileNames(self, "Plans to review (PDF)", "", "PDF (*.pdf)")
+        for p in paths:
+            if p not in self.plans:
+                self.plans.append(p)
+        self._plans_label()
+        self.changed()
+
+    def clear_plans(self):
+        self.plans = []
+        self._plans_label()
+        self.changed()
+
+    def _plans_label(self):
+        self.plan_lab.setText(("Plans: " + ", ".join(os.path.basename(p) for p in self.plans)) if self.plans
+                              else "No plans added yet. Add the PDF sheets you will submit.")
+
+    def review_with_ai(self):
+        import doc_review as dr
+        from PySide6.QtWidgets import QMessageBox
+        if not self.plans:
+            QMessageBox.information(self, self.TITLE, "Add the plans to review first.")
+            return
+        meas = self.measures()
+        todo = [i for i, r in enumerate(self.rules)
+                if not (r["measure"] and r["measure"] in meas) and not (r["kind"] != "check" and _f(r["value"]) is not None)]
+        if not todo:
+            QMessageBox.information(self, self.TITLE, "Every rule is already measured or filled in.")
+            return
+        miss = [p for p in self.plans if not os.path.exists(p)]
+        if miss:
+            QMessageBox.warning(self, self.TITLE, "Cannot find: " + ", ".join(os.path.basename(p) for p in miss))
+            return
+        n = dr.n_plan_pages(self.plans) * ((len(todo) + 19) // 20)
+        if not dr.confirm_send(self, dr.main_mod(self.win), "Review the plans against %d rule(s)." % len(todo), n):
+            return
+        sub = [self.rules[i] for i in todo]
+        try:
+            res = dr.run_busy(self, "Reading the plans...", lambda: dr.review_plans(self.win, sub, self.plans))
+        except RuntimeError as e:
+            QMessageBox.warning(self, self.TITLE, str(e))
+            return
+        for j, i in enumerate(todo):
+            if j in res:
+                self.rules[i]["ai"] = res[j]
+        self.changed()
+        self.refresh_review()
+        bad = sum(1 for j in res.values() if j["result"] == "fail")
+        QMessageBox.information(self, self.TITLE, "Done. %d rule(s) flagged as not according to the rules. The AI can be wrong: read each flagged line "
+                                "and the page it points to before you rely on it." % bad)
+
+    @staticmethod
+    def _ai_view(r):
+        a = r.get("ai")
+        if not a:
+            return None
+        res = {"pass": "Passes", "fail": "Fails"}.get(a.get("result"), "To check")
+        note = ("From the plans: " + a.get("reason", "") + ((" [" + a["page"] + "]") if a.get("page") else "")).strip()
+        return (a.get("found", ""), res, note)
+
     # ---- measuring
     def measures(self):
         """{key: number} for everything the program knows right now (missing when it does not know)."""
@@ -234,9 +348,14 @@ class GuidelinesPage(ToolBase):
         """(design value text, result, colour)"""
         lim, kind = _f(r["limit"]) or 0.0, r["kind"]
         val = meas.get(r["measure"]) if r["measure"] else _f(r["value"])
+        ai = self._ai_view(r)
         if kind == "check":
+            if r["status"] == "To check" and ai:
+                return (ai[0], ai[1], None)
             return (r["value"] or "", r["status"], None)
         if val is None:
+            if ai and not r["measure"]:
+                return (ai[0], ai[1], None)
             return ("not measured yet" if r["measure"] else (r["value"] or ""), "To check", None)
         ok = val <= lim + 1e-9 if kind == "max" else val >= lim - 1e-9
         shown = ("%g" % val) + ((" " + r["unit"]) if r["unit"] else "")
@@ -258,7 +377,8 @@ class GuidelinesPage(ToolBase):
                 res = "Not applicable"
             kind = r["kind"]
             req = "tick by hand" if kind == "check" else (("not more than " if kind == "max" else "not less than ") + ("%g" % (_f(r["limit"]) or 0)) + ((" " + r["unit"]) if r["unit"] else ""))
-            cells = [r["set"], r["rule"], req, shown, res, r["note"]]
+            ai_ = self._ai_view(r)
+            cells = [r["set"], r["rule"], req, shown, res, (ai_[2] if ai_ and ai_[1] == res and not r["value"] else r["note"])]
             for c, v in enumerate(cells):
                 it = QTableWidgetItem(str(v))
                 if c in (0, 1, 2) or (c == 3 and r["measure"]) or c == 4:
@@ -328,15 +448,20 @@ class GuidelinesPage(ToolBase):
             kind = r["kind"]
             req = "tick by hand" if kind == "check" else (("not more than " if kind == "max" else "not less than ") + ("%g" % (_f(r["limit"]) or 0)) + ((" " + r["unit"]) if r["unit"] else ""))
             bg = {"Passes": "#e4f4ea", "Fails": "#fbe3e6", "To check": "#fdf3d8"}.get(res)
-            rows.append(((r["set"], r["rule"], req, shown, res, r["note"]), bg) if bg else (r["set"], r["rule"], req, shown, res, r["note"]))
+            ai_ = self._ai_view(r)
+            nt = ai_[2] if ai_ and ai_[1] == res and not r["value"] else r["note"]
+            rows.append(((r["set"], r["rule"], req, shown, res, nt), bg) if bg else (r["set"], r["rule"], req, shown, res, nt))
         body = tb.table(["Guidelines", "Rule", "Required", "In the design", "Result", "Note"], rows, [18, 28, 16, 14, 10, 14])
         return tb.report_doc_html("Guidelines review", "The design against the architectural and council guidelines", body, rd)
 
     def state(self):
-        return {"rules": [dict(r) for r in self.rules]}
+        return {"rules": [dict(r) for r in self.rules], "plans": list(self.plans)}
 
     def set_state(self, d):
         d = d or {}
+        self.plans = [p for p in (d.get("plans") or []) if isinstance(p, str)]
+        if getattr(self, "plan_lab", None) is not None:
+            self._plans_label()
         saved = d.get("rules")
         self.rules = [dict(self._new("", ""), **r) for r in saved] if saved else []
         if not self.rules:
