@@ -447,7 +447,11 @@ class Ribbon(QFrame):
             ("Reports", [T("Preview", "eye", tool("area_page", "preview"), hot=True), T("PDF", "pdf", tool("area_page", "export")),
                          T("CSV", "export", tool("area_page", "export_csv"))])])
         self.pages[8] = self._page([
-            ("Stand", [T("Rectangle", "land", tool("site_page", "make_rect"), hot=True), T("Apply lines", "check_circle", tool("site_page", "apply_quick"))]),
+            ("Survey", [T("Load survey", "land", tool("site_page", "load_drawing", "site"), hot=True), T("Pick stand", "land", tool("site_page", "pick_shape", "site", "stand")),
+                        T("Trace", "land", tool("site_page", "start_trace", "trace_stand", "site"))]),
+            ("Footprint", [T("From IFC", "cube", tool("site_page", "footprint_from_ifc")), T("From drawing", "pdf", tool("site_page", "load_drawing", "fp")),
+                           T("Trace", "land", tool("site_page", "start_trace", "trace_building", "fp"))]),
+            ("Stand", [T("Rectangle", "land", tool("site_page", "make_rect")), T("Apply lines", "check_circle", tool("site_page", "apply_quick"))]),
             ("Buildings", [T("Add", "add", tool("site_page", "add_building")), T("Centre", "pin", tool("site_page", "centre_building")),
                            T("Result", "results", step("site_page", 2))]),
             ("Reports", [T("Preview", "eye", tool("site_page", "preview"), hot=True), T("PDF", "pdf", tool("site_page", "export"))])])

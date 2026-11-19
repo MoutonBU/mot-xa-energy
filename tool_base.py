@@ -116,7 +116,7 @@ class ToolBase(QWidget):
             sc = QScrollArea()
             sc.setWidgetResizable(True)
             sc.setFrameShape(QFrame.Shape.NoFrame)
-            sc.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            sc.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded if side is not None else Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             sc.setWidget(p)
             self.stack.addWidget(sc)
         if side is not None:

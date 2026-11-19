@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.79.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.80.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Survey and footprint in Building lines, 1.80.0**: load your surveyed site as DWG, DXF or PDF (a PDF asks for its scale, a DXF its units; DWG needs the ODA File Converter) and it sits under the plan. Pick the stand from the closed outlines in the drawing, or trace it by clicking the corners; the building lines are then set on each boundary. For the buildings, either make a footprint from the IFC model, seen from above with patios, balconies, slabs and roof overhangs (you choose what counts), or load a footprint PDF, DXF or DWG and pick or trace the building on the plan. Traced and IFC shapes move and rotate as one piece. The plan zooms with the wheel, pans with the middle or right button, snaps to the drawing's corners, and Calibrate with two points fixes a wrong scale. Drawings are remembered with the project.
 - **Three new tools, 1.79.0**, each with the same step bar, ribbon, left bar and icons as the rest of the program. The home screen now has six squares; Site and areas opens a page with Building lines and Area schedule.
   - **Council pack**: step 1 the application details (filled from Project details), step 2 a checklist of what a building plan submission needs (status, file and note per item; add, remove or mark items not needed), step 3 builds a numbered folder with an index sheet and, if you want, one joined PDF. Reports from the program (site plan, drawing register, XA, light and ventilation, coverage and FAR, area schedule, departure motivation) are made for you when an item has no file.
   - **Area schedule**: every room with block, level, unit and type. Fill it from the project rooms, the IFC model, a CSV file or a paste from a spreadsheet. Totals by block and level, by unit and room type, the unit mix, and the floor area that counts toward FAR. PDF and CSV reports.
