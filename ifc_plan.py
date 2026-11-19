@@ -5,6 +5,7 @@ walls, windows, doors, stairs and the rooms (IfcSpace). Rooms are coloured by th
 Reading the model takes a few seconds, so it runs in a background thread and is kept for the next visit."""
 import math
 import os
+import sys
 import re
 import threading
 
@@ -344,43 +345,67 @@ def build_plan(path):
     return {"storeys": out}
 
 
-def _child(path, conn):
+def worker_main(path, out):
+    """Runs in a separate process (the program started again with --plan-worker): reads the plan and writes it to `out`."""
+    import pickle
     try:
-        conn.send(("ok", build_plan(path)))
+        res = ("ok", build_plan(path))
+    except BaseException as ex:                      # noqa: BLE001
+        res = ("err", str(ex))
+    with open(out, "wb") as f:
+        pickle.dump(res, f, protocol=4)
+
+
+def _build_isolated(path, timeout=420):
+    """Read the plan in a separate process so a slow or crashing geometry library can never freeze or close the program.
+    The program is started again with --plan-worker (the same exe when installed)."""
+    import pickle, subprocess, tempfile, time
+    out = tempfile.mktemp(suffix=".plan")
+    errf = tempfile.mktemp(suffix=".err")
+    if getattr(sys, "frozen", False):
+        cmd = [sys.executable, "--plan-worker", path, out]
+    else:
+        cmd = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "mot_xa_energy.py"), "--plan-worker", path, out]
+    kw = {}
+    if os.name == "nt":
+        kw["creationflags"] = 0x08000000                     # CREATE_NO_WINDOW
+    try:
+        ef = open(errf, "wb")
+        pr = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=ef, **kw)
     except Exception as ex:
-        conn.send(("err", str(ex)))
-    conn.close()
-
-
-def _build_isolated(path, timeout=300):
-    """build_plan in a separate process: if the geometry library crashes on some element, only that process dies and the
-    program stays up. Falls back to reading in this process when a second process cannot be started."""
+        raise RuntimeError("The plan reader could not be started (%s)." % ex)
+    t0 = time.time()
+    while pr.poll() is None:
+        if time.time() - t0 > timeout:
+            try:
+                pr.kill()
+            except Exception:
+                pass
+            raise RuntimeError("Reading the plan took too long and was stopped. The rest of the program is fine.")
+        time.sleep(0.25)
     try:
-        import multiprocessing as mp
-        ctx = mp.get_context("spawn")
-        rx, tx = ctx.Pipe(False)
-        pr = ctx.Process(target=_child, args=(path, tx), daemon=True)
-        pr.start()
-    except Exception:
-        return build_plan(path)
-    tx.close()
-    got = None
-    try:
-        if rx.poll(timeout):
-            got = rx.recv()
-    except (EOFError, OSError):
-        got = None
-    try:
-        pr.join(2)
-        if pr.is_alive():
-            pr.terminate()
+        ef.close()
     except Exception:
         pass
-    if got is None:
-        raise RuntimeError("Reading the plan crashed or took too long. The rest of the program is fine. The model may hold an element the plan reader cannot draw.")
-    if got[0] == "err":
-        raise RuntimeError(got[1])
-    return got[1]
+    try:
+        with open(out, "rb") as f:
+            res = pickle.load(f)
+    except Exception:
+        tail = ""
+        try:
+            tail = open(errf, "r", errors="replace").read()[-300:]
+        except Exception:
+            pass
+        raise RuntimeError("Reading the plan failed (the reader stopped). The rest of the program is fine. %s" % tail.strip())
+    finally:
+        for fn in (out, errf):
+            try:
+                os.remove(fn)
+            except Exception:
+                pass
+    if res[0] == "err":
+        raise RuntimeError(res[1])
+    return res[1]
 
 
 def plan_for(path):

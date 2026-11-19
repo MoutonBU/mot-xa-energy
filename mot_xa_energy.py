@@ -20154,6 +20154,8 @@ def main():
 
 
 if __name__ == "__main__":
-    import multiprocessing
-    multiprocessing.freeze_support()
+    if len(sys.argv) >= 4 and sys.argv[1] == "--plan-worker":      # the floor plan is read in a separate process (see ifc_plan._build_isolated)
+        import ifc_plan as _ifc_plan
+        _ifc_plan.worker_main(sys.argv[2], sys.argv[3])
+        sys.exit(0)
     main()
