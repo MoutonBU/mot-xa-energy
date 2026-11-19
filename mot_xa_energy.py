@@ -8965,8 +8965,38 @@ class MainWindow(QMainWindow):
                 if a_.text() == "File":
                     a_.menu().addSeparator()
                     a_.menu().addAction("Quick tour...", _tour)
+                    a_.menu().addSeparator()
+                    vip = a_.menu().addAction("VIP mode (experimental features)")
+                    vip.setCheckable(True)
+                    vip.setChecked(bool(SETTINGS.get("vip")))
+                    acl = a_.menu().addAction("Archicad link (VIP)...", self.open_archicad_link)
+                    acl.setVisible(bool(SETTINGS.get("vip")))
+
+                    def _write_app_path():
+                        try:
+                            if getattr(sys, "frozen", False):
+                                d_ = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "MCP_XA_Energy")
+                                os.makedirs(d_, exist_ok=True)
+                                with open(os.path.join(d_, "app_path.txt"), "w", encoding="utf-8") as f_:
+                                    f_.write(sys.executable)
+                        except Exception:
+                            pass
+                    if SETTINGS.get("vip"):
+                        _write_app_path()
+
+                    def _vip(on, acl=acl):
+                        if on:
+                            _write_app_path()
+                        SETTINGS["vip"] = bool(on)
+                        acl.setVisible(bool(on))
+                        try:
+                            save_settings()
+                        except Exception:
+                            pass
+                    vip.toggled.connect(_vip)
         except Exception:
             pass
+        QShortcut(QKeySequence("Ctrl+Shift+A"), self, activated=lambda: self.open_archicad_link() if SETTINGS.get("vip") else None)
         if (not SETTINGS.get("welcomed") and os.environ.get("QT_QPA_PLATFORM") != "offscreen"
                 and not any(a in sys.argv for a in ("--restore", "--ready", "--after-update"))):
             QTimer.singleShot(1500, _tour)
@@ -9052,6 +9082,10 @@ class MainWindow(QMainWindow):
             if ma.menu():
                 walk(ma.menu(), [ma.text().replace("&", "")])
         return out
+
+    def open_archicad_link(self):
+        import archicad_link
+        archicad_link.ArchicadDialog(self).exec()
 
     def open_command_search(self):
         d = self._ux.CommandPalette(self, self.command_list(), lambda: bool(light()))

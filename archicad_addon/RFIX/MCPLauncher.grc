@@ -1,0 +1,14 @@
+// Resources for MCPLauncher (follow the layout of the Development Kit's Add-On template; adjust IDs if your template differs).
+'STR#' 32510 "Add-On Name and Description" {
+/* [ 1] */		"MCP Tools launcher"
+/* [ 2] */		"Opens MCP Architecture & Interiors from the Archicad menu."
+}
+
+'STR#' 32500 "Menu strings" {
+/* [ 1] */		"MCP Tools"
+/* [ 2] */		"Open MCP Architecture & Interiors"
+}
+
+'MDID' 32500 "Menu" {
+	32500
+}
