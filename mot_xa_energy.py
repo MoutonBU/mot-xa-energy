@@ -11051,7 +11051,7 @@ class MainWindow(QMainWindow):
             "rooms": [vars(r) for r in self.read_rooms()],
             "combined": self.combined,
             "xa": {"province": self.xa_prov.currentText(), "town": self.xa_town.currentText(), "zone": self.xa_zone.currentText(),
-                   "limit": self.xa_limit.value(), "zone11": self.xa_zone11.currentText(),
+                   "limit": self.xa_limit.value(), "zone11": self.xa_zone11.currentText(), "zone11_manual": bool(getattr(self, "_zone11_manual", False)),
                    "elements": self.xa_elements, "glass": self.xa_glass, "air": self.air_state(), "hw": self.hw_state(), "lt": self.lt_state()},
             "rd": self.rd,
             "cov": self.cov_state(),
@@ -11561,6 +11561,7 @@ class MainWindow(QMainWindow):
             self.xa_zone.setCurrentText(xa.get("zone", "1"))
             self.xa_limit.setValue(float(xa.get("limit", 20.0) or 20.0))
             self.xa_zone11.setCurrentText(xa.get("zone11", "1"))
+            self._zone11_manual = bool(xa.get("zone11_manual", False))
             self.xa_elements = list(xa.get("elements", []))
             self.xa_glass = dict(xa.get("glass", {}))
             self.air_set_state(xa.get("air"))
@@ -14587,6 +14588,10 @@ class MainWindow(QMainWindow):
         self.xa_zone11.setToolTip("The 2011 edition has 6 climatic zones. Used only for the "
                                   "conductance / solar heat gain calculation below.")
         row.addWidget(self.xa_zone11)
+        self.xa_zone11.activated.connect(lambda _i: setattr(self, "_zone11_manual", True))
+        zl = QLabel("(follows the project zone; pick another here to override)")
+        zl.setStyleSheet("opacity:.7")
+        row.addWidget(zl)
         row.addStretch()
         v.addLayout(row)
         self.xa_fen_table = QTableWidget(0, 7)
@@ -14618,6 +14623,18 @@ class MainWindow(QMainWindow):
         self.xa_orient_table.setItemDelegateForColumn(7, self._xa_delegate3)
         v.addWidget(self.xa_orient_table)
         add_table_grip(v, self.xa_orient_table, min_h=70)
+        fr_ = QHBoxLayout()
+        self.xa_fix_head = QLabel("<b>Problem windows and how to fix them</b>")
+        fr_.addWidget(self.xa_fix_head)
+        fr_.addStretch()
+        self.xa_fix_plan_btn = QPushButton("Show the problem windows on the plan")
+        self.xa_fix_plan_btn.clicked.connect(self._show_problems_on_plan)
+        fr_.addWidget(self.xa_fix_plan_btn)
+        v.addLayout(fr_)
+        self.xa_fix_lbl = QLabel("Run the XA check to see which windows are the problem.")
+        self.xa_fix_lbl.setWordWrap(True)
+        self.xa_fix_lbl.setTextFormat(Qt.RichText)
+        v.addWidget(self.xa_fix_lbl)
         v.addWidget(QLabel("Frame and glass type of each window / door (used only when the calculation is needed). "
                            "Pick a frame to include it in the window U-value (glass area and frame area weighted); "
                            "leave it as 'Not specified' to use the glass U-value alone. Values are typical - choose "
@@ -15411,6 +15428,47 @@ class MainWindow(QMainWindow):
         else:
             advice = "Choose which side of the plan each room's windows face to work out the orientation."
         return {"building": bld, "advice": advice, "main": main, "north": north, "lat": o["lat"], "mult": o["mult"]}
+
+    def _fill_fix_box(self):
+        import html as _h
+        adv = getattr(self, "xa_advice", None) or []
+        lab = getattr(self, "xa_fix_lbl", None)
+        if lab is None:
+            return
+        parts, n_bad = [], 0
+        for a in adv:
+            if not a.get("issues"):
+                continue
+            parts.append("<p><b style='font-size:11pt'>%s</b></p>" % _h.escape(str(a["group"])))
+            for iss in a["issues"]:
+                parts.append("<p style='color:#ff6b6b'><b>%s</b></p>" % _h.escape(iss["title"]))
+                rows = "".join(
+                    "<tr><td style='padding:1px 10px 1px 0'><b>%s</b></td><td style='padding-right:10px'>%s</td><td style='padding-right:10px'>%.2f m2</td>"
+                    "<td style='padding-right:10px'>%s</td><td>%.0f%%</td></tr>" % (
+                        _h.escape(w["tag"]), _h.escape(w["room"]), w["area"], _h.escape(w.get("sector") or "facing not set"), w["share"])
+                    for w in iss["windows"])
+                parts.append("<table><tr><td><i>Window</i></td><td><i>Room</i></td><td><i>Glass area</i></td><td><i>Faces</i></td><td><i>Share of the problem</i></td></tr>%s</table>" % rows)
+                parts.append("<ul>%s</ul>" % "".join("<li>%s</li>" % f for f in iss["fixes"]))
+            n_bad += len(a.get("bad") or [])
+        if not parts:
+            lab.setText("<span style='color:#5ecb8a'><b>Nothing to fix:</b></span> every group is within the screening limit, and its "
+                        "conductance, solar heat gain and facade (table 4) checks are met.") if adv else lab.setText(
+                "Run the XA check to see which windows are the problem.")
+            return
+        note = ""
+        if any(f.get("within") for f in (getattr(self, "xa_fen_results", None) or [])):
+            note = ("<p style='color:#c8a24a'>A group inside the screening limit (20%) does not need the SANS 204 calculation. Its red figures "
+                    "above are shown so you can see where the margin is, not because the deemed-to-satisfy route fails.</p>")
+        lab.setText(note + "".join(parts))
+
+    def _show_problems_on_plan(self):
+        pp = getattr(self, "plan_page", None)
+        if pp is None or not getattr(self, "ifc_path", ""):
+            QMessageBox.information(self, APP_NAME, "Import an IFC model to see the windows on its plan.")
+            return
+        self.main_tabs.setCurrentIndex(1)
+        self.tabs.setCurrentWidget(pp)
+        pp.activate()
 
     def _fill_orient_table(self):
         o = getattr(self, "xa_orient", None)
@@ -17120,7 +17178,7 @@ class MainWindow(QMainWindow):
                     for code, q_ in facing_parts(base_side, over_side, tag, qty):
                         og["wins"].append({"vent": o.openable_m2 * q_, "area": o.area_m2 * q_, "u": u, "s": sg,
                                            "sector": compass_sector(code, north) if code else "",
-                                           "shaded": shaded, "tag": tag, "room": rm.name})
+                                           "shaded": shaded, "tag": tag, "room": rm.name, "e": e, "floor": rm.floor})
             pct = fen / nfa * 100 if nfa else 0.0
             within = pct <= limit + 1e-9
             calc = fenestration_storey(nfa, ops, zone11)
@@ -17152,6 +17210,17 @@ class MainWindow(QMainWindow):
             bld = building_orientation(vs)
         self.xa_orient = {"rows": rows_o, "by_sector": by_sector, "notes": notes_o, "building": bld,
                           "north": north, "lat": lat, "mult": mult}
+        try:
+            import fen_advisor
+            self.xa_advice = []
+            for fr in self.xa_fen_results:
+                g_ = orient_groups.get(fr["floor"]) or {"wins": []}
+                self.xa_advice.append(fen_advisor.advise(
+                    fr["floor"], fr["nfa"], fr["limit"], g_["wins"], fr["calc"], XA_GLASS,
+                    [r_ for r_ in rows_o if r_["floor"] == fr["floor"]], zone11, fr["fen"]))
+        except Exception:
+            self.xa_advice = []
+        self._fill_fix_box()
         self._fill_orient_table()
         self._air_refresh()
         self._xa_autofill()
@@ -17700,6 +17769,15 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
         self.xa_nett.setText(f"{sum(rm.area_m2 for rm in hab):.2f} m2" if hab else "-")
         code = self.xa_occ.currentText().split(" - ")[0].strip()
         zone = self.xa_zone.currentText()
+        try:                              # the SANS 204 fenestration zone follows the project's energy zone unless it was chosen by hand
+            z11 = {"5H": "5"}.get(zone, zone)
+            if z11 in ("1", "2", "3", "4", "5", "6") and not getattr(self, "_zone11_manual", False) \
+                    and self.xa_zone11.currentText() != z11:
+                self.xa_zone11.blockSignals(True)
+                self.xa_zone11.setCurrentText(z11)
+                self.xa_zone11.blockSignals(False)
+        except Exception:
+            pass
         vals = {}
         if inside:
             vals["total_area"] = f"{sum(rm.area_m2 for rm in inside):.2f}"

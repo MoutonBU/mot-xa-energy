@@ -585,6 +585,35 @@ class PlanView(QGraphicsView):
             p = p.subtracted(hp)
         return p
 
+    def mark_problems(self, items):
+        """Red outline and a flag on windows the energy check names: items = [(ring, tag, reasons, room)]."""
+        from PySide6.QtWidgets import QGraphicsSimpleTextItem
+        names = {"solar": "solar heat gain", "conductance": "conductance (U-value)", "area": "too much glass", "facade": "facade limit (table 4)"}
+        for ring, tag, why, room in items:
+            it = QGraphicsPathItem(self._path((ring, [])))
+            c = QColor("#e5384a")
+            fc = QColor(c)
+            fc.setAlpha(150)
+            it.setBrush(QBrush(fc))
+            pen = QPen(c, 3.0)
+            pen.setCosmetic(True)
+            it.setPen(pen)
+            it.setZValue(7)
+            it.setToolTip("%s in %s: %s. See Energy XA > Problem windows and how to fix them." % (tag, room, ", ".join(names.get(w, w) for w in why)))
+            self.scene().addItem(it)
+            cx = sum(p[0] for p in ring) / len(ring)
+            cy = sum(p[1] for p in ring) / len(ring)
+            pt = self._pt(cx, cy)
+            from PySide6.QtWidgets import QGraphicsEllipseItem
+            rg = QGraphicsEllipseItem(pt.x() - 0.6, pt.y() - 0.6, 1.2, 1.2)      # a red ring round the window, so it is found at a glance
+            rp = QPen(c, 3.0)
+            rp.setCosmetic(True)
+            rg.setPen(rp)
+            rg.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+            rg.setZValue(7)
+            rg.setToolTip(it.toolTip())
+            self.scene().addItem(rg)
+
     def show_storey(self, storey, pal, status):
         """Draw one storey. pal = colours, status = {normalised room name: 'ok' | 'check' | 'fail'}."""
         sc = self.scene()
@@ -765,6 +794,45 @@ def _split_unit(name):
     if m:
         return "u" + m.group(1), _norm(name[m.end():])
     return "", _norm(name)
+
+
+def _pip(pt, ring):
+    x, y = pt
+    ins = False
+    for i in range(len(ring) - 1):
+        x1, y1 = ring[i]; x2, y2 = ring[i + 1]
+        if (y1 > y) != (y2 > y) and x < (x2 - x1) * (y - y1) / ((y2 - y1) or 1e-12) + x1:
+            ins = not ins
+    return ins
+
+
+def problem_windows(storey, advice):
+    """[(ring, tag, [reason, ...], room)] windows on this level that the energy (XA) check names as a problem."""
+    out = []
+    if not advice:
+        return out
+    fl = _norm(storey["name"])
+    bad = [b for a in advice for b in a.get("bad", []) if _norm(b.get("floor")) == fl or not b.get("floor")]
+    if not bad:
+        return out
+    for kind, text, ring in storey.get("tags", []):
+        if kind not in ("window", "door") or len(ring) < 3:
+            continue
+        cands = [b for b in bad if b["tag"].upper() == str(text).upper()]
+        if not cands:
+            continue
+        c = (sum(p[0] for p in ring) / len(ring), sum(p[1] for p in ring) / len(ring))
+        near = None
+        for sp in storey["spaces"]:
+            if _pip(c, sp["poly"][0]):
+                near = _norm(_split_unit(sp["name"])[1])
+                break
+        hit = [b for b in cands if near and _norm(_split_unit(b["room"])[1]) == near] or ([] if near else cands)
+        if not hit and near is None:
+            hit = cands
+        if hit:
+            out.append((ring, str(text), sorted({w for b in hit for w in b["why"]}), hit[0]["room"]))
+    return out
 
 
 def _poly_area(sp):
@@ -1107,6 +1175,13 @@ class PlanPage(QWidget):
         self.view.rot = square_angle(self._plan)
         self._asg = self._assigned(st)
         self.view.show_storey(st, pal, {k: room_status(r) for k, r in self._asg.items()})
+        probs = []
+        try:
+            probs = problem_windows(st, getattr(self.win, "xa_advice", None))
+            if probs:
+                self.view.mark_problems(probs)
+        except Exception:
+            probs = []
         fg, bg = ("#1c1f24", "#ffffff") if is_l else ("#eceef0", "#17171b")
         self.list.setStyleSheet("QListWidget{background:%s;color:%s;border:1px solid %s;border-radius:8px;} "
                                 "QListWidget::item{padding:3px 4px;} QListWidget::item:selected{background:%s;color:%s;}"
@@ -1117,7 +1192,8 @@ class PlanPage(QWidget):
                 (pal["fail"], "Fails", "both fail"),
                 (pal["nores"], "No result", "dashed"),
                 (pal["window"], "Window", ""), (pal["door"], "Door", ""), (pal["gate"], "Gate", "door named G"),
-                (pal["wall"], "Wall", ""), (pal["stair"], "Stair", "")]
+                (pal["wall"], "Wall", ""), (pal["stair"], "Stair", ""),
+                ("#e5384a", "Problem window", "energy check: see Energy XA")]
         self.key.setText("<b>Key</b><br>" + "<br>".join(
             "%s <b>%s</b>%s" % (sw(c), a, (" <span style='opacity:.7'>- %s</span>" % b) if b else "") for c, a, b in rows))
         self._rows = []
@@ -1147,6 +1223,9 @@ class PlanPage(QWidget):
             st["name"], len(st["spaces"]), n["ok"], n["check"], n["fail"], (", %d without a result" % n["none"]) if n["none"] else ""))
         self.note.setText("Click a room on the plan or in this list." if res else
                           "Run the check (Run check in the ribbon) to colour the rooms.")
+        if probs:
+            self.count.setText(self.count.text() + "<br><b style='color:#e5384a'>%d problem window(s) for the energy check:</b> %s." % (
+                len(probs), ", ".join(sorted({"%s (%s)" % (t, r) for _g, t, _w, r in probs}))))
 
     def refresh(self):
         """Colours or results changed."""
