@@ -4,7 +4,7 @@ import math
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QBrush, QPolygonF, QImage
-from PySide6.QtWidgets import (QAbstractItemView, QGridLayout, QDialog, QDialogButtonBox, QFileDialog, QInputDialog, QListWidget, QSlider, QProgressDialog, QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QHBoxLayout, QHeaderView, QLabel,
+from PySide6.QtWidgets import (QAbstractItemView, QGridLayout, QMenu, QDialog, QDialogButtonBox, QFileDialog, QInputDialog, QListWidget, QSlider, QProgressDialog, QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QHBoxLayout, QHeaderView, QLabel,
                                QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QSizePolicy, QTableWidget, QTableWidgetItem,
                                QVBoxLayout, QWidget)
 
@@ -309,6 +309,42 @@ class PlanView(QWidget):
             p.setPen(QColor("#d6209a"))
             p.drawText(QRectF((qa.x() + qb.x()) / 2 - 40, (qa.y() + qb.y()) / 2 - 20, 80, 18), int(Qt.AlignmentFlag.AlignCenter), "%.2f m" % d)
 
+    def _draw_north(self, p, W, big):
+        R = 34 if big else 24
+        cx, cy = W - R - 22, R + 26
+        self._north_c = (cx, cy, R)
+        th = math.radians(self.page.north)
+        d = (math.cos(th), -math.sin(th))          # on screen
+        nrm = (-d[1], d[0])
+        P = lambda a, b: QPointF(cx + d[0] * a + nrm[0] * b, cy + d[1] * a + nrm[1] * b)
+        p.save()
+        p.setPen(QPen(QColor("#222222"), 1.4))
+        p.setBrush(QColor(255, 255, 255, 215))
+        p.drawEllipse(QPointF(cx, cy), R, R)
+        tip, tail = P(R * 0.92, 0), P(-R * 0.62, 0)
+        l_, r_ = P(-R * 0.62, R * 0.42), P(-R * 0.62, -R * 0.42)
+        mid = P(-R * 0.18, 0)
+        p.setBrush(QColor("#111111"))
+        p.drawPolygon(QPolygonF([tip, mid, l_]))
+        p.setBrush(QColor("#ffffff"))
+        p.drawPolygon(QPolygonF([tip, r_, mid]))
+        p.setBrush(QColor("#111111"))
+        p.drawPolygon(QPolygonF([mid, r_, tail]))
+        p.setBrush(QColor("#ffffff"))
+        p.drawPolygon(QPolygonF([mid, tail, l_]))
+        f = QFont("Arial")
+        f.setPixelSize(int(R * 0.62))
+        f.setBold(True)
+        p.setFont(f)
+        p.setPen(QColor("#111111"))
+        q = P(R + R * 0.42, 0)
+        p.drawText(QRectF(q.x() - R * 0.4, q.y() - R * 0.4, R * 0.8, R * 0.8), int(Qt.AlignmentFlag.AlignCenter), "N")
+        p.restore()
+
+    def _hit_north(self, pos):
+        c = getattr(self, "_north_c", None)
+        return bool(c and getattr(self.page, "north_on", True) and math.hypot(pos.x() - c[0], pos.y() - c[1]) <= c[2] * 1.5)
+
     def _v_done(self, p, W, H, to, s, big=False):
         if self.highlight:
             p.setPen(QPen(QColor("#d6209a"), 3))
@@ -333,6 +369,8 @@ class PlanView(QWidget):
             p.setBrush(Qt.BrushStyle.NoBrush)
             q = to(self.snap_pt)
             p.drawRect(QRectF(q.x() - 6, q.y() - 6, 12, 12))
+        if getattr(self.page, "north_on", True):
+            self._draw_north(p, W, big)
         # scale bar
         length = 10 if s * 10 < W * 0.45 else 5
         if s * 10 < 40:
@@ -443,11 +481,16 @@ class PlanView(QWidget):
         if w is None:
             return
         if e.button() in (Qt.MouseButton.MiddleButton, Qt.MouseButton.RightButton):
+            self.rclick = e.position() if e.button() == Qt.MouseButton.RightButton else None
             self.pan = (e.position(), self.view)
             self.auto = False
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
             return
         if e.button() != Qt.MouseButton.LeftButton:
+            return
+        if self.mode == "select" and self._hit_north(e.position()):
+            self.drag = ("north",)
+            self.page.set_hint("Drag round to point north. Hold Shift to step in 15 degrees. Right-click the arrow for more.")
             return
         ortho = bool(e.modifiers() & Qt.KeyboardModifier.ShiftModifier)
         if self.mode in ("trace_stand", "trace_building"):
@@ -500,6 +543,13 @@ class PlanView(QWidget):
         w = self._world(e.position())
         if w is None:
             return
+        if self.drag and self.drag[0] == "north":
+            c = self._north_c
+            ang = math.degrees(math.atan2(-(e.position().y() - c[1]), e.position().x() - c[0]))
+            ang = round(ang / 15.0) * 15.0 if e.modifiers() & Qt.KeyboardModifier.ShiftModifier else round(ang)
+            self.page.north = ang % 360
+            self.update()
+            return
         if self.pan is not None:
             p0, v0 = self.pan
             s = v0[0]
@@ -528,15 +578,43 @@ class PlanView(QWidget):
             self.update()
             return
         from site_import import point_in_poly
-        over = any(point_in_poly(w, bpoly(b)) for b in self.page.buildings())
+        over = any(point_in_poly(w, bpoly(b)) for b in self.page.buildings()) or self._hit_north(e.position())
         self.setCursor(Qt.CursorShape.OpenHandCursor if over else Qt.CursorShape.ArrowCursor)
 
-    def mouseReleaseEvent(self, _e):
+    def mouseReleaseEvent(self, e):
+        was_north = bool(self.drag and self.drag[0] == "north")
+        right = e.button() == Qt.MouseButton.RightButton and getattr(self, "rclick", None) is not None
+        click = right and math.hypot(e.position().x() - self.rclick.x(), e.position().y() - self.rclick.y()) < 5
         self.drag = None
         self.pan = None
+        self.rclick = None
         self.setCursor(Qt.CursorShape.CrossCursor if self.mode in ("trace_stand", "trace_building", "calibrate") else
                        Qt.CursorShape.SizeAllCursor if self.mode == "move_under" else Qt.CursorShape.ArrowCursor)
+        if was_north:
+            self.page.changed()
+        if click and self.mode == "select":
+            self._context(e.globalPosition().toPoint(), e.position())
 
+    def _context(self, gpos, pos):
+        from site_import import point_in_poly
+        w = self._world(pos)
+        menu = QMenu(self)
+        if self._hit_north(pos):
+            self.page.north_menu(menu)
+        else:
+            hit = -1
+            if w is not None:
+                for i, b in enumerate(self.page.buildings()):
+                    if point_in_poly(w, bpoly(b)):
+                        hit = i
+            if hit >= 0:
+                self.sel = hit
+                self.page.select_building(hit)
+                self.update()
+                self.page.building_menu(menu)
+            else:
+                self.page.plan_menu(menu)
+        menu.exec(gpos)
 
 class PickDialog(QDialog):
     """A list of the closed outlines found in a drawing. The one you select is shown in pink on the plan."""
@@ -589,6 +667,7 @@ class SitePage(ToolBase):
     def __init__(self, win):
         super().__init__(win)
         self._busy = False
+        self.north, self.north_on = 90.0, True
         self.under = {"site": None, "fp": None}
         self._under_note = {}
         self._grp_n = 0
@@ -982,23 +1061,156 @@ class SitePage(ToolBase):
         self._translate_rows(allrows, cx - (x0 + x1) / 2, cy - (y0 + y1) / 2)
         self._after_edit(True)
 
-    def rotate_selected(self):
+    def _sel_group(self):
         rows = sorted({i.row() for i in self.bt.selectedIndexes()})
         if not rows:
             QMessageBox.information(self, "Building lines", "Click a building in the list or in the plan first.")
-            return
-        deg, ok = QInputDialog.getDouble(self, "Rotate", "Turn the building by how many degrees?\n(positive turns it anticlockwise, negative clockwise)", 0, -360, 360, 1)
-        if not ok or not deg:
-            return
-        allrows = sorted({i for r in rows for i in self._group_rows(r)})
+            return None
+        return sorted({i for r in rows for i in self._group_rows(r)})
+
+    def rotate_rows(self, allrows, deg):
         bl = self.buildings()
         pts = [q for i in allrows for q in bpoly(bl[i])]
         cx, cy = (min(q[0] for q in pts) + max(q[0] for q in pts)) / 2, (min(q[1] for q in pts) + max(q[1] for q in pts)) / 2
         a = math.radians(deg)
-        ca, sa = math.cos(a), math.sin(a)
         for i in allrows:
-            self._set_poly(i, [(cx + (q[0] - cx) * ca - (q[1] - cy) * sa, cy + (q[0] - cx) * sa + (q[1] - cy) * ca) for q in bpoly(bl[i])])
+            self._set_poly(i, self._rot_pts(bpoly(bl[i]), a, cx, cy))
         self._after_edit(True)
+        self.plan.update()
+
+    def rotate_selected(self, deg=None):
+        """Turn the selected building (anticlockwise is positive). Without an angle it asks."""
+        allrows = self._sel_group()
+        if allrows is None:
+            return
+        if deg is None:
+            deg, ok = QInputDialog.getDouble(self, "Rotate", "Turn the building by how many degrees?\n(positive turns it anticlockwise, negative clockwise)", 0, -360, 360, 1)
+            if not ok:
+                return
+        if deg:
+            self.rotate_rows(allrows, deg)
+
+    def _group_angle(self, allrows):
+        bl = self.buildings()
+        polys = [bpoly(bl[i]) for i in allrows]
+        big = max(polys, key=lambda p: abs(si.poly_area(p)))
+        best, ang = -1.0, 0.0
+        for i in range(len(big)):
+            a, b = big[i], big[(i + 1) % len(big)]
+            ln = math.hypot(b[0] - a[0], b[1] - a[1])
+            if ln > best:
+                best, ang = ln, math.degrees(math.atan2(b[1] - a[1], b[0] - a[0]))
+        return ang
+
+    def snap_selected(self, step):
+        """Turn the building so its longest wall lies on the nearest multiple of step degrees (90 = horizontal or vertical)."""
+        allrows = self._sel_group()
+        if allrows is None:
+            return
+        ang = self._group_angle(allrows)
+        d = round(ang / step) * step - ang
+        if abs(d) > 1e-6:
+            self.rotate_rows(allrows, d)
+
+    def align_to_boundary(self):
+        allrows = self._sel_group()
+        v = self.verts()
+        if allrows is None or len(v) < 3:
+            return
+        ang = self._group_angle(allrows)
+        best = None
+        for i in range(len(v)):
+            a, b = v[i], v[(i + 1) % len(v)]
+            ea = math.degrees(math.atan2(b[1] - a[1], b[0] - a[0]))
+            d = (ea - ang + 90) % 180 - 90
+            if best is None or abs(d) < abs(best):
+                best = d
+        if best:
+            self.rotate_rows(allrows, best)
+
+    # ---- turning the whole plan, the north arrow, and the menus
+    def rotate_plan(self, deg=None):
+        v = self.verts()
+        if len(v) < 3:
+            QMessageBox.information(self, "Building lines", "Set the stand first.")
+            return
+        if deg is None:
+            deg, ok = QInputDialog.getDouble(self, "Rotate the plan", "Turn the stand, the drawings and the buildings by how many degrees?\n"
+                                             "(positive turns anticlockwise, negative clockwise)", 0, -360, 360, 1)
+            if not ok:
+                return
+        if not deg:
+            return
+        a = math.radians(deg)
+        cx, cy = sum(p[0] for p in v) / len(v), sum(p[1] for p in v) / len(v)
+        self.rotate_world(a, cx, cy)
+        nv = self._rot_pts(v, a, cx, cy)
+        mnx, mny = min(p[0] for p in nv), min(p[1] for p in nv)
+        self.shift_world(-mnx, -mny)
+        self.set_vertices([(x - mnx, y - mny) for x, y in nv])
+        self.plan.fit()
+        self._after_edit(True)
+
+    def level_plan(self):
+        v = self.verts()
+        if len(v) >= 3:
+            self.rotate_plan(math.degrees(-self._long_edge_angle(v)))
+
+    def rotate_north(self, deg):
+        self.north = (self.north + deg) % 360
+        self.plan.update()
+        self.changed()
+
+    def north_custom(self):
+        cur = round((90 - self.north) % 360)
+        b, ok = QInputDialog.getInt(self, "North arrow", "Where does north point?\nGive the direction in degrees clockwise from straight up (0 = up, 90 = right).", cur, 0, 359)
+        if ok:
+            self.north = (90 - b) % 360
+            self.plan.update()
+            self.changed()
+
+    def _steps_menu(self, menu, fn, custom, title=None):
+        for step in (90, 45, 15, 1):
+            menu.addAction("Turn %d\u00b0 clockwise" % step, lambda s_=step: fn(-s_))
+            menu.addAction("Turn %d\u00b0 anticlockwise" % step, lambda s_=step: fn(s_))
+        menu.addSeparator()
+        menu.addAction("Custom angle...", custom)
+
+    def north_menu(self, menu):
+        menu.addAction("North points up", lambda: (setattr(self, "north", 90.0), self.plan.update(), self.changed()))
+        menu.addSeparator()
+        self._steps_menu(menu, self.rotate_north, self.north_custom)
+        menu.addSeparator()
+        menu.addAction("Hide the north arrow", lambda: self.show_north(False))
+
+    def show_north(self, on):
+        self.north_on = bool(on)
+        self.plan.update()
+        self.changed()
+
+    def plan_menu(self, menu):
+        menu.addAction("Rotate the whole plan").setEnabled(False)
+        self._steps_menu(menu, self.rotate_plan, self.rotate_plan)
+        menu.addSeparator()
+        menu.addAction("Turn the longest boundary horizontal", self.level_plan)
+        menu.addSeparator()
+        menu.addAction("Show the whole stand", self.plan.fit)
+        menu.addAction("Hide the north arrow" if self.north_on else "Show the north arrow", lambda: self.show_north(not self.north_on))
+
+    def building_menu(self, menu):
+        menu.addAction("Rotate the building").setEnabled(False)
+        self._steps_menu(menu, self.rotate_selected, self.rotate_selected)
+        menu.addSeparator()
+        sn = menu.addMenu("Snap its angle to")
+        sn.addAction("90\u00b0 (walls horizontal and vertical)", lambda: self.snap_selected(90))
+        sn.addAction("45\u00b0", lambda: self.snap_selected(45))
+        sn.addAction("15\u00b0", lambda: self.snap_selected(15))
+        menu.addAction("Line up with the nearest boundary", self.align_to_boundary)
+        menu.addSeparator()
+        menu.addAction("Place with a ruler...", self.place_with_ruler)
+        menu.addAction("Centre it on the stand", self.centre_building)
+        menu.addAction("Ungroup", self.ungroup_selected)
+        menu.addAction("Remove this building", self.remove_building)
 
     def ungroup_selected(self):
         rows = sorted({i.row() for i in self.bt.selectedIndexes()})
@@ -1084,7 +1296,16 @@ class SitePage(ToolBase):
             b.setToolTip(tip)
             b.clicked.connect(lambda _=False, f=fn: f())
             fl.addWidget(b)
-        bar.setMinimumHeight(40)
+        for text, filler, tip in (("Rotate plan", self.plan_menu, "Turn the stand, the survey and the buildings together."),
+                                  ("North arrow", self.north_menu, "Turn the north arrow, or drag it in the plan."),
+                                  ("Rotate building", self.building_menu, "Turn the selected building by steps, snap it, or type an angle.")):
+            b = QPushButton(text)
+            b.setToolTip(tip)
+            mn = QMenu(b)
+            mn.aboutToShow.connect(lambda m=mn, f=filler: (m.clear(), f(m)))
+            b.setMenu(mn)
+            fl.addWidget(b)
+        bar.setMinimumHeight(84)
         v.addWidget(bar)
         self.hint_lbl = QLabel("")
         self.hint_lbl.setWordWrap(True)
@@ -1308,6 +1529,7 @@ class SitePage(ToolBase):
 
     def rotate_world(self, a, cx, cy):
         """Turn the drawings and every building about a point. The stand is turned by the caller."""
+        self.north = (self.north + math.degrees(a)) % 360
         for u in self.under.values():
             if u is not None:
                 u.rotate_about(a, cx, cy)
@@ -1516,8 +1738,11 @@ class SitePage(ToolBase):
         c1.setChecked(True)
         c2 = QCheckBox("Roof overhangs")
         c2.setChecked(True)
+        c3 = QCheckBox("Straighten it (turn the longest wall to horizontal)")
+        c3.setToolTip("Leave this off to keep the direction the model was drawn in. You can always turn it later: right-click the building in the plan.")
         lay.addWidget(c1)
         lay.addWidget(c2)
+        lay.addWidget(c3)
         lay.addWidget(QLabel("Walls, columns and stairs are always included."))
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         bb.accepted.connect(d.accept)
@@ -1544,7 +1769,8 @@ class SitePage(ToolBase):
             return
         QApplication.restoreOverrideCursor()
         pd.close()
-        polys = self._level_group(polys)
+        if c3.isChecked():
+            polys = self._level_group(polys)
         pts = [q for p in polys for q in p]
         mx, my = (min(q[0] for q in pts) + max(q[0] for q in pts)) / 2, (min(q[1] for q in pts) + max(q[1] for q in pts)) / 2
         v = self.verts()
@@ -1558,7 +1784,7 @@ class SitePage(ToolBase):
         self._bulk = False
         self._after_edit(True)
         self.plan.fit()
-        self.set_hint("%d footprint%s added at the middle of the stand. Drag it into place and use Rotate... to turn it to the right direction." %
+        self.set_hint("%d footprint%s added at the middle of the stand. Drag it into place and right-click it to turn it the way you want." %
                       (len(polys), "" if len(polys) == 1 else "s"))
 
     # ---- results
@@ -1687,7 +1913,8 @@ class SitePage(ToolBase):
                 "follow": self.follow.isChecked(), "buildings": self.buildings(),
                 "reasons": [k for k, c in self.reason_cb.items() if c.isChecked()],
                 "motivation": self.motiv.toPlainText() if self._motiv_user else "", "q": [self.q_street.value(), self.q_side.value(), self.q_rear.value()],
-                "under": {r: u.state() for r, u in self.under.items() if u is not None}}
+                "under": {r: u.state() for r, u in self.under.items() if u is not None},
+                "north": self.north, "north_on": self.north_on}
 
     def set_state(self, d):
         d = d or {}
@@ -1714,6 +1941,7 @@ class SitePage(ToolBase):
         for b in d.get("buildings") or []:
             self.add_building(b)
         self._bulk = False
+        self.north, self.north_on = float(d.get("north", 90.0)), bool(d.get("north_on", True))
         self._restore_unders(d.get("under") or {})
         self._motiv_user = bool(d.get("motivation"))
         if self._motiv_user:
