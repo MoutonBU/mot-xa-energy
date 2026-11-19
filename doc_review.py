@@ -10,7 +10,7 @@ from PySide6.QtCore import QEventLoop, Qt, QThread
 from PySide6.QtWidgets import QMessageBox, QProgressDialog
 
 MEASURE_KEYS = "cov (coverage %), far (floor area ratio), lines (building line encroachments), floor (floor area m2), light, vent, glaze"
-MAX_TEXT = 22000          # characters of guideline text per request
+MAX_TEXT = 12000          # characters of guideline text per request
 MAX_IMG_SIDE = 2200
 MAX_PLAN_PAGES = 14       # pages of plans sent per review
 
@@ -94,9 +94,34 @@ def confirm_send(parent, M, what, n_pages):
 
 
 def _json_list(M, text, key):
-    d = M._json_from(text)
-    v = d.get(key, [])
-    return v if isinstance(v, list) else []
+    """The list under `key`. When the reply is cut off or has a stray quote, every complete entry before the damage is still kept."""
+    try:
+        d = M._json_from(text)
+        v = d.get(key, [])
+        return v if isinstance(v, list) else []
+    except Exception:
+        pass
+    t = re.sub(r"```(?:json)?", "", text or "")
+    i = t.find("[", max(0, t.find('"%s"' % key)))
+    dec, out, pos = json.JSONDecoder(), [], i + 1 if i >= 0 else 0
+    while True:
+        j = t.find("{", pos)
+        if j < 0:
+            break
+        try:
+            o, end = dec.raw_decode(t, j)
+        except ValueError:
+            nxt = t.find("{", j + 1)                       # skip the damaged entry, carry on with the next
+            if nxt < 0:
+                break
+            pos = nxt
+            continue
+        if isinstance(o, dict):
+            out.append(o)
+        pos = end
+    if not out:
+        raise RuntimeError("The AI's answer could not be read. Try again, or use the offline reader.")
+    return out
 
 
 # ---- rules out of a guideline PDF
@@ -137,12 +162,12 @@ def extract_rules(win, paths, offline=False):
             chunks.append(cur)
         if len(txt) < 200:                                           # scanned: send the first pages as pictures
             imgs = [b for _n, b in pdf_page_images(path, set(range(1, 11)))]
-            reply = M.ai_request(RULES_PROMPT.replace("%s", MEASURE_KEYS, 1).replace("%s", "(the guidelines are in the pictures)", 1), imgs, 4096)
+            reply = M.ai_request(RULES_PROMPT.replace("%s", MEASURE_KEYS, 1).replace("%s", "(the guidelines are in the pictures)", 1), imgs, 8000)
             rs = _json_list(M, reply, "rules")
         else:
             rs = []
-            for ch in chunks[:6]:
-                rs += _json_list(M, M.ai_request(RULES_PROMPT.replace("%s", MEASURE_KEYS, 1).replace("%s", ch, 1), (), 4096), "rules")
+            for ch in chunks[:10]:
+                rs += _json_list(M, M.ai_request(RULES_PROMPT.replace("%s", MEASURE_KEYS, 1).replace("%s", ch, 1), (), 8000), "rules")
         for r in rs:
             if not isinstance(r, dict) or not str(r.get("rule", "")).strip():
                 continue
@@ -204,7 +229,7 @@ def review_plans(win, rules, plan_paths, offline=False):
         prompt += "\n\nSHEETS (order of the pictures): " + "; ".join(l for l, _b in imgs)
         if texts:
             prompt += "\n\nTEXT ON THE SHEETS:\n" + "\n".join(texts)[:30000]
-        reply = M.ai_request(prompt, [b for _l, b in imgs], 4096)
+        reply = M.ai_request(prompt, [b for _l, b in imgs], 8000)
         for r in _json_list(M, reply, "results"):
             try:
                 i = int(r.get("n")) - 1
