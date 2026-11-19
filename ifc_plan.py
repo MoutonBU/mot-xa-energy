@@ -345,6 +345,16 @@ def build_plan(path):
     return {"storeys": out}
 
 
+def _flog(msg):
+    """A line in mot_freeze.log (temp folder): what the plan reader did and when, to find out where a stall comes from."""
+    try:
+        import tempfile, datetime
+        with open(os.path.join(tempfile.gettempdir(), "mot_freeze.log"), "a", encoding="utf-8") as f:
+            f.write(datetime.datetime.now().strftime("%d %H:%M:%S ") + str(msg) + "\n")
+    except Exception:
+        pass
+
+
 def worker_main(path, out):
     """Runs in a separate process (the program started again with --plan-worker): reads the plan and writes it to `out`."""
     import pickle
@@ -375,6 +385,7 @@ def _build_isolated(path, timeout=420):
     except Exception as ex:
         raise RuntimeError("The plan reader could not be started (%s)." % ex)
     t0 = time.time()
+    _flog("plan reader started: %s" % " ".join(cmd[:2]))
     while pr.poll() is None:
         if time.time() - t0 > timeout:
             try:
@@ -387,6 +398,7 @@ def _build_isolated(path, timeout=420):
         ef.close()
     except Exception:
         pass
+    _flog("plan reader finished after %.1f s, exit code %s" % (time.time() - t0, pr.returncode))
     try:
         with open(out, "rb") as f:
             res = pickle.load(f)
@@ -1147,10 +1159,15 @@ class PlanPage(QWidget):
             except Exception as ex:
                 self._result = {"err": str(ex)}
         threading.Thread(target=work, daemon=True).start()
+        self._t0 = __import__("time").time()
         self._poll.start(250)
 
     def _check(self):
         if not self._result:
+            try:
+                self.msg.setText("Reading the floor plan from the model... %d s (the program stays usable)" % int(__import__("time").time() - self._t0))
+            except Exception:
+                pass
             return
         self._poll.stop()
         self._busy = False

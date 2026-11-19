@@ -20221,6 +20221,36 @@ def main():
             QTimer.singleShot(250, _reveal)
         except Exception:
             win.setWindowOpacity(1.0)
+    try:                                            # stall watchdog: if the window stops answering for 6 s, the stacks go to mot_freeze.log
+        import threading, time as _t, faulthandler
+        _hb = [_t.time()]
+        _hbt = QTimer(win); _hbt.timeout.connect(lambda: _hb.__setitem__(0, _t.time())); _hbt.start(250)
+        win._hb_timer = _hbt
+
+        def _watch():
+            _logf = None
+            while True:
+                _t.sleep(1.0)
+                gap = _t.time() - _hb[0]
+                if gap > 6 and _logf is None:
+                    try:
+                        _logf = open(os.path.join(tempfile.gettempdir(), "mot_freeze.log"), "a", encoding="utf-8")
+                        _logf.write("\n=== window not answering for %.0f s at %s ===\n" % (gap, datetime.datetime.now().strftime("%d %H:%M:%S")))
+                        _logf.flush()
+                        faulthandler.dump_traceback(file=_logf, all_threads=True)
+                        _logf.flush()
+                    except Exception:
+                        _logf = None
+                        _t.sleep(30)
+                elif gap <= 6 and _logf is not None:
+                    try:
+                        _logf.write("=== answering again ===\n"); _logf.close()
+                    except Exception:
+                        pass
+                    _logf = None
+        threading.Thread(target=_watch, daemon=True).start()
+    except Exception:
+        pass
     win.start_autosave()
     if "--ready" not in av:
         QTimer.singleShot(2500, win.maybe_whats_new)
