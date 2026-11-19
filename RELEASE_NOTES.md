@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.84.0**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.84.1**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Faster update download, 1.84.1**: the update now downloads the installer with 8 connections at once, in 4 MB pieces, instead of one. If the server does not allow that, or a piece keeps failing, it falls back to the single download as before. Cancel still works.
 - **Read rules from a PDF and review the plans against them, 1.84.0**: in **Guidelines review** (step 1: Read rules from a PDF...) pick an estate's guidelines, a council's rules or a zoning scheme: the AI lists the rules in it (name, not more / not less, the limit, where it found it) and you can edit them. In step 2 add the plan PDFs you will submit and press **Review the plans against the rules**: every rule the program cannot measure itself is read from the plans and marked Passes, Fails or To check, with what the plans show and the page. In **Council pack** (the checklist step) there are two new buttons: **Read the requirements from a PDF...** adds what the council asks for to the list, and **Check the plans against the list...** flags what is missing or not according to the requirements (red notes; green means it looks complete; you still mark it Done yourself). This uses Online mode with your own API key, asks before anything is sent, and says how many pages go. The AI can misread a drawing: always read the flagged page before you rely on it.
 - **Guidelines review, 1.83.1**: inside Rules, the Stand rules and Council guidelines squares are now one tool: **Guidelines review**. Type the rules of the development's architectural guidelines and of the council once (Add the usual rules gives you a start), then Review: coverage, floor area ratio, building line encroachments, floor area, light, ventilation and glazing are measured from the program; the rest you type the design value for or tick by hand. Each rule shows Passes, Fails or To check, and the Report step makes a PDF. It is saved with the project.
 - **Rules, 1.83.0**: the sixth square on the start screen is now **Rules** (it was Council pack). It opens three squares: Council pack (as before), Stand rules and Council guidelines. The last two are marked WIP: the squares are in place, the checks themselves are still to be built.

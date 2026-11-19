@@ -2330,6 +2330,60 @@ def gh_latest_release(repo, token, timeout=15):
             "notes": (d.get("body") or "").strip()}
 
 
+def _parallel_download(url, dest, total, progress=None, workers=8, block=4 << 20, tries=4):
+    """Download url into dest with several connections, in 4 MB pieces (HTTP Range). Raises when the server does not play along."""
+    import threading
+    pieces = [(s, min(s + block, total) - 1) for s in range(0, total, block)]
+    lock = threading.Lock()
+    state = {"got": 0, "err": None, "stop": False, "i": 0}
+    with open(dest, "wb") as f:
+        f.truncate(total)
+
+    def work():
+        with open(dest, "r+b") as f:
+            while True:
+                with lock:
+                    if state["err"] or state["stop"] or state["i"] >= len(pieces):
+                        return
+                    a, b = pieces[state["i"]]
+                    state["i"] += 1
+                for k in range(tries):
+                    try:
+                        req = urllib.request.Request(url, headers={"User-Agent": "MCP-XA-Energy", "Range": "bytes=%d-%d" % (a, b)})
+                        with urllib.request.urlopen(req, timeout=60) as r:
+                            if r.status != 206:
+                                raise RuntimeError("The server does not allow partial downloads.")
+                            data = r.read()
+                        if len(data) != b - a + 1:
+                            raise RuntimeError("Short piece.")
+                        f.seek(a)
+                        f.write(data)
+                        break
+                    except Exception as ex:
+                        if k == tries - 1:
+                            with lock:
+                                state["err"] = ex
+                            return
+                with lock:
+                    state["got"] += len(data)
+                    g = state["got"]
+                if progress and progress(g, total) is False:
+                    with lock:
+                        state["stop"] = True
+                    return
+    ths = [threading.Thread(target=work, daemon=True) for _ in range(min(workers, len(pieces)))]
+    for t in ths:
+        t.start()
+    for t in ths:
+        t.join()
+    if state["stop"]:
+        raise RuntimeError("Cancelled.")
+    if state["err"]:
+        raise state["err"]
+    if state["got"] != total:
+        raise RuntimeError("The download is incomplete.")
+
+
 def gh_download_asset(repo, token, asset_id, dest, progress=None, timeout=60):
     """Download a release file of a private repository. The signed link GitHub redirects to must not receive the token."""
     hdr = {"Accept": "application/octet-stream", "User-Agent": "MCP-XA-Energy", **({"Authorization": "Bearer " + token} if token else {})}
@@ -2344,6 +2398,18 @@ def gh_download_asset(repo, token, asset_id, dest, progress=None, timeout=60):
             raise RuntimeError("Download refused (%s)." % ex.code)
     total = int(resp.headers.get("Content-Length") or 0)
     got = 0
+    if total > (8 << 20) and "bytes" in str(resp.headers.get("Accept-Ranges", "bytes")).lower():
+        try:                          # several connections at once: a single stream to GitHub is often much slower than the line allows
+            url2 = resp.geturl()
+            resp.close()
+            _parallel_download(url2, dest, total, progress)
+            return dest
+        except RuntimeError as ex:
+            if "Cancelled" in str(ex):
+                raise
+        except Exception:
+            pass
+        resp = urllib.request.urlopen(urllib.request.Request(url2, headers={"User-Agent": "MCP-XA-Energy"}), timeout=timeout)
     with open(dest, "wb") as f:
         while True:
             b = resp.read(1 << 20)
