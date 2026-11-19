@@ -5498,6 +5498,45 @@ def _ifc_space_bbox(sp, scale):
         return None
 
 
+def _ifc_floor_tris(sp):
+    """Floor triangles (x1,y1,x2,y2,x3,y3 in world metres) of a space: its real outline, not just the box around it."""
+    try:
+        import numpy as np, ifcopenshell.geom as G
+        st = G.settings()
+        try: st.set("use-world-coords", True)
+        except Exception: st.set(st.USE_WORLD_COORDS, True)
+        g = G.create_shape(st, sp).geometry
+        v = np.array(g.verts, float).reshape(-1, 3)
+        f = np.array(g.faces, int).reshape(-1, 3)
+        z0 = v[:, 2].min()
+        out = []
+        for t in f:
+            if all(abs(v[i, 2] - z0) < 0.02 for i in t):
+                out.append(tuple(float(c) for i in t for c in v[i, :2]))
+        return out
+    except Exception:
+        return []
+
+
+def _dist_tris(pt, tris):
+    """Distance in metres from a point to the nearest triangle (0 inside)."""
+    best = 1e9
+    px, py = pt[0], pt[1]
+    for x1, y1, x2, y2, x3, y3 in tris:
+        d = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3)
+        if abs(d) > 1e-12:
+            a = ((y2 - y3) * (px - x3) + (x3 - x2) * (py - y3)) / d
+            b = ((y3 - y1) * (px - x3) + (x1 - x3) * (py - y3)) / d
+            if a >= 0 and b >= 0 and a + b <= 1:
+                return 0.0
+        for (ax, ay, bx, by) in ((x1, y1, x2, y2), (x2, y2, x3, y3), (x3, y3, x1, y1)):
+            dx, dy = bx - ax, by - ay
+            L = dx * dx + dy * dy
+            u = 0.0 if L == 0 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / L))
+            best = min(best, ((px - ax - u * dx) ** 2 + (py - ay - u * dy) ** 2) ** 0.5)
+    return best
+
+
 # --------------------------------------------------------------------------
 # Site location from a Google Earth KML / KMZ file: coordinates, and the angle of north from the site outline
 # --------------------------------------------------------------------------
@@ -6462,10 +6501,12 @@ def read_ifc_model(path):
         face_of = {}
     # link openings to rooms through space boundaries
     gid2room = {r["_gid"]: r for r in rooms}
+    sb_room = {}                   # opening id -> room it was linked to by a space boundary
     for rel in ifc.by_type("IfcRelSpaceBoundary"):
         sp, el = rel.RelatingSpace, rel.RelatedBuildingElement
         if sp is None or el is None or sp.GlobalId not in gid2room: continue
         if not (el.is_a("IfcWindow") or el.is_a("IfcDoor") or _proxy_open_kind(el)): continue
+        sb_room[el.id()] = sp.GlobalId
         for it in items:
             if any(e.id() == el.id() for e in it["_els"]):
                 t = gid2room[sp.GlobalId]["tags"]; t[it["tag"]] = t.get(it["tag"], 0) + 1
@@ -6492,35 +6533,72 @@ def read_ifc_model(path):
                 and rel.RelatingSpace.GlobalId in gid2room:
             linked.add(rel.RelatedBuildingElement.id())
     boxes = {}
+    tris = {}
     for sp in ifc.by_type("IfcSpace"):
         r = gid2room.get(sp.GlobalId)
         if r is not None:
             bb = _ifc_space_bbox(sp, scale)
             if bb: boxes[sp.GlobalId] = bb
+            tr = _ifc_floor_tris(sp)
+            if tr: tris[sp.GlobalId] = tr
     by_floor_rooms = {}
     for gid, r in gid2room.items():
         by_floor_rooms.setdefault(r.get("floor") or "?", []).append(gid)
     placed = unplaced = 0
+
+    def _bare(n_):
+        return re.sub(r"^\s*u(?:nit)?\s*\d+\s*[-_. ]\s*", "", str(n_ or ""), flags=re.I).strip().lower()
+    EXT_ROOM_RE = re.compile(r"patio|balcon|stoep|deck|veranda|terrace|garage|carport", re.I)
+    ranked = []                    # (item, element, pos, [(distance, gid), ...] nearest first)
     for it in items:
         for el, pos, fl in zip(it["_els"], it["_pos"], it["_fl"]):
-            if el.id() in linked or not pos: 
+            if el.id() in linked or not pos:
                 continue
             cands = by_floor_rooms.get(fl) or list(gid2room)
-            best, bd = None, 0.6
+            rk = []
             for gid in cands:
                 bb = boxes.get(gid)
                 if not bb: continue
                 dx = max(bb[0] - pos[0], 0.0, pos[0] - bb[2]); dy = max(bb[1] - pos[1], 0.0, pos[1] - bb[3])
                 dd = (dx * dx + dy * dy) ** 0.5
-                if dd < bd: best, bd = gid, dd
-            if best:
-                t = gid2room[best]["tags"]; t[it["tag"]] = t.get(it["tag"], 0) + 1; placed += 1
-                if el.id() in el_ext:
-                    gid2room[best].setdefault("_dext", []).append(el_ext[el.id()])
-                if el.id() in face_of:
-                    gid2room[best].setdefault("_face", {}).setdefault(it["tag"], []).append(face_of[el.id()])
-            else:
-                unplaced += 1
+                if dd >= 0.6:
+                    continue
+                if tris.get(gid):
+                    dd = _dist_tris(pos, tris[gid])               # the room's real outline decides, not its box
+                    if dd >= 0.6:
+                        continue
+                if EXT_ROOM_RE.search(gid2room[gid].get("name") or ""):
+                    dd += 0.5                                       # a patio outline reaches the wall: a window belongs to the room behind it
+                rk.append((dd, gid))
+            rk.sort()
+            ranked.append((it, el, pos, rk))
+
+    def _bare(n_):
+        return re.sub(r"^\s*u(?:nit)?\s*\d+\s*[-_. ]\s*", "", str(n_ or ""), flags=re.I).strip().lower()
+
+    def _put(it, el, gid):
+        t = gid2room[gid]["tags"]; t[it["tag"]] = t.get(it["tag"], 0) + 1
+        if el.id() in el_ext:
+            gid2room[gid].setdefault("_dext", []).append(el_ext[el.id()])
+        if el.id() in face_of:
+            gid2room[gid].setdefault("_face", {}).setdefault(it["tag"], []).append(face_of[el.id()])
+    stack, later = [], []          # clear-cut openings; the same opening on another storey sits in the same room
+    for it, el, pos, rk in ranked:
+        if not rk:
+            unplaced += 1
+        elif len(rk) == 1 or rk[1][0] - rk[0][0] >= 0.15:
+            _put(it, el, rk[0][1]); placed += 1
+            stack.append((it["tag"], pos[0], pos[1], _bare(gid2room[rk[0][1]].get("name"))))
+        else:
+            later.append((it, el, pos, rk))
+    for it, el, pos, rk in later:                                    # too close to call: copy the room its twin on another storey is in
+        twin = next((b for tg, x_, y_, b in stack if tg == it["tag"] and abs(x_ - pos[0]) < 0.1 and abs(y_ - pos[1]) < 0.1), None)
+        pick = next((g for _d, g in rk if twin and _bare(gid2room[g].get("name")) == twin), None)
+        if pick is None:                                             # no twin: a small high window on the line between two rooms is the wet room's
+            close = [g for d_, g in rk if d_ - rk[0][0] < 0.15]
+            wet = [g for g in close if re.search(r"bath|wc|toilet|shower|laundry|ensuite|en-suite", gid2room[g].get("name") or "", re.I)]
+            pick = wet[0] if wet and min(float(it.get("width") or 0), 9999) <= 900 else rk[0][1]
+        _put(it, el, pick); placed += 1
     for it in items:
         cnt = {}
         for f in it["_fl"]: cnt[f] = cnt.get(f, 0) + 1
