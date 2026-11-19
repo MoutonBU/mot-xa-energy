@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.1**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.2**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Deemed-to-satisfy statement in the reports, 1.86.2**: the Energy XA report and the rational design report now say, under the fenestration table, which units or storeys are within the 20% glazing limit and so deemed to satisfy (the SANS 204 calculation is not required, provided orientation and shading comply), and that a red conductance or solar heat gain figure there is for information only. Groups above the limit are listed as needing the calculation.
 - **Combined rooms never duplicate on re-import, 1.86.1**: a combined room's parts are found again in the new model by storey, unit and name, then by unit and name on another storey (if a storey was renamed), and any part found is taken out of the room list so it cannot appear a second time next to the combined room. If a part is gone from the model, the combined room is kept as it was and the others are still not duplicated.
 - **Problem windows and fixes (Energy XA), 1.86.0**: when a unit or floor fails the solar heat gain or conductance calculation, the glazing screening limit, or a facade limit in table 4, a new box in Windows and glazed doors lists the windows that cause it (worst first, with their room, area, facing and share of the problem) and suggests what to change with the result worked out: a different glass for the named windows, glass to take out, or shading. The Plan tab rings those windows in red (Show the problem windows on the plan opens it). A group inside the 20% screening limit does not need the calculation, and the box says so. The SANS 204 zone for the calculation now follows the project's energy zone automatically (pick another to override).
 - **A new IFC import keeps your work, 1.85.5**: rooms you combined (open plan) stay combined and are rebuilt from the new model's areas and windows; the artificial-light and internal ticks you set on rooms are kept; and anything you changed by hand on a window or door (glazed %, opening %, which panes open) is kept as long as that window is still the same size. The import message lists what was kept. If a room inside a combined room was renamed or removed in the model, that combined room is left as it was and the message says so.

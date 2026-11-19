@@ -15476,6 +15476,32 @@ class MainWindow(QMainWindow):
                     "above are shown so you can see where the margin is, not because the deemed-to-satisfy route fails.</p>")
         lab.setText(note + "".join(parts))
 
+    def _screening_statement(self):
+        """Plain statement for the reports: groups inside the glazing limit are deemed to satisfy, so red SANS 204 figures there are for information."""
+        fens = getattr(self, "xa_fen_results", None) or []
+        if not fens:
+            return ""
+        lim = fens[0]["limit"]
+        unit = "unit" if UNIT_MODE[0] else "storey"
+        inside = [f for f in fens if f["within"]]
+        outside = [f for f in fens if not f["within"]]
+        info = [f["floor"] for f in inside if (not f["calc"]["ok"])]
+        out = []
+        if inside:
+            names = ", ".join("%s (%.1f%%)" % (f["floor"], f["pct"]) for f in inside)
+            out.append("<b>Deemed to satisfy (glazing screening):</b> the glazing of %s %s within the %g%% limit of the net floor area. "
+                       "Under SANS 10400-XA the fenestration requirement is therefore deemed to be satisfied and the SANS 204 calculation of "
+                       "aggregate conductance and solar heat gain is not required, provided the orientation and shading requirements below are met."
+                       % (names, ("is" if len(inside) == 1 else "are each"), lim))
+        if info:
+            out.append("The SANS 204 conductance and solar heat gain figures are still shown in the table for information. Where one is marked in red "
+                       "(%s) the aggregate is above its SANS 204 figure for that %s, but this does not affect compliance, because %s is within the "
+                       "%g%% glazing limit and the calculation is not required." % (", ".join(info), unit, "that " + unit, lim))
+        if outside:
+            out.append("<b>Calculation required:</b> %s %s above the %g%% limit, so the SANS 204 aggregate conductance and solar heat gain calculation "
+                       "applies and must be met." % (", ".join("%s (%.1f%%)" % (f["floor"], f["pct"]) for f in outside), "is" if len(outside) == 1 else "are", lim))
+        return out
+
     def _show_problems_on_plan(self):
         pp = getattr(self, "plan_page", None)
         if pp is None or not getattr(self, "ifc_path", ""):
@@ -17546,6 +17572,8 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
         body.append(table(["Floor", "Net floor area m2", "Fenestration m2", "% of floor", "Screening",
                            "Conductance actual / max", "Solar gain actual / max"], frows, [16, 13, 13, 9, 17, 16, 16])
                     if frows else "<p style='font-size:9pt;'>Run the check first.</p>")
+        for t_ in (self._screening_statement() or []):
+            body.append(f'<p style="font-size:8.5pt; color:#222222; margin-left:10px; margin-top:6px;">{t_}</p>')
         body.sec = 'Orientation and shading'
         op_ = self._orient_report_parts(cell, "#1B7F3B", RED)
         if op_:
@@ -18322,6 +18350,8 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
                     [15, 13, 13, 9, 17, 17, 16], hbg=ACTBG)]
         cu, cs = XA_FEN_2011.get(zone11, (1.4, 0.11))
         s4.append(para(f"SANS 204:2011 zone {e(zone11)}: CU = {cu}, CSHGC = {cs}."))
+        for t_ in (self._screening_statement() or []):
+            s4.append(para(t_, "8.5pt"))
         grows = []
         for tag, g in self.xa_glass.items():
             fr_ = g.get("frame", "")
