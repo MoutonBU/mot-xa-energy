@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.82.5**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.82.6**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Live link: one row per ID, 1.82.6**: every window or door with the same ID in Archicad (ID and categories > ID, like W3) is now one line in the schedule with the total count, instead of W3, W3_2, W3_3 when sizes or glass differ slightly. If they do differ, the most common size is used and the row's note says so.
 - **Live link reads the window library part, 1.82.5**: for each window type the program asks Archicad (through Tapir) for the library part settings and reads the glazed area (or works it out from the frame width), the number of panes and how they open. The opening panes and ventilation then show in the hover pop-up as soon as the window appears, marked as read from the library part so you can check them. If Archicad has no glass area in the model, this is used. Your own changes in the pop-up are still kept.
 - **Live link, from your Archicad log, 1.82.4**: Tapir was found and works. Windows and doors now take the ID you typed in Archicad (W6, D2) from Tapir, and the window or door is put in a room by where it sits against the room outline, because Archicad itself gave no room links (every room came back empty). Diagnose now also saves the full details and GDL parameters of one window, door and room, and the list of all property names, so the glazed area can be matched next.
 - **Live link: real names and glazed area, 1.82.3**: windows and doors now come in with the name you gave them in Archicad (Element ID, else the library part name) instead of W1800x600, and the glazed area is read from the model when Archicad has it. Hovering a window in the schedule or the Energy (XA) glass table now shows the drawing and the pop-up where you set how each pane opens (ventilation) and the glazed %, also when the model comes live from Archicad. What you set is kept while the live link refreshes; only the quantity follows Archicad. If it still shows typical values, press Diagnose and save the log: it lists the properties Archicad offers.

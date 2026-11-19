@@ -529,7 +529,19 @@ class ACLink:
                 gz = round(o["glazed_m2"], 2) if o["glazed_m2"] else None
                 groups.setdefault((o["name"], o["w"], o["h"], gz), []).append(o["guid"])
                 meta[(o["name"], o["w"], o["h"], gz)] = (o["glazed_src"], o["panels"], o["open_word"], o["lib"])
-            for (nm, w, h, gz), guids in groups.items():
+            byname, merged_groups, differ = {}, {}, {}
+            for key, guids in groups.items():             # one row per ID: every W3 is one line with the total count
+                if key[0]:
+                    byname.setdefault(key[0].strip().upper(), []).append((key, guids))
+                else:
+                    merged_groups[key] = guids
+            for nm_, lst in byname.items():
+                lst.sort(key=lambda kg: -len(kg[1]))
+                rep = lst[0][0]
+                merged_groups[rep] = [g for _k, gs in lst for g in gs]
+                if len(lst) > 1:
+                    differ[rep] = len(lst)
+            for (nm, w, h, gz), guids in merged_groups.items():
                 base = re.sub(r"[,:;]", "-", (nm or "%s%dx%d" % (pre, w, h))).strip().upper()
                 n = used[base] = used.get(base, 0) + 1
                 tag = base if n == 1 else "%s_%d" % (base, n)
@@ -543,6 +555,8 @@ class ACLink:
                 src, npan, word, lib = meta[(nm, w, h, gz)]
                 if gz and src == "library part":
                     note = "From Archicad: size from the model; glazed area (%.2f m2) estimated from the library part '%s'. Hover the row to check how it opens." % (gz, lib)
+                if differ.get((nm, w, h, gz)):
+                    note += " Note: %d windows/doors share this ID but differ in size or glass; the most common size is used." % sum(len(g_) for g_ in [guids])
                 items[tag] = {"ac_panels": npan, "ac_word": word, "tag": tag, "width": float(w), "height": float(h), "kind": kind, "qty": len(guids), "style": "Custom",
                               "glazed": pct, "glazed_m2": float(gz or 0.0), "openable": 50.0 if kind == "Window" else 100.0,
                               "flag": [], "note": note, "from_ac_glazed": bool(gz)}
