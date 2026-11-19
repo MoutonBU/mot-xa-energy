@@ -4740,7 +4740,7 @@ class HoverFilter(QObject):
         if op is None:
             self.pop.hide(); return
         panes, geom = w.sched_panes.get(tag), w.sched_geom.get(tag)
-        if self.xa:
+        if self.xa and self._ifc_item(tag) is not None:
             it = self._ifc_item(tag)
             panes, geom = (it.get("panes") if it else None), (it.get("geom") if it else None)
         elif not (isinstance(geom, dict) and geom.get("panes")):
@@ -4752,7 +4752,7 @@ class HoverFilter(QObject):
         w, tag = self.win, self.last
         if not tag:
             return
-        if self.xa:
+        if self.xa and self._ifc_item(tag) is not None:
             it = self._ifc_item(tag)
             g = it.get("geom") if it else None
             if not (isinstance(g, dict) and i < len(g.get("panes", []))):
@@ -4771,7 +4771,7 @@ class HoverFilter(QObject):
         self.menu_open = False
         if ch is None:
             self.timer.start(); return
-        if self.xa:
+        if self.xa and self._ifc_item(tag) is not None:
             if ch[0] == "glaze":
                 val, ok = QInputDialog.getDouble(w, APP_NAME, f"Glazed % of {tag}:", round(share, 1), 0.0, 100.0, 1)
                 if not ok:
@@ -4794,6 +4794,11 @@ class HoverFilter(QObject):
                 kinds = [(x[4], x[5] if len(x) > 5 else "") for x in g["panes"]]
                 kinds[i] = tuple(ch[1])
                 w._sched_apply_panes(tag, kinds)
+            if self.xa:
+                try:
+                    w._run_xa_quiet()
+                except Exception:
+                    pass
         self._show(tag, self.pop.pos())
 
     def eventFilter(self, obj, ev):
@@ -9115,11 +9120,29 @@ class MainWindow(QMainWindow):
                     self.room_table.removeRow(r)
             if m["items"]:
                 items = []
+                seen = getattr(self, "_ac_sig", {})
                 for it in m["items"]:
                     c = dict(it)
                     c["flag"] = []
+                    tg = c["tag"].upper()
+                    sig = (round(c["width"]), round(c["height"]), round(c.get("glazed_m2") or 0, 2))
+                    row = next(((T, r) for T, r in self._sched_rows_for(tg)), None)
+                    if row is not None and seen.get(tg) == sig:
+                        T, r = row                      # unchanged in Archicad: keep what you set (opening panes, glazed %), only update the count
+                        c0 = T.item(r, 10)
+                        if c0 and c0.text() != str(c["qty"]):
+                            self._loading = True
+                            try:
+                                c0.setText(str(c["qty"]))
+                            finally:
+                                self._loading = False
+                            self._recalc_row(r, T)
+                        continue
+                    seen[tg] = sig
                     items.append(c)
-                self._fill_schedule(items, "IFC model")
+                self._ac_sig = seen
+                if items:
+                    self._fill_schedule(items, "IFC model")
             if m["rooms"]:
                 self._fill_rooms([dict(r, tags=dict(r["tags"])) for r in m["rooms"]], 0, "IFC model")
         finally:
@@ -9725,7 +9748,7 @@ class MainWindow(QMainWindow):
         for T, rr in self._sched_rows_for(tag):
             self._loading = True
             try:
-                pct_ = it["openable"]
+                pct_ = min(100.0, it["openable"])
                 if not op.glazed_area_m2 and op.clear_m2 > 0:
                     pct_ = min(100.0, pct_ / 100.0 * (it["glazed_m2"] or op.glazed_m2) / op.clear_m2 * 100.0)
                 T.item(rr, 4).setText(f"{pct_:.1f}")

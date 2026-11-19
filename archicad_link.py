@@ -1,3 +1,4 @@
+import re
 """Archicad link (WIP, work in progress).
 
 Talks to a running Archicad through its JSON command interface on this computer (the same one the official Python
@@ -241,17 +242,51 @@ class ACLink:
             return {"w": ps[0]["propertyId"], "h": ps[1]["propertyId"]}
         return {}
 
+    def _prop_names(self):
+        if not hasattr(self, "_pn"):
+            try:
+                r = self.call("API.GetAllPropertyNames")
+                self._pn = [p.get("nonLocalizedName", "") for p in r.get("properties", []) if p.get("type") == "BuiltIn"]
+            except Exception:
+                self._pn = []
+        return self._pn
+
+    def _values(self, els, name):
+        """One built-in property for many elements: a list of values (None where Archicad has none)."""
+        out = [None] * len(els)
+        try:
+            ids = self.call("API.GetPropertyIds", {"properties": [{"type": "BuiltIn", "nonLocalizedName": name}]}).get("properties", [])
+            if not ids or "propertyId" not in ids[0]:
+                return out
+            pid = ids[0]["propertyId"]
+            for i in range(0, len(els), 500):
+                r = self.call("API.GetPropertyValuesOfElements", {"elements": els[i:i + 500], "properties": [{"propertyId": pid}]})
+                for j, row in enumerate(r.get("propertyValuesForElements", [])):
+                    pv = row.get("propertyValues") or [{}]
+                    v = (pv[0].get("propertyValue") or {}).get("value")
+                    out[i + j] = v
+        except Exception as e:
+            self.log("   property %s failed: %s" % (name, e))
+        return out
+
+    def _first_name(self, any_of, none_of=()):
+        c = [n for n in self._prop_names() if any(k in n.lower() for k in any_of) and not any(b in n.lower() for b in none_of)]
+        c.sort(key=len)
+        return c
+
     def _openings(self, etype):
-        """[(guid, width_mm, height_mm)] for every window or door."""
+        """[{guid, w, h, name, glazed_m2}] for every window or door (sizes in mm, glazed area in m2 or None)."""
         els = self.elements(etype)
         self.log("   %d %s elements" % (len(els), etype))
         if not els:
             return []
         wh = [(None, None)] * len(els)
+        glz = [None] * len(els)
         if self.tapir_ok:
             try:
                 det = self._details(els)
                 wh = [(self._find_num(d, ("width", "openingWidth")), self._find_num(d, ("height", "openingHeight"))) for d in det]
+                glz = [self._find_num(d, ("glazingArea", "glassArea", "glazedArea")) for d in det]
             except Exception as e:
                 self.log("   details failed: %s" % e)
         if any(w is None or h is None for w, h in wh):
@@ -264,13 +299,36 @@ class ACLink:
                         pv = [(p.get("propertyValue") or {}).get("value") for p in row.get("propertyValues", [])]
                         if len(pv) == 2 and wh[i + j][0] is None:
                             wh[i + j] = (pv[0], pv[1])
+        # the name the architect gave it (Element ID, like W01 or Window 1), else the library part name
+        ids_ = [None] * len(els)
+        for nm in self._first_name(("elementid", "element_id")):
+            ids_ = self._values(els, nm)
+            self.log("   name from %s: %s" % (nm, [v for v in ids_ if v][:6]))
+            if any(ids_):
+                break
+        libs = [None] * len(els)
+        for nm in self._first_name(("librarypart", "libpart")):
+            libs = self._values(els, nm)
+            self.log("   library part name from %s: %s" % (nm, [v for v in libs if v][:6]))
+            if any(libs):
+                break
+        if not any(g is not None for g in glz):
+            for nm in self._first_name(("glaz", "glass"), ("frame", "sash", "perimeter", "thick")):
+                if "area" in nm.lower() or "surface" in nm.lower():
+                    glz = self._values(els, nm)
+                    self.log("   glazed area from %s: %s" % (nm, [v for v in glz if v is not None][:6]))
+                    if any(v for v in glz):
+                        break
         out = []
-        for e, (w, h) in zip(els, wh):
+        for e, (w, h), nid, lib, gl in zip(els, wh, ids_, libs, glz):
             g = (e.get("elementId") or {}).get("guid")
             if g and w and h:
                 # Archicad reports lengths in metres
-                out.append((g, int(round(float(w) * 1000)), int(round(float(h) * 1000))))
-        self.log("   %d of %d %s elements had a size" % (len(out), len(els), etype))
+                out.append({"guid": g, "w": int(round(float(w) * 1000)), "h": int(round(float(h) * 1000)),
+                            "name": (str(nid or "").strip() or str(lib or "").strip()),
+                            "glazed_m2": float(gl) if isinstance(gl, (int, float)) and gl > 0 else None})
+        self.log("   %d of %d %s elements had a size; %d named; %d with a glazed area" % (
+            len(out), len(els), etype, sum(1 for o in out if o["name"]), sum(1 for o in out if o["glazed_m2"])))
         return out
 
     def _connected(self, zones, etype):
@@ -314,14 +372,28 @@ class ACLink:
             except Exception:
                 pass
         items, tagof = {}, {}
+        used = {}
         for etype, kind, pre in (("Window", "Window", "W"), ("Door", "Door", "D")):
-            for g, w, h in self._openings(etype):
-                tag = "%s%dx%d" % (pre, w, h)
-                tagof[g] = tag
-                it = items.setdefault(tag, {"tag": tag, "width": float(w), "height": float(h), "kind": kind, "qty": 0, "style": "Custom",
-                                            "glazed": 85.0 if kind == "Window" else 0.0, "openable": 50.0 if kind == "Window" else 100.0,
-                                            "flag": [], "note": "From Archicad: the size is read from the model. Glazed and openable % are typical values: set them for each type."})
-                it["qty"] += 1
+            groups = {}
+            for o in self._openings(etype):
+                gz = round(o["glazed_m2"], 2) if o["glazed_m2"] else None
+                groups.setdefault((o["name"], o["w"], o["h"], gz), []).append(o["guid"])
+            for (nm, w, h, gz), guids in groups.items():
+                base = re.sub(r"[,:;]", "-", (nm or "%s%dx%d" % (pre, w, h))).strip().upper()
+                n = used[base] = used.get(base, 0) + 1
+                tag = base if n == 1 else "%s_%d" % (base, n)
+                area = w * h / 1e6
+                if gz:
+                    pct = max(0.0, min(100.0, gz / area * 100.0)) if area else 0.0
+                    note = "From Archicad: size and glazed area (%.2f m2) are read from the model. Hover the row to set how it opens." % gz
+                else:
+                    pct = 85.0 if kind == "Window" else 0.0
+                    note = "From Archicad: the size is read from the model; the glazed % is typical. Hover the row to change it."
+                items[tag] = {"tag": tag, "width": float(w), "height": float(h), "kind": kind, "qty": len(guids), "style": "Custom",
+                              "glazed": pct, "glazed_m2": float(gz or 0.0), "openable": 50.0 if kind == "Window" else 100.0,
+                              "flag": [], "note": note, "from_ac_glazed": bool(gz)}
+                for g in guids:
+                    tagof[g] = tag
         rooms = []
         conns = {et: self._connected(zones, et) for et in ("Window", "Door")} if zones else {}
         for i, z in enumerate(zr):
@@ -337,8 +409,8 @@ class ACLink:
                 continue
             rooms.append({"name": nm_, "area": float(z["area"]), "tags": tags,
                           "floor": floors.get(i) or z["level"] or "Ground Floor", "elev": 0.0})
-        return {"rooms": rooms, "items": list(items.values()), "n_zones": len(zones), "n_win": sum(1 for t in tagof.values() if t[0] == "W"),
-                "n_door": sum(1 for t in tagof.values() if t[0] == "D")}
+        return {"rooms": rooms, "items": list(items.values()), "n_zones": len(zones), "n_win": sum(i["qty"] for i in items.values() if i["kind"] == "Window"),
+                "n_door": sum(i["qty"] for i in items.values() if i["kind"] == "Door")}
 
     @staticmethod
     def _find_poly(o):
