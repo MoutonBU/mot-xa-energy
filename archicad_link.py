@@ -11,7 +11,7 @@ import urllib.request
 import time
 
 from PySide6.QtCore import QThread, QTimer, Qt, Signal
-from PySide6.QtWidgets import (QCheckBox, QDoubleSpinBox, QDialog, QHBoxLayout, QInputDialog, QLabel, QMessageBox, QPlainTextEdit, QPushButton, QVBoxLayout, QFileDialog)
+from PySide6.QtWidgets import (QCheckBox, QDoubleSpinBox, QDialog, QLineEdit, QHBoxLayout, QInputDialog, QLabel, QMessageBox, QPlainTextEdit, QPushButton, QVBoxLayout, QFileDialog)
 
 PORTS = range(19723, 19743)
 
@@ -64,11 +64,18 @@ class ACLink:
         return res.get("addOnCommandResponse", res)
 
     def check_tapir(self):
+        self.tapir_ok = False
         try:
             r = self.call("API.IsAddOnCommandAvailable", {"addOnCommandId": {"commandNamespace": "TapirCommand", "commandName": "GetStories"}})
             self.tapir_ok = bool(r.get("isAvailable"))
         except Exception:
-            self.tapir_ok = False
+            pass
+        if not self.tapir_ok:                      # the question may not be answered the way we expect: just try a command
+            try:
+                self.tapir("GetStories")
+                self.tapir_ok = True
+            except Exception:
+                pass
         return self.tapir_ok
 
     # ---- reading
@@ -149,6 +156,29 @@ class ACLink:
         return out
 
     # ---- the whole model, in the shape the program's own tables use
+    def diagnose(self):
+        out = []
+        self.log("--- diagnose ---")
+        try:
+            out.append("Tapir installed: %s" % self.check_tapir())
+        except Exception as e:
+            out.append("Tapir check failed: %s" % e)
+        for t in ("Zone", "Window", "Door", "Wall", "Slab", "Mesh", "Skylight", "Opening"):
+            try:
+                out.append("%s elements: %d" % (t, len(self.elements(t))))
+            except Exception as e:
+                out.append("%s: %s" % (t, e))
+        try:
+            r = self.call("API.GetAllPropertyNames")
+            names = sorted(p.get("nonLocalizedName", "") for p in r.get("properties", []) if p.get("type") == "BuiltIn")
+            keys = ("width", "height", "window", "door", "opening", "sill", "glaz", "wall", "composite", "structure", "zone")
+            out.append("%d built-in properties. Matching: " % len(names))
+            out += ["  " + n for n in names if any(k in n.lower() for k in keys)][:250]
+        except Exception as e:
+            out.append("Property names failed: %s" % e)
+        self.log("\n".join(out))
+        return out
+
     @staticmethod
     def _find_num(o, keys):
         """First number stored under one of keys anywhere in a details reply."""
@@ -183,9 +213,38 @@ class ACLink:
             out += self.tapir("GetDetailsOfElements", {"elements": els[i:i + 400]}).get("detailsOfElements", [])
         return out
 
+    def _opening_prop_ids(self):
+        """Find the width and height properties of doors and windows by their names (they differ between Archicad versions)."""
+        try:
+            r = self.call("API.GetAllPropertyNames")
+        except Exception:
+            return {}
+        names = [p.get("nonLocalizedName", "") for p in r.get("properties", []) if p.get("type") == "BuiltIn"]
+
+        def pick(word):
+            bad = ("sill", "head", "frame", "wall", "reveal", "thick", "depth", "area", "volume", "perimeter", "marker", "sash", "panel", "glaz")
+            cands = [n for n in names if word in n.lower() and not any(b in n.lower() for b in bad)]
+            cands.sort(key=lambda n: (0 if ("opening" in n.lower()) else 1 if ("window" in n.lower() or "door" in n.lower()) else 2, len(n)))
+            return cands
+        out = {}
+        for key, word in (("w", "width"), ("h", "height")):
+            c = pick(word)
+            self.log("   %s candidates: %s" % (word, c[:8]))
+            if c:
+                out[key] = c[0]
+        if len(out) < 2:
+            return {}
+        r = self.call("API.GetPropertyIds", {"properties": [{"type": "BuiltIn", "nonLocalizedName": out["w"]}, {"type": "BuiltIn", "nonLocalizedName": out["h"]}]})
+        ps = r.get("properties", [])
+        if len(ps) == 2 and all("propertyId" in p for p in ps):
+            self.log("   opening properties used: %s, %s" % (out["w"], out["h"]))
+            return {"w": ps[0]["propertyId"], "h": ps[1]["propertyId"]}
+        return {}
+
     def _openings(self, etype):
         """[(guid, width_mm, height_mm)] for every window or door."""
         els = self.elements(etype)
+        self.log("   %d %s elements" % (len(els), etype))
         if not els:
             return []
         wh = [(None, None)] * len(els)
@@ -196,7 +255,7 @@ class ACLink:
             except Exception as e:
                 self.log("   details failed: %s" % e)
         if any(w is None or h is None for w, h in wh):
-            ids = self._prop_ids([("w", ["Opening_Width", "OpeningWidth", "_Width"]), ("h", ["Opening_Height", "OpeningHeight", "_Height"])])
+            ids = self._opening_prop_ids()
             if "w" in ids and "h" in ids:
                 for i in range(0, len(els), 500):
                     chunk = els[i:i + 500]
@@ -211,6 +270,7 @@ class ACLink:
             if g and w and h:
                 # Archicad reports lengths in metres
                 out.append((g, int(round(float(w) * 1000)), int(round(float(h) * 1000))))
+        self.log("   %d of %d %s elements had a size" % (len(out), len(els), etype))
         return out
 
     def _connected(self, zones, etype):
@@ -240,7 +300,7 @@ class ACLink:
                 pass
         return res
 
-    def model(self):
+    def model(self, ignore=()):
         """Rooms, windows and doors of the open project, shaped like the program's IFC import:
         {'rooms': [{name, area, tags{tag: n}, floor, elev}], 'items': [{tag, width, height, kind, qty, glazed, openable}]}"""
         zones = self.elements("Zone")
@@ -272,7 +332,10 @@ class ACLink:
                 for g in conns.get(et, [set()] * len(zr))[i]:
                     if g in tagof:
                         tags[tagof[g]] = tags.get(tagof[g], 0) + 1
-            rooms.append({"name": z["room"] or ("Zone " + (z["unit"] or str(i + 1))), "area": float(z["area"]), "tags": tags,
+            nm_ = z["room"] or ("Zone " + (z["unit"] or str(i + 1)))
+            if any(w_ and w_ in nm_.lower() for w_ in ignore):
+                continue
+            rooms.append({"name": nm_, "area": float(z["area"]), "tags": tags,
                           "floor": floors.get(i) or z["level"] or "Ground Floor", "elev": 0.0})
         return {"rooms": rooms, "items": list(items.values()), "n_zones": len(zones), "n_win": sum(1 for t in tagof.values() if t[0] == "W"),
                 "n_door": sum(1 for t in tagof.values() if t[0] == "D")}
@@ -428,13 +491,20 @@ class ArchicadDialog(QDialog):
 class _Fetch(QThread):
     done = Signal(object)
 
+    def __init__(self, ignore=(), diagnose=False):
+        super().__init__()
+        self.ignore, self.diag = ignore, diagnose
+
     def run(self):
         lg = []
         link = ACLink(lg.append)
         try:
             link.connect()
             link.check_tapir()
-            m = link.model()
+            if self.diag:
+                self.done.emit({"diag": link.diagnose(), "log": lg})
+                return
+            m = link.model(self.ignore)
             m["tapir"] = link.tapir_ok
             self.done.emit({"model": m, "log": lg})
         except Exception as e:
@@ -481,6 +551,15 @@ class LivePanel(QDialog):
         row2.addWidget(self.top)
         row2.addStretch(1)
         v.addLayout(row2)
+        v.addWidget(QLabel("Ignore rooms whose name has (comma separated):"))
+        self.ignore = QLineEdit(str(self._setting("ac_ignore", "gross area, site, sqm, typical, total")))
+        self.ignore.setToolTip("Zones that are not rooms: gross areas, the site, totals. They are left out of every check.")
+        self.ignore.editingFinished.connect(self._ignore_changed)
+        v.addWidget(self.ignore)
+        dg = QPushButton("Diagnose what Archicad offers")
+        dg.setToolTip("Lists what the link can see. Save the log and send it if windows or doors do not come through.")
+        dg.clicked.connect(self.diagnose)
+        v.addWidget(dg)
         self.out = QLabel("")
         self.out.setTextFormat(Qt.TextFormat.RichText)
         self.out.setWordWrap(True)
@@ -496,6 +575,37 @@ class LivePanel(QDialog):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.tick)
         self.th = None
+
+    def _setting(self, k, default):
+        try:
+            import sys
+            mod = sys.modules.get("__main__")
+            return (getattr(mod, "SETTINGS", {}) or {}).get(k, default)
+        except Exception:
+            return default
+
+    def _ignore_changed(self):
+        try:
+            import sys
+            mod = sys.modules.get("__main__")
+            mod.SETTINGS["ac_ignore"] = self.ignore.text()
+            mod.save_settings()
+        except Exception:
+            pass
+        self.sig = None
+        if self.timer.isActive():
+            self.tick(force=True)
+
+    def _ignore_words(self):
+        return tuple(w.strip().lower() for w in self.ignore.text().split(",") if w.strip())
+
+    def diagnose(self):
+        if self.busy:
+            return
+        self.busy = True
+        self.th = _Fetch((), True)
+        self.th.done.connect(self._got)
+        self.th.start()
 
     def _ontop(self, on):
         vis = self.isVisible()
@@ -527,7 +637,7 @@ class LivePanel(QDialog):
         if self.busy:
             return
         self.busy = True
-        self.th = _Fetch()
+        self.th = _Fetch(self._ignore_words())
         self.th.done.connect(self._got)
         self.th.start()
         self._force = force
@@ -535,6 +645,11 @@ class LivePanel(QDialog):
     def _got(self, r):
         self.busy = False
         self.log = (self.log + r.get("log", []))[-400:]
+        if "diag" in r:
+            self.head.setText("Diagnosis")
+            self.sub.setText("Save the log and send it if something is missing.")
+            self.out.setText("<pre>" + "\n".join(x.replace("<", "&lt;") for x in r["diag"]) + "</pre>")
+            return
         if "error" in r:
             self.head.setText("Archicad not reachable")
             self.sub.setText(r["error"])
@@ -555,7 +670,7 @@ class LivePanel(QDialog):
             self.show_results(m, time.time() - t0)
         self.head.setText(("\u25cf Live" if self.timer.isActive() else "Updated") + "  " + time.strftime("%H:%M:%S"))
         self.sub.setText("%d rooms, %d windows, %d doors%s" % (len(m["rooms"]), m["n_win"], m["n_door"],
-                         "" if m.get("tapir") else "   (Tapir not found: windows and doors cannot be tied to rooms)"))
+                         "" if m.get("tapir") else "   Tapir not found: windows and doors cannot be tied to rooms. Install the free Tapir add-on in Archicad (Options > Add-On Manager)."))
 
     def show_results(self, m, secs):
         w = self.win
@@ -593,7 +708,8 @@ class LivePanel(QDialog):
         self.out.setText("".join(h))
 
     def save_log(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Save the log", "archicad_live_log.txt", "Text (*.txt)")
+        import os
+        path, _ = QFileDialog.getSaveFileName(self, "Save the log", os.path.join(os.path.expanduser("~"), "Desktop", "archicad_live_log.txt"), "Text (*.txt)")
         if path:
             with open(path, "w", encoding="utf-8") as f:
                 f.write("\n".join(self.log))
