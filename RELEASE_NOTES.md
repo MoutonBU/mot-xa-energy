@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.82.3**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.82.4**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Live link, from your Archicad log, 1.82.4**: Tapir was found and works. Windows and doors now take the ID you typed in Archicad (W6, D2) from Tapir, and the window or door is put in a room by where it sits against the room outline, because Archicad itself gave no room links (every room came back empty). Diagnose now also saves the full details and GDL parameters of one window, door and room, and the list of all property names, so the glazed area can be matched next.
 - **Live link: real names and glazed area, 1.82.3**: windows and doors now come in with the name you gave them in Archicad (Element ID, else the library part name) instead of W1800x600, and the glazed area is read from the model when Archicad has it. Hovering a window in the schedule or the Energy (XA) glass table now shows the drawing and the pop-up where you set how each pane opens (ventilation) and the glazed %, also when the model comes live from Archicad. What you set is kept while the live link refreshes; only the quantity follows Archicad. If it still shows typical values, press Diagnose and save the log: it lists the properties Archicad offers.
 - **Tapir with the installer, 1.82.2**: the setup now carries the Tapir add-on installer for Archicad (the build fetches the latest one) and, on a normal install, offers to run it on the last page (tick: Install the Tapir add-on into Archicad). Automatic updates do not run it. The Live design check has an Install the Tapir add-on button as well. Close Archicad first; Tapir's installer finds your Archicad versions itself.
 - **Live design check, 1.82.1**: tested on a real Archicad it read the rooms but no windows or doors. Now: Tapir is detected by trying one of its commands (not only by asking), window and door sizes are looked up from Archicad's property names, with the candidates written to the log, a new Diagnose button lists what the link can see (element counts and the width, height, window, door and wall properties), and an Ignore rooms box (default: gross area, site, sqm, typical, total) leaves non-rooms such as gross areas and the site out of the checks.

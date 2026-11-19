@@ -177,6 +177,27 @@ class ACLink:
             out += ["  " + n for n in names if any(k in n.lower() for k in keys)][:250]
         except Exception as e:
             out.append("Property names failed: %s" % e)
+        # full replies for one window, one door and one room, and the GDL parameters of the window (so the exact field names are known)
+        for t in ("Window", "Door", "Zone"):
+            try:
+                els = self.elements(t)[:1]
+                if els and self.tapir_ok:
+                    d = self.tapir("GetDetailsOfElements", {"elements": els})
+                    out.append("FULL %s details: %s" % (t, json.dumps(d)[:6000]))
+                    if t == "Window":
+                        try:
+                            g = self.tapir("GetGDLParametersOfElements", {"elements": els})
+                            out.append("FULL Window GDL parameters: %s" % json.dumps(g)[:9000])
+                        except Exception as e:
+                            out.append("GDL parameters failed: %s" % e)
+            except Exception as e:
+                out.append("%s details failed: %s" % (t, e))
+        try:
+            r = self.call("API.GetAllPropertyNames")
+            allnames = sorted(p.get("nonLocalizedName", "") for p in r.get("properties", []) if p.get("type") == "BuiltIn")
+            out.append("ALL built-in property names: " + ", ".join(allnames))
+        except Exception:
+            pass
         self.log("\n".join(out))
         return out
 
@@ -282,9 +303,15 @@ class ACLink:
             return []
         wh = [(None, None)] * len(els)
         glz = [None] * len(els)
+        dnames = [("", "")] * len(els)
+        dpos = [None] * len(els)
+        dfloor = [None] * len(els)
         if self.tapir_ok:
             try:
                 det = self._details(els)
+                dnames = [(str(d.get("id") or "").strip(), str(((d.get("details") or {}).get("libPart") or {}).get("name") or "").strip()) for d in det]
+                dpos = [self._find_xy(d.get("details") or {}) for d in det]
+                dfloor = [d.get("floorIndex") for d in det]
                 wh = [(self._find_num(d, ("width", "openingWidth")), self._find_num(d, ("height", "openingHeight"))) for d in det]
                 glz = [self._find_num(d, ("glazingArea", "glassArea", "glazedArea")) for d in det]
             except Exception as e:
@@ -320,16 +347,52 @@ class ACLink:
                     if any(v for v in glz):
                         break
         out = []
-        for e, (w, h), nid, lib, gl in zip(els, wh, ids_, libs, glz):
+        for e, (w, h), nid, lib, gl, dn, pos, fl in zip(els, wh, ids_, libs, glz, dnames, dpos, dfloor):
+            nid = dn[0] or nid
+            lib = dn[1] or lib
             g = (e.get("elementId") or {}).get("guid")
             if g and w and h:
                 # Archicad reports lengths in metres
                 out.append({"guid": g, "w": int(round(float(w) * 1000)), "h": int(round(float(h) * 1000)),
                             "name": (str(nid or "").strip() or str(lib or "").strip()),
-                            "glazed_m2": float(gl) if isinstance(gl, (int, float)) and gl > 0 else None})
+                            "glazed_m2": float(gl) if isinstance(gl, (int, float)) and gl > 0 else None,
+                            "xy": pos, "floor": fl})
         self.log("   %d of %d %s elements had a size; %d named; %d with a glazed area" % (
             len(out), len(els), etype, sum(1 for o in out if o["name"]), sum(1 for o in out if o["glazed_m2"])))
         return out
+
+    @staticmethod
+    def _find_xy(o, depth=0):
+        """The (x, y) position in metres stored in a window/door details reply, or None."""
+        if depth > 4:
+            return None
+        if isinstance(o, dict):
+            if isinstance(o.get("x"), (int, float)) and isinstance(o.get("y"), (int, float)):
+                return (float(o["x"]), float(o["y"]))
+            pref = [k for k in o if any(w in k.lower() for w in ("coord", "pos", "loc", "origo", "beg", "center"))]
+            for k in pref + [k for k in o if k not in pref and k != "libPart"]:
+                r = ACLink._find_xy(o[k], depth + 1)
+                if r:
+                    return r
+        return None
+
+    @staticmethod
+    def _dist_poly(p, poly):
+        """Distance in metres from point p to a polygon's outline (0 when inside)."""
+        import math
+        x, y = p
+        inside = False
+        best = 1e9
+        n = len(poly)
+        for i in range(n):
+            x1, y1 = poly[i]
+            x2, y2 = poly[(i + 1) % n]
+            if (y1 > y) != (y2 > y) and x < (x2 - x1) * (y - y1) / (y2 - y1 + 1e-12) + x1:
+                inside = not inside
+            dx, dy = x2 - x1, y2 - y1
+            t = 0.0 if dx == dy == 0 else max(0.0, min(1.0, ((x - x1) * dx + (y - y1) * dy) / (dx * dx + dy * dy)))
+            best = min(best, math.hypot(x - (x1 + t * dx), y - (y1 + t * dy)))
+        return 0.0 if inside else best
 
     def _connected(self, zones, etype):
         """For each zone, the set of guids of the windows or doors that belong to it."""
@@ -363,19 +426,23 @@ class ACLink:
         {'rooms': [{name, area, tags{tag: n}, floor, elev}], 'items': [{tag, width, height, kind, qty, glazed, openable}]}"""
         zones = self.elements("Zone")
         zr = self.zones()
-        floors = {}
+        floors, zpoly, zfloor = {}, {}, {}
         if self.tapir_ok and zones:
             try:
                 det = self._details(zones)
                 st = self.stories()
                 floors = {i: st.get(d.get("floorIndex"), "") for i, d in enumerate(det)}
+                zfloor = {i: d.get("floorIndex") for i, d in enumerate(det)}
+                zpoly = {i: self._find_poly(d) for i, d in enumerate(det)}
             except Exception:
                 pass
         items, tagof = {}, {}
         used = {}
+        opos = {}
         for etype, kind, pre in (("Window", "Window", "W"), ("Door", "Door", "D")):
             groups = {}
             for o in self._openings(etype):
+                opos[o["guid"]] = (o["xy"], o["floor"], etype)
                 gz = round(o["glazed_m2"], 2) if o["glazed_m2"] else None
                 groups.setdefault((o["name"], o["w"], o["h"], gz), []).append(o["guid"])
             for (nm, w, h, gz), guids in groups.items():
@@ -396,6 +463,21 @@ class ACLink:
                     tagof[g] = tag
         rooms = []
         conns = {et: self._connected(zones, et) for et in ("Window", "Door")} if zones else {}
+        for et in ("Window", "Door"):                         # Archicad does not tie windows to rooms: use where they sit
+            if zones and not any(conns.get(et, [])) and zpoly:
+                n_ = 0
+                for g, (xy, fl, et2) in opos.items():
+                    if et2 != et or not xy:
+                        continue
+                    cands = sorted((self._dist_poly(xy, zpoly[i]), i) for i in zpoly
+                                   if zpoly[i] and (fl is None or zfloor.get(i) in (None, fl)))
+                    near = [i for d_, i in cands if d_ <= 0.6] or []
+                    if et == "Window" and near:
+                        near = near[:1]
+                    for i in near:
+                        conns[et][i].add(g)
+                        n_ += 1
+                self.log("   %s: placed %d against room outlines (no room links from Archicad)" % (et, n_))
         for i, z in enumerate(zr):
             if not z["area"]:
                 continue
