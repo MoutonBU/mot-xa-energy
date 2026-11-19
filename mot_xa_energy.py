@@ -12753,7 +12753,7 @@ class MainWindow(QMainWindow):
                 ("Costing", "Fixtures, materials and the budget for a job.", "calc", "Costing"),
                 ("SANS", "Light and ventilation, energy and coverage checks for the building regulations.", "sun", "SANS"),
                 ("Site and areas", "Building lines on the stand, and the area schedule with unit mix and floor area ratio.", "land", "Site and"),
-                ("Council pack", "The checklist for a building plan submission, and one folder with everything in it.", "folder", "Council"))):
+                ("Rules", "Council pack, stand rules and the council's submission guidelines.", "folder", "Rules"))):
             g.addWidget(tile(title, sub, ico, tgt), i // 3, i % 3)
         for k in (0, 1):
             g.setRowStretch(k, 1)
@@ -12787,10 +12787,29 @@ class MainWindow(QMainWindow):
             g.setColumnStretch(i, 1)
         v.addLayout(g)
         v.addStretch(1)
+        self.rules_sub_page, v = page("Rules", back="Start")
+        g = QGridLayout()
+        g.setSpacing(24)
+        soon = lambda what: (lambda *_: QMessageBox.information(self, APP_NAME, what + "\n\nThis part is still to be built (WIP). Tell me which rules it should check."))
+        for i, (title, sub, ico, tgt) in enumerate((
+                ("Council pack", "The checklist for a building plan submission, and one folder with everything in it.", "folder", "Council pack"),
+                ("Stand rules (WIP)", "Check the design against the stand's zoning rules: coverage, floor area ratio, building lines, height and parking.", "land", None),
+                ("Council guidelines (WIP)", "Check the drawings and documents against what the council asks for in a submission.", "clipboard", None))):
+            t_ = tile(title, sub, ico, tgt or "Rules")
+            if tgt is None:
+                t_.clicked.disconnect()
+                t_.clicked.connect(soon(title.replace(" (WIP)", "")))
+            t_.setMinimumHeight(300)
+            t_.setMaximumHeight(380)
+            g.addWidget(t_, 0, i)
+            g.setColumnStretch(i, 1)
+        v.addLayout(g)
+        v.addStretch(1)
         self.main_tabs.addTab(self.launch_page, "Start")
         self.main_tabs.addTab(self.sans_page, "SANS")
         self.main_tabs.addTab(self.site_sub_page, "Site and areas")
-        self.launcher_idx = (self.main_tabs.count() - 3, self.main_tabs.count() - 2, self.main_tabs.count() - 1)
+        self.main_tabs.addTab(self.rules_sub_page, "Rules")
+        self.launcher_idx = tuple(range(self.main_tabs.count() - 4, self.main_tabs.count()))
         self.main_tabs.setCurrentIndex(self.launcher_idx[0])
 
     def _tab_index(self, prefix):
