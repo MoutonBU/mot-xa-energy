@@ -271,11 +271,18 @@ class PlanView(QWidget):
             m = QPointF((a.x() + b.x()) / 2, (a.y() + b.y()) / 2)
             dx, dy = m.x() - cen.x(), m.y() - cen.y()
             ln = math.hypot(dx, dy) or 1
-            tp = QPointF(m.x() + dx / ln * 34, m.y() + dy / ln * 16)
+            tp = QPointF(m.x() + dx / ln * 40, m.y() + dy / ln * 26)
             p.setPen(QColor("#333333"))
             k = edges[i]["kind"] if i < len(edges) else ""
-            txt = "%s %s" % (k, ("%.1f m" % edges[i]["sb"]) if i < len(edges) and edges[i]["sb"] else "")
-            p.drawText(QRectF(tp.x() - 80, tp.y() - 10, 160, 20), int(Qt.AlignmentFlag.AlignCenter), txt.strip())
+            txt = ("%s %s" % (k, ("%.1f m" % edges[i]["sb"]) if i < len(edges) and edges[i]["sb"] else "")).strip()
+            nm = edges[i].get("name", "") if i < len(edges) else ""
+            if nm:
+                f2 = QFont(f)
+                f2.setBold(True)
+                p.setFont(f2)
+                p.drawText(QRectF(tp.x() - 110, tp.y() - 24, 220, 18), int(Qt.AlignmentFlag.AlignCenter), nm)
+                p.setFont(f)
+            p.drawText(QRectF(tp.x() - 80, tp.y() - 6, 160, 20), int(Qt.AlignmentFlag.AlignCenter), txt)
             p.setPen(QPen(QColor("#222222"), 1))
             p.setBrush(QColor("#ffffff"))
             r_ = 12 if big else 8
@@ -595,6 +602,20 @@ class PlanView(QWidget):
         if click and self.mode == "select":
             self._context(e.globalPosition().toPoint(), e.position())
 
+    def _edge_hit(self, pos):
+        v = self.page.verts()
+        if len(v) < 3 or not self._v:
+            return -1
+        s, cx, cy, W, H = self._v
+        for i in range(len(v)):
+            a, b = self._sc(v[i], (s, cx, cy), W, H), self._sc(v[(i + 1) % len(v)], (s, cx, cy), W, H)
+            dx, dy = b.x() - a.x(), b.y() - a.y()
+            L2 = dx * dx + dy * dy or 1.0
+            t_ = max(0.0, min(1.0, ((pos.x() - a.x()) * dx + (pos.y() - a.y()) * dy) / L2))
+            if math.hypot(pos.x() - (a.x() + t_ * dx), pos.y() - (a.y() + t_ * dy)) < 10:
+                return i
+        return -1
+
     def _context(self, gpos, pos):
         from site_import import point_in_poly
         w = self._world(pos)
@@ -607,7 +628,10 @@ class PlanView(QWidget):
                 for i, b in enumerate(self.page.buildings()):
                     if point_in_poly(w, bpoly(b)):
                         hit = i
-            if hit >= 0:
+            eh = self._edge_hit(pos) if hit < 0 else -1
+            if eh >= 0:
+                self.page.edge_menu(menu, eh)
+            elif hit >= 0:
                 self.sel = hit
                 self.page.select_building(hit)
                 self.update()
@@ -738,7 +762,7 @@ class SitePage(ToolBase):
         v1.addWidget(bx)
         bx, bv = self.box("Building lines", "Set the distance to keep clear on each boundary. Check the numbers against your zoning scheme.")
         qr = QHBoxLayout()
-        self.q_street, self.q_side, self.q_rear = spin(0, 50, 4.0, 2, " m"), spin(0, 50, 2.0, 2, " m"), spin(0, 50, 3.0, 2, " m")
+        self.q_street, self.q_side, self.q_rear = spin(0, 50, 4.5, 2, " m"), spin(0, 50, 2.0, 2, " m"), spin(0, 50, 3.0, 2, " m")
         for lab, w_ in (("Street", self.q_street), ("Side", self.q_side), ("Rear", self.q_rear)):
             qr.addWidget(QLabel(lab))
             qr.addWidget(w_)
@@ -748,8 +772,9 @@ class SitePage(ToolBase):
         qr.addWidget(ap)
         qr.addStretch(1)
         bv.addLayout(qr)
-        self.et = QTableWidget(0, 3)
-        self.et.setHorizontalHeaderLabels(["Boundary", "Kind", "Building line (m)"])
+        self.et = QTableWidget(0, 4)
+        self.et.setHorizontalHeaderLabels(["Boundary", "Kind", "Building line (m)", "Name (street name, for example)"])
+        self.et.itemChanged.connect(self._edge_text_edited)
         self.et.verticalHeader().setVisible(False)
         self.et.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.et.setMinimumHeight(150)
@@ -878,7 +903,8 @@ class SitePage(ToolBase):
         out = []
         for r in range(self.et.rowCount()):
             cb, sp = self.et.cellWidget(r, 1), self.et.cellWidget(r, 2)
-            out.append({"kind": cb.currentText() if cb else "Side", "sb": sp.value() if sp else 0.0})
+            out.append({"kind": cb.currentText() if cb else "Side", "sb": sp.value() if sp else 0.0,
+                        "name": (self.et.item(r, 3).text().strip() if self.et.item(r, 3) else "")})
         return out
 
     def buildings(self):
@@ -916,16 +942,78 @@ class SitePage(ToolBase):
                 lab.setFlags(Qt.ItemFlag.ItemIsEnabled)
                 self.et.setItem(i, 0, lab)
                 e = old[i] if i < len(old) else {"kind": "Side", "sb": self.q_side.value()}
+                nm = QTableWidgetItem(e.get("name", ""))
+                nm.setToolTip("Type the street name here, for example Jacob Street. A name with Street, Road, Avenue, Laan or Straat in it makes this boundary the street.")
+                self.et.setItem(i, 3, nm)
                 cb = QComboBox()
                 cb.addItems(KINDS)
                 cb.setCurrentText(e["kind"])
-                cb.currentTextChanged.connect(lambda _t: self._after_edit(True))
+                cb.currentTextChanged.connect(lambda _t, c_=cb: self._kind_changed(c_))
                 sp = spin(0, 100, e["sb"], 2, " m")
                 sp.valueChanged.connect(lambda _v: self._after_edit(True))
                 self.et.setCellWidget(i, 1, cb)
                 self.et.setCellWidget(i, 2, sp)
         finally:
             self._busy = False
+
+    STREET_WORDS = ("street", "st", "road", "rd", "avenue", "ave", "drive", "dr", "straat", "laan", "weg", "lane", "ln", "crescent", "way", "close",
+                    "boulevard", "blvd", "highway", "pad", "singel", "plein")
+
+    def _default_sb(self, kind):
+        return {"Street": self.q_street.value(), "Side": self.q_side.value(), "Rear": self.q_rear.value()}.get(kind)
+
+    def _kind_changed(self, cb):
+        """Choosing Street, Side or Rear fills in that kind's usual building line. You can still type another number."""
+        if not self._busy:
+            for r in range(self.et.rowCount()):
+                if self.et.cellWidget(r, 1) is cb:
+                    v = self._default_sb(cb.currentText())
+                    if v is not None:
+                        self.et.cellWidget(r, 2).setValue(v)
+                    break
+        self._after_edit(True)
+
+    def _edge_text_edited(self, it):
+        if self._busy or it.column() != 3:
+            return
+        words = [w_.strip(".,") for w_ in it.text().lower().split()]
+        cb = self.et.cellWidget(it.row(), 1)
+        if cb is not None and any(w_ in self.STREET_WORDS for w_ in words) and cb.currentText() != "Street":
+            cb.setCurrentText("Street")        # also fills in the street building line
+            return
+        self._after_edit(True)
+
+    def set_edge_kind(self, i, kind, ask_name=False):
+        cb = self.et.cellWidget(i, 1)
+        if cb is None:
+            return
+        cb.setCurrentText(kind)
+        if kind == "Street" and ask_name and not (self.et.item(i, 3) and self.et.item(i, 3).text().strip()):
+            self.name_edge(i)
+
+    def name_edge(self, i):
+        cur = self.et.item(i, 3).text() if self.et.item(i, 3) else ""
+        txt, ok = QInputDialog.getText(self, "Name the boundary", "Name of this boundary (for example the street name):", text=cur)
+        if ok:
+            self.et.item(i, 3).setText(txt.strip())
+
+    def set_edge_setback(self, i):
+        sp = self.et.cellWidget(i, 2)
+        if sp is None:
+            return
+        val, ok = QInputDialog.getDouble(self, "Building line", "Building line on boundary %s, in metres:" % self._edge_name(i), sp.value(), 0, 100, 2)
+        if ok:
+            sp.setValue(val)
+
+    def edge_menu(self, menu, i):
+        menu.addAction("Boundary " + self._edge_name(i)).setEnabled(False)
+        menu.addAction("This is the street...", lambda: self.set_edge_kind(i, "Street", True))
+        menu.addAction("This is a side boundary", lambda: self.set_edge_kind(i, "Side"))
+        menu.addAction("This is the rear boundary", lambda: self.set_edge_kind(i, "Rear"))
+        menu.addAction("Other", lambda: self.set_edge_kind(i, "Other"))
+        menu.addSeparator()
+        menu.addAction("Name this boundary...", lambda: self.name_edge(i))
+        menu.addAction("Change the building line...", lambda: self.set_edge_setback(i))
 
     def make_rect(self):
         w, d = self.q_w.value(), self.q_d.value()
@@ -1614,7 +1702,7 @@ class SitePage(ToolBase):
         bl = self.buildings()
         pts = [q for i in grp for q in bpoly(bl[i])]
         n = len(v)
-        names = ["%s to %s  (%s)" % (corner_name(i), corner_name((i + 1) % n), (self.edges()[i]["kind"] if i < len(self.edges()) else "")) for i in range(n)]
+        names = ["%s  -  %s" % (self._edge_name(i), (self.edges()[i]["kind"] if i < len(self.edges()) else "")) for i in range(n)]
         kinds = [e["kind"] for e in self.edges()]
         ia = kinds.index("Street") if "Street" in kinds else 0
         inw = self._inward()
@@ -1868,7 +1956,10 @@ class SitePage(ToolBase):
 
     def _edge_name(self, i):
         n = len(self.verts())
-        return "%s to %s" % (corner_name(i), corner_name((i + 1) % n)) if n else ""
+        if not n:
+            return ""
+        nm = self.et.item(i, 3).text().strip() if i < self.et.rowCount() and self.et.item(i, 3) else ""
+        return "%s to %s%s" % (corner_name(i), corner_name((i + 1) % n), (" (%s)" % nm) if nm else "")
 
     # ---- the departure motivation
     def _reason_toggled(self, _c):
@@ -1925,7 +2016,7 @@ class SitePage(ToolBase):
         self.max_far.setValue(d.get("max_far", 0))
         self.floor_area.setValue(d.get("floor_area", 0))
         self.follow.setChecked(d.get("follow", True))
-        q = d.get("q") or [4.0, 2.0, 3.0]
+        q = d.get("q") or [4.5, 2.0, 3.0]
         self.q_street.setValue(q[0]), self.q_side.setValue(q[1]), self.q_rear.setValue(q[2])
         for k, c in self.reason_cb.items():
             c.setChecked(k in (d.get("reasons") or []))
