@@ -582,3 +582,70 @@ class BoxSteps(StepBar):
                 return True
             w = w.parentWidget()
         return False
+
+
+def icon_group(title):
+    """A group box with a small icon in its title when the main module provides IconGroupBox (else a plain one)."""
+    import sys
+    from PySide6.QtWidgets import QGroupBox
+    for n in ("__main__", "mot_xa_energy"):
+        cls = getattr(sys.modules.get(n), "IconGroupBox", None)
+        if cls is not None:
+            return cls(title)
+    return QGroupBox(title)
+
+
+class WelcomeTour(QDialog):
+    """A short first-run tour: what the four squares are, how the step bars work, and the keyboard shortcuts."""
+    PAGES = [
+        ("Welcome", "This program has four squares on the home screen: Drawing register, Detail Notes, Costing and SANS "
+                    "(Light & ventilation, Energy XA and Coverage & FAR). Click a square to open that tool. The left bar then shows "
+                    "only that tool, and Home takes you back."),
+        ("Work one step at a time", "Each tool has numbered step buttons along the top, with a short hint under them. Do step 1, "
+                                    "press Next, and carry on. You can click any step to jump to it. Less common options are under 'More options'."),
+        ("Everything is saved for you", "The drawing register and the costing save themselves as you work. The line at the bottom "
+                                        "shows what is open and whether it is saved. 'Switch tool' in the left bar moves between tools."),
+        ("Keyboard shortcuts", "Alt+Right / Alt+Left: next / previous step.\nF5: run the check.\nCtrl+S: save.   Ctrl+K: search commands.\n"
+                               "Ctrl+H: back to the home screen.   F1: release notes.\nYou can reopen this tour from File > Quick tour."),
+    ]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Quick tour")
+        self.setMinimumSize(520, 300)
+        v = QVBoxLayout(self)
+        self.title = QLabel("")
+        self.title.setStyleSheet("font-size:20px; font-weight:700;")
+        self.body = QLabel("")
+        self.body.setWordWrap(True)
+        self.body.setStyleSheet("font-size:14px;")
+        self.count = QLabel("")
+        self.count.setStyleSheet("color:gray;")
+        v.addWidget(self.title)
+        v.addWidget(self.body, 1)
+        v.addWidget(self.count)
+        h = QHBoxLayout()
+        self.skip = QPushButton("Skip")
+        self.back = QPushButton("‹  Back")
+        self.next = QPushButton("Next  ›")
+        self.next.setDefault(True)
+        h.addWidget(self.skip)
+        h.addStretch(1)
+        h.addWidget(self.back)
+        h.addWidget(self.next)
+        v.addLayout(h)
+        self.i = 0
+        self.skip.clicked.connect(self.accept)
+        self.back.clicked.connect(lambda: self._go(self.i - 1))
+        self.next.clicked.connect(lambda: self.accept() if self.i >= len(self.PAGES) - 1 else self._go(self.i + 1))
+        self._go(0)
+
+    def _go(self, i):
+        self.i = max(0, min(i, len(self.PAGES) - 1))
+        t, b = self.PAGES[self.i]
+        self.title.setText(t)
+        self.body.setText(b)
+        self.count.setText("%d of %d" % (self.i + 1, len(self.PAGES)))
+        self.back.setVisible(self.i > 0)
+        self.next.setText("Done" if self.i == len(self.PAGES) - 1 else "Next  ›")
+        self.skip.setVisible(self.i < len(self.PAGES) - 1)

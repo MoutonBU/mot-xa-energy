@@ -8898,6 +8898,56 @@ class MainWindow(QMainWindow):
                     walk(a_.menu())
         except Exception:
             pass
+        # step navigation, run check, home, quick tour
+        def _steps_now():
+            i_ = self.main_tabs.currentIndex()
+            if i_ == 1:
+                return getattr(self, "lv_steps", None)
+            if i_ == 2:
+                return getattr(self, "xa_steps", None)
+            if i_ == 3:
+                return getattr(self, "cov_steps", None)
+            return None
+
+        def _step_move(d_):
+            st_ = _steps_now()
+            if st_ is not None:
+                st_.go(st_.i + d_)
+                return
+            rp_ = getattr(self, "register_page", None)
+            if self.main_tabs.currentIndex() == 6 and rp_ is not None:
+                rp_.go_step(rp_.steps.currentIndex() + d_)
+
+        def _run_now():
+            i_ = self.main_tabs.currentIndex()
+            if i_ == 2:
+                self._run_xa()
+            elif i_ == 1:
+                self.run_check()
+
+        QShortcut(QKeySequence("Alt+Right"), self, activated=lambda: _step_move(1))
+        QShortcut(QKeySequence("Alt+Left"), self, activated=lambda: _step_move(-1))
+        QShortcut(QKeySequence("F5"), self, activated=_run_now)
+        QShortcut(QKeySequence("Ctrl+H"), self, activated=lambda: self.main_tabs.setCurrentIndex(self.launcher_idx[0]) if getattr(self, "launcher_idx", None) else None)
+
+        def _tour():
+            ux.WelcomeTour(self).exec()
+            SETTINGS["welcomed"] = True
+            try:
+                save_settings()
+            except Exception:
+                pass
+        self.show_tour = _tour
+        try:
+            for a_ in self.menuBar().actions():
+                if a_.text() == "File":
+                    a_.menu().addSeparator()
+                    a_.menu().addAction("Quick tour...", _tour)
+        except Exception:
+            pass
+        if (not SETTINGS.get("welcomed") and os.environ.get("QT_QPA_PLATFORM") != "offscreen"
+                and not any(a in sys.argv for a in ("--restore", "--ready", "--after-update"))):
+            QTimer.singleShot(1500, _tour)
         # command search, table features
         QShortcut(QKeySequence("Ctrl+K"), self, activated=self.open_command_search)
         self._ui_tables(ux)

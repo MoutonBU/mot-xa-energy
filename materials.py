@@ -444,7 +444,8 @@ class MaterialsPage(QWidget):
         self._busy = False
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 4, 0, 0)
-        gb = QGroupBox("Blocks and buildings")
+        from ui_extras import icon_group
+        gb = icon_group("Blocks and buildings")
         bv = QVBoxLayout(gb)
         row = QHBoxLayout()
         for text, fn in (("Use this project's IFC", self.add_current), ("Add block (IFC)...", self.add_block), ("Remove", self.remove_block),

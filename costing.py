@@ -456,7 +456,8 @@ class CostingPage(QWidget):
         self.main.currentChanged.connect(lambda i: self.summary_page.refresh() if self.main.widget(i) is self.summary_page else None)
 
         # products
-        gp = QGroupBox("Products")
+        from ui_extras import icon_group
+        gp = icon_group("Products")
         pv = QVBoxLayout(gp)
         from flow_layout import FlowLayout
         pb = FlowLayout()
@@ -503,7 +504,7 @@ class CostingPage(QWidget):
         sp.addWidget(gp)
 
         # schedule
-        gs = QGroupBox("Fixture schedule")
+        gs = icon_group("Fixture schedule")
         sv = QVBoxLayout(gs)
         sb = QHBoxLayout()
         b = QPushButton("Build from rooms")
