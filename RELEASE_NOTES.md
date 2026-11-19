@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.5**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.6**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Frame and glass schedule in the reports, 1.86.6**: the Energy XA report and the rational design report now carry a table of every window and glazed door with its type, size, quantity, glazed area, rooms, the frame and glass chosen, glass U, solar gain S, exposure E, window U, overhang P and whether it is a common South African product (OK) or needs a supplier check, with a note under it for each choice to confirm and the SANS 10400-XA 5.3 certification wording.
 - **South African availability of frames and glass, 1.86.5**: in Windows and glazed doors every frame and glass choice now has a tooltip saying whether it is a common South African product, available (REHAU uPVC, McCoy's double low-E glass) or still to be confirmed with a supplier (triple glazing, fibreglass, aluminium-clad timber, thermally broken steel, argon fill). A note under the heading lists the SANS 10400-XA 5.3 certification rules (NFRC 100/200 values, SANS 613 air leakage), and single low-E glass is flagged as not allowed for the U-value in the Southern Cape Condensation Problem Area.
 - **Shading fix says how far to protrude, 1.86.4**: when solar heat gain fails, the shading suggestion now lists each unshaded west, north or east window with the projection it needs (table 3 multiplier x window height H, and what it has now), and the exposure factor E the group must reach to comply. It says plainly when shading alone cannot fix the group.
 - **Plan tab no longer freezes the program, 1.86.3**: the floor plan is now read by a separate helper process started from the program itself (with a time limit of 7 minutes and a clear message if it fails), instead of Python's multiprocessing, which could restart the whole program window in the installed version and make it show "Not responding". The program stays usable while the plan is being read.

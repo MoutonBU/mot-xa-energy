@@ -16840,6 +16840,50 @@ class MainWindow(QMainWindow):
                              "into the reports automatically.</b> The only proof still needed from you is the supplier's "
                              "SANS 613 test report for the glazing.")
 
+    def _glazing_spec_parts(self, cell):
+        """Frame and glass of every window / glazed door: what is in the model, what was chosen, the resulting values and where it is
+        found, with a note on whether the choice is available in South Africa. Returns (head, rows, widths) or None."""
+        gl = getattr(self, "xa_glass", None) or {}
+        if not gl:
+            return None
+        try:
+            sch = self.xa_schedule() or {}
+        except Exception:
+            sch = {}
+        use = getattr(self, "xa_use", {}) or {}
+        rows = []
+        for tag, g in gl.items():
+            o = sch.get(str(tag).upper())
+            fr_ = g.get("frame", "")
+            fr_ = "Not specified" if (not fr_ or fr_.startswith("Not specified")) else fr_
+            u = use.get(tag) or {}
+            av = XA_AVAIL.get(g.get("frame", ""), "") or XA_AVAIL.get(g.get("type", ""), "")
+            av2 = XA_AVAIL.get(g.get("type", ""), "")
+            note = "; ".join(x for x in (XA_AVAIL.get(g.get("frame", "")), av2) if x and not x.startswith(("Common", "Available")))
+            size = f"{o.width_mm:.0f} x {o.height_mm:.0f}" if o else ""
+            gla = f"{o.glazed_m2:.2f}" if o else ""
+            rows.append([cell(str(tag), bold=True), cell(("Door" if o.kind == "Door" else "Win") if o else "", "center"), cell(size, "center"),
+                         cell(f"{u.get('qty', 0):g}" if u else "", "center"), cell(gla, "right"),
+                         cell(", ".join(u.get("rooms", [])[:4]) if u else ""),
+                         cell(fr_), cell(str(g.get("type", ""))),
+                         cell(f"{g.get('U', '')}", "right"), cell(f"{g.get('S', '')}", "right"), cell(f"{g.get('E', '')}", "right"),
+                         cell(f"{g.get('UW', g.get('U', ''))}", "right"),
+                         cell(f"{g['P']:g}" if g.get("P") else "-", "right"),
+                         cell("Check" if note else "OK", "center", None if not note else "#8a5a00", bool(note))])
+        head = ["Tag", "Type", "W x H", "Qty", "Glz m2", "Rooms", "Frame", "Glass", "U gl", "S", "E", "U win", "P mm", "SA supply"]
+        return head, rows, [5, 5, 9, 4, 6, 11, 16, 18, 4, 4, 4, 5, 5, 6]
+
+    def _glazing_spec_notes(self):
+        """Per-choice availability and certification notes for the report (only choices that need a supplier check)."""
+        out, seen = [], set()
+        for g in (getattr(self, "xa_glass", None) or {}).values():
+            for k in (g.get("frame", ""), g.get("type", "")):
+                t = XA_AVAIL.get(k)
+                if t and k not in seen and not t.startswith(("Common", "Available")):
+                    seen.add(k)
+                    out.append(f"{k}: {t}")
+        return out
+
     def _shade_report_parts(self, cell, okc, badc):
         """Overhang measured from the IFC model for each window type, tested against SANS 10400-XA table 3. None without an IFC."""
         shd = (getattr(self, "ifc_data", None) or {}).get("shading") or {}
@@ -17222,6 +17266,7 @@ class MainWindow(QMainWindow):
         ft = self.xa_fen_table
         ft.setRowCount(0)
         self.xa_fen_results = []
+        self.xa_use = {}
         north = self._north_deg()
         lat = self._xa_latitude()
         mult = xa_shade_multiplier(lat)
@@ -17239,6 +17284,10 @@ class MainWindow(QMainWindow):
                         continue
                     area = o.area_m2 * qty
                     fen += area
+                    u_ = self.xa_use.setdefault(tag, {"qty": 0.0, "rooms": []})
+                    u_["qty"] += qty
+                    if rm.name not in u_["rooms"]:
+                        u_["rooms"].append(rm.name)
                     u, sg, e = gval(tag)
                     ops.append((area, u, sg, e))
                     try:
@@ -17610,6 +17659,12 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
                     if frows else "<p style='font-size:9pt;'>Run the check first.</p>")
         for t_ in (self._screening_statement() or []):
             body.append(f'<p style="font-size:8.5pt; color:#222222; margin-left:10px; margin-top:6px;">{t_}</p>')
+        gp_ = self._glazing_spec_parts(cell)
+        if gp_:
+            body.append(f'<p style="font-size:12pt; font-weight:bold; color:{RED}; margin-left:10px; margin-top:12px;">Frame and glass specified per window / door</p>')
+            body.append(table(gp_[0], gp_[1], gp_[2]))
+            for n_ in self._glazing_spec_notes():
+                body.append(f'<p style="font-size:8pt; color:#8a5a00; margin-left:10px;">{e(n_)}</p>')
         body.sec = 'Orientation and shading'
         op_ = self._orient_report_parts(cell, "#1B7F3B", RED)
         if op_:
@@ -18388,17 +18443,13 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
         s4.append(para(f"SANS 204:2011 zone {e(zone11)}: CU = {cu}, CSHGC = {cs}."))
         for t_ in (self._screening_statement() or []):
             s4.append(para(t_, "8.5pt"))
-        grows = []
-        for tag, g in self.xa_glass.items():
-            fr_ = g.get("frame", "")
-            fr_ = "-" if fr_.startswith("Not specified") else fr_
-            grows.append([cell(tag, bold=True), cell(e(fr_)), cell(e(g.get("type", ""))),
-                          cell(f"{g.get('U', '')}", "right"), cell(f"{g.get('S', '')}", "right"),
-                          cell(f"{g.get('E', '')}", "right"), cell(f"{g.get('UW', g.get('U', ''))}", "right")])
-        if grows:
+        gp_ = self._glazing_spec_parts(cell)
+        if gp_:
             s4.append(h2("Frame and glass specified per window / door"))
-            s4.append(table(["Tag", "Frame", "Glass type", "Glass U", "Solar gain S", "Exposure E", "Window U"], grows,
-                            [8, 24, 32, 8, 10, 9, 9], hbg=ACTBG))
+            s4.append(table(gp_[0], gp_[1], gp_[2], hbg=ACTBG))
+            for n_ in self._glazing_spec_notes():
+                s4.append(para(e(n_), "8pt"))
+            s4.append(para(e(XA_AVAIL_NOTE.rsplit(" Hover", 1)[0]), "8pt"))
         op_ = self._orient_report_parts(cell, OKC, BADC)
         if op_:
             s4.append(h2("Orientation and shading (SANS 10400-XA:2021 clause 5)"))
