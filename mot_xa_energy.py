@@ -17219,7 +17219,8 @@ class MainWindow(QMainWindow):
                     for code, q_ in facing_parts(base_side, over_side, tag, qty):
                         og["wins"].append({"vent": o.openable_m2 * q_, "area": o.area_m2 * q_, "u": u, "s": sg,
                                            "sector": compass_sector(code, north) if code else "",
-                                           "shaded": shaded, "tag": tag, "room": rm.name, "e": e, "floor": rm.floor})
+                                           "shaded": shaded, "tag": tag, "room": rm.name, "e": e, "floor": rm.floor,
+                                           "H": hmm, "P": pmm, "mult": mult})
             pct = fen / nfa * 100 if nfa else 0.0
             within = pct <= limit + 1e-9
             calc = fenestration_storey(nfa, ops, zone11)

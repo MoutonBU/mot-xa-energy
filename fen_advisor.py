@@ -66,10 +66,34 @@ def advise(group, nfa, limit_pct, wins, calc, glass, orient_rows=None, zone="", 
         avg_s = sum(w["area"] * w["s"] * w["e"] for w in wins) / (sum(w["area"] for w in wins) or 1)
         drop = ex / (avg_s or 1)
         fixes.append("Or take about <b>%.2f m2</b> of glass out of the group (the windows above first)." % drop)
-        need = calc["max_s"] / tot
-        if need >= 0.35:
-            fixes.append("Or shade the west, north and east windows (deep overhang, louvres or a screen) so their exposure factor E "
-                         "drops by about %d%%." % round((1 - need) * 100))
+        # shading: only W / NW / N / NE / E windows that are not already shaded can earn a lower exposure factor E
+        elig = [w for w in wins if not w.get("shaded") and ((w.get("sector") in GROUP_A) or not w.get("sector"))]
+        base = sum(w["area"] * w["s"] for w in elig)
+        if elig and base > 0:
+            e_now = sum(w["area"] * w["s"] * w["e"] for w in elig)
+            e_need = (e_now - ex) / base                      # the exposure factor these windows must drop to
+            seen, lines = set(), []
+            for w in sorted(elig, key=lambda w: -w["area"] * w["s"] * w["e"]):
+                key = (w["tag"], w.get("H"))
+                if key in seen:
+                    continue
+                seen.add(key)
+                H, m = w.get("H") or 0.0, w.get("mult") or 0.0
+                if H and m:
+                    lines.append("%s (%s, faces %s): projection of at least <b>%.0f mm</b> (%.2f x H of %.0f mm)%s" % (
+                        w["tag"], w["room"], w.get("sector") or "?", H * m, m, H,
+                        " - now %.0f mm" % w["P"] if w.get("P") else ""))
+                if len(lines) >= 6:
+                    break
+            if e_need > 0.05:
+                fixes.append("Or <b>shade</b> the %d unshaded west, north and east windows with a deep overhang, louvres or a screen. "
+                             "Their exposure factor E must come down from about %.2f to <b>%.2f or lower</b> (use the SANS 204 value "
+                             "for the projection you choose) for the group to comply. Projection needed so the window counts as shaded "
+                             "(SANS 10400-XA table 3), measured out from the glass:<br>&nbsp;&nbsp;%s" % (
+                                 len(elig), e_now / base, e_need, "<br>&nbsp;&nbsp;".join(lines) or "enter the window height H in the glass table"))
+            else:
+                fixes.append("Shading alone cannot fix this group: even with full shading the west, north and east windows leave "
+                             "it over the limit. Change the glass or take glass out as well.")
         out["issues"].append({
             "kind": "solar", "title": "Solar heat gain is %.2f, the limit is %.2f (over by %.2f)" % (calc["agg_s"], calc["max_s"], ex),
             "windows": [{**w, "contrib": w["area"] * w["s"] * w["e"], "share": w["area"] * w["s"] * w["e"] / tot * 100} for w in ranked[:6]],

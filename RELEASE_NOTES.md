@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.3**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.4**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Shading fix says how far to protrude, 1.86.4**: when solar heat gain fails, the shading suggestion now lists each unshaded west, north or east window with the projection it needs (table 3 multiplier x window height H, and what it has now), and the exposure factor E the group must reach to comply. It says plainly when shading alone cannot fix the group.
 - **Plan tab no longer freezes the program, 1.86.3**: the floor plan is now read by a separate helper process started from the program itself (with a time limit of 7 minutes and a clear message if it fails), instead of Python's multiprocessing, which could restart the whole program window in the installed version and make it show "Not responding". The program stays usable while the plan is being read.
 - **Deemed-to-satisfy statement in the reports, 1.86.2**: the Energy XA report and the rational design report now say, under the fenestration table, which units or storeys are within the 20% glazing limit and so deemed to satisfy (the SANS 204 calculation is not required, provided orientation and shading comply), and that a red conductance or solar heat gain figure there is for information only. Groups above the limit are listed as needing the calculation.
 - **Combined rooms never duplicate on re-import, 1.86.1**: a combined room's parts are found again in the new model by storey, unit and name, then by unit and name on another storey (if a storey was renamed), and any part found is taken out of the room list so it cannot appear a second time next to the combined room. If a part is gone from the model, the combined room is kept as it was and the others are still not duplicated.
