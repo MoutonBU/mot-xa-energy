@@ -1395,6 +1395,21 @@ def excluded_reason(name):
     return ""
 
 
+STORAGE_RE = re.compile(r"\b(storage|stores?|store\s?rooms?|cupboards?|linen)\b", re.I)
+LIVED_IN_RE = re.compile(r"\b(bed|bedroom|sleep|lounge|living|kitchen|dining|study|office|studio|flat|dwelling)", re.I)
+
+
+def lv_excluded_reason(name):
+    """Rooms left out of the light and ventilation check: everything excluded_reason() skips, and storage rooms.
+    A storage room is not a habitable room, so it needs no natural light or ventilation (unless its name says people sleep or live in it)."""
+    r = excluded_reason(name)
+    if r:
+        return r
+    if STORAGE_RE.search(name or "") and not LIVED_IN_RE.search(name or ""):
+        return "Storage - not a habitable room: no natural light or ventilation required"
+    return ""
+
+
 def check_room(room, schedule, light_pct):
     tags = parse_tags(room.tags)
     glazed = 0.0
@@ -7045,6 +7060,25 @@ def ifc_health_check(path, res):
         noname = [e for cls in ("IfcDoor", "IfcWindow") for e in _ifc_open_els(ifc, cls) if not (e.Name or "").strip()]
         if noname:
             add("warn", f"{len(noname)} window/door(s) with no name or tag", "", "Give every opening an ID (W1, D1...) in Archicad so the schedule can group them.")
+        px = [e for e in ifc.by_type("IfcBuildingElementProxy") if _proxy_open_kind(e)]
+        if px:
+            add("warn", f"{len(px)} window/door(s) exported as generic objects (read anyway)",
+                ", ".join(sorted({(e.Name or "?") for e in px})[:6]),
+                "Set the IFC type of your window and door library parts to IfcWindow / IfcDoor (Classification and Properties) so they export properly.")
+        try:
+            by_fl = {}
+            for r in rooms:
+                by_fl.setdefault(r.get("floor") or "", 0)
+                by_fl[r.get("floor") or ""] += 1
+            fl_open = {i.get("floor") for i in items if i.get("floor")}
+            if fl_open:
+                miss = [f for f in by_fl if f and f not in fl_open and not any(f in str(x) for x in fl_open)]
+                if miss:
+                    add("warn", f"No windows or doors found on: {', '.join(miss[:5])}",
+                        "These storeys have rooms but no openings came in.",
+                        "Check the windows/doors on those storeys are on the same story and exported as IfcWindow / IfcDoor.")
+        except Exception:
+            pass
         if not ifc.by_type("IfcBuildingStorey"):
             add("error", "No storeys in the model", "", "Set up Stories in Archicad and export them.")
     except Exception:
@@ -10465,8 +10499,8 @@ class MainWindow(QMainWindow):
         except Exception: pass
         sched = self.read_schedule()
         all_rooms = self.read_rooms()
-        rooms = [rm for rm in all_rooms if not excluded_reason(rm.name)]
-        skipped = [(rm, excluded_reason(rm.name)) for rm in all_rooms if excluded_reason(rm.name)]
+        rooms = [rm for rm in all_rooms if not lv_excluded_reason(rm.name)]
+        skipped = [(rm, lv_excluded_reason(rm.name)) for rm in all_rooms if lv_excluded_reason(rm.name)]
         light_pct = RULES[self.rule_box.currentText()]
         self.results = [check_room(rm, sched, light_pct) for rm in rooms]
         t = self.result_table

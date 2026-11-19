@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.84.3**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.84.4**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **1.84.4** Storage rooms (Storage, Store, Store room, Linen cupboard...) are not habitable: no light or ventilation check, listed for information only. "Bedroom with storage" is still checked. The IFC check now warns when windows or doors were exported as generic objects (still read) and when a storey has rooms but no openings.
 - **IFC: windows and doors exported as proxies, 1.84.3**: in ERF 14243 Block D.1 the first floor was missing because Archicad exported its windows and doors as IfcBuildingElementProxy (named W4, D3...) instead of IfcWindow / IfcDoor, so the import only saw the ground floor. A proxy that fills an opening and is named like a window or door (W1, D3, Window..., Door...) is now read as one, with its size taken from its own shape, else from the same tag, else from the opening it fills. On that model the import now finds 16 windows and 18 doors (was 8 and 11) and links the first floor rooms. To avoid proxies in future, give the first floor windows and doors the Window and Door IFC types in Archicad (Classification / IFC mapping).
 - **Read the PDFs offline, 1.84.2**: Guidelines review and Council pack now read the rules and the plans without the AI or the internet. Without Online mode it reads offline straight away; with Online mode on you choose Read offline or Use the AI each time. Offline it finds the rules in the guideline text (maximum / minimum / not more than / at least with the number and unit, and what must be shown or provided), drops the clause numbers, and checks the plans by the text written on the sheets: it finds the matching words, picks the figure next to them and compares it. A rule it cannot find in the text stays To check, because something that is only drawn and not written cannot be read offline. Scanned PDFs are read with the program's own text reader. Always read the page it points to.
 - **Faster update download, 1.84.1**: the update now downloads the installer with 8 connections at once, in 4 MB pieces, instead of one. If the server does not allow that, or a piece keeps failing, it falls back to the single download as before. Cancel still works.
