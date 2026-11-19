@@ -3940,6 +3940,7 @@ ICON_SVG = {
     "orientation": '<circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v2.5M12 18v2.5M3.5 12H6M18 12h2.5"/><path d="m12 7.5 2.2 4.5H9.8z" fill="currentColor"/>',
     "glass": '<rect x="5" y="3" width="14" height="18" rx="1.5"/><path d="m9 8 6-2.5M9 13.5l6-2.5"/>',
     "leaf": '<path d="M5 19c0-8 4-13.5 14-14.5 0 9-5 14.5-12.5 14.5"/><path d="M5 19c2.5-4 5-6.5 9-8.5"/>',
+    "land": '<path d="M4 8.5 11 4l9 4.5-1.5 9L11 20.5 4.5 17z"/><path d="M8 11.5h6M8 15h4" stroke-dasharray="1.6 1.6"/>',
     "mail": '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3.5 7 8.5 6 8.5-6"/>',
     "star": '<path d="m12 3.5 2.6 5.4 5.9.8-4.3 4.1 1 5.9L12 16.9l-5.2 2.8 1-5.9-4.3-4.1 5.9-.8z"/>',
 }
@@ -4003,6 +4004,8 @@ ICON_KEYS = [
     ("quit", "close"), ("cancel", "close"), ("done", "check_circle"), ("tools", "settings"),
     ("reports", "pdf"), ("select all", "check_circle"), ("set...", "edit"),
     # --- fallbacks, so that nearly every button carries an icon ---
+    ("build the pack", "folder"), ("the stand", "land"), ("the result", "results"), ("the application", "folder"),
+    ("the checklist", "clipboard"), ("the totals", "results"), ("the rooms", "room"),
     ("check and send", "mail"), ("who is it for", "user"), ("the drawings", "plan"), ("stand and its limits", "pin"),
     ("the buildings", "building"), ("result and reports", "results"), ("walls", "wall"), ("roof", "roof"),
     ("floors", "floor"), ("hot water pipes", "drop"), ("hot water", "sun"), ("air infiltration", "wind"),
@@ -4020,6 +4023,9 @@ ICON_KEYS = [
     ("edit", "edit"), ("calc", "calc"), ("schedule", "clipboard"), ("sheet", "clipboard"), ("update", "refresh"),
     ("rates", "tag"), ("price", "tag"), ("site plan", "plan"), ("southern cape", "pin"), ("plan", "plan"),
     ("row", "add"), ("whole", "layers"), ("home", "home"), ("switch", "layers"),
+    ("fill from", "import"), ("fill the", "import"), ("make a rectangle", "land"), ("make ", "play"), ("rectangle", "land"),
+    ("corner", "add"), ("centre", "pin"), ("apply", "check_circle"), ("write a note", "edit"), ("mark as", "check_circle"),
+    ("area schedule", "layers"), ("council", "folder"), ("the pack", "folder"), ("pack", "folder"), ("copy the text", "copy"),
 ]
 TAB_KEYS = [
     ("sent and revisions", "mail"), ("client changes", "edit"), ("orders", "clipboard"), ("drawing register", "plan"),
@@ -4028,6 +4034,7 @@ TAB_KEYS = [
     ("quantities", "ruler"), ("tally", "results"), ("cost by level", "layers"), ("schedule", "clipboard"),
     ("home", "home"), ("light", "lightvent"), ("energy", "bolt"), ("coverage", "building"), ("detail notes", "edit"),
     ("costing", "calc"), ("start", "home"), ("sans", "building"), ("rates", "tag"), ("windows", "window"),
+    ("area schedule", "layers"), ("building lines", "land"), ("council", "folder"), ("site and areas", "land"),
     ("doors", "door"), ("rooms", "room"), ("results", "results"), ("plan", "plan"),
 ]
 
@@ -4148,7 +4155,10 @@ GROUP_ICON_KEYS = [
     ("building details", "building"), ("building type", "building"), ("what kind of building", "building"),
     ("project", "folder"), ("model", "cube"), ("light", "lightvent"), ("energy", "bolt"), ("reports", "pdf"),
     ("who", "user"), ("location", "pin"), ("details", "edit"), ("blocks", "building"),
-    ("fixture", "tag"), ("product", "tag"),
+    ("fixture", "tag"), ("product", "tag"), ("the stand", "land"), ("corners", "land"), ("building lines", "land"), ("limits", "ruler"),
+    ("buildings on", "building"), ("what complies", "check_circle"), ("departure", "edit"), ("totals", "results"), ("by block", "layers"),
+    ("units", "building"), ("unit mix", "building"), ("by room", "room"), ("where do the rooms", "import"), ("the application", "folder"),
+    ("what a submission", "clipboard"), ("is it ready", "check_circle"), ("build the pack", "folder"),
 ]
 
 
@@ -8816,6 +8826,16 @@ class MainWindow(QMainWindow):
             self.main_tabs.addTab(self.register_page, "Drawing register")
         except Exception:
             self.register_page = None
+        for attr_, mod_, cls_, tab_ in (("area_page", "area_schedule", "AreaPage", "Area schedule"),
+                                        ("site_page", "site_lines", "SitePage", "Building lines"),
+                                        ("council_page", "council_pack", "CouncilPage", "Council pack")):
+            try:
+                pg_ = getattr(__import__(mod_), cls_)(self)
+                setattr(self, attr_, pg_)
+                self.main_tabs.addTab(pg_, tab_)
+            except Exception as e_:
+                print("tool not started:", mod_, e_)
+                setattr(self, attr_, None)
         self._build_home()
 
         self.assign_table = QTableWidget(0, 8)
@@ -8907,6 +8927,8 @@ class MainWindow(QMainWindow):
                 return getattr(self, "xa_steps", None)
             if i_ == 3:
                 return getattr(self, "cov_steps", None)
+            if i_ in (7, 8, 9):
+                return getattr(getattr(self, ("area_page", "site_page", "council_page")[i_ - 7], None), "steps", None)
             return None
 
         def _step_move(d_):
@@ -10529,6 +10551,9 @@ class MainWindow(QMainWindow):
             self.costing_page.set_state({})
         if getattr(self, "register_page", None):
             self.register_page.set_state({})
+        for pg_ in (getattr(self, "area_page", None), getattr(self, "site_page", None), getattr(self, "council_page", None)):
+            if pg_ is not None:
+                pg_.load_state({})
         self._rd_to_widgets()
         self._xa_refresh()
         self.current_file = None
@@ -10558,6 +10583,9 @@ class MainWindow(QMainWindow):
             "cov": self.cov_state(),
             "costing": (self.costing_page.state() if getattr(self, "costing_page", None) else None),
             "register": (self.register_page.state() if getattr(self, "register_page", None) else None),
+            "areas": (self.area_page.state() if getattr(self, "area_page", None) else None),
+            "site": (self.site_page.state() if getattr(self, "site_page", None) else None),
+            "council": (self.council_page.state() if getattr(self, "council_page", None) else None),
             "ifc": getattr(self, "ifc_data", None),
             "unit_mode": UNIT_MODE[0],
             "panes": self.sched_panes,
@@ -11080,6 +11108,9 @@ class MainWindow(QMainWindow):
             self.costing_page.set_state(data.get("costing"))
         if getattr(self, "register_page", None):
             self.register_page.set_state(data.get("register"))
+        for pg_, key_ in ((getattr(self, "area_page", None), "areas"), (getattr(self, "site_page", None), "site"), (getattr(self, "council_page", None), "council")):
+            if pg_ is not None:
+                pg_.load_state(data.get(key_))
         self.sched_panes = {k: [tuple(p) for p in v] for k, v in (data.get("panes") or {}).items()}
         self.sched_geom = {k: {"aspect": v.get("aspect", 1.0), "panes": [tuple(q) for q in v.get("panes", [])]}
                            for k, v in (data.get("geom") or {}).items() if isinstance(v, dict)}
@@ -12527,10 +12558,13 @@ class MainWindow(QMainWindow):
                 ("Drawing register", "Issue drawings by email, with the sheet index and what is still to come.", "clipboard", "Drawing register"),
                 ("Detail Notes", "Add construction detail notes to an Archicad detail.", "ruler", "Detail Notes"),
                 ("Costing", "Fixtures, materials and the budget for a job.", "calc", "Costing"),
-                ("SANS", "Light and ventilation, energy and coverage checks for the building regulations.", "sun", "SANS"))):
-            g.addWidget(tile(title, sub, ico, tgt), i // 2, i % 2)
+                ("SANS", "Light and ventilation, energy and coverage checks for the building regulations.", "sun", "SANS"),
+                ("Site and areas", "Building lines on the stand, and the area schedule with unit mix and floor area ratio.", "land", "Site and"),
+                ("Council pack", "The checklist for a building plan submission, and one folder with everything in it.", "folder", "Council"))):
+            g.addWidget(tile(title, sub, ico, tgt), i // 3, i % 3)
         for k in (0, 1):
             g.setRowStretch(k, 1)
+        for k in (0, 1, 2):
             g.setColumnStretch(k, 1)
         v.addLayout(g, 1)
         self.sans_page, v = page("SANS", back="Start")
@@ -12547,9 +12581,23 @@ class MainWindow(QMainWindow):
             g.setColumnStretch(i, 1)
         v.addLayout(g)
         v.addStretch(1)
+        self.site_sub_page, v = page("Site and areas", back="Start")
+        g = QGridLayout()
+        g.setSpacing(24)
+        for i, (title, sub, ico, tgt) in enumerate((
+                ("Building lines", "Draw the stand and set the building lines<br><br>See what encroaches, coverage and floor area ratio, and write a departure motivation.", "land", "Building lines"),
+                ("Area schedule", "Every room by block, level and unit<br><br>Totals, unit mix and the floor area that counts toward FAR.", "layers", "Area schedule"))):
+            t_ = tile(title, sub, ico, tgt)
+            t_.setMinimumHeight(300)
+            t_.setMaximumHeight(380)
+            g.addWidget(t_, 0, i)
+            g.setColumnStretch(i, 1)
+        v.addLayout(g)
+        v.addStretch(1)
         self.main_tabs.addTab(self.launch_page, "Start")
         self.main_tabs.addTab(self.sans_page, "SANS")
-        self.launcher_idx = (self.main_tabs.count() - 2, self.main_tabs.count() - 1)
+        self.main_tabs.addTab(self.site_sub_page, "Site and areas")
+        self.launcher_idx = (self.main_tabs.count() - 3, self.main_tabs.count() - 2, self.main_tabs.count() - 1)
         self.main_tabs.setCurrentIndex(self.launcher_idx[0])
 
     def _tab_index(self, prefix):
@@ -17998,7 +18046,8 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
         """Show a report inside the program so it can be checked without saving files.
         Zoom: 50-400 %, Fit width, Fit page, + / - buttons, Ctrl + mouse wheel."""
         from PySide6.QtGui import QPixmap
-        kind_name = ("SANS 10400-XA Energy Report" if writer == self._write_xa_pdf else
+        kind_name = (getattr(getattr(writer, "__self__", None), "report_title", None) if getattr(getattr(writer, "__self__", None), "KEY", None) in ("areas", "site", "council") else
+                     "SANS 10400-XA Energy Report" if writer == self._write_xa_pdf else
                      "Rational Design Report" if writer == self._write_rd_pdf else
                      getattr(getattr(writer, "__self__", None), "report_title", "Fixture Schedule")
                      if getattr(getattr(writer, "__self__", None), "is_costing", False) else
