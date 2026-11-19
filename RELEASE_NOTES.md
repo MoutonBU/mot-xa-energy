@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.85.4**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.85.5**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **A new IFC import keeps your work, 1.85.5**: rooms you combined (open plan) stay combined and are rebuilt from the new model's areas and windows; the artificial-light and internal ticks you set on rooms are kept; and anything you changed by hand on a window or door (glazed %, opening %, which panes open) is kept as long as that window is still the same size. The import message lists what was kept. If a room inside a combined room was renamed or removed in the model, that combined room is left as it was and the message says so.
 - **Openings go to the right room, 1.85.4**: windows and doors that the IFC does not link to a room are placed using the room's real outline (not the box around it). A patio or balcony outline no longer takes the window of the room behind it, and when a window sits on the line between two rooms the program copies the room that the same window at the same place on another storey is in (else a bathroom for a small window). On Block D both units now total 10.80 m2 of fenestration. If one unit shows a different total, check that the window IDs on each storey are the same as the ground floor: a window named W1 on one floor and W5 on another is read as two different windows.
 - **WCs and stores comply, 1.85.3**: a WC or toilet (public ones too) may rely on artificial light and mechanical ventilation, so it now passes with a note to fit a light and an extract fan (shown as "PASS (mechanical)"). Storage rooms and public stores are marked compliant (green) on the Plan, and the results list says why they are not checked.
 - **Plan tab and public rooms, 1.85.2**: (1) the Plan now draws the windows and doors that Archicad exported as generic objects, so the first floor shows its windows. (2) The plan is read in a separate process, so if the model holds something the reader chokes on, only that step fails with a message and the program stays open. (3) A toilet or store that belongs to no unit and is entered only from outside is named "Public WC" / "Public Storage..." in the IFC import, so the light, ventilation and sun checks, the reports and the plan label it correctly (public stores are not habitable, so they are not checked). Only used when the model has units.

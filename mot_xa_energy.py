@@ -12011,6 +12011,9 @@ class MainWindow(QMainWindow):
             self.rd["ifc_loaded"] = "1"
             self.rd["has_ifc"] = "1"
             self.ifc_path = path
+            self._reimport_notes = []
+            old_ifc = getattr(self, "ifc_data", None)
+            self._carry_window_edits(old_ifc, res)
             self.ifc_data = {"rooms": res["rooms"], "items": res["items"], "path": path,
                              "floors": res.get("floors") or [], "north": res.get("north"), "air": res.get("air") or {},
                              "latlon": res.get("latlon"), "aliases": res.get("aliases") or {}}
@@ -12019,6 +12022,7 @@ class MainWindow(QMainWindow):
                 self.xa_lat.setText(f"{abs(ll[0]):.4f}")          # the model's own site position (inside South Africa) drives the sun
                 self.rd["lon"] = f"{ll[1]:.5f}"
                 self._coord_src = "IFC model"
+            self.ifc_data["pristine"] = res.get("_pristine") or {}
             self.ifc_report = res.get("room_report") or []
             self.ifc_info = "(%d rooms, %d window/door types)" % (len(res["rooms"]), len(res["items"]))
             self._ifc_counts = {k: res.get(k) for k in ("no_area_names", "unplaced", "faced", "n_win", "n_door", "dups")}
@@ -12098,10 +12102,41 @@ class MainWindow(QMainWindow):
                     self._ifc_to_lv_auto()
                 except Exception as e_:
                     msg += "\n\n(Could not fill Light & Ventilation by itself: %s. Tick the IFC boxes in that tab to try again.)" % e_
+                if getattr(self, "_reimport_notes", None):
+                    msg += "\n\nKept from before:\n- " + "\n- ".join(self._reimport_notes)
                 msg += "\n\nThe next window lets you check the glazed and opening percentages, and mark glazed doors."
                 QMessageBox.information(self, APP_NAME, msg)
                 QTimer.singleShot(0, self.review_ifc)
         self._run_bg(lambda: read_ifc_model(path), done, "Reading the IFC model...")
+
+    @staticmethod
+    def _item_sig(it):
+        g = it.get("geom") if isinstance(it.get("geom"), dict) else {}
+        return repr((round(float(it.get("glazed") or 0), 1), round(float(it.get("openable") or 0), 1),
+                     [tuple(q) for q in (g.get("panes") or it.get("panes") or [])]))
+
+    def _carry_window_edits(self, old, res):
+        """A new IFC import keeps what was changed by hand on a window or door (glazed %, opening %, which panes open)
+        as long as the window is still the same size. res['_pristine'] records the raw values for the next time."""
+        new_items = res.get("items") or []
+        edits = {}
+        if old and old.get("items"):
+            pri = old.get("pristine") or {}
+            for it in old["items"]:
+                key = "%s|%s" % (it["tag"].upper(), it.get("kind"))
+                if key in pri and pri[key] != self._item_sig(it):
+                    edits[key] = it
+        res["_pristine"] = {"%s|%s" % (i["tag"].upper(), i.get("kind")): self._item_sig(i) for i in new_items}
+        kept = []
+        for i in new_items:
+            o = edits.get("%s|%s" % (i["tag"].upper(), i.get("kind")))
+            if o and round(o["width"]) == round(i["width"]) and round(o["height"]) == round(i["height"]):
+                for k in ("glazed", "openable", "geom", "panes", "style", "glazed_m2", "sash_w", "sash_h", "sash_qty", "flag"):
+                    if k in o:
+                        i[k] = o[k]
+                kept.append(i["tag"])
+        if kept:
+            self._reimport_notes.append("your changes to windows/doors: " + ", ".join(sorted(set(kept))))
 
     def _ifc_to_lv_auto(self):
         """After an IFC import: put the windows, doors and rooms into Light & Ventilation and refresh Energy (XA),
@@ -12149,13 +12184,82 @@ class MainWindow(QMainWindow):
         order = []
         for r in sorted(rooms, key=lambda x: x.get("elev", 0.0)):
             if r["floor"] not in order: order.append(r["floor"])
+        old_rows = {}
+        try:
+            for r_ in range(self.room_table.rowCount()):
+                dct = self._room_row_dict(r_)
+                if dct["name"]:
+                    old_rows[(dct["floor"], dct.get("unit", ""), dct["name"].lower())] = dct
+        except Exception:
+            pass
+        rooms = self._reapply_combined(rooms)
         self._fill_rooms(rooms, 0, "IFC model")
+        try:                                   # keep the ticks (artificial light / internal) set by hand on rooms that are still there
+            for r_ in range(self.room_table.rowCount()):
+                dct = self._room_row_dict(r_)
+                o = old_rows.get((dct["floor"], dct.get("unit", ""), dct["name"].lower()))
+                if not o:
+                    continue
+                chk, art = self.room_table.cellWidget(r_, 3), self.room_table.cellWidget(r_, 4)
+                if chk is not None and chk.isChecked() != o["internal"]:
+                    chk.setChecked(o["internal"])
+                if art is not None and art.isChecked() != o["art"]:
+                    art.setChecked(o["art"])
+        except Exception:
+            pass
         try:   # lowest storey first in the floor lists
             rest = [f for f in self.floors if f not in order]
             self.floors = order + rest
             self._refresh_floor_widgets(select="All floors")
         except Exception:
             pass
+
+    def _reapply_combined(self, rooms):
+        """Rooms that were combined (open plan) stay combined after a new IFC import: they are rebuilt from the new rooms'
+        areas and windows. A combined room whose parts cannot all be found in the new model is kept as it was."""
+        if not hasattr(self, "_reimport_notes"):
+            self._reimport_notes = []
+        if not self.combined:
+            return rooms
+        def key(r):
+            return ((r.get("floor") or ""), (r.get("unit") or ""), str(r.get("name") or "").strip().lower())
+        by_key = {key(r): r for r in rooms}
+        out, used, rebuilt, frozen = list(rooms), set(), [], []
+        add = []
+        for name, parts in list(self.combined.items()):
+            found = [by_key.get((p.get("floor") or "", p.get("unit") or "", str(p.get("name") or "").strip().lower())) for p in parts]
+            hit = [f for f in found if f is not None]
+            for f in hit:
+                used.add(id(f))
+            if len(hit) == len(parts):
+                newparts, tags, area = [], {}, 0.0
+                for f, p in zip(found, parts):
+                    for t, n in (f.get("tags") or {}).items():
+                        tags[t] = tags.get(t, 0) + n
+                    area += float(f.get("area") or 0)
+                    newparts.append({"name": f["name"], "area": "%.2f" % float(f.get("area") or 0),
+                                     "tags": ", ".join("%s:%g" % (t, n) for t, n in sorted((f.get("tags") or {}).items())),
+                                     "internal": p.get("internal", False), "art": p.get("art", False),
+                                     "floor": f.get("floor") or p.get("floor"), "unit": f.get("unit", ""), "facing": f.get("facing", "")})
+                self.combined[name] = newparts
+                add.append({"name": name, "area": area, "tags": tags, "floor": parts[0].get("floor"),
+                            "unit": parts[0].get("unit", ""), "facing": self._merge_facing(newparts), "_art": all(p.get("art") for p in parts)})
+                rebuilt.append(name)
+            else:                                                      # part renamed or gone: leave this combined room exactly as it was
+                tags = {}
+                for p in parts:
+                    for t, n in parse_tags(p.get("tags", "")).items():
+                        tags[t] = tags.get(t, 0) + n
+                add.append({"name": name, "area": sum(self._num_text(p.get("area")) for p in parts), "tags": tags,
+                            "floor": parts[0].get("floor"), "unit": parts[0].get("unit", ""),
+                            "facing": self._merge_facing(parts), "_art": all(p.get("art") for p in parts)})
+                frozen.append(name)
+        out = [r for r in rooms if id(r) not in used] + add
+        if rebuilt:
+            self._reimport_notes.append("combined rooms rebuilt from the new model: " + ", ".join(rebuilt))
+        if frozen:
+            self._reimport_notes.append("combined rooms NOT updated (one of their rooms was renamed or removed in the model): " + ", ".join(frozen))
+        return out
 
     def _lv_ifc_toggled(self, on):
         self.rd["lv_ifc"] = "1" if on else ""
