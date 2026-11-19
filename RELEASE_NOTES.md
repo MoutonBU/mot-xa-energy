@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.85.2**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.85.3**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **WCs and stores comply, 1.85.3**: a WC or toilet (public ones too) may rely on artificial light and mechanical ventilation, so it now passes with a note to fit a light and an extract fan (shown as "PASS (mechanical)"). Storage rooms and public stores are marked compliant (green) on the Plan, and the results list says why they are not checked.
 - **Plan tab and public rooms, 1.85.2**: (1) the Plan now draws the windows and doors that Archicad exported as generic objects, so the first floor shows its windows. (2) The plan is read in a separate process, so if the model holds something the reader chokes on, only that step fails with a message and the program stays open. (3) A toilet or store that belongs to no unit and is entered only from outside is named "Public WC" / "Public Storage..." in the IFC import, so the light, ventilation and sun checks, the reports and the plan label it correctly (public stores are not habitable, so they are not checked). Only used when the model has units.
 - **Reading guidelines with the AI no longer stops on a bad answer, 1.85.1**: when the AI's reply was cut off or had a stray quote the whole read failed ("Expecting ',' delimiter"). Now every complete rule before the damage is kept, long guidelines are sent in smaller pieces with room for a longer answer, and the plan review does the same.
 - **Guidelines review replaces Rules and Council pack, 1.85.0**: the Council pack is gone; the Start tile goes straight to Guidelines review, which takes the estate's, the council's or the state's guidelines and checklists. The rules list now selects several rules at once (Ctrl/Shift + click, Select all, Select one set) and removes them together (Remove selected or the Delete key). Select a rule in the review and press Show on plan (or double-click it): the plan page where it was found opens with the spot marked in red, with page buttons, zoom and Save as picture.

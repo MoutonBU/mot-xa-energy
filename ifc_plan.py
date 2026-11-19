@@ -772,6 +772,10 @@ def _poly_area(sp):
     return abs(sum(o[i][0] * o[i + 1][1] - o[i + 1][0] * o[i][1] for i in range(len(o) - 1))) / 2.0
 
 
+_STORE_RE = re.compile(r"\b(storage|stores?|store\s?rooms?|cupboards?|linen)\b", re.I)
+_LIVED_RE = re.compile(r"\b(bed|bedroom|sleep|lounge|living|kitchen|dining|study|office|studio|flat|dwelling)", re.I)
+
+
 def assign_results(storey, results, combined=None, alias=None):
     """Match every room of a level with a row of the results: {id(room): result row}.
     The program drops the unit prefix from room names (U3-Kitchen becomes Kitchen in unit U3), so rooms are matched
@@ -819,6 +823,11 @@ def assign_results(storey, results, combined=None, alias=None):
             out[id(sp)] = best[0][0]
             if best[0][1]:
                 sp["_part_of"] = best[0][0].get("room")
+    # storage is not habitable: shown as compliant (green) rather than "no result"
+    for sp in storey["spaces"]:
+        if id(sp) not in out and _STORE_RE.search(sp["name"] or "") and not _LIVED_RE.search(sp["name"] or ""):
+            out[id(sp)] = {"room": sp["name"], "light_ok": True, "vent_ok": True, "area": _poly_area(sp), "glazed": 0.0, "openable": 0.0,
+                           "synthetic": "Storage: not habitable, so no light or ventilation is required."}
     # second pass: a combined room whose parts could not be matched above (renamed, or the same name used twice):
     # its name lists the parts ("Kitchen / Lounge"), so give every still-unmatched room of that unit and level its result
     done = {id(v) for v in out.values()}
@@ -1165,6 +1174,9 @@ class PlanPage(QWidget):
         r = self._asg.get(id(sp))
         if not r:
             self.note.setText("<b>%s</b>: no result yet. Run the check to colour the rooms." % (name or "Room"))
+            return
+        if r.get("synthetic"):
+            self.note.setText("<b>%s</b><br>%s" % (r.get("room"), r["synthetic"]))
             return
         area = float(r.get("area") or 0)
         gl = float(r.get("glazed") or 0)

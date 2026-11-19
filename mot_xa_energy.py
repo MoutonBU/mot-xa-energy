@@ -1406,8 +1406,12 @@ def lv_excluded_reason(name):
     if r:
         return r
     if STORAGE_RE.search(name or "") and not LIVED_IN_RE.search(name or ""):
-        return "Storage - not a habitable room: no natural light or ventilation required"
+        return "Storage - not a habitable room: compliant, no natural light or ventilation required"
     return ""
+
+
+# a WC / toilet (public ones too) may rely on artificial light and mechanical ventilation
+WC_ARTIFICIAL_RE = re.compile(r"\b(toilets?|wc|w\.c\.?|vc|lavatory|loo|cloakroom|powder\s?room)\b", re.I)
 
 
 def check_room(room, schedule, light_pct):
@@ -1436,6 +1440,7 @@ def check_room(room, schedule, light_pct):
         if op.glazed_area_m2 <= 0 and op.kind != "Door" and op.glazed_pct >= 99.5:
             assumed.append(tag)
     no_area = room.area_m2 <= 0
+    sanitary = bool(WC_ARTIFICIAL_RE.search(room.name or ""))
     circulation = bool(re.search(r"\b(passage|corridor|hall|hallway|lobby|landing|stair)", room.name, re.I))
     area = room.area_m2 if not no_area else 1.0
     light_req = max(area * light_pct / 100.0, MIN_LIGHT_M2)
@@ -1458,10 +1463,12 @@ def check_room(room, schedule, light_pct):
         "vent_pct": 0.0 if no_area else openable / area * 100.0,
         "light_req": light_req,
         "vent_req": vent_req,
-        "art_used": bool(room.artificial_light) and not circulation and not no_area
+        "art_used": (bool(room.artificial_light) or sanitary) and not circulation and not no_area
                     and glazed < light_req,
-        "light_ok": circulation or ((not no_area) and (glazed >= light_req or bool(room.artificial_light))),
-        "vent_ok": circulation or ((not no_area) and openable >= vent_req),
+        "light_ok": circulation or ((not no_area) and (glazed >= light_req or bool(room.artificial_light) or sanitary)),
+        "vent_ok": circulation or ((not no_area) and (openable >= vent_req or sanitary)),
+        "mech_used": sanitary and not circulation and not no_area and openable < vent_req,
+        "sanitary": sanitary,
         "circulation": circulation,
         "missing": missing,
         "detail": detail,
@@ -10564,6 +10571,8 @@ class MainWindow(QMainWindow):
             if res.get("art_used"):
                 notes.append("Natural light below the minimum - relies on artificial lighting "
                              "(confirm your council accepts this)")
+            if res.get("mech_used") or (res.get("sanitary") and res.get("art_used")):
+                notes.append("WC: artificial light and mechanical ventilation are accepted - fit a light and an extract fan")
             if not res["light_ok"]:
                 notes.append("Needs artificial lighting or more glazing")
             if not res["vent_ok"]:
@@ -10577,7 +10586,7 @@ class MainWindow(QMainWindow):
                 if res["light_ok"] else "FAIL",
                 f"{res['openable']:.2f}",
                 f"{res['vent_pct']:.1f}% (min {res['vent_req']:.2f} m2)",
-                "PASS" if res["vent_ok"] else "FAIL",
+                ("PASS (mechanical)" if res.get("mech_used") else "PASS") if res["vent_ok"] else "FAIL",
                 f"{res['glaze_pct']:.1f}% (max {GLAZE_LIMIT[0]:g}% = {res['glaze_max']:.2f} m2)",
                 "WITHIN LIMIT" if res["glaze_ok"] else "RATIONAL DESIGN", "; ".join(notes)]
             for c, v in enumerate(cells):
