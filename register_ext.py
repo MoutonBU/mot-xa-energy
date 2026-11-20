@@ -1521,8 +1521,9 @@ class LogMixin:
             head.setCheckable(True)
             head.setStyleSheet("QPushButton{border:none;background:transparent;text-align:left;font-weight:700;padding:4px;%s}" % ("color:#ff4d5e;" if urg else ""))
             when = "%s%s" % (c.get("req_date") or c.get("date", ""), (", " + c["by_name"]) if c.get("by_name") else "")
-            head.setText("%s  Change %s   %s   %s%s%s" % ("\u25be" if id(c) in self._ch_open else "\u25b8", c.get("rev") or "-", when,
-                                                    "URGENT   " if urg else "", ("NEW   " if c.get("status") == "New" else ""), first))
+            kd_ = lambda ent: ("MAJOR   " if "Major" in str(ent.get("kinds", "")) else ("MINOR   " if "Minor" in str(ent.get("kinds", "")) else ""))
+            head.setText("%s  Change %s   %s   %s%s%s%s" % ("\u25be" if id(c) in self._ch_open else "\u25b8", c.get("rev") or "-", when,
+                                                      "URGENT   " if urg else "", kd_(c), ("NEW   " if c.get("status") == "New" else ""), first))
             head.setChecked(id(c) in self._ch_open)
             cv.addWidget(head)
             body = QWidget()
@@ -1535,6 +1536,16 @@ class LogMixin:
             if c.get("extras"):
                 bl.addWidget(QLabel("Extras: " + str(c["extras"])))
             row = QHBoxLayout()
+            row.addWidget(QLabel("This change is:"))
+            kb = QComboBox()
+            kb.addItems(["Not tagged", "Minor change", "Major change"])
+            kb.setCurrentIndex(2 if "Major" in str(c.get("kinds", "")) else (1 if "Minor" in str(c.get("kinds", "")) else 0))
+
+            def tagged(i_, ent=c):
+                ent["kinds"] = ("", "Minor changes", "Major changes")[i_]
+                self._rebuild_changes()
+            kb.currentIndexChanged.connect(lambda i_, f_=tagged: QTimer.singleShot(0, lambda: f_(i_)))
+            row.addWidget(kb)
             if c.get("req_path") and os.path.exists(c["req_path"]):
                 ob = QPushButton("Open the client's email")
                 ob.clicked.connect(lambda _c=False, pth=c["req_path"]: QDesktopServices.openUrl(QUrl.fromLocalFile(pth)))
@@ -2756,7 +2767,7 @@ class LogMixin:
                 r.append('<tr><td width="14%%">%s</td><td width="16%%">Order %s%s</td><td>%s%s</td></tr>' % (e_(dt_(e.get("date"))), e_(e.get("order") or "-"), pr, t, ex))
             for c in sorted(chs, key=lambda c: str(c.get("date"))):
                 t = e_(c.get("text")).replace("\n", "<br>")
-                r.append('<tr><td>%s</td><td>Change %s</td><td>%s</td></tr>' % (e_(dt_(c.get("date"))), e_(c.get("rev") or ""), t))
+                r.append('<tr><td>%s</td><td>Change %s%s</td><td>%s</td></tr>' % (e_(dt_(c.get("date"))), e_(c.get("rev") or ""), (" <b>(%s)</b>" % ("major" if "Major" in str(c.get("kinds", "")) else "minor")) if re.search("Major|Minor", str(c.get("kinds", ""))) else "", t))
             return "".join(r)
         sections = (("Completed", done, True),) if only_done else (("Completed", done, True), ("Still to be done", todo, False))
         for i_, (t_, lst, tick) in enumerate(sections):
