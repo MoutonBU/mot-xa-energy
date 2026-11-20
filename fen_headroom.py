@@ -110,3 +110,172 @@ def analyse(entries, calc):
             out["rooms"].append({"floor": fl, "room": nm, "light_pct": r_[2] / area * 100.0 if r_[4] else 0.0,
                                  "vent_pct": r_[3] / area * 100.0 if r_[4] else 0.0})
     return out
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Same suggestion for the same room type in every unit.
+MIN_DOOR_W = 750          # a door or glazed door is only ever narrowed (its height stays) and never below this width, in mm
+MIN_WIN = 450             # a window is never made smaller than this in either direction, in mm
+import re as _re
+
+
+def _room_key(name):
+    n = _re.sub(r"^\s*u(?:nit)?\s*\d+\s*[-_. ]\s*", "", str(name or ""), flags=_re.I)
+    return _re.sub(r"[^a-z0-9]", "", n.lower())
+
+
+def _is_door(en):
+    return str(en.get("kind", "")).lower().startswith("door")
+
+
+def _size_cap(en):
+    """Largest fraction of the opening's area that may go, by its own shape rules (doors: width only, window: minimum size)."""
+    w, h = float(en["w"] or 0), float(en["h"] or 0)
+    if _is_door(en):
+        return max(0.0, (w - MIN_DOOR_W) / w) if w > 0 else 0.0
+    m = min(w, h)
+    return max(0.0, 1.0 - (MIN_WIN / m) ** 2) if m > 0 else 0.0
+
+
+def _new_size(en, c):
+    if _is_door(en):
+        return int(round(en["w"] * (1.0 - c) / 10.0) * 10), int(en["h"])
+    return _size(en, c)
+
+
+def analyse_global(by_group, calcs):
+    """by_group: {group: [entries]}, calcs: {group: calc}. One change per (room type, window type), applied in every unit.
+    Returns {"rows", "plan", "units", "achieved", "rooms"}."""
+    keys = {}
+    for g, ens in by_group.items():
+        for en in ens:
+            keys.setdefault((_room_key(en["room"]), en["tag"]), []).append((g, en))
+    rem = {}
+    for g, ens in by_group.items():
+        for en in ens:
+            k = (g, en["room"])
+            if k not in rem:
+                rem[k] = list(_spare(en)) + [en["room_glazed"], en["room_open"], en["room_area"]]
+
+    def cap(k):
+        c, why = 1.0, "can be taken out"
+        for g, en in keys[k]:
+            r_ = rem[(g, en["room"])]
+            f, w_ = _max_cut(en, r_[0], r_[1])
+            if f < c:
+                c, why = f, w_
+        sc = min(_size_cap(en) for _g, en in keys[k])
+        any_door = any(_is_door(en) for _g, en in keys[k])
+        return c, sc, any_door, why
+
+    rows = []
+    for k, inst in keys.items():
+        c, sc, door, why = cap(k)
+        if door:
+            lim, remv = min(c, sc), False
+            if sc < c:
+                why = "minimum door width %d mm" % MIN_DOOR_W
+        else:
+            remv = c >= 0.999
+            lim = 1.0 if remv else min(c, sc)
+            if not remv and sc < c:
+                why = "minimum window size %d mm" % MIN_WIN
+        en0 = inst[0][1]
+        w2, h2 = _new_size(en0, lim)
+        s_save = sum(en["area"] * en["qty"] * lim * en["s"] * en["e"] for _g, en in inst)
+        units = sorted({g for g, _en in inst})
+        sizes = sorted({(int(en["w"]), int(en["h"])) for _g, en in inst})
+        rows.append({"key": k, "room": en0["room"], "tag": en0["tag"], "units": units, "n": len(inst), "door": door, "frac": lim, "remove": remv,
+                     "why": why, "w": en0["w"], "h": en0["h"], "w2": w2, "h2": h2, "sizes": sizes, "s_save": s_save,
+                     "free": any(en.get("light_free") or en.get("vent_free") for _g, en in inst),
+                     "fixed_m2": max(0.0, min(min((_spare(en)[0] for _g, en in inst)),
+                                               min(en["g"] * en["qty"] - en["o"] * en["qty"] for _g, en in inst)))})
+    # per unit what has to go
+    st = {}
+    for g, c_ in calcs.items():
+        ns, nu = max(0.0, c_["agg_s"] - c_["max_s"]), max(0.0, c_["agg_u"] - c_["max_u"])
+        st[g] = {"group": g, "agg_s": c_["agg_s"], "agg_u": c_["agg_u"], "max_s": c_["max_s"], "max_u": c_["max_u"],
+                 "rs": ns, "ru": nu, "ok": ns <= 1e-9 and nu <= 1e-9, "sv_s": 0.0, "sv_u": 0.0}
+    plan = []
+    failing = lambda: [g for g, v in st.items() if v["rs"] > 1e-9 or v["ru"] > 1e-9]   # noqa: E731
+    if failing():
+        def density(k):
+            d = 0.0
+            for g, en in keys[k]:
+                v = st.get(g)
+                if not v:
+                    continue
+                a = en["area"] * en["qty"]
+                if v["rs"] > 1e-9:
+                    d += a * en["s"] * en["e"] / v["rs"]
+                if v["ru"] > 1e-9:
+                    d += a * en["u"] / v["ru"]
+            return d
+        for k in sorted(keys, key=lambda k_: -density(k_)):
+            fl = failing()
+            if not fl:
+                break
+            inst = [(g, en) for g, en in keys[k] if g in fl]
+            if not inst:
+                continue
+            c, sc, door, why = cap(k)
+            want = 0.0
+            for g in fl:
+                v = st[g]
+                mine = [en for g_, en in keys[k] if g_ == g]
+                if not mine:
+                    continue
+                a_s = sum(en["area"] * en["qty"] * en["s"] * en["e"] for en in mine)
+                a_u = sum(en["area"] * en["qty"] * en["u"] for en in mine)
+                if v["rs"] > 1e-9 and a_s > 1e-9:
+                    want = max(want, v["rs"] / a_s)
+                if v["ru"] > 1e-9 and a_u > 1e-9:
+                    want = max(want, v["ru"] / a_u)
+            if want <= 1e-6:
+                continue
+            if door:
+                cut, remove = min(want, c, sc), False
+            elif want > sc and c >= 0.999:
+                cut, remove = 1.0, True
+            else:
+                cut, remove = min(want, c, sc), False
+            if cut <= 1e-6:
+                continue
+            for g, en in keys[k]:
+                r_ = rem[(g, en["room"])]
+                cg, co = en["g"] * en["qty"] * cut, en["o"] * en["qty"] * cut
+                if r_[0] < INF:
+                    r_[0] -= cg
+                if r_[1] < INF:
+                    r_[1] -= co
+                r_[2] -= cg
+                r_[3] -= co
+                v = st[g]
+                a = en["area"] * en["qty"]
+                v["rs"] = max(0.0, v["rs"] - a * cut * en["s"] * en["e"])
+                v["ru"] = max(0.0, v["ru"] - a * cut * en["u"])
+                v["sv_s"] += a * cut * en["s"] * en["e"]
+                v["sv_u"] += a * cut * en["u"]
+            en0 = keys[k][0][1]
+            w2, h2 = _new_size(en0, cut)
+            if door and sc <= c + 1e-9:
+                why = "minimum door width %d mm" % MIN_DOOR_W
+            elif not door and not remove and sc < c:
+                why = "minimum window size %d mm" % MIN_WIN
+            plan.append({"room": en0["room"], "tag": en0["tag"], "units": sorted({g for g, _e in keys[k]}), "door": door, "cut": cut,
+                         "remove": remove, "w": en0["w"], "h": en0["h"], "w2": w2, "h2": h2,
+                         "full": cut >= min(c, sc) - 1e-6, "limit": why,
+                         "sizes": sorted({(int(e["w"]), int(e["h"])) for _g, e in keys[k]})})
+    units = []
+    for g, v in st.items():
+        v["after_s"] = v["agg_s"] - v["sv_s"]
+        v["after_u"] = v["agg_u"] - v["sv_u"]
+        v["ok_after"] = v["after_s"] <= v["max_s"] + 1e-6 and v["after_u"] <= v["max_u"] + 1e-6
+        units.append(v)
+    touched = {id(en) for p_ in [] for en in []}
+    rooms = []
+    changed = {(p_["room"] and _room_key(p_["room"]), p_["tag"]) for p_ in plan}
+    for (g, nm), r_ in rem.items():
+        if any((_room_key(e["room"]), e["tag"]) in changed and e["room"] == nm for e in by_group[g]) and r_[4]:
+            rooms.append({"unit": g, "room": nm, "light_pct": r_[2] / r_[4] * 100.0, "vent_pct": r_[3] / r_[4] * 100.0})
+    return {"rows": rows, "plan": plan, "units": units, "achieved": all(u["ok_after"] for u in units), "rooms": rooms}

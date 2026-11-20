@@ -1167,6 +1167,7 @@ XA_AVAIL = {
     "Double glazed low-E solar control, argon (U 1.4, S 0.35)": "Check: argon fill not confirmed locally; ask the glazier for a certified U and S.",
     "Triple glazed low-E, argon (U 0.8, S 0.50)": "Check: no South African triple glazing supplier found (imported, specialist). Not normally needed for SANS 204.",
 }
+MIN_DOOR_W, MIN_WIN = 750, 450          # same limits as fen_headroom
 XA_AVAIL_NOTE = ("Certification (SANS 10400-XA:2021 clause 5.3): glass and frame are assessed as one window; the U-value must come from ANSI/NFRC 100 "
                  "and the solar heat gain from ANSI/NFRC 200, certified by the glazier or a competent person. Windows and doors must meet the air leakage "
                  "requirements of SANS 613. Values here are typical, so use the supplier's certified figures (Custom). "
@@ -14750,7 +14751,7 @@ class MainWindow(QMainWindow):
         self.xa_size_lbl.setWordWrap(True); self.xa_size_lbl.setTextFormat(Qt.RichText)
         _l2.addWidget(self.xa_size_lbl)
         self.xa_size_table = QTableWidget(0, 9)
-        self.xa_size_table.setHorizontalHeaderLabels(["Unit / floor", "Room", "Window", "Now (mm)", "Can be reduced by", "Smallest size (mm)",
+        self.xa_size_table.setHorizontalHeaderLabels(["Room", "Window", "Units", "Now (mm)", "Can be reduced by", "Smallest size (mm)",
                                                       "Can it be removed?", "What limits it", "Solar gain saved at the limit"])
         self.xa_size_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.xa_size_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -15602,59 +15603,81 @@ class MainWindow(QMainWindow):
         return out
 
     def _fill_size_tab(self):
-        """Second tab of the fix box: how far each window can shrink or go while its room keeps daylight (SANS 10400-O) and ventilation."""
+        """Second tab of the fix box: how far each window can shrink or go while its room keeps daylight (SANS 10400-O) and ventilation.
+        One suggestion per room type and window type, applied in every unit; doors are only narrowed, never below 750 mm."""
         import html as _h
         lab, t = getattr(self, "xa_size_lbl", None), getattr(self, "xa_size_table", None)
         if lab is None:
             return
         t.setRowCount(0)
-        data = getattr(self, "xa_head", None) or []
-        if not data:
+        a = getattr(self, "xa_head", None)
+        if not a or not a.get("rows"):
             lab.setText("Run the XA check to see how far each window can be reduced or taken out.")
             return
-        parts = []
-        for fl, a, within in data:
-            if not a["rows"]:
-                continue
-            if a["ok"]:
-                parts.append("<p><b>%s</b>: solar heat gain %.2f (limit %.2f) and conductance %.2f (limit %.2f) already comply. The table shows how much "
-                             "you can still take out or reduce without losing daylight or ventilation.</p>" % (
-                                 _h.escape(str(fl)), a["agg_s"], a["max_s"], a["agg_u"], a["max_u"]))
+        within = a.get("within") or {}
+        parts = ["<p>One suggestion for each room type and window type, applied in <b>every unit</b>. The limit is set by the tightest unit, so all units still pass "
+                 "daylight and ventilation. Doors and glazed doors are only narrowed (their height stays), never below %d mm and never removed; windows are not made smaller than %d mm.</p>" % (
+                     MIN_DOOR_W, MIN_WIN)]
+        bad = [u for u in a["units"] if not u["ok"]]
+        for u in a["units"]:
+            if u["ok"]:
+                parts.append("<p><b>%s</b>: solar heat gain %.2f (limit %.2f) and conductance %.2f (limit %.2f) comply.</p>" % (
+                    _h.escape(str(u["group"])), u["agg_s"], u["max_s"], u["agg_u"], u["max_u"]))
             else:
                 parts.append("<p><b>%s</b>: solar heat gain %.2f against %.2f, conductance %.2f against %.2f%s.</p>" % (
-                    _h.escape(str(fl)), a["agg_s"], a["max_s"], a["agg_u"], a["max_u"], " (inside the glazing screening limit, so for information)" if within else ""))
-                if a["plan"]:
-                    items = "".join("<li>%s in %s: %s</li>" % (
-                        _h.escape(p["tag"]), _h.escape(p["room"]),
-                        ("<b>take out</b>" if p["remove"] else "reduce from %.0f x %.0f to about <b>%d x %d mm</b>" % (p["w"], p["h"], p["w2"], p["h2"]))
-                        + (" (the limit, %s)" % p["limit"] if p["full"] and not p["remove"] else "") + (" - each of %g windows" % p["qty"] if p["qty"] > 1 else ""))
-                        for p in a["plan"])
-                    ok_ = a.get("achieved")
-                    parts.append("<p>To comply by changing size only, keeping daylight and ventilation:</p><ul>%s</ul><p>%s Solar heat gain then %.2f (limit %.2f), conductance %.2f (limit %.2f).%s</p>" % (
-                        items, "<span style='color:#5ecb8a'><b>This complies.</b></span>" if ok_ else "<span style='color:#ff6b6b'><b>Size changes alone cannot get there:</b></span> the rooms run out of daylight or ventilation first. Also change the glass, add shading or take glass out of rooms that may use artificial light.",
-                        a["after_s"], a["max_s"], a["after_u"], a["max_u"],
-                        (" Rooms after the change: " + "; ".join("%s light %.1f%%, ventilation %.1f%%" % (_h.escape(r["room"]), r["light_pct"], r["vent_pct"]) for r in a["rooms"]) + ".") if a["rooms"] else ""))
+                    _h.escape(str(u["group"])), u["agg_s"], u["max_s"], u["agg_u"], u["max_u"],
+                    " (inside the screening limit, so for information)" if within.get(u["group"]) else ""))
+        if bad:
+            if a["plan"]:
+                def _it(p):
+                    if p["remove"]:
+                        what = "<b>take out</b>"
+                    elif p["door"]:
+                        what = "narrow from %.0f to <b>%d mm wide</b> (height stays %.0f mm)" % (p["w"], p["w2"], p["h"])
+                    else:
+                        what = "reduce from %.0f x %.0f to about <b>%d x %d mm</b>" % (p["w"], p["h"], p["w2"], p["h2"])
+                    if len(p["sizes"]) > 1:
+                        what += " (sizes differ between units; the same %.0f%% of the area goes everywhere)" % (p["cut"] * 100)
+                    return "<li>%s in %s, all units (%s): %s%s</li>" % (
+                        _h.escape(p["tag"]), _h.escape(p["room"]), ", ".join(_h.escape(str(x)) for x in p["units"]), what,
+                        " (the limit: %s)" % _h.escape(p["limit"]) if p["full"] and not p["remove"] else "")
+                parts.append("<p>To comply by changing sizes only, the same in every unit:</p><ul>%s</ul>" % "".join(_it(p) for p in a["plan"]))
+                parts.append("<p>%s</p>" % ("<span style='color:#5ecb8a'><b>All units then comply</b></span>" if a["achieved"] else
+                             "<span style='color:#ff6b6b'><b>Size changes alone cannot get every unit there:</b></span> the rooms run out of daylight or ventilation, or doors reach "
+                             "their minimum width, first. Also change the glass, add shading, or take glass out of rooms that may use artificial light."))
+                parts.append("<p>After the change: " + "; ".join("%s solar heat gain %.2f (limit %.2f), conductance %.2f (limit %.2f)" % (
+                    _h.escape(str(u["group"])), u["after_s"], u["max_s"], u["after_u"], u["max_u"]) for u in a["units"]) + ".</p>")
+                if a["rooms"]:
+                    parts.append("<p>Rooms after the change: " + "; ".join("%s %s: daylight %.1f%%, ventilation %.1f%%" % (
+                        _h.escape(str(r["unit"])), _h.escape(r["room"]), r["light_pct"], r["vent_pct"]) for r in a["rooms"]) + ".</p>")
+            else:
+                parts.append("<p style='color:#ff6b6b'>No window or door can be reduced without a room losing daylight or ventilation. Change the glass or add shading instead.</p>")
+        for r in sorted(a["rows"], key=lambda r_: -r_["s_save"]):
+            i = t.rowCount()
+            t.insertRow(i)
+            if r["remove"]:
+                lim_a = "Yes"
+                lim_b = "the room still complies without it" + (" (relies on artificial light / mechanical ventilation)" if r["free"] else "")
+                red, small = "100% (removed)", "-"
+            else:
+                lim_a = "No" + (" (door: width only)" if r["door"] else "")
+                lim_b = r["why"]
+                red = "%.0f%%" % (r["frac"] * 100)
+                if r["frac"] <= 0.005:
+                    small = "no reduction possible"
+                elif r["door"]:
+                    small = "%d wide (height %d)" % (r["w2"], r["h2"])
                 else:
-                    parts.append("<p style='color:#ff6b6b'>No window can be reduced here without the room losing daylight or ventilation. Change the glass or add shading instead.</p>")
-            for r in sorted(a["rows"], key=lambda r_: -r_["s_save"]):
-                i = t.rowCount()
-                t.insertRow(i)
-                if r["remove"]:
-                    lim = "Yes: the room still complies without it" + (" (relies on artificial light / mechanical ventilation)" if r["free"] else "")
-                    red, small = "100% (removed)", "-"
-                else:
-                    lim = "No: " + r["why"]
-                    red = "%.0f%%" % (r["frac"] * 100)
-                    small = "%d x %d" % (r["w2"], r["h2"]) if r["frac"] > 0.005 else "no reduction possible"
-                    if r["fixed_m2"] > 0.005 and r["why"] == "ventilation":
-                        lim += " (or take up to %.2f m2 of fixed glass out and keep the opening part)" % r["fixed_m2"]
-                for c, val in enumerate([str(r["floor"]), r["room"], r["tag"] + (" x%g" % r["qty"] if r["qty"] != 1 else ""),
-                                         "%.0f x %.0f" % (r["w"], r["h"]), red, small, lim.split(":")[0], lim.split(": ", 1)[-1] if ": " in lim else "",
-                                         "%.2f" % r["s_save"]]):
-                    t.setItem(i, c, QTableWidgetItem(val))
+                    small = "%d x %d" % (r["w2"], r["h2"])
+                if r["fixed_m2"] > 0.005 and r["why"] == "ventilation" and not r["door"]:
+                    lim_b += " (or take up to %.2f m2 of fixed glass out and keep the opening part)" % r["fixed_m2"]
+            now = " / ".join("%d x %d" % sz for sz in r["sizes"][:3])
+            for c, val in enumerate([r["room"], r["tag"] + (" (door)" if r["door"] else ""), ", ".join(str(x) for x in r["units"]), now, red, small,
+                                     lim_a, lim_b, "%.2f" % r["s_save"]]):
+                t.setItem(i, c, QTableWidgetItem(val))
         parts.append("<p style='color:#9aa0a6'>Limits keep each room at its daylight requirement (glazed area against the floor area under the chosen rule) and at 5% openable area "
                      "for ventilation, and keep the window's proportions. Rooms ticked for artificial light, WCs and passages have no daylight limit. "
-                     "A window type used in several rooms changes everywhere, so make a new type for a different size.</p>")
+                     "A window type is changed everywhere it is used, so make a new type if one room needs a different size.</p>")
         lab.setText("".join(parts))
 
     def _fill_fix_box(self):
@@ -17501,7 +17524,7 @@ class MainWindow(QMainWindow):
                                            "H": hmm, "P": pmm, "mult": mult})
                     self.xa_head_entries.setdefault(fl, []).append({
                         "floor": fl, "room": rm.name, "tag": tag, "qty": qty, "area": o.area_m2, "g": o.glazed_m2, "o": o.openable_m2,
-                        "w": o.width_mm, "h": o.height_mm, "s": sg, "u": u, "e": e,
+                        "w": o.width_mm, "h": o.height_mm, "s": sg, "u": u, "e": e, "kind": o.kind,
                         "sector": compass_sector(base_side, north) if base_side else "", "room_area": rm.area_m2,
                         "light_req": _cr["light_req"], "vent_req": _cr["vent_req"], "room_glazed": _cr["glazed"], "room_open": _cr["openable"],
                         "light_free": bool(rm.artificial_light or _cr["sanitary"] or _cr["circulation"] or _cr["no_area"]),
@@ -17549,10 +17572,11 @@ class MainWindow(QMainWindow):
             self.xa_advice = []
         try:
             import fen_headroom
-            self.xa_head = [(fr["floor"], fen_headroom.analyse(self.xa_head_entries.get(fr["floor"], []), fr["calc"]), fr["within"])
-                            for fr in self.xa_fen_results]
+            self.xa_head = fen_headroom.analyse_global(self.xa_head_entries,
+                                                       {fr["floor"]: fr["calc"] for fr in self.xa_fen_results if fr["floor"] in self.xa_head_entries})
+            self.xa_head["within"] = {fr["floor"]: fr["within"] for fr in self.xa_fen_results}
         except Exception:
-            self.xa_head = []
+            self.xa_head = None
         self._fill_size_tab()
         self._fill_fix_box()
         self._fill_orient_table()
