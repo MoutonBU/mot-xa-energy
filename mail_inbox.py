@@ -62,7 +62,8 @@ def orders_from_tables(html, houses=()):
             if len(r) <= ci or not r[ci].strip() or not re.search(r"\d", r[ci]):
                 continue
             num = r[ci].strip()
-            group = next((h for h in houses if _norm(num) and _norm(h).endswith(_norm(num))), "%s %s" % (word, num))
+            pcode = portion_code(num)
+            group = _portion_house(pcode, houses) if pcode else next((h for h in houses if _norm(num) and _norm(h).endswith(_norm(num))), "%s %s" % (word, num))
             yes, no, facts, area = [], [], [], ""
             for i, c in enumerate(r):
                 if i == ci or not c.strip() or i >= len(head) or not head[i].strip():
@@ -77,6 +78,31 @@ def orders_from_tables(html, houses=()):
                     facts.append("%s: %s" % (h, c.strip()))
             out.append({"group": group, "order": "", "area": area, "extras": "; ".join(re.sub(r"(\w)\(", r"\1 (", y) for y in yes), "text": ("%s %s\n%s" % (word, num, "; ".join(facts))).strip()})
     return out
+
+
+PORTION = re.compile(r"(?<![\w])(?:(?P<farm>[A-Za-z]{2,5}\s?\d{1,5})\s*[-_/ ]\s*)?(?P<p>PTN|PT|PORTION|PORT)\s*\.?\s*(?P<n>\d{1,4})(?![\w])", re.I)
+
+
+def portion_code(text):
+    """'ARF670-PTN4' (farm/erf code + portion = the stand number), also 'arf 670 ptn 14' or just 'PTN35'. '' when the text has none."""
+    m = PORTION.search(str(text))
+    if not m:
+        return ""
+    farm = re.sub(r"\s+", "", m.group("farm") or "").upper()
+    ptn = "PTN%d" % int(m.group("n"))
+    return farm + "-" + ptn if farm else ptn
+
+
+def _portion_house(code, houses):
+    """The existing house that is this portion code (ARF670-PTN4, or PTN4 when only the portion is written), else the code itself."""
+    for h in houses:
+        if _norm(h) == _norm(code):
+            return h
+    if "-" not in code:
+        hit = [h for h in houses if _norm(h).endswith(_norm(code)) and portion_code(h)]
+        if len(hit) == 1:
+            return hit[0]
+    return code
 
 
 def _known_in(text, houses):
@@ -106,6 +132,9 @@ def parse_orders(subject, body, houses=(), html=""):
     lines = [ln for ln in lines[:cut] if ln.strip()]
 
     def group_of(text):
+        pc = portion_code(text)
+        if pc:
+            return _portion_house(pc, houses)
         low = _norm(text)
         for h in sorted(houses, key=len, reverse=True):
             if _norm(h) and _norm(h) in low:
@@ -196,7 +225,7 @@ def read_eml(raw, path=""):
 
 
 ORDERISH = re.compile(r"\b(orders?|bestelling(s)?|stands?|erf|erwe|standplaas|changes?|wysigings?|extras?|urgent|dringend|ext(ension)?|uitbreiding|plans?|tekeninge|drawings?|revisions?|nominations?|braai|patio|ibr)\b", re.I)
-STANDNO = re.compile(r"\b(stand|erf|standplaas|house|unit|plot|lot)\s*(no\.?|nr\.?|#)?\s*\d{2,6}\b", re.I)
+STANDNO = re.compile(r"\b(stand|erf|standplaas|house|unit|plot|lot)\s*(no\.?|nr\.?|#)?\s*\d{2,6}\b|\bPTN\s?\d+\b", re.I)
 ROBOT = re.compile(r"(no-?reply|donotreply|mailer-daemon|notifications?@|newsletter|marketing@|alerts?@)", re.I)
 
 
@@ -251,6 +280,8 @@ _NOTCODE = {"re", "fw", "fwd", "aw", "erf", "stand", "unit", "lot", "plot", "new
 def subject_code(subject):
     """The short area code a subject starts with: 'BH 2037' and 'BH nominations orders' give BH; 'Re: AD46 braai' gives AD. '' when there is none."""
     t = re.sub(r"^\s*((re|fwd?|aw)\s*:\s*)+", "", str(subject), flags=re.I)
+    if re.match(r"\s*(?:[A-Za-z]{2,5}\s?\d{1,5}\s*[-_/ ]\s*)?(?:PTN|PORTION)\s*\.?\s*\d", t, re.I):
+        return ""                                 # ARF670-PTN4 is a house, not an area code
     m = re.match(r"\s*([A-Za-z]{2,4})\s*[-_ ]?\s*\d{2,6}\b", t) or re.match(r"\s*([A-Z]{2,4})\b", t)
     code = m.group(1) if m else ""
     return "" if code.lower() in _NOTCODE else code.upper()
