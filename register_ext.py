@@ -1148,61 +1148,73 @@ class AreaTile(QPushButton):
 
 
 class OrderToast(QWidget):
-    """The corner pop-up for new orders: MCP logo, the new orders by area and house, and a bright red look when something is urgent."""
-    def __init__(self, rows, logo_png, on_open, urgent):
+    """The corner pop-up for new orders: MCP logo, the new orders by area and house, a glowing frame (red and fast when something is urgent) and Open / Accept / Dismiss."""
+    G = 16                                   # room around the card for the glow
+
+    def __init__(self, rows, logo_png, on_open, urgent, on_accept=None):
         super().__init__(None, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         from PySide6.QtGui import QPixmap
+        from PySide6.QtCore import QVariantAnimation, QEasingCurve
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        self._urgent, self._on_open, self._pulse = urgent, on_open, 0
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedWidth(400)
+        self._urgent, self._on_open, self._on_accept, self._phase = urgent, on_open, on_accept, 0.0
+        self.setFixedWidth(450 + 2 * self.G)
         v = QVBoxLayout(self)
-        v.setContentsMargins(18, 14, 18, 14)
-        v.setSpacing(8)
+        g = self.G
+        v.setContentsMargins(g + 18, g + 14, g + 18, g + 14)
+        v.setSpacing(9)
         top = QHBoxLayout()
         lg = QLabel()
         pm = QPixmap()
         pm.loadFromData(logo_png, "PNG")
-        lg.setPixmap(pm.scaledToHeight(44, Qt.TransformationMode.SmoothTransformation))
+        lg.setPixmap(pm.scaledToHeight(52, Qt.TransformationMode.SmoothTransformation))
         top.addWidget(lg)
         n = sum(r["count"] for r in rows)
         c = sum(r.get("changes", 0) for r in rows)
         sub = ("%d new order%s" % (n, "" if n == 1 else "s") if n else "") + (" and " if n and c else "") + ("%d change%s" % (c, "" if c == 1 else "s") if c else "")
-        t = QLabel("<div style='font-size:17px;font-weight:800;color:%s'>%s</div><div style='color:#aab0b8'>%s</div>" % (
-            "#ff4d5e" if urgent else "#ffffff", "URGENT" if urgent else ("New orders" if n else "Client changes"), sub or "the client wrote again"))
+        t = QLabel("<div style='font-size:21px;font-weight:900;color:%s'>%s</div><div style='font-size:13px;color:#c4cad2'>%s</div>" % (
+            "#ff5a6a" if urgent else "#ffffff", "URGENT" if urgent else ("New orders" if n else "Client changes"), sub or "the client wrote again"))
         top.addWidget(t, 1)
-        x = QPushButton("\u00d7")
-        x.setFixedSize(26, 26)
-        x.setStyleSheet("QPushButton{border:none;color:#aab0b8;font-size:20px;background:transparent;}QPushButton:hover{color:#ffffff;}")
-        x.clicked.connect(self.close)
-        top.addWidget(x, 0, Qt.AlignmentFlag.AlignTop)
         v.addLayout(top)
         for r in rows[:6]:
             lab = QLabel(self._row_html(r))
             lab.setWordWrap(True)
             lab.setTextFormat(Qt.TextFormat.RichText)
             if r["urgent"]:
-                lab.setStyleSheet("background:#ff1f3a;color:#ffffff;border-radius:8px;padding:7px 10px;")
+                lab.setStyleSheet("background:#ff1f3a;color:#ffffff;border-radius:9px;padding:9px 12px;font-size:14px;")
             else:
-                lab.setStyleSheet("background:#262a30;color:#eceef0;border-radius:8px;padding:7px 10px;")
-            lab.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+                lab.setStyleSheet("background:#2a2e35;color:#f2f4f6;border-radius:9px;padding:9px 12px;font-size:14px;")
             v.addWidget(lab)
         if len(rows) > 6:
             more = QLabel("and %d more..." % (len(rows) - 6))
             more.setStyleSheet("color:#aab0b8;")
             v.addWidget(more)
-        f = QLabel("Click to open the Orders")
-        f.setStyleSheet("color:#8a919a;font-size:11px;")
-        v.addWidget(f)
+        bt = QHBoxLayout()
+        bt.setSpacing(8)
+        for text, fn, look in (("Open", self._open, "background:#d8132b;color:#ffffff;font-weight:800;"),
+                               ("Accept", self._accept, "background:#2ea44f;color:#ffffff;font-weight:800;"),
+                               ("Dismiss", self.close, "background:#3a3f46;color:#e6e8eb;")):
+            b = QPushButton(text)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setMinimumHeight(34)
+            b.setStyleSheet("QPushButton{border:none;border-radius:8px;padding:0 18px;font-size:14px;%s}QPushButton:hover{border:2px solid #ffffff;}" % look)
+            b.clicked.connect(fn)
+            bt.addWidget(b)
+        v.addLayout(bt)
         self.adjustSize()
-        if urgent:
-            self._tm = QTimer(self)
-            self._tm.timeout.connect(self._tick)
-            self._tm.start(450)
-        else:
-            QTimer.singleShot(16000, self.close)
+        self._anim = QVariantAnimation(self)
+        self._anim.setStartValue(0.0)
+        self._anim.setEndValue(1.0)
+        self._anim.setDuration(700 if urgent else 1600)
+        self._anim.setEasingCurve(QEasingCurve.Type.InOutSine)
+        self._anim.setLoopCount(-1)
+        self._anim.valueChanged.connect(self._glow)
+        self._anim.finished.connect(lambda: None)
+        self._dir = 1
+        self._anim.start()
+        if not urgent:
+            QTimer.singleShot(20000, self.close)
 
     @staticmethod
     def _row_html(r):
@@ -1212,33 +1224,54 @@ class OrderToast(QWidget):
         if r.get("changes") and not r["count"]:
             cnt = " &nbsp;<span style='opacity:.8'>%d change%s</span>" % (r["changes"], "" if r["changes"] == 1 else "s")
         note = ("<br><span style='opacity:.85'>%s</span>" % esc(r["note"])) if r.get("note") else ""
-        return "%s<b>%s</b> &nbsp;%s%s%s" % (tag, esc(r["group"]), esc(r["area"]), cnt, note)
+        return "%s<b style='font-size:16px'>%s</b> &nbsp;%s%s%s" % (tag, esc(r["group"]), esc(r["area"]), cnt, note)
 
-    def _tick(self):
-        self._pulse ^= 1
+    def _glow(self, val):
+        # the value runs 0 to 1 and starts over: ping-pong it so the glow breathes in and out
+        self._phase = float(val)
         self.update()
 
-    def paintEvent(self, ev):
-        from PySide6.QtGui import QPainter, QPen, QLinearGradient
-        from PySide6.QtCore import QRectF
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        r = QRectF(self.rect()).adjusted(3, 3, -3, -3)
-        g = QLinearGradient(0, 0, 0, self.height())
-        g.setColorAt(0, QColor("#2a0d12") if self._urgent else QColor("#1b1e23"))
-        g.setColorAt(1, QColor("#16181c"))
-        p.setBrush(g)
-        p.setPen(QPen(QColor("#ff2a40" if (self._urgent and self._pulse) else "#d8132b") if self._urgent else QColor("#3a3f46"), 3 if self._urgent else 1.5))
-        p.drawRoundedRect(r, 14, 14)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor("#ff2a40" if self._urgent else "#d8132b"))
-        p.drawRoundedRect(QRectF(3, 16, 5, self.height() - 32), 2.5, 2.5)
-
-    def mousePressEvent(self, ev):
+    def _open(self):
         try:
             self._on_open()
         finally:
             self.close()
+
+    def _accept(self):
+        try:
+            if self._on_accept:
+                self._on_accept()
+        finally:
+            self.close()
+
+    def paintEvent(self, ev):
+        import math
+        from PySide6.QtGui import QPainter, QPen, QLinearGradient
+        from PySide6.QtCore import QRectF
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        g = self.G
+        k = 0.5 - 0.5 * math.cos(self._phase * 2 * math.pi)          # 0 .. 1 .. 0 each cycle
+        col = QColor("#ff2a40") if self._urgent else QColor("#e8334a")
+        card = QRectF(self.rect()).adjusted(g, g, -g, -g)
+        for i in range(g, 0, -1):                                      # the glow: strokes that fade outwards
+            a = (0.10 + 0.50 * k) * (1 - i / g) ** 1.6 * (1.0 if self._urgent else 0.65)
+            c = QColor(col)
+            c.setAlphaF(max(0.0, min(1.0, a)))
+            p.setPen(QPen(c, 2))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(card.adjusted(-i, -i, i, i), 14 + i, 14 + i)
+        gr = QLinearGradient(0, card.top(), 0, card.bottom())
+        gr.setColorAt(0, QColor("#2e0f15") if self._urgent else QColor("#1d2025"))
+        gr.setColorAt(1, QColor("#15171b"))
+        edge = QColor(col)
+        edge.setAlphaF(0.65 + 0.35 * k)
+        p.setBrush(gr)
+        p.setPen(QPen(edge, 3.2 if self._urgent else 2.2))
+        p.drawRoundedRect(card, 14, 14)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(col)
+        p.drawRoundedRect(QRectF(card.left(), card.top() + 16, 5, card.height() - 32), 2.5, 2.5)
 
 
 class LogMixin:
@@ -1590,7 +1623,14 @@ class LogMixin:
                     old.close()
                 except Exception:
                     pass
-            t = OrderToast(rows, self.design_png(True), open_it, urgent)
+            ids = {n.get("msg_id") for n in news if n.get("msg_id")}
+
+            def accept_it():
+                for x in self.log:
+                    if x.get("msg_id") in ids and x.get("status") == "New":
+                        x["status"] = "Seen"
+                self.refresh_log()
+            t = OrderToast(rows, self.design_png(True), open_it, urgent, accept_it)
             self._toast = t
             ag = (self.screen() or QApplication.primaryScreen()).availableGeometry()
             end = QPoint(ag.right() - t.width() - 16, ag.bottom() - t.height() - 16)

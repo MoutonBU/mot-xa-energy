@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.45**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.46**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **1.86.46** - A louder new-order pop-up. It is bigger and has a glowing frame that breathes in and out (red and fast for urgent, softer for normal orders) and three buttons: **Open** (goes to the house), **Accept** (you have seen it: the lines stop showing as new) and **Dismiss** (closes it, the lines stay new). An urgent pop-up stays until you press a button; a normal one closes by itself after about 20 seconds.
 - **1.86.45** - Completed houses. Open a house and press **Mark completed** (or right-click its square > Mark as completed): the whole house, with the changes inside it, drops out of Priority and moves down to a green **Completed** section of green squares. Right-click a completed square (or press **Reopen this house**) to open it again; if the client writes again about a completed house with a new change, it opens again by itself. A completed house no longer counts as urgent or new, and an area whose houses are all completed shows a green **ALL COMPLETED** square. The Status column also has Done for single lines, shaded green.
 - **1.86.44** - Unread emails that were set aside before are looked at again, and Check now says what it found. The list of emails the program had already looked at is cleared once, so an unread email that an earlier version skipped (for example one that waited in Maybe orders) is brought in. Check now also looks at every unread match again (an email already in your list is recognised and is not added twice). The line next to Check now says how many unread emails matched, for example *checked 14:12, 1 unread email found, 1 new order*, or *none match your words, areas or senders* (then add a word or a sender in the Watch window).
 - **1.86.43** - Only unread mail is taken in. Check now (and the watcher) only picks up emails that are unread in Gmail; an email you have already read is left alone and is not put into the orders or an area. The program still never marks or changes your mail. Read an order email in Gmail before the program has seen it (it looks every 10 seconds while watching) and it is not imported; use New order to add it by hand.
