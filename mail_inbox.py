@@ -195,29 +195,86 @@ def read_eml(raw, path=""):
             "body": _body_text(msg), "html": html, "path": path, "raw": raw}
 
 
-def fetch_new(S, keywords, seen, folder, days=14, limit=25):
-    """New emails matching the subject words, newest first: [{'id', 'subject', 'from', 'date', 'body', 'path'}]. Each is saved as an .eml in `folder`."""
+ORDERISH = re.compile(r"\b(orders?|bestelling(s)?|stands?|erf|erwe|standplaas|changes?|wysigings?|extras?|urgent|dringend|ext(ension)?|uitbreiding|plans?|tekeninge|drawings?|revisions?|nominations?|braai|patio|ibr)\b", re.I)
+STANDNO = re.compile(r"\b(stand|erf|standplaas|house|unit|plot|lot)\s*(no\.?|nr\.?|#)?\s*\d{2,6}\b", re.I)
+ROBOT = re.compile(r"(no-?reply|donotreply|mailer-daemon|notifications?@|newsletter|marketing@|alerts?@)", re.I)
+
+
+def sender_addr(frm):
+    from email.utils import parseaddr
+    return parseaddr(str(frm))[1].strip().lower()
+
+
+def looks_like_order(subject, body, html, sender, trusted=(), houses=()):
+    """Senses whether an email is an order or a change from a client, without any typed words: a sender whose orders were accepted before, an order word in the
+    subject, a stand/erf/house number anywhere in the top of the email, or an order table. Robots and newsletters are not."""
+    addr = sender_addr(sender)
+    if addr and addr in {t.lower() for t in trusted}:
+        return True
+    if ROBOT.search(addr):
+        return False
+    top = str(body or "")[:4000]
+    if ORDERISH.search(str(subject)) or re.match(r"\s*(re:|fwd?:)?\s*[A-Za-z]{2,4}\s*\d{3,6}\b", str(subject), re.I) or STANDNO.search(str(subject) + "\n" + top):
+        return True
+    try:
+        return any(o.get("group") for o in orders_from_tables(html, list(houses)))
+    except Exception:
+        return False
+
+
+GREET = re.compile(r"^\s*(hi|hello|hey|dear|hallo|goeie\s*(dag|more|middag)|good\s*(day|morning|afternoon))\b[^\n]{0,30}$", re.I)
+SIGNOFF = re.compile(r"^\s*(\*|--|(kind |best |warm )?regards\b|groete\b|vriendelike groete\b|dankie\b|thanks\b|thank you\b|cheers\b|sent from my|on .+ wrote:|op .+ geskryf:|from:\s|van:\s)", re.I)
+CONTACT = re.compile(r"(@|https?://|www\.|\+?\d[\d ()-]{7,}\d|\*[CEW]\s*:)", re.I)
+
+
+def clean_change_text(body, group=""):
+    """The part of a follow-up email that says what the client wants changed: greeting, signature, quoted mail and a bare 'it is urgent' line are dropped."""
+    lines = [ln.rstrip() for ln in str(body or "").replace("\r", "").split("\n")]
+    keep = []
+    for ln in lines:
+        if ln.lstrip().startswith(">"):
+            continue
+        if SIGNOFF.match(ln) and keep:
+            break
+        if not ln.strip() or GREET.match(ln) or CONTACT.search(ln):
+            continue
+        keep.append(ln.strip())
+    g = _norm(group)
+    keep = [ln for ln in keep if not (g and _norm(ln) in (g, g + "isurgent", "urgent" + g))]
+    rest = [ln for ln in keep if not (URGENT.search(ln) and len(ln) < 60 and not re.search(r"\bchange|wysig|add|remove|move|swap|replace|enlarge|reduce\b", ln, re.I))]
+    return "\n".join(rest or ([] if all(URGENT.search(ln) for ln in keep) else keep)).strip()
+
+
+def save_eml(folder, rec):
+    """Writes the email to the inbox folder (only done for emails that were taken in) and returns the path."""
+    os.makedirs(folder, exist_ok=True)
+    safe = re.sub(r"[^A-Za-z0-9 _.-]+", "", rec["subject"])[:60].strip() or "email"
+    path = os.path.join(folder, "%s %s.eml" % (time.strftime("%Y-%m-%d %H%M"), safe))
+    n = 1
+    while os.path.exists(path):
+        n += 1
+        path = os.path.join(folder, "%s %s (%d).eml" % (time.strftime("%Y-%m-%d %H%M"), safe, n))
+    with open(path, "wb") as f:
+        f.write(rec["raw"])
+    return path
+
+
+def fetch_new(S, keywords, seen, folder, days=14, limit=40, stubs=False):
+    """The newest inbox emails that have not been looked at yet (promotions, social and your own mail left out): [{'id', 'subject', 'from', 'date', 'body', 'html', 'raw'}].
+    Nothing is written to disk here; the caller decides which emails are orders. With stubs=True only the ids come back (the first look at the inbox)."""
     import mail_oauth as mo
-    words = [w.strip() for w in re.split(r"[,;\n]", keywords or "") if w.strip()] or ["order", "orders"]
-    q = "in:inbox newer_than:%dd subject:(%s)" % (days, " OR ".join('"%s"' % w if " " in w else w for w in words))
+    q = "in:inbox newer_than:%dd -from:me -category:promotions -category:social -category:forums" % days
     lst = mo.gmail_get(S, "messages", {"q": q, "maxResults": limit})
     out = []
-    os.makedirs(folder, exist_ok=True)
     for m in lst.get("messages", []) or []:
         if m["id"] in seen:
+            continue
+        if stubs:
+            out.append({"id": m["id"], "subject": "", "from": "", "date": "", "body": "", "html": "", "raw": b"", "path": ""})
             continue
         full = mo.gmail_get(S, "messages/" + m["id"], {"format": "raw"})
         raw = base64.urlsafe_b64decode(full["raw"] + "=" * (-len(full["raw"]) % 4))
         rec = read_eml(raw)
-        safe = re.sub(r"[^A-Za-z0-9 _.-]+", "", rec["subject"])[:60].strip() or "email"
-        path = os.path.join(folder, "%s %s.eml" % (time.strftime("%Y-%m-%d %H%M"), safe))
-        n = 1
-        while os.path.exists(path):
-            n += 1
-            path = os.path.join(folder, "%s %s (%d).eml" % (time.strftime("%Y-%m-%d %H%M"), safe, n))
-        with open(path, "wb") as f:
-            f.write(raw)
-        rec.update({"id": m["id"], "path": path})
-        rec.pop("raw", None)
+        rec["id"] = m["id"]
         out.append(rec)
     return out
