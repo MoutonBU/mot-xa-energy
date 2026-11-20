@@ -1116,18 +1116,53 @@ class _ExtrasCell(QWidget):
 
 class AreaTile(QPushButton):
     """A large area square: the photo (if there is one) fills it, darkened, with the text centred over it."""
-    def __init__(self, photo="", urgent=False, light=False):
+    def __init__(self, photo="", urgent=False, light=False, logo="", accent="", done=False):
         super().__init__()
         self._pm = None
+        self._logo = None
+        self._accent = accent
+        self._done = done
         self._urgent, self._light = urgent, light
+        if logo and os.path.exists(logo) and not photo:
+            from PySide6.QtGui import QPixmap
+            lp = QPixmap(logo)
+            self._logo = lp if not lp.isNull() else None
         if photo and os.path.exists(photo):
             from PySide6.QtGui import QPixmap
             pm = QPixmap(photo)
             self._pm = pm if not pm.isNull() else None
 
+    def _paint_logo(self):
+        from PySide6.QtGui import QPainter, QPainterPath, QPen, QLinearGradient
+        from PySide6.QtCore import QRectF
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        base = QColor(self._accent or "#d8132b")
+        top = base.darker(150 if not self._light else 110)
+        bot = base.darker(260 if not self._light else 150)
+        gr = QLinearGradient(0, 0, self.width(), self.height())
+        gr.setColorAt(0, top)
+        gr.setColorAt(1, bot)
+        p.setBrush(gr)
+        edge = QColor("#d8132b") if self._urgent else QColor("#2ea44f") if self._done else (QColor(255, 255, 255, 110) if self.underMouse() else QColor(255, 255, 255, 50))
+        p.setPen(QPen(edge, 2.5 if (self._urgent or self._done) else 1.5))
+        p.drawRoundedRect(r, 14, 14)
+        badge = QRectF((self.width() - 210) / 2, 14, 210, 74)           # the logo sits on a white badge so any logo reads well
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(255, 255, 255, 245))
+        p.drawRoundedRect(badge, 12, 12)
+        sc = self._logo.scaled(int(190 * self.devicePixelRatioF()), int(58 * self.devicePixelRatioF()), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        sc.setDevicePixelRatio(self.devicePixelRatioF())
+        dw, dh = sc.width() / self.devicePixelRatioF(), sc.height() / self.devicePixelRatioF()
+        p.drawPixmap(int(badge.left() + (badge.width() - dw) / 2), int(badge.top() + (badge.height() - dh) / 2), sc)
+
     def paintEvent(self, ev):
         from PySide6.QtGui import QPainter, QPainterPath, QPen
         from PySide6.QtCore import QRectF
+        if self._logo is not None:
+            return self._paint_logo()
         if self._pm is None:
             return super().paintEvent(ev)
         p = QPainter(self)
@@ -1146,6 +1181,25 @@ class AreaTile(QPushButton):
         p.setPen(QPen(QColor("#d8132b") if (self._urgent or self.underMouse()) else QColor(255, 255, 255, 70), 2 if self._urgent else 1.5))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRoundedRect(r, 14, 14)
+
+
+def _accent_of(path):
+    """The main colour of a logo (ignoring white and see-through parts), as #rrggbb; the MCP red when there is none."""
+    try:
+        from PySide6.QtGui import QImage
+        im = QImage(path).scaled(48, 48)
+        r = g = b = n = 0
+        for y in range(im.height()):
+            for x in range(im.width()):
+                c = im.pixelColor(x, y)
+                if c.alpha() < 160 or (c.red() > 225 and c.green() > 225 and c.blue() > 225) or (c.red() < 25 and c.green() < 25 and c.blue() < 25):
+                    continue
+                r, g, b, n = r + c.red(), g + c.green(), b + c.blue(), n + 1
+        if n > 20:
+            return "#%02x%02x%02x" % (r // n, g // n, b // n)
+    except Exception:
+        pass
+    return "#d8132b"
 
 
 class OrderToast(QWidget):
@@ -2259,10 +2313,14 @@ class LogMixin:
             if new:
                 lines.append("<b style='color:#ff4d5e'>%d new</b>" % new)
             c = next((x for x in self.companies if x["name"] == name), None)
-            btn = AreaTile((c or {}).get("photo", ""), bool(nurg), lt)
+            btn = AreaTile((c or {}).get("photo", ""), bool(nurg), lt, (c or {}).get("logo", ""), (c or {}).get("accent", ""), alldone)
             btn.setFixedSize(350, 170)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             has_ph = btn._pm is not None
+            has_logo = btn._logo is not None
+            if has_logo:
+                lines = ["<b style='font-size:17px'>%s</b>" % name.replace("<", "&lt;")] + [x.replace("font-size:21px", "font-size:17px") for x in lines[1:]]
+                has_ph = True                                            # white text on the coloured tile
             if has_ph:
                 btn.setStyleSheet("QPushButton{background:transparent;border:none;}")
             else:
@@ -2271,8 +2329,12 @@ class LogMixin:
             lab = QLabel("<br>".join(lines), btn)
             lab.setStyleSheet("background:transparent;border:none;color:%s;" % ("#ffffff" if has_ph else txt))
             lab.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-            lab.setGeometry(12, 8, 326, 154)
-            lab.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            if has_logo:
+                lab.setGeometry(12, 94, 326, 70)
+                lab.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+            else:
+                lab.setGeometry(12, 8, 326, 154)
+                lab.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lab.setWordWrap(True)
             if has_ph:
                 from PySide6.QtWidgets import QGraphicsDropShadowEffect
@@ -2308,9 +2370,11 @@ class LogMixin:
         a1 = m.addAction("Open")
         real = name != NO_COMPANY
         a2 = m.addAction("Edit name, email addresses and words..." if real else "Make this a company (name and email addresses)...")
-        ap = m.addAction("Set photo...") if real else None
+        al = m.addAction("Set logo...") if real else None
+        ac = m.addAction("Set tile colour...") if real else None
+        ap = m.addAction("Set background photo...") if real else None
         c = next((x for x in self.companies if x["name"] == name), None)
-        ax = m.addAction("Remove photo") if (c and c.get("photo")) else None
+        ax = m.addAction("Remove logo and photo") if (c and (c.get("photo") or c.get("logo"))) else None
         a3 = m.addAction("Delete this company and its orders..." if real else "Delete these orders...")
         pick = m.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
         if pick is a1:
@@ -2319,8 +2383,17 @@ class LogMixin:
             self.edit_company(name) if real else self.adopt_no_company()
         elif ap is not None and pick is ap:
             self._set_photo(c, name)
+        elif al is not None and pick is al:
+            self.set_company_logo(name)
+        elif ac is not None and pick is ac:
+            from PySide6.QtWidgets import QColorDialog
+            col = QColorDialog.getColor(QColor(c.get("accent") or "#d8132b"), self, "Tile colour for %s" % name)
+            if col.isValid():
+                c["accent"] = col.name()
+                self.refresh_log()
         elif ax is not None and pick is ax:
             c["photo"] = ""
+            c["logo"] = ""
             self.refresh_log()
         elif pick is a3:
             self.delete_company(name)
@@ -2369,8 +2442,31 @@ class LogMixin:
             return
         self.companies.append({"name": r[0], "emails": r[1], "keys": r[2]})
         self.refresh_log()
-        if QMessageBox.question(self, "Orders", "Choose a photo for the %s square now?" % r[0]) == QMessageBox.StandardButton.Yes:
-            self._set_photo(self.companies[-1], r[0])
+        if QMessageBox.question(self, "Orders", "Add the logo of %s now?" % r[0]) == QMessageBox.StandardButton.Yes:
+            self.set_company_logo(r[0])
+
+    def set_company_logo(self, name):
+        c = next((x for x in self.companies if x["name"] == name), None)
+        if c is None:
+            return
+        fn, _ = QFileDialog.getOpenFileName(self, "Logo for %s" % name, "", "Pictures (*.png *.jpg *.jpeg *.webp *.bmp *.svg)")
+        if not fn:
+            return
+        from PySide6.QtGui import QImage
+        im = QImage(fn)
+        if im.isNull():
+            QMessageBox.warning(self, "Orders", "That picture could not be opened.")
+            return
+        im = im.scaled(600, 240, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        d_ = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "MCP_XA_Energy", "company_logos")
+        os.makedirs(d_, exist_ok=True)
+        out = os.path.join(d_, "%s_%d.png" % (re.sub(r"\W+", "_", name)[:40], int(datetime.datetime.now().timestamp())))
+        if not im.save(out, "PNG"):
+            QMessageBox.warning(self, "Orders", "The logo could not be saved.")
+            return
+        c["logo"], c["photo"] = out, ""
+        c["accent"] = _accent_of(out)                 # the tile takes the colour of the logo; change it with Set tile colour
+        self.refresh_log()
 
     def adopt_no_company(self):
         """Turns the No company square into a real company: its areas and orders move into it."""
