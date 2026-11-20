@@ -62,10 +62,7 @@ def orders_from_tables(html, houses=()):
                     (yes if c.strip().upper() in ("YES", "Y") else no).append(re.sub(r"\((\w+)\)", lambda m_: "(" + m_.group(1).upper() + ")", h.capitalize()) if h.isupper() else h)
                 else:
                     facts.append("%s: %s" % (h, c.strip()))
-            txt = "%s %s\n%s" % (word, num, "; ".join(facts))
-            if yes or no:
-                txt += "\nExtras: " + (", ".join(yes) if yes else "none")
-            out.append({"group": group, "order": "", "text": txt.strip()})
+            out.append({"group": group, "order": "", "extras": "; ".join(re.sub(r"(\w)\(", r"\1 (", y) for y in yes), "text": ("%s %s\n%s" % (word, num, "; ".join(facts))).strip()})
     return out
 
 
@@ -105,8 +102,17 @@ def parse_orders(subject, body, houses=(), html=""):
             num = re.search(r"\d{2,6}[A-Za-z]?", lines[i]).group(0)
             word = (re.match(r"\s*(stand|erf|house|unit|plot|lot)", lines[i], re.I) or re.match(r"(stand)", "stand")).group(1).capitalize()
             group = next((h for h in houses if _norm(h).endswith(_norm(num))), "%s %s" % (word, num))
-            det = [x.strip() for x in lines[i + 1:end] if x.strip()]
-            out.append({"group": group, "order": "", "kinds": kinds, "text": ("%s %s%s\n%s" % (word, num, (" - " + intro) if intro else "", "\n".join(det))).strip()})
+            det, ex = [], []
+            for x in lines[i + 1:end]:
+                if not x.strip():
+                    continue
+                mm = re.search(r"\bextras?\s*:\s*(.*)$", x, re.I)
+                if mm:
+                    ex += [y.strip() for y in re.split(r"[;,]", mm.group(1)) if y.strip()]
+                    x = x[:mm.start()].strip()
+                if x:
+                    det.append(x.strip())
+            out.append({"group": group, "order": "", "kinds": kinds, "extras": "; ".join(ex), "text": ("%s %s%s\n%s" % (word, num, (" - " + intro) if intro else "", "\n".join(det))).strip()})
         allno = ORDER_NO.search(str(subject) + "\n" + intro)
         for o in out:
             o["order"] = allno.group("n").strip(" .,;") if allno else ""

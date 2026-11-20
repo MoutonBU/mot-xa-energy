@@ -19,8 +19,8 @@ from PySide6.QtWidgets import (QWidget, QAbstractItemView, QCheckBox, QComboBox,
                                QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QTableWidget,
                                QTableWidgetItem, QVBoxLayout, QStackedWidget, QScrollArea, QFrame)
 
-LOGK = ("group", "type", "rev", "date", "order", "text", "kinds", "by", "req_subject", "req_date", "req_from", "sent_date", "sent_to", "status", "by_name", "by_email", "sent_subject")
-LOGC = ["House or block", "Type", "Rev", "Date", "Order number", "What was ordered or changed", "Kind of change", "Asked by", "The client's email", "Received",
+LOGK = ("group", "type", "rev", "date", "order", "text", "extras", "kinds", "by", "req_subject", "req_date", "req_from", "sent_date", "sent_to", "status", "by_name", "by_email", "sent_subject")
+LOGC = ["House or block", "Type", "Rev", "Date", "Order number", "What was ordered or changed", "Extras the client wants", "Kind of change", "Asked by", "The client's email", "Received",
         "From", "Sent to the client on", "Sent to", "Status", "Client name", "Client email", "Email that was sent"]
 TYPES = ["Order", "Change", "Issue"]
 KINDS = ["Minor changes", "Major changes", "Masters", "Final plans", "SDP"]
@@ -1050,10 +1050,61 @@ class InboxDialog(QDialog):
         self.accept()
 
 
+class _ExtrasCell(QWidget):
+    """Under a drop-down heading: the extras the client wants on this house (one per line, editable)."""
+
+    def __init__(self, host, e, table):
+        super().__init__()
+        self.host, self.e, self.table = host, e, table
+        v = QVBoxLayout(self)
+        v.setContentsMargins(4, 2, 4, 2)
+        v.setSpacing(2)
+        self.btn = QPushButton()
+        self.btn.setFlat(True)
+        self.btn.setStyleSheet("text-align:left;font-weight:700;")
+        self.btn.clicked.connect(self._toggle)
+        v.addWidget(self.btn)
+        self.box = QPlainTextEdit()
+        self.box.setPlaceholderText("One extra per line")
+        self.box.setPlainText("\n".join(LogMixin.extras_of(e)))
+        self.box.textChanged.connect(self._edited)
+        v.addWidget(self.box)
+        self._show()
+
+    def _show(self):
+        n = len(LogMixin.extras_of(self.e))
+        opened = id(self.e) not in self.host._extras_closed
+        self.btn.setText(("\u25BE " if opened else "\u25B8 ") + ("Extras (%d)" % n if n else "Extras (none)"))
+        self.box.setVisible(opened)
+        self.box.setFixedHeight(max(1, n) * 20 + 14)
+
+    def _toggle(self):
+        k = id(self.e)
+        if k in self.host._extras_closed:
+            self.host._extras_closed.discard(k)
+        else:
+            self.host._extras_closed.add(k)
+        self._show()
+        self.updateGeometry()
+        self.table.resizeRowsToContents()
+
+    def _edited(self):
+        lines = [x.strip() for x in self.box.toPlainText().split("\n") if x.strip()]
+        self.e["extras"] = "; ".join(lines)
+        self.box.setFixedHeight(max(1, len(lines)) * 20 + 14)
+        self._show_count()
+        self.host.update_mail()
+
+    def _show_count(self):
+        n = len(LogMixin.extras_of(self.e))
+        opened = id(self.e) not in self.host._extras_closed
+        self.btn.setText(("\u25BE " if opened else "\u25B8 ") + ("Extras (%d)" % n if n else "Extras (none)"))
+
+
 class LogMixin:
     """The orders-and-revisions log."""
 
-    LOG_SIMPLE = ("group", "order", "text", "kinds", "by_name", "by_email", "req_subject", "sent_subject")
+    LOG_SIMPLE = ("group", "order", "text", "extras", "kinds", "by_name", "by_email", "req_subject", "sent_subject")
 
     def build_log(self, kind="Order"):
         """One of the two lists: the client's orders, or the client's changes. They share the log behind them, so the email and the PDF still find everything."""
@@ -1103,7 +1154,7 @@ class LogMixin:
         t.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         t.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         t.horizontalHeader().setStretchLastSection(True)
-        for i, wd in enumerate((150, 70, 40, 85, 110, 360, 660, 130, 300, 85, 170, 85, 200, 80, 150, 200, 320)):
+        for i, wd in enumerate((150, 70, 40, 85, 110, 330, 300, 660, 130, 300, 85, 170, 85, 200, 80, 150, 200, 320)):
             t.setColumnWidth(i, wd)
         t.itemChanged.connect(self._log_cell)
         t.cellDoubleClicked.connect(lambda r, c: self.open_sent() if LOGK[c] == "sent_subject" else self.open_ref() if LOGK[c] == "req_subject" else None)
@@ -1130,6 +1181,24 @@ class LogMixin:
         self._inbox_timer.timeout.connect(self.inbox_check)
         self.inbox_done.connect(self._inbox_result, Qt.ConnectionType.UniqueConnection)
         QTimer.singleShot(4000, self._inbox_apply)
+
+    @staticmethod
+    def extras_of(e):
+        return [x.strip() for x in str(e.get("extras", "") or "").split(";") if x.strip()]
+
+    def _migrate_extras(self):
+        """Older order lines have the extras inside the text (an Extras: line): move them to their own column."""
+        for e in self.log:
+            if e.get("extras") or "extras:" not in str(e.get("text", "")).lower():
+                continue
+            keep, ex = [], []
+            for ln in str(e["text"]).split("\n"):
+                m = re.match(r"\s*extras\s*:\s*(.*)$", ln, re.I)
+                if m:
+                    ex += [x.strip() for x in re.split(r"[;,]", m.group(1)) if x.strip() and x.strip().lower() != "none"]
+                else:
+                    keep.append(ln)
+            e["text"], e["extras"] = "\n".join(keep).strip(), "; ".join(ex)
 
     @staticmethod
     def _order_key(e):
@@ -1227,7 +1296,7 @@ class LogMixin:
                 rd = it["date"][:16]
             for o in mail_inbox.parse_orders(it["subject"], it["body"], houses, it.get("html", "")):
                 e = {k: "" for k in LOGK}
-                e.update({"group": o["group"] or "Not sure which house", "type": "Order", "date": datetime.date.today().isoformat(), "order": o["order"], "text": o["text"],
+                e.update({"group": o["group"] or "Not sure which house", "type": "Order", "date": datetime.date.today().isoformat(), "order": o["order"], "text": o["text"], "extras": o.get("extras", ""),
                           "status": "New", "kinds": o.get("kinds", ""), "req_subject": it["subject"], "req_date": rd, "req_from": it["from"], "req_path": it["path"], "sent_path": "", "drawings": "",
                           "by_name": nm, "by_email": addr, "msg_id": it["id"]})
                 k = self._order_key(e)
@@ -1730,7 +1799,7 @@ class LogMixin:
         if day:
             out.append('<h3 style="color:%s;margin-bottom:2px;">Orders and changes that day</h3><ul style="margin-top:0px;">' % RED)
             for x in day:
-                out.append("<li><b>%s</b>: %s%s%s</li>" % (e(x.get("group", "")), e((x.get("text") or "").replace("\n", " / ")),
+                out.append("<li><b>%s</b>: %s%s%s</li>" % (e(x.get("group", "")), e(((x.get("text") or "") + ((" (extras: %s)" % "; ".join(LogMixin.extras_of(x))) if LogMixin.extras_of(x) else "")).replace("\n", " / ")),
                                                            (" [%s]" % e(x["kinds"])) if x.get("kinds") else "", (" (asked by %s)" % e(x["by_name"])) if x.get("by_name") else ""))
             out.append("</ul>")
         # the drawings in this revision
@@ -1815,7 +1884,10 @@ class LogMixin:
 
     def refresh_log(self):
         self._busy = True
+        if not hasattr(self, "_extras_closed"):
+            self._extras_closed = set()
         try:
+            self._migrate_extras()
             for kind, t in getattr(self, "ltabs", {}).items():
                 keep_row = t.currentRow()
                 gsel = self._lgroup.get(kind)
@@ -1825,8 +1897,8 @@ class LogMixin:
                 t.setRowCount(len(ents))
                 for i, e in enumerate(ents):
                     for c, k in enumerate(LOGK):
-                        it = QTableWidgetItem("" if k == "kinds" else str(e.get(k, "")))
-                        if k == "kinds":
+                        it = QTableWidgetItem("" if k in ("kinds", "extras") else str(e.get(k, "")))
+                        if k in ("kinds", "extras"):
                             it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
                         if k in ("req_subject",) and e.get("req_path"):
                             it.setToolTip(e["req_path"])
@@ -1842,6 +1914,7 @@ class LogMixin:
                         cb.currentTextChanged.connect(lambda tx, ent=e, kk=k: ent.__setitem__(kk, tx))
                         t.setCellWidget(i, LOGK.index(k), cb)
                     t.setCellWidget(i, LOGK.index("kinds"), self._kinds_box(e))
+                    t.setCellWidget(i, LOGK.index("extras"), _ExtrasCell(self, e, t))
                 t.resizeRowsToContents()
                 if 0 <= keep_row < len(ents):
                     t.selectRow(keep_row)

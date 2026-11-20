@@ -2445,6 +2445,8 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
                     bit += ": the changes listed above"            # made from the drawings: not repeated here, only its kind of change
                 else:
                     bit += ": " + (x.get("text") or ("New order" if x.get("type") == "Order" else "Change")).replace("\n", "  /  ")
+                    if str(x.get("extras", "")).strip():
+                        bit += "  /  Extras: " + str(x["extras"]).strip()
                 if x.get("kinds"):
                     bit += " [%s]" % x["kinds"]
                 if x.get("by_name") or x.get("by_email"):
