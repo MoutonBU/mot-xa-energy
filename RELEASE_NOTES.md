@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.52**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.53**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **Portion codes now sort themselves into an area.** 'Urbika ARF670-PTN38' or 'Urbika Erf 670 PTN 38' (subject, email text or order table) now makes/uses the area 'Urbika Erf 670' and files PTN38 as the stand inside it, under the company that sender belongs to. ARF670 and Erf 670 are treated as the same farm, so follow-up emails land as changes on the same stand.
 
 - **Stand codes like ARF670-PTN4.** The Orders tool now reads a farm/erf code plus portion (ARF670-PTN4, PTN14, PTN35, even "arf 670 ptn 14") as the house, in subjects, email text and order tables. PTN is the stand number; a lone PTN4 matches the house ARF670-PTN4 you already have, and the code is no longer mistaken for an area short code.
 - **1.86.51** - Only the addresses you listed are read. The inbox watcher now looks only at unread mail from the email addresses (or @domains) you gave your companies, plus the *Always look at mail from* list; mail from anyone else is ignored, whatever its subject says (a second check inside the program drops anything not from a listed address). With no address listed anywhere, Check now says so instead of searching. The old search by subject words, area names and short codes is still there as a tick box in the Watch window (*Also look at mail from anyone whose subject has these words...*), off by default. Orders that were brought in earlier by the subject search (for example Zandspruit) stay until you delete them: right-click the square > Delete.

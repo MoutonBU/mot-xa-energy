@@ -89,14 +89,41 @@ def portion_code(text):
     if not m:
         return ""
     farm = re.sub(r"\s+", "", m.group("farm") or "").upper()
+    farm = re.sub(r"^(ERF|ERVEN)(?=\d)", "ARF", farm)         # Erf 670 and ARF670 are the same farm/erf
     ptn = "PTN%d" % int(m.group("n"))
     return farm + "-" + ptn if farm else ptn
 
 
+_AREA_LEAD = {"new", "order", "orders", "urgent", "re", "fwd", "fw", "aw", "for", "stand", "please", "hi", "dear", "the", "from", "at", "in", "of", "to",
+              "house", "houses", "change", "changes", "dringend", "bestelling", "final", "finals", "plan", "plans", "extras"}
+
+
+def portion_area(text):
+    """The area a portion code sits in: 'Urbika ARF670-PTN38' and 'Urbika Erf 670 PTN 38' both give 'Urbika Erf 670'; 'Urbika PTN 38' gives 'Urbika';
+    '' when nothing but the portion is written."""
+    t = str(text)
+    m = PORTION.search(t)
+    if not m:
+        return ""
+    farm = re.sub(r"\s+", "", m.group("farm") or "")
+    fm = re.match(r"([A-Za-z]+)(\d+)", farm)
+    fdisp = ""
+    if fm:
+        fdisp = ("Erf" if fm.group(1).upper() in ("ARF", "ERF", "ERVEN", "RF") else fm.group(1).upper()) + " " + fm.group(2)
+    words = re.findall(r"[A-Za-z][\w'\u2019-]*", re.sub(r"^\s*((re|fwd?|aw)\s*:\s*)+", "", t[:m.start()], flags=re.I))
+    name = []
+    for w in reversed(words):
+        if w.lower() in _AREA_LEAD or len(name) >= 3:
+            break
+        name.insert(0, w)
+    return " ".join(name + ([fdisp] if fdisp else [])).strip()
+
+
 def _portion_house(code, houses):
     """The existing house that is this portion code (ARF670-PTN4, or PTN4 when only the portion is written), else the code itself."""
+    same = lambda x: _norm(x).replace("arf", "erf")
     for h in houses:
-        if _norm(h) == _norm(code):
+        if same(h) == same(code):
             return h
     if "-" not in code:
         hit = [h for h in houses if _norm(h).endswith(_norm(code)) and portion_code(h)]
@@ -124,6 +151,8 @@ def parse_orders(subject, body, houses=(), html=""):
     if tab:
         allno = ORDER_NO.search(str(subject))
         for o in tab:
+            if not o.get("area") and portion_code(o.get("group", "")):
+                o["area"] = portion_area(subject) or portion_area(o["group"])
             o["order"] = allno.group("n").strip(" .,;") if allno else ""
         return tab
     lines = [ln.rstrip() for ln in str(body or "").replace("\r", "").split("\n")]
@@ -192,7 +221,16 @@ def parse_orders(subject, body, houses=(), html=""):
         if not out:
             out = [{"group": g0, "order": "", "text": txt_all}]
     allno = ORDER_NO.search(str(subject) + "\n" + "\n".join(lines))
+    sub_area = portion_area(subject)
     for o in out:
+        if portion_code(o.get("group", "")) and not o.get("area"):
+            a = portion_area(o["text"].split("\n")[0])
+            if not re.search(r"\d", a) and sub_area:       # "Urbika PTN 38" in the body, the farm only in the subject
+                a = sub_area
+            elif not a:
+                a = sub_area
+            if a:
+                o["area"] = a
         m = ORDER_NO.search(o["text"])
         o["order"] = (m or allno).group("n").strip(" .,;") if (m or allno) else ""
         o["text"] = o["text"].strip()[:1500]
