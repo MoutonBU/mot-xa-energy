@@ -2640,11 +2640,11 @@ class LogMixin:
         ap = m.addAction("Set photo...") if name != NOT_SORTED else None
         ar = next((a for a in self.areas if a["name"] == name), None)
         ax = m.addAction("Remove photo") if (ar and ar.get("photo")) else None
-        apdf = m.addAction("Print order progress (PDF for the client)...")
+        apdf = m.addAction("Preview / print order progress (PDF for the client)...")
         a3 = m.addAction("Delete this area and its orders...")
         pick = m.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
         if pick is apdf:
-            self.area_progress_pdf(name)
+            self.area_progress_preview(name)
             return
         if ap is not None and pick is ap:
             self.set_area_photo(name)
@@ -2660,16 +2660,38 @@ class LogMixin:
         elif pick is a3:
             self.delete_area(name)
 
-    def area_progress_html(self, name):
-        """The client's scope-of-work list for one area: what is completed and what is still to be done, every house with its order lines, extras and changes."""
+    @staticmethod
+    def _day_key(v):
+        """20261120 for '2026-11-20', '20261120', '20261120T0930' ... '' when there is no date."""
+        d = re.sub(r"\D", "", str(v or ""))[:8]
+        return d if len(d) == 8 else ""
+
+    @staticmethod
+    def _day_label(k):
+        try:
+            d = datetime.date(int(k[:4]), int(k[4:6]), int(k[6:8]))
+        except Exception:
+            return "No date"
+        t = d.strftime("%A, %d %B %Y")
+        return ("Today - " + t) if d == datetime.date.today() else t
+
+    def _house_day(self, g):
+        """The day the house's first order came in."""
+        ds = sorted(k for k in (self._day_key(e.get("date")) for e in self.log if self.log_kind(e) == "Order" and e.get("group") == g) if k)
+        return ds[0] if ds else ""
+
+    def area_progress_html(self, name, day=None, only_done=False):
+        """The client's scope-of-work list for one area (or for the orders of one day in it): completed and still to be done, every house with its order lines, extras and changes.
+        Front page in the same look as the other reports."""
         import html as _h
         e_ = lambda t: _h.escape(str(t or ""))
-        dt_ = lambda v: re.sub(r"^(\d{4})(\d{2})(\d{2}).*$", r"\1-\2-\3", str(v or "").strip())[:10]
         orders = [e for e in self.log if self.log_kind(e) == "Order" and self._area_of(e) == name]
         houses = []
         for e in orders:
             if e.get("group") not in houses:
                 houses.append(e.get("group"))
+        if day is not None:
+            houses = [g for g in houses if self._house_day(g) == day]
         def nat(g):
             m_ = re.findall(r"\d+", str(g))
             return [int(x) for x in m_] or [0]
@@ -2681,48 +2703,121 @@ class LogMixin:
         done = [g for g in houses if info[g][2]]
         todo = [g for g in houses if not info[g][2]]
         comp = next((self._comp_of(e) for e in orders if self._comp_of(e)), "")
+        dt_ = lambda v: re.sub(r"^(\d{4})-?(\d{2})-?(\d{2}).*$", r"\1-\2-\3", str(v or "").strip())[:10]
+        RED, DARK = "#C8102E", "#DCDCDC"
+        try:
+            M = self._M()
+            win = self.window()
+            rd = {**M.RD_DEFAULTS, **getattr(win, "rd", {})}
+        except Exception:
+            rd = {"company": "MCP Architecture & Interiors", "project": "", "owner": "", "architect": "", "prepared_by": "", "reg_no": "", "contact": ""}
+        title = "ORDER PROGRESS" if not only_done else "COMPLETED ORDERS"
+        sub = "Scope of work" + ((" received " + self._day_label(day)) if day else "")
+        h = ['<p style="font-size:40pt;">&nbsp;</p><p align="center"><img src="logo" height="90"></p>',
+             '<p align="center" style="font-size:11pt; color:#444444;">%s</p><p style="font-size:30pt;">&nbsp;</p>' % e_(rd.get("company")),
+             '<table width="100%%" cellspacing="0" cellpadding="14" border="0"><tr><td bgcolor="%s" style="color:#222222;"><span style="font-size:24pt; font-weight:bold;">%s</span><br>'
+             '<span style="font-size:9pt; color:#555555;">%s &nbsp;|&nbsp; %s</span></td></tr></table>'
+             '<table width="100%%" cellspacing="0" cellpadding="0" border="0"><tr><td bgcolor="%s" height="4"></td></tr></table>' % (DARK, title, e_(sub), datetime.date.today().strftime("%d %B %Y"), RED),
+             '<p style="font-size:12pt;">&nbsp;</p><p style="font-size:9pt; color:#666666;">AREA / DEVELOPMENT</p>'
+             '<p style="font-size:16pt; font-weight:bold; color:#222222; margin-top:0px;">%s</p>' % e_(name)]
+        if comp:
+            h.append('<p style="font-size:9pt; color:#666666;">PREPARED FOR</p><p style="font-size:13pt; font-weight:bold; color:#222222; margin-top:0px;">%s</p>' % e_(comp))
+        if day:
+            h.append('<p style="font-size:9pt; color:#666666;">ORDERS RECEIVED</p><p style="font-size:13pt; font-weight:bold; color:#222222; margin-top:0px;">%s</p>' % e_(self._day_label(day)))
+        h.append('<p style="font-size:9pt; color:#666666;">HOUSES</p><p style="font-size:13pt; font-weight:bold; color:#222222; margin-top:0px;">%d in total: <span style="color:#1B7F3B;">%d completed</span>, %d still to be done</p>'
+                 % (len(houses), len(done), len(todo)))
+        h.append('<p style="font-size:12pt;">&nbsp;</p><table width="100%%" cellspacing="0" cellpadding="3" border="0"><tr>'
+                 '<td width="50%%" style="font-size:8.5pt; color:#666666;">PROJECT<br><span style="font-size:12pt; font-weight:bold; color:#222222;">%s</span></td>'
+                 '<td width="50%%" style="font-size:8.5pt; color:#666666;">ARCHITECTURE FIRM<br><span style="font-size:12pt; font-weight:bold; color:#222222;">%s</span></td></tr></table>'
+                 % (e_(rd.get("project") or "-"), e_(rd.get("architect") or rd.get("company") or "-")))
+        h.append('<p style="font-size:24pt;">&nbsp;</p><p style="font-size:9pt; color:#666666;">THIS REPORT WAS COMPILED BY</p>'
+                 '<p style="font-size:12pt; font-weight:bold; color:#222222; margin-top:0px;">%s</p>' % e_(rd.get("prepared_by") or rd.get("company")))
+        if rd.get("contact"):
+            h.append('<p style="font-size:8pt; color:#777777;">%s</p>' % e_(rd.get("contact")))
+
         def block(g, tick):
             ents, chs, _d = info[g]
-            h = ['<tr><td colspan="3" style="background:#eee;font-size:10pt;"><b>%s %s</b></td></tr>' % ("&#10003;" if tick else "&#9675;", e_(g))]
+            r = ['<tr><td colspan="3" bgcolor="%s" style="font-size:10pt;"><b>%s %s</b></td></tr>' % (DARK, "&#10003;" if tick else "&#9675;", e_(g))]
             for e in ents:
                 t = e_(e.get("text")).replace("\n", "<br>")
                 ex = ("<br><i>Extras: %s</i>" % e_(e.get("extras"))) if e.get("extras") else ""
                 pr = (" <b style='color:#b00;'>%s</b>" % e_(e.get("priority"))) if e.get("priority") else ""
-                h.append('<tr><td width="14%%">%s</td><td width="16%%">Order %s%s</td><td>%s%s</td></tr>' % (e_(dt_(e.get("date"))), e_(e.get("order") or "-"), pr, t, ex))
+                r.append('<tr><td width="14%%">%s</td><td width="16%%">Order %s%s</td><td>%s%s</td></tr>' % (e_(dt_(e.get("date"))), e_(e.get("order") or "-"), pr, t, ex))
             for c in sorted(chs, key=lambda c: str(c.get("date"))):
                 t = e_(c.get("text")).replace("\n", "<br>")
-                h.append('<tr><td>%s</td><td>Change %s</td><td>%s</td></tr>' % (e_(dt_(c.get("date"))), e_(c.get("rev") or ""), t))
-            return "".join(h)
-        out = ['<h2 style="margin:0;">Order progress: %s</h2>' % e_(name)]
-        out.append('<p style="color:#444;">%s%s &nbsp;|&nbsp; %s &nbsp;|&nbsp; %d houses: <b>%d completed</b>, <b>%d still to be done</b></p>' % (
-            ("Prepared for %s<br>" % e_(comp)) if comp else "", e_(self.project_name() if hasattr(self, "project_name") else ""), datetime.date.today().strftime("%d %B %Y"), len(houses), len(done), len(todo)))
-        for title, lst, tick in (("Completed", done, True), ("Still to be done", todo, False)):
-            out.append('<h3 style="margin-top:14px;">%s (%d)</h3>' % (title, len(lst)))
+                r.append('<tr><td>%s</td><td>Change %s</td><td>%s</td></tr>' % (e_(dt_(c.get("date"))), e_(c.get("rev") or ""), t))
+            return "".join(r)
+        sections = (("Completed", done, True),) if only_done else (("Completed", done, True), ("Still to be done", todo, False))
+        for i_, (t_, lst, tick) in enumerate(sections):
+            h.append('<h3 style="margin-top:14px; color:%s;%s">%s (%d)</h3>' % ("#1B7F3B" if tick else RED, " page-break-before:always;" if i_ == 0 else "", t_, len(lst)))
             if not lst:
-                out.append("<p>None.</p>")
+                h.append("<p>None.</p>")
                 continue
-            out.append('<table width="100%%" border="0.5" cellspacing="0" cellpadding="3" style="font-size:8.5pt;">%s</table>' % "".join(block(g, tick) for g in lst))
-        out.append('<p style="font-size:7.5pt;color:#666;margin-top:16px;">MCP Architecture &amp; Interiors. Status as at the date above.</p>')
-        return "".join(out)
+            h.append('<table width="100%%" cellspacing="0" cellpadding="3" border="0.6" style="border-color:#bbbbbb; font-size:8.5pt;">%s</table>' % "".join(block(g, tick) for g in lst))
+        h.append('<p style="font-size:7.5pt;color:#666;margin-top:16px;">%s. Status as at %s.</p>' % (e_(rd.get("company")), datetime.date.today().strftime("%d %B %Y")))
+        return "".join(h)
 
-    def area_progress_pdf(self, name):
-        from PySide6.QtCore import QMarginsF
+    def _progress_write(self, path, name, day=None, only_done=False):
+        from PySide6.QtCore import QMarginsF, QUrl
         from PySide6.QtGui import QFont, QPageLayout, QPageSize, QPdfWriter, QTextDocument
-        if not any(self.log_kind(e) == "Order" and self._area_of(e) == name for e in self.log):
-            QMessageBox.information(self, "Orders", "There are no orders in %s yet." % name)
-            return
-        dflt = re.sub(r'[\\/:*?"<>|]+', "-", "Order progress - %s - %s.pdf" % (name, datetime.date.today().isoformat()))
-        fn, _ = QFileDialog.getSaveFileName(self, "Save order progress", dflt, "PDF (*.pdf)")
-        if not fn:
-            return
-        w = QPdfWriter(fn)
+        w = QPdfWriter(path)
         w.setPageLayout(QPageLayout(QPageSize(QPageSize.PageSizeId.A4), QPageLayout.Orientation.Portrait, QMarginsF(14, 14, 14, 14), QPageLayout.Unit.Millimeter))
         w.setTitle("Order progress - " + name)
         d = QTextDocument()
+        try:
+            d.addResource(QTextDocument.ImageResource, QUrl("logo"), self.window()._dark_logo())
+        except Exception:
+            pass
         d.setDefaultFont(QFont("Arial", 9))
-        d.setHtml('<html><body style="font-family:Arial;color:#111;">' + self.area_progress_html(name) + "</body></html>")
+        d.setHtml('<html><body style="font-family:Arial;color:#111;">' + self.area_progress_html(name, day, only_done) + "</body></html>")
         d.print_(w)
+
+    def area_progress_preview(self, name, day=None, only_done=False):
+        """Preview the report in the program (zoom, Save PDF...), like the other reports."""
+        if not any(self.log_kind(e) == "Order" and self._area_of(e) == name and (day is None or self._house_day(e.get("group")) == day) for e in self.log):
+            QMessageBox.information(self, "Orders", "There are no orders to report on here.")
+            return
+        class _W:
+            KEY = "areas"
+            report_title = "Order progress - %s%s" % (name, (" - " + day) if day else "")
+            def write(_s, path):
+                self._progress_write(path, name, day, only_done)
+        wr = _W()
+        self.window().preview_pdf_report(wr.write, lambda: None)
+
+    def area_progress_pdf(self, name, day=None, only_done=False):
+        if not any(self.log_kind(e) == "Order" and self._area_of(e) == name and (day is None or self._house_day(e.get("group")) == day) for e in self.log):
+            QMessageBox.information(self, "Orders", "There are no orders to report on here.")
+            return
+        dflt = re.sub(r'[\\/:*?"<>|]+', "-", "%s - %s%s.pdf" % ("Completed orders" if only_done else "Order progress", name, (" - " + day) if day else ""))
+        fn, _ = QFileDialog.getSaveFileName(self, "Save report", dflt, "PDF (*.pdf)")
+        if not fn:
+            return
+        self._progress_write(fn, name, day, only_done)
         QDesktopServices.openUrl(QUrl.fromLocalFile(fn))
+
+    def _day_menu(self, name, day, btn):
+        from PySide6.QtWidgets import QMenu
+        m = QMenu(btn)
+        ap = m.addAction("Preview report (PDF)...")
+        ac = m.addAction("Save the whole list as PDF...")
+        ad = m.addAction("Save completed list only as PDF...")
+        m.addSeparator()
+        am = m.addAction("Mark all of these houses as completed")
+        pick = m.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
+        if pick is ap:
+            self.area_progress_preview(name, day)
+        elif pick is ac:
+            self.area_progress_pdf(name, day)
+        elif pick is ad:
+            self.area_progress_pdf(name, day, True)
+        elif pick is am:
+            for g in {e.get("group") for e in self.log if self.log_kind(e) == "Order" and self._area_of(e) == name}:
+                if self._house_day(g) == day:
+                    for e in self.log:
+                        if e.get("group") == g and (self.log_kind(e) == "Order" or (e.get("type") == "Change" and e.get("of_order"))):
+                            e["status"] = "Done"
+            self.refresh_log()
 
     def set_area_photo(self, name):
         self._set_photo(next((x for x in self.areas if x["name"] == name), None), name)
@@ -3034,12 +3129,40 @@ class LogMixin:
         if urgent_names:
             heads[urgent_names[0]] = "Priority"
         rest_ = [n_ for n_ in names_ if n_ not in urgent_names and n_ not in done_set]
-        if urgent_names and rest_:
+        dayhead = {}
+        if kind == "Order" and self._larea.get("Order") is not None:
+            # undone houses sit under a big date header: the day their order came in (newest day first); one header menu reports on the whole day
+            byday = {}
+            for n_ in rest_:
+                byday.setdefault(self._house_day(n_), []).append(n_)
+            rest_ = []
+            for k_ in sorted(byday, reverse=True):
+                for n_ in byday[k_]:
+                    rest_.append(n_)
+                dayhead[byday[k_][0]] = k_
+            names_ = [n_ for n_ in names_ if n_ in urgent_names] + rest_ + [n_ for n_ in names_ if n_ in done_set]
+        elif urgent_names and rest_:
             heads[rest_[0]] = "All houses and blocks"
         done_l = [n_ for n_ in names_ if n_ in done_set]
         if done_l:
             heads[done_l[0]] = "Completed"
         for name in names_:
+            if name in dayhead:
+                k_ = dayhead[name]
+                nday = sum(1 for n2 in rest_ if self._house_day(n2) == k_)
+                hb = QPushButton("%s   (%d %s)   \u25be" % (self._day_label(k_), nday, "house" if nday == 1 else "houses"))
+                hb.setFlat(True)
+                hb.setCursor(Qt.CursorShape.PointingHandCursor)
+                hb.setStyleSheet("QPushButton{font-size:18px;font-weight:800;text-align:left;padding:10px 6px 4px 2px;border:none;border-bottom:2px solid #d8132b;color:%s;}QPushButton:hover{color:#d8132b;}" % txt)
+                hb.setToolTip("Click or right-click: preview the report for this day, save it as a PDF for the client, or mark the whole day completed")
+                hb._full = True
+                an_ = self._larea["Order"]
+                hb.clicked.connect(lambda _c=False, a_=an_, d_=k_, b_=hb: self._day_menu(a_, d_, b_))
+                hb.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+                hb.customContextMenuRequested.connect(lambda _p, a_=an_, d_=k_, b_=hb: self._day_menu(a_, d_, b_))
+                hb.setParent(host)
+                hb.show()
+                tiles.append(hb)
             if name in heads:
                 hl = QLabel(heads[name])
                 hl.setStyleSheet("font-size:14px;font-weight:700;padding:6px 0 0 2px;%s" % ("color:#d8132b;" if heads[name] == "Priority" else ("color:#3fb868;" if heads[name] == "Completed" else "")))

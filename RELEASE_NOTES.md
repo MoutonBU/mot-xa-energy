@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.55**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.56**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **Orders grouped under a date header, with a client report per day.** Inside an area the houses now sit under a large header showing the day their orders came in (newest first, 'Today - ...'). Click or right-click the header: Preview report (PDF), Save the whole list as PDF, Save completed list only as PDF, or Mark all of these houses as completed. The report has a cover page in the same look as the other reports (logo, grey title block, red bar, area, company, project, compiled by) then the Completed and Still to be done lists. The area's right-click menu previews the report for the whole area.
 
 - **Subjects like 'Urbika Erf 670 | PTN 38'.** What stands before the | is the area (Urbika Erf 670 is made if it is new) and what follows is the stand (PTN 38, or Stand 2037 and so on). Replies ('Re: ...') become changes on the same stand. Works for every company's emails.
 
