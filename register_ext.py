@@ -2636,8 +2636,12 @@ class LogMixin:
         ap = m.addAction("Set photo...") if name != NOT_SORTED else None
         ar = next((a for a in self.areas if a["name"] == name), None)
         ax = m.addAction("Remove photo") if (ar and ar.get("photo")) else None
+        apdf = m.addAction("Print order progress (PDF for the client)...")
         a3 = m.addAction("Delete this area and its orders...")
         pick = m.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
+        if pick is apdf:
+            self.area_progress_pdf(name)
+            return
         if ap is not None and pick is ap:
             self.set_area_photo(name)
             return
@@ -2651,6 +2655,70 @@ class LogMixin:
             self.edit_area(name)
         elif pick is a3:
             self.delete_area(name)
+
+    def area_progress_html(self, name):
+        """The client's scope-of-work list for one area: what is completed and what is still to be done, every house with its order lines, extras and changes."""
+        import html as _h
+        e_ = lambda t: _h.escape(str(t or ""))
+        dt_ = lambda v: re.sub(r"^(\d{4})(\d{2})(\d{2}).*$", r"\1-\2-\3", str(v or "").strip())[:10]
+        orders = [e for e in self.log if self.log_kind(e) == "Order" and self._area_of(e) == name]
+        houses = []
+        for e in orders:
+            if e.get("group") not in houses:
+                houses.append(e.get("group"))
+        def nat(g):
+            m_ = re.findall(r"\d+", str(g))
+            return [int(x) for x in m_] or [0]
+        houses.sort(key=lambda g: (nat(g), str(g)))
+        info = {}
+        for g in houses:
+            ents = [e for e in orders if e.get("group") == g]
+            info[g] = (ents, self._changes_of(g), all(e.get("status") == "Done" for e in ents))
+        done = [g for g in houses if info[g][2]]
+        todo = [g for g in houses if not info[g][2]]
+        comp = next((self._comp_of(e) for e in orders if self._comp_of(e)), "")
+        def block(g, tick):
+            ents, chs, _d = info[g]
+            h = ['<tr><td colspan="3" style="background:#eee;font-size:10pt;"><b>%s %s</b></td></tr>' % ("&#10003;" if tick else "&#9675;", e_(g))]
+            for e in ents:
+                t = e_(e.get("text")).replace("\n", "<br>")
+                ex = ("<br><i>Extras: %s</i>" % e_(e.get("extras"))) if e.get("extras") else ""
+                pr = (" <b style='color:#b00;'>%s</b>" % e_(e.get("priority"))) if e.get("priority") else ""
+                h.append('<tr><td width="14%%">%s</td><td width="16%%">Order %s%s</td><td>%s%s</td></tr>' % (e_(dt_(e.get("date"))), e_(e.get("order") or "-"), pr, t, ex))
+            for c in sorted(chs, key=lambda c: str(c.get("date"))):
+                t = e_(c.get("text")).replace("\n", "<br>")
+                h.append('<tr><td>%s</td><td>Change %s</td><td>%s</td></tr>' % (e_(dt_(c.get("date"))), e_(c.get("rev") or ""), t))
+            return "".join(h)
+        out = ['<h2 style="margin:0;">Order progress: %s</h2>' % e_(name)]
+        out.append('<p style="color:#444;">%s%s &nbsp;|&nbsp; %s &nbsp;|&nbsp; %d houses: <b>%d completed</b>, <b>%d still to be done</b></p>' % (
+            ("Prepared for %s<br>" % e_(comp)) if comp else "", e_(self.project_name() if hasattr(self, "project_name") else ""), datetime.date.today().strftime("%d %B %Y"), len(houses), len(done), len(todo)))
+        for title, lst, tick in (("Completed", done, True), ("Still to be done", todo, False)):
+            out.append('<h3 style="margin-top:14px;">%s (%d)</h3>' % (title, len(lst)))
+            if not lst:
+                out.append("<p>None.</p>")
+                continue
+            out.append('<table width="100%%" border="0.5" cellspacing="0" cellpadding="3" style="font-size:8.5pt;">%s</table>' % "".join(block(g, tick) for g in lst))
+        out.append('<p style="font-size:7.5pt;color:#666;margin-top:16px;">MCP Architecture &amp; Interiors. Status as at the date above.</p>')
+        return "".join(out)
+
+    def area_progress_pdf(self, name):
+        from PySide6.QtCore import QMarginsF
+        from PySide6.QtGui import QFont, QPageLayout, QPageSize, QPdfWriter, QTextDocument
+        if not any(self.log_kind(e) == "Order" and self._area_of(e) == name for e in self.log):
+            QMessageBox.information(self, "Orders", "There are no orders in %s yet." % name)
+            return
+        dflt = re.sub(r'[\\/:*?"<>|]+', "-", "Order progress - %s - %s.pdf" % (name, datetime.date.today().isoformat()))
+        fn, _ = QFileDialog.getSaveFileName(self, "Save order progress", dflt, "PDF (*.pdf)")
+        if not fn:
+            return
+        w = QPdfWriter(fn)
+        w.setPageLayout(QPageLayout(QPageSize(QPageSize.PageSizeId.A4), QPageLayout.Orientation.Portrait, QMarginsF(14, 14, 14, 14), QPageLayout.Unit.Millimeter))
+        w.setTitle("Order progress - " + name)
+        d = QTextDocument()
+        d.setDefaultFont(QFont("Arial", 9))
+        d.setHtml('<html><body style="font-family:Arial;color:#111;">' + self.area_progress_html(name) + "</body></html>")
+        d.print_(w)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(fn))
 
     def set_area_photo(self, name):
         self._set_photo(next((x for x in self.areas if x["name"] == name), None), name)
