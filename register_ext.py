@@ -1902,6 +1902,13 @@ class LogMixin:
                 st["changes"] += 1
                 took = True
                 continue
+            ordered, wanted = mail_inbox.split_changes(e["text"])
+            if wanted and len([x for x in ordered.split("\n") if x.strip()]) >= 2:
+                e["text"] = ordered                                   # the "change ..." lines go to the house's changes, not into the order
+                k = self._order_key(e)
+                kh = self._key_hash(e)
+            else:
+                wanted = ""
             if k in have or kh in mem:
                 continue                                              # the same order came in before: only added once
             if urgent:
@@ -1913,6 +1920,14 @@ class LogMixin:
             self.log.append(e)
             st["made"] += 1
             took = True
+            if wanted:
+                ce = {k_: "" for k_ in LOGK}
+                ce.update({"group": e["group"], "type": "Change", "rev": "1", "date": e["date"], "text": wanted, "status": "New", "req_subject": it["subject"], "req_date": rd,
+                           "req_from": it["from"], "req_path": "", "sent_path": "", "drawings": "", "by_name": nm, "by_email": addr, "msg_id": it["id"], "area": e["area"],
+                           "priority": "Urgent" if urgent else ""})
+                self.log.append(ce)
+                news.append(dict(ce, type="Change"))
+                st["changes"] += 1
         if took:
             path = it.get("path", "")
             if not path:

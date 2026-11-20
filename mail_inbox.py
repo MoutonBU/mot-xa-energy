@@ -256,6 +256,21 @@ def subject_code(subject):
     return "" if code.lower() in _NOTCODE else code.upper()
 
 
+CHANGE_WORD = re.compile(r"\b(chang(e|es|ed|ing)|amend(s|ed|ing|ment|ments)?|revis(e|es|ed|ion|ions)|alter(s|ed|ation|ations)?|modif(y|ied|ication)|updat(e|es|ed)|mov(e|ed)|replac(e|ed)|swap(ped)?|instead|wysig(ing|ings|ings)?|verander(ing|ings)?|aanpassing(s)?|vervang|skuif|in plaas van)\b", re.I)
+
+
+def split_changes(text):
+    """Splits the lines of an order into (what is ordered, what is to be changed). The first line (the house) always stays with the order."""
+    lines = [ln for ln in str(text or "").split("\n")]
+    keep, chg = [], []
+    for i, ln in enumerate(lines):
+        if i > 0 and ln.strip() and CHANGE_WORD.search(ln):
+            chg.append(ln.strip())
+        else:
+            keep.append(ln)
+    return "\n".join(keep).strip(), "\n".join(chg).strip()
+
+
 def save_eml(folder, rec):
     """Writes the email to the inbox folder (only done for emails that were taken in) and returns the path."""
     os.makedirs(folder, exist_ok=True)
