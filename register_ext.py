@@ -1653,6 +1653,278 @@ class LogMixin:
                 self.inbox_done.emit([], str(ex))
         threading.Thread(target=work, daemon=True).start()
 
+    def _maybe_button(self):
+        n = len(self._M().SETTINGS.get("inbox_maybe", []))
+        b = getattr(self, "maybe_btn", None)
+        if b is not None:
+            b.setText("Maybe orders (%d)" % n if n else "Maybe orders")
+            b.setStyleSheet("font-weight:700;%s" % ("background:#d8132b;color:#ffffff;" if n else ""))
+
+    def maybe_dialog(self):
+        """Emails from senders that are not your clients yet but look like orders: you decide once for each sender."""
+        import mail_inbox
+        M = self._M()
+        S = M.SETTINGS
+        d = QDialog(self)
+        d.setWindowTitle("Maybe orders")
+        d.resize(900, 520)
+        v = QVBoxLayout(d)
+        n = QLabel("These emails look like orders but come from someone who is not one of your clients yet. <b>It's a client</b> takes the email in (and everything that "
+                   "sender sends from now on); <b>Not an order</b> ignores that sender for good. Choose the area when you know it: the program remembers the short code "
+                   "in the subject (for example BH) and files the next ones by itself.")
+        n.setWordWrap(True)
+        v.addWidget(n)
+        row = QHBoxLayout()
+        from PySide6.QtWidgets import QListWidget, QPlainTextEdit
+        lst = QListWidget()
+        lst.setMinimumWidth(360)
+        prev = QPlainTextEdit()
+        prev.setReadOnly(True)
+        row.addWidget(lst, 1)
+        row.addWidget(prev, 2)
+        v.addLayout(row, 1)
+        ar = QComboBox()
+        fl = QFormLayout()
+        fl.addRow("Put it in the area", ar)
+        v.addLayout(fl)
+        bt = QHBoxLayout()
+        yes = QPushButton("It's a client: take it in")
+        yes.setStyleSheet("font-weight:700;")
+        no = QPushButton("Not an order: ignore this sender")
+        opn = QPushButton("Open the email")
+        cl = QPushButton("Clients...")
+        close = QPushButton("Close")
+        for b_ in (yes, no, opn, cl):
+            bt.addWidget(b_)
+        bt.addStretch(1)
+        bt.addWidget(close)
+        v.addLayout(bt)
+
+        def fill():
+            lst.clear()
+            for m in S.get("inbox_maybe", []):
+                lst.addItem("%s  -  %s" % (str(m["from"])[:40], m["subject"][:70]))
+            ar.clear()
+            ar.addItem("Work it out from the email", None)
+            for nm_ in self._area_names():
+                ar.addItem(nm_, nm_)
+            if lst.count():
+                lst.setCurrentRow(0)
+            else:
+                prev.setPlainText("Nothing is waiting.")
+            self._maybe_button()
+
+        def cur():
+            r = lst.currentRow()
+            ms = S.get("inbox_maybe", [])
+            return ms[r] if 0 <= r < len(ms) else None
+
+        def show():
+            m = cur()
+            if m is None:
+                return
+            try:
+                rec = mail_inbox.read_eml(open(m["path"], "rb").read())
+                prev.setPlainText("From: %s\nSubject: %s\nDate: %s\n\n%s" % (rec["from"], rec["subject"], rec["date"], rec["body"][:4000]))
+            except Exception:
+                prev.setPlainText("From: %s\nSubject: %s" % (m["from"], m["subject"]))
+            got = self._area_by_code(m["subject"])
+            i = ar.findData(got) if got else 0
+            ar.setCurrentIndex(max(i, 0))
+
+        def take():
+            m = cur()
+            if m is None:
+                return
+            addr = mail_inbox.sender_addr(m["from"])
+            S.setdefault("inbox_clients", {})[addr] = {"name": str(m["from"])}
+            pick = ar.currentData()
+            mine = [x for x in S.get("inbox_maybe", []) if mail_inbox.sender_addr(x["from"]) == addr]
+            S["inbox_maybe"] = [x for x in S.get("inbox_maybe", []) if mail_inbox.sender_addr(x["from"]) != addr]
+            houses = [g["name"] for g in self.groups] + [x.get("group", "") for x in self.log if x.get("group")]
+            st = {"made": 0, "changes": 0, "alerts": [], "news": [], "have": {self._order_key(e) for e in self.log if e.get("type") == "Order"},
+                  "mem": list(S.get("inbox_keys", [])), "houses": houses, "folder": os.path.join(M._user_data_dir(), "inbox")}
+            for x in reversed(mine):
+                try:
+                    rec = mail_inbox.read_eml(open(x["path"], "rb").read())
+                except Exception:
+                    continue
+                rec.update({"id": x["id"], "path": x["path"]})
+                if pick is not None:
+                    self._learn_code(rec["subject"], pick)
+                self._process_email(rec, st, force_area=pick)
+            S["inbox_keys"] = st["mem"][-3000:]
+            M.save_settings()
+            self.refresh_log()
+            self._order_toast(st["news"], st["alerts"])
+            fill()
+
+        def skip():
+            m = cur()
+            if m is None:
+                return
+            addr = mail_inbox.sender_addr(m["from"])
+            S.setdefault("inbox_ignored", []).append(addr)
+            S["inbox_maybe"] = [x for x in S.get("inbox_maybe", []) if mail_inbox.sender_addr(x["from"]) != addr]
+            M.save_settings()
+            fill()
+
+        def op():
+            m = cur()
+            if m and m.get("path") and os.path.exists(m["path"]):
+                QDesktopServices.openUrl(QUrl.fromLocalFile(m["path"]))
+        lst.currentRowChanged.connect(lambda _r: show())
+        yes.clicked.connect(take)
+        no.clicked.connect(skip)
+        opn.clicked.connect(op)
+        cl.clicked.connect(self.clients_dialog)
+        close.clicked.connect(d.accept)
+        fill()
+        d.exec()
+        self._maybe_button()
+
+    def clients_dialog(self):
+        from PySide6.QtWidgets import QListWidget, QInputDialog
+        M = self._M()
+        S = M.SETTINGS
+        d = QDialog(self)
+        d.setWindowTitle("My clients")
+        d.resize(520, 420)
+        v = QVBoxLayout(d)
+        v.addWidget(QLabel("Everything these senders write is read as orders and changes. Ignored senders are never looked at."))
+        lst = QListWidget()
+        v.addWidget(lst, 1)
+        bt = QHBoxLayout()
+        add = QPushButton("Add a client address...")
+        rem = QPushButton("Remove selected")
+        close = QPushButton("Close")
+        for b_ in (add, rem):
+            bt.addWidget(b_)
+        bt.addStretch(1)
+        bt.addWidget(close)
+        v.addLayout(bt)
+
+        def fill():
+            lst.clear()
+            for a_ in sorted(S.get("inbox_clients", {})):
+                lst.addItem("Client:   " + a_)
+            for a_ in sorted(S.get("inbox_ignored", [])):
+                lst.addItem("Ignored:  " + a_)
+
+        def do_add():
+            t, ok = QInputDialog.getText(d, "My clients", "Email address of the client:")
+            if ok and "@" in t:
+                a_ = t.strip().lower()
+                S.setdefault("inbox_clients", {})[a_] = {"name": a_}
+                S["inbox_ignored"] = [x for x in S.get("inbox_ignored", []) if x.lower() != a_]
+                M.save_settings()
+                fill()
+
+        def do_rem():
+            it = lst.currentItem()
+            if it is None:
+                return
+            kind, a_ = [x.strip() for x in it.text().split(":", 1)]
+            if kind == "Client":
+                S.get("inbox_clients", {}).pop(a_, None)
+            else:
+                S["inbox_ignored"] = [x for x in S.get("inbox_ignored", []) if x != a_]
+            M.save_settings()
+            fill()
+        add.clicked.connect(do_add)
+        rem.clicked.connect(do_rem)
+        close.clicked.connect(d.accept)
+        fill()
+        d.exec()
+
+    def _learn_code(self, subject, area):
+        """The short code at the start of a subject (BH, AD...) is remembered for the area it was filed in, so the next email with that code files itself."""
+        import mail_inbox
+        code = mail_inbox.subject_code(subject)
+        a = next((x for x in self.areas if x["name"] == area), None) if area else None
+        if not code or a is None:
+            return
+        codes = [c.strip().upper() for c in re.split(r"[,;\s]+", a.get("codes", "")) if c.strip()]
+        if code.upper() not in codes:
+            a["codes"] = ", ".join(codes + [code.upper()])
+
+    def _process_email(self, it, st, force_area=None):
+        """Takes one email from a client in: its orders go to the houses (or to the one order the house already has, as a change)."""
+        import mail_inbox
+        import hashlib
+        from email.utils import parseaddr
+        have, mem, alerts, news, houses = st["have"], st["mem"], st["alerts"], st["news"], st["houses"]
+        nm, addr = parseaddr(it["from"])
+        try:
+            rd = short_date(parsedate_to_datetime(it["date"]).date().isoformat())
+        except Exception:
+            rd = it["date"][:16]
+        urgent = mail_inbox.is_urgent(it["subject"], it["body"])
+        took = False
+        for o in mail_inbox.parse_orders(it["subject"], it["body"], houses, it.get("html", "")):
+            grp = o["group"] or "Not sure which house"
+            area = force_area if force_area is not None else self._area_for(it["subject"], it["body"], o["group"], o.get("area", ""))
+            existing = [x for x in self.log if x.get("type") == "Order" and o["group"] and _gnorm(x.get("group")) == _gnorm(grp)]
+            if existing and existing[0].get("area"):
+                area = existing[0]["area"]
+            e = {k: "" for k in LOGK}
+            e.update({"group": existing[0]["group"] if existing else grp, "type": "Order", "date": datetime.date.today().isoformat(), "order": o["order"], "text": o["text"],
+                      "extras": o.get("extras", ""), "status": "New", "kinds": o.get("kinds", ""), "req_subject": it["subject"], "req_date": rd, "req_from": it["from"],
+                      "req_path": "", "sent_path": "", "drawings": "", "by_name": nm, "by_email": addr, "msg_id": it["id"], "area": area})
+            k = self._order_key(e)
+            kh = self._key_hash(e)
+            if existing:
+                # the house already has its one order: this is the client coming back about it
+                ctext = mail_inbox.clean_change_text(o["text"] if len(str(o["text"]).split("\n")) > 1 or not it["body"].strip() else it["body"], e["group"])
+                if not ctext and not e["extras"]:
+                    self._chase(existing, urgent, alerts, it)       # "Stand 2037 is urgent": no new wording, only a reminder
+                    took = True
+                    continue
+                ckey = ("change", _gnorm(e["group"]), re.sub(r"\s+", " ", (ctext + "|" + e["extras"]).lower()))
+                ch = "c" + hashlib.sha1(repr(ckey).encode("utf-8")).hexdigest()[:15]
+                if ch in mem or any(c.get("type") == "Change" and _gnorm(c.get("group")) == _gnorm(e["group"]) and re.sub(r"\s+", " ", (str(c.get("text", "")) + "|" + str(c.get("extras", ""))).lower()) == ckey[2]
+                                    for c in self.log):
+                    self._chase(existing, urgent, alerts, it)
+                    took = True
+                    continue
+                ce = {k_: "" for k_ in LOGK}
+                nrev = 1 + sum(1 for c in self.log if c.get("type") == "Change" and _gnorm(c.get("group")) == _gnorm(e["group"]) and c.get("msg_id"))
+                ce.update({"group": e["group"], "type": "Change", "rev": str(nrev), "date": e["date"], "text": ctext or "(extras)", "extras": e["extras"], "status": "New",
+                           "req_subject": it["subject"], "req_date": rd, "req_from": it["from"], "req_path": "", "sent_path": "", "drawings": "", "by_name": nm, "by_email": addr,
+                           "msg_id": it["id"], "area": e["area"], "priority": "Urgent" if urgent else ""})
+                self.log.append(ce)
+                mem.append(ch)
+                if urgent:
+                    for x in existing:
+                        x["priority"] = "Urgent"
+                    alerts.append((e["group"], it["subject"], "change"))
+                news.append(dict(ce, type="Change"))
+                st["changes"] += 1
+                took = True
+                continue
+            if k in have or kh in mem:
+                continue                                              # the same order came in before: only added once
+            if urgent:
+                e["priority"] = "Urgent"
+                alerts.append((e["group"], it["subject"], "new"))
+            news.append(e)
+            have.add(k)
+            mem.append(kh)
+            self.log.append(e)
+            st["made"] += 1
+            took = True
+        if took:
+            path = it.get("path", "")
+            if not path:
+                try:
+                    path = mail_inbox.save_eml(st["folder"], it)
+                except Exception:
+                    path = ""
+            for x in self.log:
+                if x.get("msg_id") == it["id"] and not x.get("req_path"):
+                    x["req_path"] = path
+        return took
+
     def _inbox_result(self, items, err):
         self._inbox_busy = False
         M = self._M()
@@ -1675,92 +1947,38 @@ class LogMixin:
         have = {self._order_key(e) for e in self.log if e.get("type") == "Order"}
         mem = list(S.get("inbox_keys", []))
         have_ids = {e.get("msg_id") for e in self.log if e.get("msg_id")}
-        trusted = list(S.get("inbox_senders", []))
+        clients = S.setdefault("inbox_clients", {})
+        ignored = {x.lower() for x in S.get("inbox_ignored", [])}
+        maybe = S.setdefault("inbox_maybe", [])
         folder = os.path.join(M._user_data_dir(), "inbox")
-        changes_made = 0
+        st = {"made": 0, "changes": 0, "alerts": alerts, "news": news, "have": have, "mem": mem, "houses": houses, "folder": folder}
+        maybe_new = 0
         for it in reversed(items):
             if it["id"] in seen or it["id"] in have_ids:
                 continue
             seen.append(it["id"])
             if base:
                 continue
-            if not mail_inbox.looks_like_order(it["subject"], it["body"], it.get("html", ""), it["from"], trusted, houses):
-                continue                                   # not an order or a change: left alone (and not looked at again)
-            nm, addr = parseaddr(it["from"])
-            try:
-                rd = short_date(parsedate_to_datetime(it["date"]).date().isoformat())
-            except Exception:
-                rd = it["date"][:16]
-            urgent = mail_inbox.is_urgent(it["subject"], it["body"])
-            took = False
-            for o in mail_inbox.parse_orders(it["subject"], it["body"], houses, it.get("html", "")):
-                grp = o["group"] or "Not sure which house"
-                area = self._area_for(it["subject"], it["body"], o["group"], o.get("area", ""))
-                existing = [x for x in self.log if x.get("type") == "Order" and o["group"] and _gnorm(x.get("group")) == _gnorm(grp)]
-                if existing:
-                    area = self._area_of(existing[0]) if existing[0].get("area") else area
-                e = {k: "" for k in LOGK}
-                e.update({"group": existing[0]["group"] if existing else grp, "type": "Order", "date": datetime.date.today().isoformat(), "order": o["order"], "text": o["text"],
-                          "extras": o.get("extras", ""), "status": "New", "kinds": o.get("kinds", ""), "req_subject": it["subject"], "req_date": rd, "req_from": it["from"],
-                          "req_path": "", "sent_path": "", "drawings": "", "by_name": nm, "by_email": addr, "msg_id": it["id"], "area": area})
-                k = self._order_key(e)
-                kh = self._key_hash(e)
-                if existing:
-                    # the house already has its one order: this is the client coming back about it
-                    ctext = mail_inbox.clean_change_text(o["text"] if len(str(o["text"]).split("\n")) > 1 or not it["body"].strip() else it["body"], e["group"])
-                    if not ctext and not e["extras"]:
-                        self._chase(existing, urgent, alerts, it)       # "Stand 2037 is urgent": no new wording, only a reminder
-                        took = True
-                        continue
-                    ckey = ("change", _gnorm(e["group"]), re.sub(r"\s+", " ", (ctext + "|" + e["extras"]).lower()))
-                    import hashlib
-                    ch = "c" + hashlib.sha1(repr(ckey).encode("utf-8")).hexdigest()[:15]
-                    if ch in mem or any(c.get("type") == "Change" and _gnorm(c.get("group")) == _gnorm(e["group"]) and re.sub(r"\s+", " ", (str(c.get("text", "")) + "|" + str(c.get("extras", ""))).lower()) == ckey[2]
-                                        for c in self.log):
-                        self._chase(existing, urgent, alerts, it)
-                        took = True
-                        continue
-                    ce = {k_: "" for k_ in LOGK}
-                    nrev = 1 + sum(1 for c in self.log if c.get("type") == "Change" and _gnorm(c.get("group")) == _gnorm(e["group"]) and c.get("msg_id"))
-                    ce.update({"group": e["group"], "type": "Change", "rev": str(nrev), "date": e["date"], "text": ctext or "(extras)", "extras": e["extras"], "status": "New",
-                               "req_subject": it["subject"], "req_date": rd, "req_from": it["from"], "req_path": "", "sent_path": "", "drawings": "", "by_name": nm, "by_email": addr,
-                               "msg_id": it["id"], "area": e["area"], "priority": "Urgent" if urgent else ""})
-                    self.log.append(ce)
-                    mem.append(ch)
-                    if urgent:
-                        for x in existing:
-                            x["priority"] = "Urgent"
-                        alerts.append((e["group"], it["subject"], "change"))
-                    news.append(dict(ce, type="Change"))
-                    changes_made += 1
-                    took = True
-                    continue
-                if k in have or kh in mem:
-                    continue                                              # the same order came in before: only added once
-                if urgent:
-                    e["priority"] = "Urgent"
-                    alerts.append((e["group"], it["subject"], "new"))
-                news.append(e)
-                have.add(k)
-                mem.append(kh)
-                self.log.append(e)
-                made += 1
-                took = True
-            if took:
+            addr = mail_inbox.sender_addr(it["from"])
+            if addr in ignored:
+                continue
+            if addr in {c.lower() for c in clients}:
+                self._process_email(it, st)                        # one of your clients: everything they send is read
+            elif mail_inbox.looks_like_order(it["subject"], it["body"], it.get("html", ""), it["from"], (), houses):
                 try:
                     path = mail_inbox.save_eml(folder, it)
                 except Exception:
                     path = ""
-                for x in self.log:
-                    if x.get("msg_id") == it["id"] and not x.get("req_path"):
-                        x["req_path"] = path
-                if addr and addr.lower() not in {t.lower() for t in trusted}:
-                    trusted.append(addr)
+                maybe.append({"id": it["id"], "subject": it["subject"], "from": it["from"], "date": it["date"], "path": path})
+                maybe_new += 1                                    # not a known client: waits in the Maybe orders list
+        made, changes_made = st["made"], st["changes"]
+        del maybe[:-200]
         S["inbox_seen"] = seen[-3000:]
-        S["inbox_senders"] = trusted[-300:]
         S["inbox_keys"] = mem[-3000:]
         M.save_settings()
         removed = self.inbox_dedupe()
+        if maybe_new:
+            self._maybe_button()
         if made or removed or alerts or changes_made:
             self.refresh_log()
             self._order_toast(news, alerts)
@@ -1769,7 +1987,7 @@ class LogMixin:
                 QApplication.alert(self.window(), 0)
             except Exception:
                 pass
-        self._inbox_label("checked %s%s" % (now, ((", %d new order%s" % (made, "" if made == 1 else "s")) + ((", %d change%s" % (changes_made, "" if changes_made == 1 else "s")) if changes_made else "")) if (made or changes_made) else ", nothing new"))
+        self._inbox_label("checked %s%s" % (now, ((", %d new order%s" % (made, "" if made == 1 else "s")) + ((", %d change%s" % (changes_made, "" if changes_made == 1 else "s")) if changes_made else "")) if (made or changes_made) else ", nothing new") + ((", %d email%s waiting in Maybe orders" % (maybe_new, "" if maybe_new == 1 else "s")) if maybe_new else ""))
 
     # ----- areas: the large squares (Blue Hills, another estate...) that the houses and orders sit in -----
     @staticmethod
@@ -1819,11 +2037,27 @@ class LogMixin:
                 return " ".join(words)
         return ""
 
+    def _area_by_code(self, subject):
+        """The area whose short code (BH, AD...) the subject starts with, or ''."""
+        try:
+            import mail_inbox
+            code = mail_inbox.subject_code(subject)
+        except Exception:
+            return ""
+        if code:
+            for a in self.areas:
+                if code.upper() in [c.strip().upper() for c in re.split(r"[,;\s]+", a.get("codes", "")) if c.strip()]:
+                    return a["name"]
+        return ""
+
     def _area_for(self, subject, body, group, from_table=""):
         """The area (name, or "" for Not sorted) for an incoming order. In order: the Township column; an existing area whose name or email words appear in the subject
         or top of the email; an estate written like 'Albertsdal Ext 46' (a missing area is made for it); the area this house already sits in."""
         if from_table.strip():
             return self._ensure_area(from_table.strip())
+        bycode = self._area_by_code(subject)
+        if bycode:
+            return bycode
         hay = _gnorm(str(subject) + " " + str(body)[:3000])
         for a in self.areas:
             keys = [a["name"], self._area_base(a["name"])] + [k for k in re.split(r"[,;\n]", a.get("keys", "")) if k.strip()]
@@ -1859,6 +2093,11 @@ class LogMixin:
         cb_.setStyleSheet("font-weight:700;")
         cb_.clicked.connect(lambda: self.inbox_check(manual=True))
         bar.addWidget(cb_)
+        mb = QPushButton("Maybe orders")
+        mb.setStyleSheet("font-weight:700;")
+        mb.clicked.connect(self.maybe_dialog)
+        self.maybe_btn = mb
+        bar.addWidget(mb)
         self.inbox_lbl = QLabel("")
         bar.addWidget(self.inbox_lbl)
         self._inbox_setup()
@@ -1880,6 +2119,7 @@ class LogMixin:
         sc.setWidget(host)
         v.addWidget(sc, 1)
         self._atiles = (host, gl, sc, [])
+        self._maybe_button()
         sc.viewport().installEventFilter(self._area_filter())
         return pg
 
@@ -2052,7 +2292,7 @@ class LogMixin:
         a["photo"] = out
         self.refresh_log()
 
-    def _area_dialog(self, name="", keys=""):
+    def _area_dialog(self, name="", keys="", codes=""):
         d = QDialog(self)
         d.setWindowTitle("Area")
         d.setMinimumWidth(460)
@@ -2062,8 +2302,11 @@ class LogMixin:
         nm.setPlaceholderText("for example Blue Hills Ext 120")
         kw = QLineEdit(keys)
         kw.setPlaceholderText("Blue Hills, Cosmo")
+        cd = QLineEdit(codes)
+        cd.setPlaceholderText("BH, BHE")
         f.addRow("Area name", nm)
         f.addRow("Words in the client's emails", kw)
+        f.addRow("Short codes at the start of the subject", cd)
         v.addLayout(f)
         t = QLabel("An email whose subject or first lines have the area name (or one of these words) is put in this area. "
                    "An order table with a Township column is put in the area of that name.")
@@ -2081,7 +2324,7 @@ class LogMixin:
         v.addLayout(row)
         if d.exec() != QDialog.DialogCode.Accepted or not nm.text().strip():
             return None
-        return nm.text().strip(), kw.text().strip()
+        return nm.text().strip(), kw.text().strip(), cd.text().strip()
 
     def new_area(self):
         r = self._area_dialog()
@@ -2090,7 +2333,7 @@ class LogMixin:
         if self._match_area(r[0]) and _gnorm(self._match_area(r[0])) == _gnorm(r[0]):
             QMessageBox.information(self, "Orders", "There is already an area called %s." % r[0])
             return
-        self.areas.append({"name": r[0], "keys": r[1]})
+        self.areas.append({"name": r[0], "keys": r[1], "codes": r[2]})
         self.refresh_log()
         if QMessageBox.question(self, "Orders", "Choose a photo for the %s square now?" % r[0]) == QMessageBox.StandardButton.Yes:
             self.set_area_photo(r[0])
@@ -2099,13 +2342,13 @@ class LogMixin:
         a = next((x for x in self.areas if x["name"] == name), None)
         if a is None:
             return
-        r = self._area_dialog(a["name"], a.get("keys", ""))
+        r = self._area_dialog(a["name"], a.get("keys", ""), a.get("codes", ""))
         if r is None:
             return
         for e in self.log:
             if e.get("area") == name:
                 e["area"] = r[0]
-        a["name"], a["keys"] = r
+        a["name"], a["keys"], a["codes"] = r
         self.refresh_log()
 
     def delete_area(self, name):
@@ -2131,6 +2374,11 @@ class LogMixin:
                 e["area"] = "" if pick == NOT_SORTED else pick
         for c in self._changes_of(group):
             c["area"] = "" if pick == NOT_SORTED else pick
+        if pick != NOT_SORTED:
+            for e in self.log:
+                if e.get("group") == group and e.get("req_subject"):
+                    self._learn_code(e["req_subject"], pick)
+                    break
         self.refresh_log()
 
     def new_order(self):

@@ -245,6 +245,17 @@ def clean_change_text(body, group=""):
     return "\n".join(rest or ([] if all(URGENT.search(ln) for ln in keep) else keep)).strip()
 
 
+_NOTCODE = {"re", "fw", "fwd", "aw", "erf", "stand", "unit", "lot", "plot", "new", "no", "ref", "the", "hi"}
+
+
+def subject_code(subject):
+    """The short area code a subject starts with: 'BH 2037' and 'BH nominations orders' give BH; 'Re: AD46 braai' gives AD. '' when there is none."""
+    t = re.sub(r"^\s*((re|fwd?|aw)\s*:\s*)+", "", str(subject), flags=re.I)
+    m = re.match(r"\s*([A-Za-z]{2,4})\s*[-_ ]?\s*\d{2,6}\b", t) or re.match(r"\s*([A-Z]{2,4})\b", t)
+    code = m.group(1) if m else ""
+    return "" if code.lower() in _NOTCODE else code.upper()
+
+
 def save_eml(folder, rec):
     """Writes the email to the inbox folder (only done for emails that were taken in) and returns the path."""
     os.makedirs(folder, exist_ok=True)
