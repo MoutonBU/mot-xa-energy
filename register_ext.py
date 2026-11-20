@@ -975,7 +975,7 @@ class InboxDialog(QDialog):
         self.allow.clicked.connect(self._allow)
         v.addWidget(self.allow)
         f = QFormLayout()
-        self.words = QLineEdit(self.S.get("inbox_words", "order, orders"))
+        self.words = QLineEdit(self.S.get("inbox_words", "order, orders, bestelling, bestellings"))
         self.words.setPlaceholderText("order, new order, bestelling")
         f.addRow("Subject words (any of them)", self.words)
         self.secs = QSpinBox()
@@ -1042,7 +1042,7 @@ class InboxDialog(QDialog):
             return
         if self.on.isChecked() and not S.get("inbox_on") and not self.old.isChecked():
             S["inbox_baseline"] = True            # the first look only notes what is already there
-        S["inbox_words"], S["inbox_secs"], S["inbox_on"] = self.words.text().strip() or "order, orders", self.secs.value(), self.on.isChecked()
+        S["inbox_words"], S["inbox_secs"], S["inbox_on"] = self.words.text().strip() or "order, orders, bestelling, bestellings", self.secs.value(), self.on.isChecked()
         if self.old.isChecked():
             S["inbox_seen"] = []
             S.pop("inbox_baseline", None)
@@ -1316,7 +1316,7 @@ class LogMixin:
         if manual:
             self._inbox_label("checking...")
         self._inbox_busy = True
-        words, seen, folder = S.get("inbox_words", "order, orders"), set(S.get("inbox_seen", [])), os.path.join(M._user_data_dir(), "inbox")
+        words, seen, folder = S.get("inbox_words", "order, orders, bestelling, bestellings"), set(S.get("inbox_seen", [])), os.path.join(M._user_data_dir(), "inbox")
 
         def work():
             try:

@@ -7,12 +7,12 @@ import os
 import re
 import time
 
-HOUSE = re.compile(r"(?P<head>\b(?:stand|erf|house|unit|plot|block|site|lot)\b\s*(?:no\.?|number|#|:)?\s*[-:]?\s*(?P<id>[A-Za-z]?\d[\w+/\-]*))", re.I)
-ORDER_NO = re.compile(r"\b(?:order|po|purchase order|ref|reference)\b\s*(?:no\.?|number|#|:)?\s*[-:]?\s*(?P<n>[A-Z]{0,4}[\-/]?\d[\w/\-]*)", re.I)
+HOUSE = re.compile(r"(?P<head>\b(?:stand|standplaas|erf|house|huis|unit|eenheid|plot|perseel|block|blok|site|lot)\b\s*(?:no\.?|number|#|:)?\s*[-:]?\s*(?P<id>[A-Za-z]?\d[\w+/\-]*))", re.I)
+ORDER_NO = re.compile(r"\b(?:order|bestelling|opdrag|po|purchase order|ref|reference|verwysing)\b\s*(?:no\.?|number|#|:)?\s*[-:]?\s*(?P<n>[A-Z]{0,4}[\-/]?\d[\w/\-]*)", re.I)
 BULLET = re.compile(r"^\s*(?:[-*•]|\d{1,2}[.)])\s+")
 
 
-URGENT = re.compile(r"\b(urgent(ly)?|asap|a\.s\.a\.p\.?|as soon as possible|immediately|top priority|high priority|priority|rush|emergency|dringend|dadelik)\b", re.I)
+URGENT = re.compile(r"\b(urgent(ly)?|asap|a\.s\.a\.p\.?|as soon as possible|immediately|top priority|high priority|priority|rush|emergency|dringend(e)?|dadelik(e)?|onmiddellik(e)?|spoedeisend(e)?|spoed|spoedig moontlik|so (gou|spoedig) (as )?moontlik|prioriteit|noodgeval|hoogs dringend)\b", re.I)
 
 
 def is_urgent(subject, body):
@@ -43,7 +43,7 @@ def _tables(html):
     return out
 
 
-STAND_COL = re.compile(r"stand\s*(no|nr|number|#)|^(erf|house|unit|plot|lot)\b.*(no|nr|number|#)?|^(stand|erf|house|unit|plot|lot)$", re.I)
+STAND_COL = re.compile(r"(stand|standplaas|erf)\s*(no|nr|number|nommer|#)|^(erf|house|huis|unit|eenheid|plot|perseel|lot)\b.*(no|nr|number|nommer|#)?|^(stand|standplaas|erf|house|huis|unit|eenheid|plot|perseel|lot)$", re.I)
 
 
 def orders_from_tables(html, houses=()):
@@ -55,7 +55,7 @@ def orders_from_tables(html, houses=()):
             continue
         head = rows[hi]
         ci = next(i for i, c in enumerate(head) if STAND_COL.search(c))
-        kind = re.match(r"(stand|erf|house|unit|plot|lot)", head[ci], re.I)
+        kind = re.match(r"(standplaas|stand|erf|house|huis|unit|eenheid|plot|perseel|lot)", head[ci], re.I)
         word = (kind.group(1) if kind else "Stand").capitalize()
         for r in rows[hi + 1:]:
             if len(r) <= ci or not r[ci].strip() or not re.search(r"\d", r[ci]):
@@ -88,7 +88,7 @@ def parse_orders(subject, body, houses=(), html=""):
         return tab
     lines = [ln.rstrip() for ln in str(body or "").replace("\r", "").split("\n")]
     lines = [ln for ln in lines if not ln.lstrip().startswith(">")]
-    cut = next((i for i, ln in enumerate(lines) if re.match(r"\s*(--\s*$|On .+ wrote:|Sent from my|From:\s|(kind |best |warm )?regards\b|thanks\b|thank you\b|cheers\b)", ln, re.I)), len(lines))
+    cut = next((i for i, ln in enumerate(lines) if re.match(r"\s*(--\s*$|On .+ wrote:|Op .+ geskryf:|Sent from my|From:\s|Van:\s|(kind |best |warm )?regards\b|groete\b|vriendelike groete\b|dankie\b|thanks\b|thank you\b|cheers\b)", ln, re.I)), len(lines))
     lines = [ln for ln in lines[:cut] if ln.strip()]
 
     def group_of(text):
@@ -97,14 +97,19 @@ def parse_orders(subject, body, houses=(), html=""):
             if _norm(h) and _norm(h) in low:
                 return h
         m = HOUSE.search(text)
+        if m:
+            num = _norm(m.group("id"))
+            for h in houses:                      # "Standplaas 2037" in the email is "Stand 2037" in your register
+                if num and re.search(r"\d", num) and _norm(h).endswith(num):
+                    return h
         return re.sub(r"\s+", " ", m.group("head")).strip().capitalize() if m else ""
 
     num_lines = [i for i, ln in enumerate(lines) if re.fullmatch(r"\s*(?:(?:stand|erf|house|unit|plot|lot)\s*(?:no\.?|#)?\s*)?(\d{2,6}[A-Za-z]?)\s*[:\-]?\s*", ln, re.I)]
     if num_lines and not any(HOUSE.search(ln) and not re.fullmatch(r"\s*(?:stand|erf|house|unit|plot|lot)\s*(?:no\.?|#)?\s*\d+\s*", ln, re.I) for ln in lines):
         # the format "3339 / 91m2 (4+2) Extras: ...": a line with only the stand number, then what is wanted on it
-        intro = " ".join(ln.strip() for ln in lines[:num_lines[0]] if re.search(r"\b(please|following|finals?|orders?|plans?)\b", ln, re.I)).strip(" :")
+        intro = " ".join(ln.strip() for ln in lines[:num_lines[0]] if re.search(r"\b(please|following|finals?|finale|orders?|bestelling|plans?|planne|asseblief|volgende)\b", ln, re.I)).strip(" :")
         low = (intro + " " + str(subject)).lower()
-        kinds = ", ".join(k for k, pat in (("Final plans", r"\bfinals?\b"), ("Masters", r"\bmasters?\b"), ("SDP", r"\bsdp\b")) if re.search(pat, low))
+        kinds = ", ".join(k for k, pat in (("Final plans", r"\b(finals?|finale)\b"), ("Masters", r"\bmasters?\b"), ("SDP", r"\bsdp\b")) if re.search(pat, low))
         out = []
         for j, i in enumerate(num_lines):
             end = num_lines[j + 1] if j + 1 < len(num_lines) else len(lines)
@@ -115,7 +120,7 @@ def parse_orders(subject, body, houses=(), html=""):
             for x in lines[i + 1:end]:
                 if not x.strip():
                     continue
-                mm = re.search(r"\bextras?\s*:\s*(.*)$", x, re.I)
+                mm = re.search(r"\b(?:extras?|ekstra'?s?|ekstras)\s*:\s*(.*)$", x, re.I)
                 if mm:
                     ex += [y.strip() for y in re.split(r"[;,]", mm.group(1)) if y.strip()]
                     x = x[:mm.start()].strip()
