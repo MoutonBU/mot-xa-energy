@@ -963,9 +963,9 @@ class InboxDialog(QDialog):
         self.setWindowTitle("Watch my Gmail inbox for orders")
         self.setMinimumWidth(560)
         v = QVBoxLayout(self)
-        t = QLabel("The program looks at your Gmail inbox and works out by itself which emails are orders: an email that names a stand, erf or house, has an order word, "
-                   "has an order table, or comes from a client whose orders it already took in. Each order is split into one order per house and added to the Orders squares marked <b>New</b>. "
-                   "A later email about a house that already has its order is added to that order as a <b>change</b>. Newsletters, promotions and your own mail are ignored. "
+        t = QLabel("The program looks at the <b>subjects</b> of your Gmail inbox (never the whole email) for order words and for the name and short codes of each of your areas "
+                   "(for example Blue Hills, BH, BHE). Each email found is split into one order per house and added to the area's square marked <b>New</b>; a later email about a "
+                   "house that already has its order is added to that order as a <b>change</b>. An estate that is not there yet gets its own square. "
                    "The program only reads; it never deletes or changes your mail.")
         t.setWordWrap(True)
         v.addWidget(t)
@@ -1690,7 +1690,7 @@ class LogMixin:
         if manual:
             self._inbox_label("checking...")
         self._inbox_busy = True
-        words, seen, folder = S.get("inbox_words", "order, orders, bestelling, bestellings"), set(S.get("inbox_seen", [])), os.path.join(M._user_data_dir(), "inbox")
+        words, seen, folder = self._search_words(), set(S.get("inbox_seen", [])), os.path.join(M._user_data_dir(), "inbox")
 
         def work():
             try:
@@ -1700,189 +1700,32 @@ class LogMixin:
                 self.inbox_done.emit([], str(ex))
         threading.Thread(target=work, daemon=True).start()
 
-    def _maybe_button(self):
-        n = len(self._M().SETTINGS.get("inbox_maybe", []))
-        b = getattr(self, "maybe_btn", None)
-        if b is not None:
-            b.setText("Maybe orders (%d)" % n if n else "Maybe orders")
-            b.setStyleSheet("font-weight:700;%s" % ("background:#d8132b;color:#ffffff;" if n else ""))
+    @staticmethod
+    def _derived_codes(name):
+        """BH and BHE for Blue Hills; AL and ALE for Albertsdal: the initials (or the first two letters of a single name), with and without an E for extension."""
+        words = [w for w in re.split(r"[^A-Za-z]+", LogMixin._area_base(name)) if w]
+        if not words:
+            return []
+        base = "".join(w[0] for w in words).upper() if len(words) > 1 else words[0][:2].upper()
+        return [base, base + "E"]
 
-    def maybe_dialog(self):
-        """Emails from senders that are not your clients yet but look like orders: you decide once for each sender."""
-        import mail_inbox
-        M = self._M()
-        S = M.SETTINGS
-        d = QDialog(self)
-        d.setWindowTitle("Maybe orders")
-        d.resize(900, 520)
-        v = QVBoxLayout(d)
-        n = QLabel("These emails look like orders but come from someone who is not one of your clients yet. <b>It's a client</b> takes the email in (and everything that "
-                   "sender sends from now on); <b>Not an order</b> ignores that sender for good. Choose the area when you know it: the program remembers the short code "
-                   "in the subject (for example BH) and files the next ones by itself.")
-        n.setWordWrap(True)
-        v.addWidget(n)
-        row = QHBoxLayout()
-        from PySide6.QtWidgets import QListWidget, QPlainTextEdit
-        lst = QListWidget()
-        lst.setMinimumWidth(360)
-        prev = QPlainTextEdit()
-        prev.setReadOnly(True)
-        row.addWidget(lst, 1)
-        row.addWidget(prev, 2)
-        v.addLayout(row, 1)
-        ar = QComboBox()
-        fl = QFormLayout()
-        fl.addRow("Put it in the area", ar)
-        v.addLayout(fl)
-        bt = QHBoxLayout()
-        yes = QPushButton("It's a client: take it in")
-        yes.setStyleSheet("font-weight:700;")
-        no = QPushButton("Not an order: ignore this sender")
-        opn = QPushButton("Open the email")
-        cl = QPushButton("Clients...")
-        close = QPushButton("Close")
-        for b_ in (yes, no, opn, cl):
-            bt.addWidget(b_)
-        bt.addStretch(1)
-        bt.addWidget(close)
-        v.addLayout(bt)
+    def _area_codes(self, a):
+        explicit = [c.strip().upper() for c in re.split(r"[,;\s]+", a.get("codes", "")) if c.strip()]
+        return explicit + [c for c in self._derived_codes(a["name"]) if c not in explicit]
 
-        def fill():
-            lst.clear()
-            for m in S.get("inbox_maybe", []):
-                lst.addItem("%s  -  %s" % (str(m["from"])[:40], m["subject"][:70]))
-            ar.clear()
-            ar.addItem("Work it out from the email", None)
-            for nm_ in self._area_names():
-                ar.addItem(nm_, nm_)
-            if lst.count():
-                lst.setCurrentRow(0)
-            else:
-                prev.setPlainText("Nothing is waiting.")
-            self._maybe_button()
-
-        def cur():
-            r = lst.currentRow()
-            ms = S.get("inbox_maybe", [])
-            return ms[r] if 0 <= r < len(ms) else None
-
-        def show():
-            m = cur()
-            if m is None:
-                return
-            try:
-                rec = mail_inbox.read_eml(open(m["path"], "rb").read())
-                prev.setPlainText("From: %s\nSubject: %s\nDate: %s\n\n%s" % (rec["from"], rec["subject"], rec["date"], rec["body"][:4000]))
-            except Exception:
-                prev.setPlainText("From: %s\nSubject: %s" % (m["from"], m["subject"]))
-            got = self._area_by_code(m["subject"])
-            i = ar.findData(got) if got else 0
-            ar.setCurrentIndex(max(i, 0))
-
-        def take():
-            m = cur()
-            if m is None:
-                return
-            addr = mail_inbox.sender_addr(m["from"])
-            S.setdefault("inbox_clients", {})[addr] = {"name": str(m["from"])}
-            pick = ar.currentData()
-            mine = [x for x in S.get("inbox_maybe", []) if mail_inbox.sender_addr(x["from"]) == addr]
-            S["inbox_maybe"] = [x for x in S.get("inbox_maybe", []) if mail_inbox.sender_addr(x["from"]) != addr]
-            houses = [g["name"] for g in self.groups] + [x.get("group", "") for x in self.log if x.get("group")]
-            st = {"made": 0, "changes": 0, "alerts": [], "news": [], "have": {self._order_key(e) for e in self.log if e.get("type") == "Order"},
-                  "mem": list(S.get("inbox_keys", [])), "houses": houses, "folder": os.path.join(M._user_data_dir(), "inbox")}
-            for x in reversed(mine):
-                try:
-                    rec = mail_inbox.read_eml(open(x["path"], "rb").read())
-                except Exception:
-                    continue
-                rec.update({"id": x["id"], "path": x["path"]})
-                if pick is not None:
-                    self._learn_code(rec["subject"], pick)
-                self._process_email(rec, st, force_area=pick)
-            S["inbox_keys"] = st["mem"][-3000:]
-            M.save_settings()
-            self.refresh_log()
-            self._order_toast(st["news"], st["alerts"])
-            fill()
-
-        def skip():
-            m = cur()
-            if m is None:
-                return
-            addr = mail_inbox.sender_addr(m["from"])
-            S.setdefault("inbox_ignored", []).append(addr)
-            S["inbox_maybe"] = [x for x in S.get("inbox_maybe", []) if mail_inbox.sender_addr(x["from"]) != addr]
-            M.save_settings()
-            fill()
-
-        def op():
-            m = cur()
-            if m and m.get("path") and os.path.exists(m["path"]):
-                QDesktopServices.openUrl(QUrl.fromLocalFile(m["path"]))
-        lst.currentRowChanged.connect(lambda _r: show())
-        yes.clicked.connect(take)
-        no.clicked.connect(skip)
-        opn.clicked.connect(op)
-        cl.clicked.connect(self.clients_dialog)
-        close.clicked.connect(d.accept)
-        fill()
-        d.exec()
-        self._maybe_button()
-
-    def clients_dialog(self):
-        from PySide6.QtWidgets import QListWidget, QInputDialog
-        M = self._M()
-        S = M.SETTINGS
-        d = QDialog(self)
-        d.setWindowTitle("My clients")
-        d.resize(520, 420)
-        v = QVBoxLayout(d)
-        v.addWidget(QLabel("Everything these senders write is read as orders and changes. Ignored senders are never looked at."))
-        lst = QListWidget()
-        v.addWidget(lst, 1)
-        bt = QHBoxLayout()
-        add = QPushButton("Add a client address...")
-        rem = QPushButton("Remove selected")
-        close = QPushButton("Close")
-        for b_ in (add, rem):
-            bt.addWidget(b_)
-        bt.addStretch(1)
-        bt.addWidget(close)
-        v.addLayout(bt)
-
-        def fill():
-            lst.clear()
-            for a_ in sorted(S.get("inbox_clients", {})):
-                lst.addItem("Client:   " + a_)
-            for a_ in sorted(S.get("inbox_ignored", [])):
-                lst.addItem("Ignored:  " + a_)
-
-        def do_add():
-            t, ok = QInputDialog.getText(d, "My clients", "Email address of the client:")
-            if ok and "@" in t:
-                a_ = t.strip().lower()
-                S.setdefault("inbox_clients", {})[a_] = {"name": a_}
-                S["inbox_ignored"] = [x for x in S.get("inbox_ignored", []) if x.lower() != a_]
-                M.save_settings()
-                fill()
-
-        def do_rem():
-            it = lst.currentItem()
-            if it is None:
-                return
-            kind, a_ = [x.strip() for x in it.text().split(":", 1)]
-            if kind == "Client":
-                S.get("inbox_clients", {}).pop(a_, None)
-            else:
-                S["inbox_ignored"] = [x for x in S.get("inbox_ignored", []) if x != a_]
-            M.save_settings()
-            fill()
-        add.clicked.connect(do_add)
-        rem.clicked.connect(do_rem)
-        close.clicked.connect(d.accept)
-        fill()
-        d.exec()
+    def _search_words(self):
+        """The subject words the Gmail search uses: your own words, the order words, and for every area its name, its email words and its short codes (BH, BHE...).
+        Only the subject is searched, never the whole email."""
+        S = self._M().SETTINGS
+        words = [w.strip() for w in re.split(r"[,;\n]", S.get("inbox_words", "") or "") if w.strip()]
+        words += ["order", "orders", "bestelling", "bestellings", "extension", "ext", "uitbreiding"]
+        for a in self.areas:
+            words += [a["name"], self._area_base(a["name"])] + [k.strip() for k in re.split(r"[,;\n]", a.get("keys", "")) if k.strip()] + self._area_codes(a)
+        out = []
+        for w in words:
+            if w and w.lower() not in [x.lower() for x in out]:
+                out.append(w)
+        return ", ".join(out)
 
     def _learn_code(self, subject, area):
         """The short code at the start of a subject (BH, AD...) is remembered for the area it was filed in, so the next email with that code files itself."""
@@ -2009,38 +1852,22 @@ class LogMixin:
         have = {self._order_key(e) for e in self.log if e.get("type") == "Order"}
         mem = list(S.get("inbox_keys", []))
         have_ids = {e.get("msg_id") for e in self.log if e.get("msg_id")}
-        clients = S.setdefault("inbox_clients", {})
-        ignored = {x.lower() for x in S.get("inbox_ignored", [])}
-        maybe = S.setdefault("inbox_maybe", [])
         folder = os.path.join(M._user_data_dir(), "inbox")
         st = {"made": 0, "changes": 0, "alerts": alerts, "news": news, "have": have, "mem": mem, "houses": houses, "folder": folder}
-        maybe_new = 0
         for it in reversed(items):
             if it["id"] in seen or it["id"] in have_ids:
                 continue
             seen.append(it["id"])
             if base:
                 continue
-            addr = mail_inbox.sender_addr(it["from"])
-            if addr in ignored:
+            if mail_inbox.ROBOT.search(mail_inbox.sender_addr(it["from"])):
                 continue
-            if addr in {c.lower() for c in clients}:
-                self._process_email(it, st)                        # one of your clients: everything they send is read
-            elif mail_inbox.looks_like_order(it["subject"], it["body"], it.get("html", ""), it["from"], (), houses):
-                try:
-                    path = mail_inbox.save_eml(folder, it)
-                except Exception:
-                    path = ""
-                maybe.append({"id": it["id"], "subject": it["subject"], "from": it["from"], "date": it["date"], "path": path})
-                maybe_new += 1                                    # not a known client: waits in the Maybe orders list
+            self._process_email(it, st)
         made, changes_made = st["made"], st["changes"]
-        del maybe[:-200]
         S["inbox_seen"] = seen[-3000:]
         S["inbox_keys"] = mem[-3000:]
         M.save_settings()
         removed = self.inbox_dedupe()
-        if maybe_new:
-            self._maybe_button()
         if made or removed or alerts or changes_made:
             self.refresh_log()
             self._order_toast(news, alerts)
@@ -2049,7 +1876,7 @@ class LogMixin:
                 QApplication.alert(self.window(), 0)
             except Exception:
                 pass
-        self._inbox_label("checked %s%s" % (now, ((", %d new order%s" % (made, "" if made == 1 else "s")) + ((", %d change%s" % (changes_made, "" if changes_made == 1 else "s")) if changes_made else "")) if (made or changes_made) else ", nothing new") + ((", %d email%s waiting in Maybe orders" % (maybe_new, "" if maybe_new == 1 else "s")) if maybe_new else ""))
+        self._inbox_label("checked %s%s" % (now, ((", %d new order%s" % (made, "" if made == 1 else "s")) + ((", %d change%s" % (changes_made, "" if changes_made == 1 else "s")) if changes_made else "")) if (made or changes_made) else ", nothing new") + "")
 
     # ----- areas: the large squares (Blue Hills, another estate...) that the houses and orders sit in -----
     @staticmethod
@@ -2078,7 +1905,7 @@ class LogMixin:
         got = self._match_area(name)
         if got:
             return got
-        self.areas.append({"name": name.strip(), "keys": ""})
+        self.areas.append({"name": name.strip(), "keys": "", "codes": ", ".join(self._derived_codes(name))})
         return name.strip()
 
     _EXT_RX = re.compile(r"([A-Z][\w'\u2019-]+(?:[ \t]+[A-Z][\w'\u2019-]+){0,3})[ \t]*,?[ \t]*(?i:(?:ext(?:ension)?|uitbreiding|uitb)\b\.?(?:[ \t]*\d+)?|(?:phase|fase)[ \t]*\.?[ \t]*\d+)")
@@ -2108,7 +1935,7 @@ class LogMixin:
             return ""
         if code:
             for a in self.areas:
-                if code.upper() in [c.strip().upper() for c in re.split(r"[,;\s]+", a.get("codes", "")) if c.strip()]:
+                if code.upper() in self._area_codes(a):
                     return a["name"]
         return ""
 
@@ -2155,11 +1982,6 @@ class LogMixin:
         cb_.setStyleSheet("font-weight:700;")
         cb_.clicked.connect(lambda: self.inbox_check(manual=True))
         bar.addWidget(cb_)
-        mb = QPushButton("Maybe orders")
-        mb.setStyleSheet("font-weight:700;")
-        mb.clicked.connect(self.maybe_dialog)
-        self.maybe_btn = mb
-        bar.addWidget(mb)
         self.inbox_lbl = QLabel("")
         bar.addWidget(self.inbox_lbl)
         self._inbox_setup()
@@ -2181,7 +2003,6 @@ class LogMixin:
         sc.setWidget(host)
         v.addWidget(sc, 1)
         self._atiles = (host, gl, sc, [])
-        self._maybe_button()
         sc.viewport().installEventFilter(self._area_filter())
         return pg
 
@@ -2219,7 +2040,7 @@ class LogMixin:
         names = [a["name"] for a in self.areas]
         for e in self.log:
             if e.get("type") == "Order" and e.get("area") and e["area"] not in names:
-                self.areas.append({"name": e["area"], "keys": ""})
+                self.areas.append({"name": e["area"], "keys": "", "codes": ", ".join(self._derived_codes(e["area"]))})
                 names.append(e["area"])
         if any(e.get("type") == "Order" and not e.get("area") for e in self.log):
             names.append(NOT_SORTED)
