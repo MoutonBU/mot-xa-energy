@@ -20727,6 +20727,11 @@ def main():
     except Exception:
         pass
     app = QApplication(sys.argv)
+    try:
+        import button_fx
+        button_fx.install(app)                        # soft glow on every button: mouse over, pressed, clicked
+    except Exception as e_:
+        print("button animation not started:", e_)
     if not any(a in sys.argv for a in ("--restore", "--ready", "--after-update")):   # reloads and updates stay signed in
         user = sign_in_gate(app)
         if not user:
