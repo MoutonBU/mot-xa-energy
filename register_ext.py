@@ -19,11 +19,12 @@ from PySide6.QtWidgets import (QWidget, QAbstractItemView, QCheckBox, QComboBox,
                                QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QTableWidget,
                                QTableWidgetItem, QVBoxLayout, QStackedWidget, QScrollArea, QFrame)
 
-LOGK = ("group", "type", "rev", "date", "order", "text", "extras", "kinds", "by", "req_subject", "req_date", "req_from", "sent_date", "sent_to", "status", "by_name", "by_email", "sent_subject")
-LOGC = ["House or block", "Type", "Rev", "Date", "Order number", "What was ordered or changed", "Extras the client wants", "Kind of change", "Asked by", "The client's email", "Received",
+LOGK = ("group", "priority", "type", "rev", "date", "order", "text", "extras", "kinds", "by", "req_subject", "req_date", "req_from", "sent_date", "sent_to", "status", "by_name", "by_email", "sent_subject")
+LOGC = ["House or block", "Priority", "Type", "Rev", "Date", "Order number", "What was ordered or changed", "Extras the client wants", "Kind of change", "Asked by", "The client's email", "Received",
         "From", "Sent to the client on", "Sent to", "Status", "Client name", "Client email", "Email that was sent"]
 TYPES = ["Order", "Change", "Issue"]
 KINDS = ["Minor changes", "Major changes", "Masters", "Final plans", "SDP"]
+PRIO = ["", "Urgent", "Asked again"]
 LSTAT = ["New", "Draft", "Final", "Issued", "Superseded"]
 PRESETS = {"Gmail": ("smtp.gmail.com", 465, "SSL"), "Outlook / Office 365": ("smtp.office365.com", 587, "STARTTLS"), "Other": ("", 587, "STARTTLS")}
 
@@ -1050,6 +1051,10 @@ class InboxDialog(QDialog):
         self.accept()
 
 
+def _gnorm(s):
+    return re.sub(r"[^a-z0-9]+", "", str(s or "").lower())
+
+
 class _ExtrasCell(QWidget):
     """Under a drop-down heading: the extras the client wants on this house (one per line, editable)."""
 
@@ -1104,7 +1109,7 @@ class _ExtrasCell(QWidget):
 class LogMixin:
     """The orders-and-revisions log."""
 
-    LOG_SIMPLE = ("group", "order", "text", "extras", "kinds", "by_name", "by_email", "req_subject", "sent_subject")
+    LOG_SIMPLE = ("group", "priority", "order", "text", "extras", "kinds", "by_name", "by_email", "req_subject", "sent_subject")
 
     def build_log(self, kind="Order"):
         """One of the two lists: the client's orders, or the client's changes. They share the log behind them, so the email and the PDF still find everything."""
@@ -1154,7 +1159,7 @@ class LogMixin:
         t.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         t.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         t.horizontalHeader().setStretchLastSection(True)
-        for i, wd in enumerate((150, 70, 40, 85, 110, 330, 300, 660, 130, 300, 85, 170, 85, 200, 80, 150, 200, 320)):
+        for i, wd in enumerate((150, 100, 70, 40, 85, 110, 330, 300, 660, 130, 300, 85, 170, 85, 200, 80, 150, 200, 320)):
             t.setColumnWidth(i, wd)
         t.itemChanged.connect(self._log_cell)
         t.cellDoubleClicked.connect(lambda r, c: self.open_sent() if LOGK[c] == "sent_subject" else self.open_ref() if LOGK[c] == "req_subject" else None)
@@ -1229,6 +1234,51 @@ class LogMixin:
             self.log.remove(e)
         return len(drop)
 
+    def _chase(self, lines, urgent, alerts, it):
+        """The client wrote again about an order that is already in the list: it moves up (urgent) or is marked as asked again."""
+        for x in lines:
+            x["chased"] = int(x.get("chased", 0) or 0) + 1
+            if urgent:
+                x["priority"] = "Urgent"
+            elif not x.get("priority"):
+                x["priority"] = "Asked again"
+        if lines and urgent:
+            alerts.append((lines[0].get("group", ""), it["subject"], "again"))
+
+    def _urgent_popup(self, alerts):
+        from PySide6.QtWidgets import QApplication
+        seen_, rows = set(), []
+        for g, subj, how in alerts:
+            if g in seen_:
+                continue
+            seen_.add(g)
+            rows.append("%s  (%s: %s)" % (g, "the client wrote again" if how == "again" else "new urgent order", subj))
+        box = QMessageBox(self.window())
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Urgent order")
+        box.setText("<b>URGENT</b> - the client needs attention on:<br><br>" + "<br>".join(x.replace("<", "&lt;") for x in rows) +
+                    "<br><br>It is now at the top of the Orders list, marked Urgent.")
+        op = box.addButton("Open the first one", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Close", QMessageBox.ButtonRole.RejectRole)
+        first = next(iter(seen_))
+        box.setModal(False)
+
+        def clicked(b):
+            if b is op:
+                try:
+                    self.sub.setCurrentIndex(self.sub.indexOf(self.lpages["Order"]))
+                    self._open_group("Order", first)
+                except Exception:
+                    pass
+        box.buttonClicked.connect(clicked)
+        self._popups = getattr(self, "_popups", [])[-3:] + [box]
+        box.show()
+        box.raise_()
+        try:
+            QApplication.alert(self.window(), 0)
+        except Exception:
+            pass
+
     def inbox_dialog(self):
         InboxDialog(self, self).exec()
 
@@ -1290,6 +1340,7 @@ class LogMixin:
         seen = list(S.get("inbox_seen", []))
         houses = [g["name"] for g in self.groups]
         made = 0
+        alerts = []
         have = {self._order_key(e) for e in self.log if e.get("type") == "Order"}
         mem = list(S.get("inbox_keys", []))
         have_ids = {e.get("msg_id") for e in self.log if e.get("msg_id")}
@@ -1304,6 +1355,7 @@ class LogMixin:
                 rd = short_date(parsedate_to_datetime(it["date"]).date().isoformat())
             except Exception:
                 rd = it["date"][:16]
+            urgent = mail_inbox.is_urgent(it["subject"], it["body"])
             for o in mail_inbox.parse_orders(it["subject"], it["body"], houses, it.get("html", "")):
                 e = {k: "" for k in LOGK}
                 e.update({"group": o["group"] or "Not sure which house", "type": "Order", "date": datetime.date.today().isoformat(), "order": o["order"], "text": o["text"], "extras": o.get("extras", ""),
@@ -1311,8 +1363,18 @@ class LogMixin:
                           "by_name": nm, "by_email": addr, "msg_id": it["id"]})
                 k = self._order_key(e)
                 kh = self._key_hash(e)
+                gl = [x for x in self.log if x.get("type") == "Order" and not x.get("sent_date") and _gnorm(x.get("group")) == _gnorm(e["group"])]
+                again = [x for x in gl if self._order_key(x) == k]
                 if k in have or kh in mem:
-                    continue                      # this order came in before (in this email or another): it is only added once
+                    # this order came in before (in this email or another): it is only added once, but the client asking again is noted
+                    self._chase(again or [], urgent, alerts, it)
+                    continue
+                if urgent and gl and not (e["extras"] or len(str(e["text"]).split("\n")) >= 3):
+                    self._chase(gl, True, alerts, it)       # "Stand 2037 is urgent": about the order that is already there
+                    continue
+                if urgent:
+                    e["priority"] = "Urgent"
+                    alerts.append((e["group"], it["subject"], "new"))
                 have.add(k)
                 mem.append(kh)
                 self.log.append(e)
@@ -1321,8 +1383,10 @@ class LogMixin:
         S["inbox_keys"] = mem[-3000:]
         M.save_settings()
         removed = self.inbox_dedupe()
-        if made or removed:
+        if made or removed or alerts:
             self.refresh_log()
+            if alerts:
+                self._urgent_popup(alerts)
             try:
                 from PySide6.QtWidgets import QApplication
                 QApplication.alert(self.window(), 0)
@@ -1400,13 +1464,18 @@ class LogMixin:
         for i, b in enumerate(tiles):
             gl.addWidget(b, i // cols, i % cols)
 
+    @staticmethod
+    def _is_urgent(e):
+        return e.get("priority") == "Urgent" and not e.get("sent_date")
+
     def _tile_names(self, kind):
         names = [g["name"] for g in self.groups]
         for e in self.log:
             g = e.get("group", "")
             if g and g not in names and self.log_kind(e) == kind:
                 names.append(g)
-        return names
+        urg = {e.get("group") for e in self.log if self.log_kind(e) == kind and self._is_urgent(e)}
+        return [n for n in names if n in urg] + [n for n in names if n not in urg]          # houses with an urgent order come first
 
     def _rebuild_tiles(self, kind):
         host, gl, sc, tiles = self._ltiles[kind]
@@ -1426,6 +1495,12 @@ class LogMixin:
             last = max([str(e.get("date", "")) for e in ents] or [""])
             lines = ["<b style='font-size:14px'>%s</b>" % name.replace("<", "&lt;"),
                      ("%d %s" % (len(ents), ("order" if kind == "Order" else "change") + ("" if len(ents) == 1 else "s"))) if ents else "nothing yet"]
+            urg = sum(1 for e in ents if self._is_urgent(e))
+            asked = sum(1 for e in ents if e.get("priority") == "Asked again" and not e.get("sent_date"))
+            if urg:
+                lines.insert(1, "<b style='color:#d8132b'>URGENT</b>")
+            elif asked:
+                lines.insert(1, "<b style='color:#d8932f'>client asked again</b>")
             if new:
                 lines.append("<b style='color:#d8132b'>%d new</b>" % new)
             elif open_:
@@ -1435,7 +1510,7 @@ class LogMixin:
             btn = QPushButton()
             btn.setFixedSize(220, 100)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setStyleSheet(qss + ("QPushButton{border:2px solid #d8132b;}" if new else ""))
+            btn.setStyleSheet(qss + ("QPushButton{border:2px solid #d8132b;}" if new or urg else "") + ("QPushButton{background:%s;}" % ("#ffe3e6" if lt else "#3a1b20") if urg else ""))
             lab = QLabel("<br>".join(lines), btn)
             lab.setStyleSheet("background:transparent;border:none;color:%s;" % txt)
             lab.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
@@ -1944,6 +2019,7 @@ class LogMixin:
                 keep_row = t.currentRow()
                 gsel = self._lgroup.get(kind)
                 ents = [e for e in self.log if self.log_kind(e) == kind and (gsel is None or e.get("group") == gsel)]
+                ents.sort(key=lambda e: 0 if self._is_urgent(e) else 1)          # urgent ones on top
                 self._lrows[kind] = ents
                 t.setRowCount(0)
                 t.setRowCount(len(ents))
@@ -1954,16 +2030,20 @@ class LogMixin:
                             it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
                         if k in ("req_subject",) and e.get("req_path"):
                             it.setToolTip(e["req_path"])
-                        if e.get("status") == "Draft":
+                        if self._is_urgent(e):
+                            it.setBackground(QColor(216, 19, 43, 70))
+                        elif e.get("status") == "Draft":
                             it.setBackground(QColor(120, 90, 20, 90))
                         t.setItem(i, c, it)
-                    for k, vals in (("group", [g["name"] for g in self.groups]), ("type", TYPES), ("by", None), ("status", LSTAT)):
+                    for k, vals in (("group", [g["name"] for g in self.groups]), ("priority", PRIO), ("type", TYPES), ("by", None), ("status", LSTAT)):
                         cb = QComboBox()
                         cb.setEditable(True)
                         from register import BYS
                         cb.addItems(vals if vals is not None else BYS)
                         cb.setCurrentText(str(e.get(k, "")))
                         cb.currentTextChanged.connect(lambda tx, ent=e, kk=k: ent.__setitem__(kk, tx))
+                        if k == "priority":
+                            cb.currentTextChanged.connect(lambda _tx: QTimer.singleShot(0, self.refresh_log))
                         t.setCellWidget(i, LOGK.index(k), cb)
                     t.setCellWidget(i, LOGK.index("kinds"), self._kinds_box(e))
                     t.setCellWidget(i, LOGK.index("extras"), _ExtrasCell(self, e, t))

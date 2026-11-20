@@ -12,6 +12,15 @@ ORDER_NO = re.compile(r"\b(?:order|po|purchase order|ref|reference)\b\s*(?:no\.?
 BULLET = re.compile(r"^\s*(?:[-*•]|\d{1,2}[.)])\s+")
 
 
+URGENT = re.compile(r"\b(urgent(ly)?|asap|a\.s\.a\.p\.?|as soon as possible|immediately|top priority|high priority|priority|rush|emergency|dringend|dadelik)\b", re.I)
+
+
+def is_urgent(subject, body):
+    """True when the client says it is urgent in the subject or the top of the email (quoted older mail is ignored)."""
+    top = "\n".join(ln for ln in str(body or "").split("\n")[:40] if not ln.lstrip().startswith(">"))
+    return bool(URGENT.search(str(subject or "") + "\n" + top))
+
+
 def _norm(s):
     return re.sub(r"[^a-z0-9]+", "", str(s).lower())
 
