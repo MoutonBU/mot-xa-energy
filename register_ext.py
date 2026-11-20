@@ -776,7 +776,14 @@ class OrderReplyDialog(QDialog):
         v.addWidget(self.body, 3)
         self.design_chk = QCheckBox("Send as a designed email with my signature (MCP look)")
         self.design_chk.setChecked(page.designed_on())
-        v.addWidget(self.design_chk)
+        dr_ = QHBoxLayout()
+        dr_.addWidget(self.design_chk)
+        seeb = QPushButton("See how it looks")
+        seeb.setToolTip("Shows the email as the client will see it, with the MCP look and your signature")
+        seeb.clicked.connect(lambda: page.show_design(self.sub.text(), self.body.toPlainText()))
+        dr_.addWidget(seeb)
+        dr_.addStretch(1)
+        v.addLayout(dr_)
         v.addWidget(QLabel("Drawings that go with it (tick what is sent):"))
         self.att = QListWidget()
         self.paths = []
@@ -3843,7 +3850,11 @@ class LogMixin:
                 subj = subj or str(e.get("req_subject") or "").strip()
             ls = [g]
             for e in ords:
-                t = str(e.get("text") or "").strip().split("\n")
+                t = [x for x in str(e.get("text") or "").strip().split("\n") if x.strip()]
+                if len(t) > 1:
+                    t = t[1:]                                       # the first line is only the heading of the email ("New order Urbika Erf 670 | PTN 38")
+                elif t and ("|" in t[0] or _gnorm(g) in _gnorm(t[0])):
+                    t = ["new order"]
                 ls.append("  Your order: " + (t[0] if t else "") + ("".join("\n    " + x for x in t[1:]) if len(t) > 1 else ""))
             for c in chs:
                 kd = "major" if "Major" in str(c.get("kinds", "")) else "minor" if "Minor" in str(c.get("kinds", "")) else ""

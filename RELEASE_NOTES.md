@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.68**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.69**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **1.86.69 Orders reply: "See how it looks" button** in the reply window shows the email with the MCP look and your signature before you send. The order line in the reply no longer repeats the email heading ("New order Urbika Erf 670 | PTN 38").
 
 - **1.86.68 Orders: reply to the client with drawings and your signature.** New "Reply to the client..." button on a house, and in the right-click menu of a house or of several picked houses. It fills in the client's address, "Re:" subject, each house's order and changes, and the original order quoted underneath. The revised drawings from the register that match the stand or PTN number are ticked ready to send (you can add more files), your signature goes at the bottom, and it replies inside the client's own email thread when their email is saved. Every line of those houses then shows the date and the email that was sent.
 
