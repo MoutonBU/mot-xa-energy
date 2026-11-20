@@ -2449,7 +2449,7 @@ def gh_latest_release(repo, token, timeout=15, base=()):
     raise RuntimeError("The latest release has no installer file.")
 
 
-def _parallel_download(url, dest, total, progress=None, workers=8, block=4 << 20, tries=4):
+def _parallel_download(url, dest, total, progress=None, workers=32, block=2 << 20, tries=4):
     """Download url into dest with several connections, in 4 MB pieces (HTTP Range). Raises when the server does not play along."""
     import threading
     pieces = [(s, min(s + block, total) - 1) for s in range(0, total, block)]

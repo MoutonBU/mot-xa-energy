@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.18**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.19**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Faster update download, 1.86.19**: the update downloads now use 32 connections at once (was 8), in 2 MB pieces so all of them stay busy to the end.
 - **Quick code updates, 1.86.18**: when a release changes only the program's code (no new libraries, installer or pictures), the build now makes a small code update instead of a new installer (about a minute instead of about 12). The program offers it on the same red update button, marked quick, downloads a few MB and restarts with your work restored. A code update only applies to the installer it was made for; when a release needs a new installer, that is offered instead. If a code update ever fails to load, the program puts it aside and starts from the installer's own files. This release itself is a full installer: it adds the start-up file the quick updates need.
 - **Bigger column dividers that slide the columns after them, 1.86.17**: the column divider is now much easier to grab (about 9 pixels either side, with a larger arrow marker), and dragging it moves every column after it along with its own width, instead of making the next column smaller. This replaces the neighbour-gives-width behaviour of 1.86.16.
 - **Centred table text and divider that moves its neighbour, 1.86.16**: in every table the text under the headings is now centred in its column, and dragging a column divider now moves the divider itself: the column next to it gives up or takes the width, so the columns further along stay where they are (dragging left no longer leaves the table the same width with only one column changed).
