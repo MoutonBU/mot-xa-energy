@@ -25,6 +25,7 @@ LOGC = ["House or block", "Priority", "Type", "Rev", "Date", "Order number", "Wh
 TYPES = ["Order", "Change", "Issue"]
 KINDS = ["Minor changes", "Major changes", "Masters", "Final plans", "SDP"]
 PRIO = ["", "Urgent", "Asked again"]
+NOT_SORTED = "Not sorted"
 LSTAT = ["New", "Draft", "Final", "Issued", "Superseded"]
 PRESETS = {"Gmail": ("smtp.gmail.com", 465, "SSL"), "Outlook / Office 365": ("smtp.office365.com", 587, "STARTTLS"), "Other": ("", 587, "STARTTLS")}
 
@@ -1120,7 +1121,9 @@ class LogMixin:
         if not hasattr(self, "ltabs"):
             self.ltabs, self.lpages, self.lall = {}, {}, {}
             self._lgroup, self._ltiles, self._ltitle, self._lstack = {}, {}, {}, {}
+            self._lidx, self._larea = {}, {}
         self._lgroup[kind] = None
+        self._larea[kind] = None
         back = QHBoxLayout()
         bb = QPushButton("\u2039  All houses and blocks")
         bb.setStyleSheet("font-weight:700;")
@@ -1172,6 +1175,11 @@ class LogMixin:
         self._lrows[kind] = []
         self._log_columns()
         stack = QStackedWidget()
+        if kind == "Order":
+            stack.addWidget(self._area_page())
+            self._lidx[kind] = {"areas": 0, "houses": 1, "detail": 2}
+        else:
+            self._lidx[kind] = {"houses": 0, "detail": 1}
         stack.addWidget(self._tile_page(kind))
         stack.addWidget(w)
         self.lpages[kind], self._lstack[kind] = stack, stack
@@ -1267,6 +1275,8 @@ class LogMixin:
             if b is op:
                 try:
                     self.show_orders("Order")
+                    ue = next((x for x in self.log if x.get("group") == first and self._is_urgent(x)), None)
+                    self._open_area(self._area_of(ue) if ue else NOT_SORTED)
                     self._open_group("Order", first)
                 except Exception:
                     pass
@@ -1373,10 +1383,11 @@ class LogMixin:
                 rd = it["date"][:16]
             urgent = mail_inbox.is_urgent(it["subject"], it["body"])
             for o in mail_inbox.parse_orders(it["subject"], it["body"], houses, it.get("html", "")):
+                area = self._area_for(it["subject"], it["body"], o["group"], o.get("area", ""))
                 e = {k: "" for k in LOGK}
                 e.update({"group": o["group"] or "Not sure which house", "type": "Order", "date": datetime.date.today().isoformat(), "order": o["order"], "text": o["text"], "extras": o.get("extras", ""),
                           "status": "New", "kinds": o.get("kinds", ""), "req_subject": it["subject"], "req_date": rd, "req_from": it["from"], "req_path": it["path"], "sent_path": "", "drawings": "",
-                          "by_name": nm, "by_email": addr, "msg_id": it["id"]})
+                          "by_name": nm, "by_email": addr, "msg_id": it["id"], "area": area})
                 k = self._order_key(e)
                 kh = self._key_hash(e)
                 gl = [x for x in self.log if x.get("type") == "Order" and not x.get("sent_date") and _gnorm(x.get("group")) == _gnorm(e["group"])]
@@ -1410,6 +1421,315 @@ class LogMixin:
                 pass
         self._inbox_label("checked %s%s" % (now, (", %d new order%s from %d email%s" % (made, "" if made == 1 else "s", len(items), "" if len(items) == 1 else "s")) if made else ", nothing new"))
 
+    # ----- areas: the large squares (Blue Hills, another estate...) that the houses and orders sit in -----
+    @staticmethod
+    def _area_of(e):
+        return e.get("area") or NOT_SORTED
+
+    @staticmethod
+    def _area_base(name):
+        """Blue Hills Ext 120 -> Blue Hills: the name without a trailing extension, phase or number."""
+        return re.sub(r"[\s,\-]*(ext(ension)?\.?|phase|stage|fase)?\s*\d+\s*$", "", str(name or ""), flags=re.I).strip()
+
+    def _match_area(self, name):
+        """The existing area this name belongs to (same name, or the same name apart from Ext 120), else None."""
+        g, b = _gnorm(name), _gnorm(self._area_base(name))
+        for a in self.areas:
+            if _gnorm(a["name"]) == g or (b and _gnorm(self._area_base(a["name"])) == b):
+                return a["name"]
+        return None
+
+    def _ensure_area(self, name):
+        got = self._match_area(name)
+        if got:
+            return got
+        self.areas.append({"name": name.strip(), "keys": ""})
+        return name.strip()
+
+    def _area_for(self, subject, body, group, from_table=""):
+        """The area (name, or "" for Not sorted) for an incoming order: the Township column of the email, the area this house already sits in, then the area's name
+        or its email words in the subject or the top of the email."""
+        if from_table.strip():
+            return self._ensure_area(from_table.strip())
+        same = Counter(self._area_of(x) for x in self.log if x.get("type") == "Order" and _gnorm(x.get("group")) == _gnorm(group) and x.get("area"))
+        if same:
+            return same.most_common(1)[0][0]
+        hay = _gnorm(str(subject) + " " + str(body)[:3000])
+        for a in self.areas:
+            keys = [a["name"], self._area_base(a["name"])] + [k for k in re.split(r"[,;\n]", a.get("keys", "")) if k.strip()]
+            if any(len(_gnorm(k)) >= 4 and _gnorm(k) in hay for k in keys):
+                return a["name"]
+        return ""
+
+    def _area_page(self):
+        pg = QWidget()
+        v = QVBoxLayout(pg)
+        v.setContentsMargins(0, 6, 0, 0)
+        n = QLabel("Each large square is an area or development (for example Blue Hills). Everything the client sends for that area goes into its square. "
+                   "Add your own with New area; the program also makes a square when an order names a new township.")
+        n.setWordWrap(True)
+        v.addWidget(n)
+        bar = QHBoxLayout()
+        na = QPushButton("+ New area")
+        na.setStyleSheet("font-weight:700;")
+        na.clicked.connect(self.new_area)
+        bar.addWidget(na)
+        b = QPushButton("Watch my Gmail inbox for orders...")
+        b.setStyleSheet("font-weight:700;")
+        b.clicked.connect(self.inbox_dialog)
+        self.inbox_btn = b
+        bar.addWidget(b)
+        cb_ = QPushButton("Check now")
+        cb_.setStyleSheet("font-weight:700;")
+        cb_.clicked.connect(lambda: self.inbox_check(manual=True))
+        bar.addWidget(cb_)
+        self.inbox_lbl = QLabel("")
+        bar.addWidget(self.inbox_lbl)
+        self._inbox_setup()
+        da = QPushButton("Delete all orders...")
+        da.clicked.connect(lambda: self.delete_all_log("Order"))
+        bar.addWidget(da)
+        bar.addStretch(1)
+        v.addLayout(bar)
+        sc = QScrollArea()
+        sc.setWidgetResizable(True)
+        sc.setFrameShape(QFrame.Shape.NoFrame)
+        sc.setStyleSheet("QScrollArea{background:transparent;} QScrollArea > QWidget > QWidget{background:transparent;}")
+        host = QWidget()
+        from PySide6.QtWidgets import QGridLayout
+        gl = QGridLayout(host)
+        gl.setContentsMargins(2, 4, 2, 4)
+        gl.setSpacing(18)
+        gl.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        sc.setWidget(host)
+        v.addWidget(sc, 1)
+        self._atiles = (host, gl, sc, [])
+        sc.viewport().installEventFilter(self._area_filter())
+        return pg
+
+    def _area_filter(self):
+        from PySide6.QtCore import QObject, QEvent
+
+        class F(QObject):
+            def eventFilter(_s, obj, ev):
+                if ev.type() == QEvent.Type.Resize:
+                    QTimer.singleShot(0, self._reflow_areas)
+                return False
+        f = F(self)
+        self._tile_filters = getattr(self, "_tile_filters", []) + [f]
+        return f
+
+    def _reflow_areas(self):
+        host, gl, sc, tiles = self._atiles
+        while gl.count():
+            gl.takeAt(0)
+        cols = max(1, (sc.viewport().width() - 4) // 372)
+        row = col = 0
+        for w in tiles:
+            if getattr(w, "_full", False):
+                if col:
+                    row, col = row + 1, 0
+                gl.addWidget(w, row, 0, 1, cols)
+                row, col = row + 1, 0
+            else:
+                gl.addWidget(w, row, col)
+                col += 1
+                if col >= cols:
+                    row, col = row + 1, 0
+
+    def _area_names(self):
+        names = [a["name"] for a in self.areas]
+        for e in self.log:
+            if e.get("type") == "Order" and e.get("area") and e["area"] not in names:
+                self.areas.append({"name": e["area"], "keys": ""})
+                names.append(e["area"])
+        if any(e.get("type") == "Order" and not e.get("area") for e in self.log):
+            names.append(NOT_SORTED)
+        return names
+
+    def _rebuild_areas(self):
+        host, gl, sc, tiles = self._atiles
+        for b in tiles:
+            gl.removeWidget(b)
+            b.setParent(None)
+            b.deleteLater()
+        tiles.clear()
+        lt = self._M().light()
+        txt = "#1c1f23" if lt else "#eceef0"
+        qss = ("QPushButton{border-radius:14px;border:1px solid %s;background:%s;}QPushButton:hover{border-color:#d8132b;}"
+               % (("#c3c9d0", "#ffffff") if lt else ("#3a3f46", "#1f2125")))
+        names = self._area_names()
+
+        def stat(n_):
+            ents = [e for e in self.log if e.get("type") == "Order" and self._area_of(e) == n_]
+            return ents, sum(1 for e in ents if self._is_urgent(e))
+        urg = [n_ for n_ in names if stat(n_)[1]]
+        order = urg + [n_ for n_ in names if n_ not in urg]
+        heads = {}
+        if urg:
+            heads[urg[0]] = "Priority"
+            rest = next((n_ for n_ in order if n_ not in urg), None)
+            if rest:
+                heads[rest] = "All areas"
+        for name in order:
+            if name in heads:
+                hl = QLabel(heads[name])
+                hl.setStyleSheet("font-size:14px;font-weight:700;padding:6px 0 0 2px;%s" % ("color:#d8132b;" if heads[name] == "Priority" else ""))
+                hl._full = True
+                hl.setParent(host)
+                hl.show()
+                tiles.append(hl)
+            ents, nurg = stat(name)
+            houses = len({e.get("group") for e in ents})
+            new = sum(1 for e in ents if e.get("status") == "New")
+            lines = ["<b style='font-size:19px'>%s</b>" % name.replace("<", "&lt;"),
+                     ("%d house%s, %d order%s" % (houses, "" if houses == 1 else "s", len(ents), "" if len(ents) == 1 else "s")) if ents else "nothing yet"]
+            if nurg:
+                lines.insert(1, "<b style='color:#d8132b'>URGENT</b>")
+            if new:
+                lines.append("<b style='color:#d8132b'>%d new</b>" % new)
+            btn = QPushButton()
+            btn.setFixedSize(350, 170)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setStyleSheet(qss + ("QPushButton{border:2px solid #d8132b;}" if nurg else "") + ("QPushButton{background:%s;}" % ("#ffe3e6" if lt else "#3a1b20") if nurg else ""))
+            lab = QLabel("<br>".join(lines), btn)
+            lab.setStyleSheet("background:transparent;border:none;color:%s;" % txt)
+            lab.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            lab.setGeometry(18, 14, 314, 142)
+            lab.setWordWrap(True)
+            btn.clicked.connect(lambda _c=False, n_=name: self._open_area(n_))
+            btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            btn.customContextMenuRequested.connect(lambda _p, n_=name, b_=btn: self._area_menu(n_, b_))
+            tiles.append(btn)
+        self._reflow_areas()
+
+    def _open_area(self, name):
+        self._larea["Order"] = name
+        self._lgroup["Order"] = None
+        self._area_title.setText(name)
+        self.refresh_log()
+        self._lstack["Order"].setCurrentIndex(self._lidx["Order"]["houses"])
+
+    def _close_area(self):
+        self._larea["Order"] = None
+        self._lgroup["Order"] = None
+        self._lstack["Order"].setCurrentIndex(0)
+        self.refresh_log()
+
+    def _area_menu(self, name, btn):
+        from PySide6.QtWidgets import QMenu
+        m = QMenu(btn)
+        a1 = m.addAction("Open")
+        a2 = m.addAction("Edit name and email words...") if name != NOT_SORTED else None
+        a3 = m.addAction("Delete this area and its orders...")
+        pick = m.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
+        if pick is a1:
+            self._open_area(name)
+        elif a2 is not None and pick is a2:
+            self.edit_area(name)
+        elif pick is a3:
+            self.delete_area(name)
+
+    def _area_dialog(self, name="", keys=""):
+        d = QDialog(self)
+        d.setWindowTitle("Area")
+        d.setMinimumWidth(460)
+        v = QVBoxLayout(d)
+        f = QFormLayout()
+        nm = QLineEdit(name)
+        nm.setPlaceholderText("for example Blue Hills Ext 120")
+        kw = QLineEdit(keys)
+        kw.setPlaceholderText("Blue Hills, Cosmo")
+        f.addRow("Area name", nm)
+        f.addRow("Words in the client's emails", kw)
+        v.addLayout(f)
+        t = QLabel("An email whose subject or first lines have the area name (or one of these words) is put in this area. "
+                   "An order table with a Township column is put in the area of that name.")
+        t.setWordWrap(True)
+        v.addWidget(t)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        ok = QPushButton("Save")
+        ok.setStyleSheet("font-weight:700;")
+        ok.clicked.connect(d.accept)
+        cn = QPushButton("Cancel")
+        cn.clicked.connect(d.reject)
+        row.addWidget(ok)
+        row.addWidget(cn)
+        v.addLayout(row)
+        if d.exec() != QDialog.DialogCode.Accepted or not nm.text().strip():
+            return None
+        return nm.text().strip(), kw.text().strip()
+
+    def new_area(self):
+        r = self._area_dialog()
+        if r is None:
+            return
+        if self._match_area(r[0]) and _gnorm(self._match_area(r[0])) == _gnorm(r[0]):
+            QMessageBox.information(self, "Orders", "There is already an area called %s." % r[0])
+            return
+        self.areas.append({"name": r[0], "keys": r[1]})
+        self.refresh_log()
+
+    def edit_area(self, name):
+        a = next((x for x in self.areas if x["name"] == name), None)
+        if a is None:
+            return
+        r = self._area_dialog(a["name"], a.get("keys", ""))
+        if r is None:
+            return
+        for e in self.log:
+            if e.get("area") == name:
+                e["area"] = r[0]
+        a["name"], a["keys"] = r
+        self.refresh_log()
+
+    def delete_area(self, name):
+        ents = [e for e in self.log if e.get("type") == "Order" and self._area_of(e) == name]
+        if QMessageBox.question(self, "Orders", "Delete the area %s and its %d order%s?\n\nThis cannot be undone." % (name, len(ents), "" if len(ents) == 1 else "s")) != QMessageBox.StandardButton.Yes:
+            return
+        gone = {id(e) for e in ents}
+        self.log[:] = [e for e in self.log if id(e) not in gone]
+        self.areas[:] = [a for a in self.areas if a["name"] != name]
+        self._close_area()
+
+    def move_house(self, group):
+        from PySide6.QtWidgets import QInputDialog
+        cur = self._larea.get("Order")
+        opts = [n for n in self._area_names() if n != cur] + ([NOT_SORTED] if cur != NOT_SORTED and NOT_SORTED not in self._area_names() else [])
+        if not opts:
+            return
+        pick, ok = QInputDialog.getItem(self, "Move %s" % group, "Move %s and its orders to:" % group, opts, 0, False)
+        if not ok:
+            return
+        for e in self.log:
+            if e.get("type") == "Order" and e.get("group") == group and self._area_of(e) == cur:
+                e["area"] = "" if pick == NOT_SORTED else pick
+        self.refresh_log()
+
+    def new_order(self):
+        """Asks for the house (and the area when none is open) and starts an order line for it."""
+        from PySide6.QtWidgets import QInputDialog
+        area = self._larea.get("Order")
+        if area is None:
+            names = self._area_names() or [NOT_SORTED]
+            area, ok = QInputDialog.getItem(self, "New order", "Area:", names, 0, False)
+            if not ok:
+                return
+        house, ok = QInputDialog.getText(self, "New order", "House or stand (for example Stand 2037):")
+        if not ok or not house.strip():
+            return
+        e = {k: "" for k in LOGK}
+        e.update({"group": house.strip(), "area": "" if area == NOT_SORTED else area, "type": "Order", "date": datetime.date.today().isoformat(), "status": "Draft",
+                  "text": "New order", "req_path": "", "sent_path": "", "drawings": "", "by_name": self.info.get("to", ""), "by_email": self.info.get("email", "")})
+        self.log.append(e)
+        self._larea["Order"] = area
+        self._area_title.setText(area)
+        self._lgroup["Order"] = None
+        self.refresh_log()
+        self._lstack["Order"].setCurrentIndex(self._lidx["Order"]["houses"])
+        self._open_group("Order", house.strip())
+
     # ----- the house and block squares -----
     TILE_QSS = ("QPushButton{text-align:left;padding:10px 12px;border-radius:10px;border:1px solid palette(mid);background:palette(base);}"
                 "QPushButton:hover{border-color:#d8132b;}")
@@ -1419,31 +1739,33 @@ class LogMixin:
         pg = QWidget()
         v = QVBoxLayout(pg)
         v.setContentsMargins(0, 6, 0, 0)
-        n = QLabel("Click a house or block to open its orders." if kind == "Order" else "Click a house or block to open the changes the client asked for. Add a change inside it, or let the program make them from the revision rows of the drawings.")
+        n = QLabel("Click a house or stand to open its orders." if kind == "Order" else "Click a house or block to open the changes the client asked for. Add a change inside it, or let the program make them from the revision rows of the drawings.")
         n.setWordWrap(True)
         v.addWidget(n)
         bar = QHBoxLayout()
         if kind == "Order":
-            b = QPushButton("Watch my Gmail inbox for orders...")
-            b.setStyleSheet("font-weight:700;")
-            b.clicked.connect(self.inbox_dialog)
-            self.inbox_btn = b
-            bar.addWidget(b)
-            cb_ = QPushButton("Check now")
-            cb_.setStyleSheet("font-weight:700;")
-            cb_.clicked.connect(lambda: self.inbox_check(manual=True))
-            bar.addWidget(cb_)
-            self.inbox_lbl = QLabel("")
-            bar.addWidget(self.inbox_lbl)
-            self._inbox_setup()
+            ab = QPushButton("\u2039  All areas")
+            ab.setStyleSheet("font-weight:700;")
+            ab.clicked.connect(self._close_area)
+            bar.addWidget(ab)
+            self._area_title = QLabel("")
+            self._area_title.setStyleSheet("font-size:16px;font-weight:700;")
+            bar.addWidget(self._area_title)
+            nb = QPushButton("+ Add house / new order")
+            nb.setStyleSheet("font-weight:700;")
+            nb.clicked.connect(self.new_order)
+            bar.addWidget(nb)
+            da = QPushButton("Delete this area's orders...")
+            da.clicked.connect(lambda: self.delete_all_log("Order", None))
+            bar.addWidget(da)
         else:
             b = QPushButton("Get changes from the drawings")
             b.setStyleSheet("font-weight:700;")
             b.clicked.connect(self.changes_from_drawings)
             bar.addWidget(b)
-        da = QPushButton("Delete all...")
-        da.clicked.connect(lambda: self.delete_all_log(kind))
-        bar.addWidget(da)
+            da = QPushButton("Delete all...")
+            da.clicked.connect(lambda: self.delete_all_log(kind))
+            bar.addWidget(da)
         bar.addStretch(1)
         v.addLayout(bar)
         sc = QScrollArea()
@@ -1496,13 +1818,24 @@ class LogMixin:
     def _is_urgent(e):
         return e.get("priority") == "Urgent" and not e.get("sent_date")
 
+    def _in_scope(self, e, kind):
+        """The line belongs to this kind and, for orders, to the area that is open."""
+        if self.log_kind(e) != kind:
+            return False
+        if kind == "Order" and self._larea.get("Order") is not None:
+            return self._area_of(e) == self._larea["Order"]
+        return True
+
     def _tile_names(self, kind):
-        names = [g["name"] for g in self.groups]
+        if kind == "Order":
+            names = []
+        else:
+            names = [g["name"] for g in self.groups]
         for e in self.log:
             g = e.get("group", "")
-            if g and g not in names and self.log_kind(e) == kind:
+            if g and g not in names and self._in_scope(e, kind):
                 names.append(g)
-        urg = {e.get("group") for e in self.log if self.log_kind(e) == kind and self._is_urgent(e)}
+        urg = {e.get("group") for e in self.log if self._in_scope(e, kind) and self._is_urgent(e)}
         return [n for n in names if n in urg] + [n for n in names if n not in urg]          # houses with an urgent order come first
 
     def _rebuild_tiles(self, kind):
@@ -1517,7 +1850,7 @@ class LogMixin:
         qss = ("QPushButton{border-radius:10px;border:1px solid %s;background:%s;}QPushButton:hover{border-color:#d8132b;}"
                % (("#c3c9d0", "#ffffff") if lt else ("#3a3f46", "#1f2125")))
         names_ = self._tile_names(kind)
-        urgent_names = [n_ for n_ in names_ if any(self._is_urgent(e) for e in self.log if e.get("group") == n_ and self.log_kind(e) == kind)]
+        urgent_names = [n_ for n_ in names_ if any(self._is_urgent(e) for e in self.log if e.get("group") == n_ and self._in_scope(e, kind))]
         heads = {}
         if urgent_names:
             heads[urgent_names[0]] = "Priority"
@@ -1532,7 +1865,7 @@ class LogMixin:
                 hl.setParent(host)
                 hl.show()
                 tiles.append(hl)
-            ents = [e for e in self.log if e.get("group") == name and self.log_kind(e) == kind]
+            ents = [e for e in self.log if e.get("group") == name and self._in_scope(e, kind)]
             new = sum(1 for e in ents if e.get("status") == "New")
             open_ = sum(1 for e in ents if not e.get("sent_date"))
             last = max([str(e.get("date", "")) for e in ents] or [""])
@@ -1569,18 +1902,21 @@ class LogMixin:
         from PySide6.QtWidgets import QMenu
         m = QMenu(btn)
         a1 = m.addAction("Open")
+        a3 = m.addAction("Move to another area...") if kind == "Order" else None
         a2 = m.addAction("Delete all the %s of %s..." % ("orders" if kind == "Order" else "changes", name))
         pick = m.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
         if pick is a1:
             self._open_group(kind, name)
         elif pick is a2:
             self.delete_all_log(kind, name)
+        elif a3 is not None and pick is a3:
+            self.move_house(name)
 
     def delete_all_log(self, kind, group=None):
         """Removes every order (or change) line, or only those of one house. Deleting all orders also makes the inbox watcher forget what it has read,
         so Check now brings the emails in again from the start."""
         what = "orders" if kind == "Order" else "changes"
-        ents = [e for e in self.log if self.log_kind(e) == kind and (group is None or e.get("group") == group)]
+        ents = [e for e in self.log if self._in_scope(e, kind) and (group is None or e.get("group") == group)]
         if not ents:
             QMessageBox.information(self, "Drawing register", "There are no %s to delete." % what)
             return
@@ -1591,23 +1927,23 @@ class LogMixin:
             return
         gone = {id(e) for e in ents}
         self.log[:] = [e for e in self.log if id(e) not in gone]
-        if kind == "Order" and group is None:
+        if kind == "Order" and group is None and self._larea.get("Order") is None:
             S = self._M().SETTINGS
             S["inbox_seen"], S["inbox_keys"] = [], []
             self._M().save_settings()
         self._lgroup[kind] = None
-        self._lstack[kind].setCurrentIndex(0)
+        self._lstack[kind].setCurrentIndex(self._lidx[kind]["houses"] if (kind != "Order" or self._larea.get("Order") is not None) else 0)
         self.refresh_log()
 
     def _open_group(self, kind, name):
         self._lgroup[kind] = name
         self._ltitle[kind].setText(name)
         self.refresh_log()
-        self._lstack[kind].setCurrentIndex(1)
+        self._lstack[kind].setCurrentIndex(self._lidx[kind]["detail"])
 
     def _close_group(self, kind):
         self._lgroup[kind] = None
-        self._lstack[kind].setCurrentIndex(0)
+        self._lstack[kind].setCurrentIndex(self._lidx[kind]["houses"])
         self.refresh_log()
 
     @staticmethod
@@ -1992,7 +2328,8 @@ class LogMixin:
 
     def add_log(self, typ):
         e = {k: "" for k in LOGK}
-        e.update({"group": (getattr(self, "_lgroup", {}).get(self.log_kind({"type": typ})) or self.groups[self.cur]["name"]), "type": typ, "date": datetime.date.today().isoformat(), "status": "Draft",
+        e.update({"group": (getattr(self, "_lgroup", {}).get(self.log_kind({"type": typ})) or self.groups[self.cur]["name"]), "type": typ,
+                  "area": ((self._larea.get("Order") or "") if typ == "Order" and self._larea.get("Order") != NOT_SORTED else ""), "date": datetime.date.today().isoformat(), "status": "Draft",
                   "text": "New order" if typ == "Order" else "", "req_path": "", "sent_path": "", "drawings": "",
                   "by_name": self.info.get("to", ""), "by_email": self.info.get("email", "")})
         self.log.append(e)
@@ -2062,7 +2399,7 @@ class LogMixin:
             for kind, t in getattr(self, "ltabs", {}).items():
                 keep_row = t.currentRow()
                 gsel = self._lgroup.get(kind)
-                ents = [e for e in self.log if self.log_kind(e) == kind and (gsel is None or e.get("group") == gsel)]
+                ents = [e for e in self.log if self._in_scope(e, kind) and (gsel is None or e.get("group") == gsel)]
                 ents.sort(key=lambda e: 0 if self._is_urgent(e) else 1)          # urgent ones on top
                 self._lrows[kind] = ents
                 t.setRowCount(0)
@@ -2095,6 +2432,7 @@ class LogMixin:
                 if 0 <= keep_row < len(ents):
                     t.selectRow(keep_row)
                 self._rebuild_tiles(kind)
+            self._rebuild_areas()
         finally:
             self._busy = False
         self.update_mail()

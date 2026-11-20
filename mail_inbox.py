@@ -43,6 +43,7 @@ def _tables(html):
     return out
 
 
+AREA_COL = re.compile(r"township|estate|development|complex|suburb|dorp|ontwikkeling|area\\b|project", re.I)
 STAND_COL = re.compile(r"(stand|standplaas|erf)\s*(no|nr|number|nommer|#)|^(erf|house|huis|unit|eenheid|plot|perseel|lot)\b.*(no|nr|number|nommer|#)?|^(stand|standplaas|erf|house|huis|unit|eenheid|plot|perseel|lot)$", re.I)
 
 
@@ -62,16 +63,19 @@ def orders_from_tables(html, houses=()):
                 continue
             num = r[ci].strip()
             group = next((h for h in houses if _norm(num) and _norm(h).endswith(_norm(num))), "%s %s" % (word, num))
-            yes, no, facts = [], [], []
+            yes, no, facts, area = [], [], [], ""
             for i, c in enumerate(r):
                 if i == ci or not c.strip() or i >= len(head) or not head[i].strip():
+                    continue
+                if AREA_COL.search(head[i]) and not area:
+                    area = c.strip()                      # the Township column is the area
                     continue
                 h = re.sub(r"\s*\(list\)", "", head[i], flags=re.I).strip()
                 if c.strip().upper() in ("YES", "NO", "Y", "N"):
                     (yes if c.strip().upper() in ("YES", "Y") else no).append(re.sub(r"\((\w+)\)", lambda m_: "(" + m_.group(1).upper() + ")", h.capitalize()) if h.isupper() else h)
                 else:
                     facts.append("%s: %s" % (h, c.strip()))
-            out.append({"group": group, "order": "", "extras": "; ".join(re.sub(r"(\w)\(", r"\1 (", y) for y in yes), "text": ("%s %s\n%s" % (word, num, "; ".join(facts))).strip()})
+            out.append({"group": group, "order": "", "area": area, "extras": "; ".join(re.sub(r"(\w)\(", r"\1 (", y) for y in yes), "text": ("%s %s\n%s" % (word, num, "; ".join(facts))).strip()})
     return out
 
 
