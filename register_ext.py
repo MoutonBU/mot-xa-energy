@@ -26,7 +26,7 @@ TYPES = ["Order", "Change", "Issue"]
 KINDS = ["Minor changes", "Major changes", "Masters", "Final plans", "SDP"]
 PRIO = ["", "Urgent", "Asked again"]
 NOT_SORTED = "Not sorted"
-LSTAT = ["New", "Draft", "Final", "Issued", "Superseded"]
+LSTAT = ["New", "Draft", "Final", "Issued", "Superseded", "Done"]
 PRESETS = {"Gmail": ("smtp.gmail.com", 465, "SSL"), "Outlook / Office 365": ("smtp.office365.com", 587, "STARTTLS"), "Other": ("", 587, "STARTTLS")}
 
 
@@ -1267,6 +1267,13 @@ class LogMixin:
         back.addWidget(bb)
         back.addWidget(ttl)
         back.addStretch(1)
+        dn = QPushButton("\u2713  Mark completed")
+        dn.setStyleSheet("font-weight:700;")
+        dn.clicked.connect(lambda _c=False, k=kind: self._toggle_done(k))
+        back.addWidget(dn)
+        if not hasattr(self, "_done_btns"):
+            self._done_btns = {}
+        self._done_btns[kind] = dn
         v.addLayout(back)
         self._ltitle[kind] = ttl
         if kind == "Order":
@@ -1785,6 +1792,9 @@ class LogMixin:
                     self._chase(existing, urgent, alerts, it)
                     took = True
                     continue
+                for x in existing:
+                    if x.get("status") == "Done":
+                        x["status"] = "New"                          # the client came back: the house is open again
                 ce = {k_: "" for k_ in LOGK}
                 nrev = 1 + sum(1 for c in self.log if c.get("type") == "Change" and c.get("of_order") and _gnorm(c.get("group")) == _gnorm(e["group"]))
                 ce.update({"group": e["group"], "type": "Change", "rev": str(nrev), "date": e["date"], "text": ctext or "(extras)", "extras": e["extras"], "status": "New",
@@ -2091,8 +2101,15 @@ class LogMixin:
             new = sum(1 for e in ents if e.get("status") == "New")
             lines = ["<b style='font-size:19px'>%s</b>" % name.replace("<", "&lt;"),
                      ("%d house%s, %d order%s" % (houses, "" if houses == 1 else "s", len(ents), "" if len(ents) == 1 else "s")) if ents else "nothing yet"]
+            hs = {e.get("group") for e in ents}
+            hdone = {g_ for g_ in hs if all(e.get("status") == "Done" for e in ents if e.get("group") == g_)}
+            alldone = bool(hs) and len(hdone) == len(hs)
             if nurg:
                 lines.insert(1, "<b style='color:#ff4d5e'>URGENT</b>")
+            if alldone:
+                lines.append("<b style='color:#3fb868'>ALL COMPLETED</b>")
+            elif hdone:
+                lines.append("<b style='color:#3fb868'>%d completed</b>" % len(hdone))
             if new:
                 lines.append("<b style='color:#ff4d5e'>%d new</b>" % new)
             ar = next((a for a in self.areas if a["name"] == name), None)
@@ -2104,7 +2121,8 @@ class LogMixin:
             if has_ph:
                 btn.setStyleSheet("QPushButton{background:transparent;border:none;}")
             else:
-                btn.setStyleSheet(qss + ("QPushButton{border:2px solid #d8132b;}" if nurg else "") + ("QPushButton{background:%s;}" % ("#ffe3e6" if lt else "#3a1b20") if nurg else ""))
+                btn.setStyleSheet(qss + ("QPushButton{border:2px solid #d8132b;}" if nurg else "") + ("QPushButton{background:%s;}" % ("#ffe3e6" if lt else "#3a1b20") if nurg else "")
+                                  + ("QPushButton{border:2px solid #2ea44f;background:%s;}" % ("#dff5e5" if lt else "#17361f") if alldone and not nurg else ""))
             lab = QLabel("<br>".join(lines), btn)
             lab.setStyleSheet("background:transparent;border:none;color:%s;" % ("#ffffff" if has_ph else txt))
             lab.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
@@ -2381,7 +2399,7 @@ class LogMixin:
 
     @staticmethod
     def _is_urgent(e):
-        return e.get("priority") == "Urgent" and not e.get("sent_date")
+        return e.get("priority") == "Urgent" and not e.get("sent_date") and e.get("status") != "Done"
 
     def _in_scope(self, e, kind):
         """The line belongs to this kind and, for orders, to the area that is open."""
@@ -2393,6 +2411,35 @@ class LogMixin:
             return self._area_of(e) == self._larea["Order"]
         return True
 
+    def _done_houses(self, kind):
+        """Houses whose lines are all marked Done."""
+        out = set()
+        for g in {e.get("group") for e in self.log if self._in_scope(e, kind)}:
+            ents = [e for e in self.log if self._in_scope(e, kind) and e.get("group") == g]
+            if ents and all(e.get("status") == "Done" for e in ents):
+                out.add(g)
+        return out
+
+    def _toggle_done(self, kind):
+        g = self._lgroup.get(kind)
+        if g:
+            was = g in self._done_houses(kind)
+            self.set_house_done(kind, g, not was)
+            if not was:
+                self._close_group(kind)            # a completed house drops down to the Completed squares
+
+    def set_house_done(self, kind, name, done=True):
+        """Marks every line of the house (and, for orders, the changes inside it) Done, or opens them again."""
+        for e in self.log:
+            if e.get("group") != name:
+                continue
+            if self._in_scope(e, kind) or (kind == "Order" and e.get("type") == "Change" and e.get("of_order")):
+                if done:
+                    e["status"] = "Done"
+                elif e.get("status") == "Done":
+                    e["status"] = "Final" if e.get("sent_date") else "New"
+        self.refresh_log()
+
     def _tile_names(self, kind):
         if kind == "Order":
             names = []
@@ -2403,7 +2450,9 @@ class LogMixin:
             if g and g not in names and self._in_scope(e, kind):
                 names.append(g)
         urg = {e.get("group") for e in self.log if self._in_scope(e, kind) and self._is_urgent(e)}
-        return [n for n in names if n in urg] + [n for n in names if n not in urg]          # houses with an urgent order come first
+        done = self._done_houses(kind)
+        return ([n for n in names if n in urg and n not in done] + [n for n in names if n not in urg and n not in done]
+                + [n for n in names if n in done])          # urgent houses first, completed ones last
 
     def _rebuild_tiles(self, kind):
         host, gl, sc, tiles = self._ltiles[kind]
@@ -2417,17 +2466,21 @@ class LogMixin:
         qss = ("QPushButton{border-radius:10px;border:1px solid %s;background:%s;}QPushButton:hover{border-color:#d8132b;}"
                % (("#c3c9d0", "#ffffff") if lt else ("#3a3f46", "#1f2125")))
         names_ = self._tile_names(kind)
-        urgent_names = [n_ for n_ in names_ if any(self._is_urgent(e) for e in self.log if e.get("group") == n_ and self._in_scope(e, kind))]
+        done_set = self._done_houses(kind)
+        urgent_names = [n_ for n_ in names_ if n_ not in done_set and any(self._is_urgent(e) for e in self.log if e.get("group") == n_ and self._in_scope(e, kind))]
         heads = {}
         if urgent_names:
             heads[urgent_names[0]] = "Priority"
-            first_rest = next((n_ for n_ in names_ if n_ not in urgent_names), None)
-            if first_rest:
-                heads[first_rest] = "All houses and blocks"
+        rest_ = [n_ for n_ in names_ if n_ not in urgent_names and n_ not in done_set]
+        if urgent_names and rest_:
+            heads[rest_[0]] = "All houses and blocks"
+        done_l = [n_ for n_ in names_ if n_ in done_set]
+        if done_l:
+            heads[done_l[0]] = "Completed"
         for name in names_:
             if name in heads:
                 hl = QLabel(heads[name])
-                hl.setStyleSheet("font-size:14px;font-weight:700;padding:6px 0 0 2px;%s" % ("color:#d8132b;" if heads[name] == "Priority" else ""))
+                hl.setStyleSheet("font-size:14px;font-weight:700;padding:6px 0 0 2px;%s" % ("color:#d8132b;" if heads[name] == "Priority" else ("color:#3fb868;" if heads[name] == "Completed" else "")))
                 hl._full = True
                 hl.setParent(host)
                 hl.show()
@@ -2443,13 +2496,19 @@ class LogMixin:
                 if chs:
                     lines[1] += ", %d change%s" % (len(chs), "" if len(chs) == 1 else "s")
                     new += sum(1 for c in chs if c.get("status") == "New")
+            isdone = name in done_set
             urg = sum(1 for e in ents if self._is_urgent(e))
             asked = sum(1 for e in ents if e.get("priority") == "Asked again" and not e.get("sent_date"))
-            if urg:
+            if isdone:
+                lines = [lines[0], "<b style='color:#3fb868'>COMPLETED</b>", lines[1]]
+                new = 0
+            elif urg:
                 lines.insert(1, "<b style='color:#ff4d5e'>URGENT</b>")
             elif asked:
                 lines.insert(1, "<b style='color:#d8932f'>client asked again</b>")
-            if new:
+            if isdone:
+                pass
+            elif new:
                 lines.append("<b style='color:#ff4d5e'>%d new</b>" % new)
             elif open_:
                 lines.append("%d not sent yet" % open_)
@@ -2458,7 +2517,8 @@ class LogMixin:
             btn = QPushButton()
             btn.setFixedSize(220, 100)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setStyleSheet(qss + ("QPushButton{border:2px solid #d8132b;}" if urg else "") + ("QPushButton{background:%s;}" % ("#ffe3e6" if lt else "#3a1b20") if urg else ""))
+            btn.setStyleSheet(qss + ("QPushButton{border:2px solid #d8132b;}" if urg else "") + ("QPushButton{background:%s;}" % ("#ffe3e6" if lt else "#3a1b20") if urg else "")
+                              + ("QPushButton{border:2px solid #2ea44f;background:%s;}" % ("#dff5e5" if lt else "#17361f") if isdone else ""))
             lab = QLabel("<br>".join(lines), btn)
             lab.setStyleSheet("background:transparent;border:none;color:%s;" % txt)
             lab.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
@@ -2474,6 +2534,8 @@ class LogMixin:
         from PySide6.QtWidgets import QMenu
         m = QMenu(btn)
         a1 = m.addAction("Open")
+        isdone = name in self._done_houses(kind)
+        a4 = m.addAction("Reopen (not completed)" if isdone else "Mark as completed")
         a3 = m.addAction("Move to another area...") if kind == "Order" else None
         a2 = m.addAction("Delete all the %s of %s..." % ("orders" if kind == "Order" else "changes", name))
         pick = m.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
@@ -2483,6 +2545,8 @@ class LogMixin:
             self.delete_all_log(kind, name)
         elif a3 is not None and pick is a3:
             self.move_house(name)
+        elif pick is a4:
+            self.set_house_done(kind, name, not isdone)
 
     def delete_all_log(self, kind, group=None):
         """Removes every order (or change) line, or only those of one house. Deleting all orders also makes the inbox watcher forget what it has read,
@@ -2991,6 +3055,8 @@ class LogMixin:
                             it.setToolTip(e["req_path"])
                         if self._is_urgent(e):
                             it.setBackground(QColor(216, 19, 43, 70))
+                        elif e.get("status") == "Done":
+                            it.setBackground(QColor(46, 164, 79, 80))
                         elif e.get("status") == "Draft":
                             it.setBackground(QColor(120, 90, 20, 90))
                         t.setItem(i, c, it)
@@ -3011,6 +3077,9 @@ class LogMixin:
                     t.selectRow(keep_row)
                 self._rebuild_tiles(kind)
             self._rebuild_changes()
+            for k_, b_ in getattr(self, "_done_btns", {}).items():
+                g_ = self._lgroup.get(k_)
+                b_.setText("Reopen this house" if (g_ and g_ in self._done_houses(k_)) else "\u2713  Mark completed")
             self._rebuild_areas()
         finally:
             self._busy = False
