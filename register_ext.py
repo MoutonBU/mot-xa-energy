@@ -1214,6 +1214,10 @@ class InboxDialog(QDialog):
         self.subj.setChecked(bool(self.S.get("inbox_subject_search", False)))
         self.subj.setStyleSheet("")
         v.addWidget(self.subj)
+        self.auto = QCheckBox("Start the program with Windows and keep it in the tray, so orders are never missed after a restart")
+        self.auto.setChecked(bool(self.S.get("start_with_windows", False)))
+        self.auto.setVisible(sys.platform == "win32")
+        v.addWidget(self.auto)
         self.old = QCheckBox("Also bring in the matching emails of the last 14 days (otherwise only emails that arrive from now on)")
         self.old.setChecked(False)
         v.addWidget(self.old)
@@ -1270,6 +1274,9 @@ class InboxDialog(QDialog):
         if self.on.isChecked() and not S.get("inbox_on") and not self.old.isChecked():
             S["inbox_baseline"] = True            # the first look only notes what is already there
         S["inbox_subject_search"] = self.subj.isChecked()
+        if sys.platform == "win32":
+            S["start_with_windows"] = self.auto.isChecked()
+            self.M.set_autostart(self.auto.isChecked())
         S["inbox_from"] = [x.strip() for x in re.split(r"[\n,;]+", self.froms.toPlainText()) if x.strip() and ("@" in x)]
         S["inbox_words"], S["inbox_secs"], S["inbox_on"] = self.words.text().strip() or "order, orders, bestelling, bestellings", self.secs.value(), self.on.isChecked()
         if self.old.isChecked():
@@ -2043,6 +2050,7 @@ class LogMixin:
         self._inbox_timer.stop()
         if self.inbox_dedupe():
             self.refresh_log()
+        self._auto_backup()
         if S.get("inbox_on"):
             self._inbox_timer.start(InboxDialog._secs(S) * 1000)
             if now or True:
@@ -2252,8 +2260,16 @@ class LogMixin:
         S = M.SETTINGS
         now = datetime.datetime.now().strftime("%H:%M")
         if err:
-            self._inbox_label("could not check at %s: %s" % (now, err))
+            if re.search(r"ended the Gmail sign-in|invalid_grant|sign-in (has )?expired", str(err), re.I):
+                self._gmail_expired_notice(err)
+                self._inbox_label("Gmail sign-in ended: press Sign in again")
+            else:
+                self._inbox_label("could not check at %s: %s" % (now, err))
             return
+        if S.get("gmail_expired"):
+            S["gmail_expired"] = False
+            self._expired_told = False
+            self._update_banners()
         import mail_inbox
         from email.utils import parseaddr
         base = S.pop("inbox_baseline", False)
@@ -2446,6 +2462,9 @@ class LogMixin:
                    "Give a company its email addresses and the orders from those senders are filed in it by themselves.")
         n.setWordWrap(True)
         v.addWidget(n)
+        self._ban_g = self._make_banner(v, self._gmail_relogin, red=True)
+        self._ban_g.lbl.setText("Google ended the Gmail sign-in, so new orders are not being read. This happens every 7 days while the Google project is in Testing mode.")
+        self._ban_g.btn.setText("Sign in again")
         self._ban_c = self._make_banner(v, self._assign_company)
         bar = QHBoxLayout()
         nc = QPushButton("+ New company")
@@ -2481,6 +2500,9 @@ class LogMixin:
                    "Add your own with New area; the program also makes a square when an order names a new township.")
         n.setWordWrap(True)
         v.addWidget(n)
+        self._ban_g2 = self._make_banner(v, self._gmail_relogin, red=True)
+        self._ban_g2.lbl.setText("Google ended the Gmail sign-in, so new orders are not being read.")
+        self._ban_g2.btn.setText("Sign in again")
         self._ban_a = self._make_banner(v, self._assign_area)
         bar = QHBoxLayout()
         na = QPushButton("+ New area")
@@ -3704,10 +3726,11 @@ class LogMixin:
         card.show()
         return card
 
-    def _make_banner(self, v, fn):
+    def _make_banner(self, v, fn, red=False):
         fr = QFrame()
         fr.setObjectName("homebar")
-        fr.setStyleSheet("QFrame#homebar{background:#3a2d12;border:1px solid #d8932f;border-radius:8px;} QLabel{color:#ffe2b0;border:none;}")
+        fr.setStyleSheet("QFrame#homebar{background:#3a1218;border:1px solid #ff4d5e;border-radius:8px;} QLabel{color:#ffd0d5;border:none;}" if red else
+                         "QFrame#homebar{background:#3a2d12;border:1px solid #d8932f;border-radius:8px;} QLabel{color:#ffe2b0;border:none;}")
         hl = QHBoxLayout(fr)
         hl.setContentsMargins(10, 6, 10, 6)
         fr.lbl = QLabel("")
@@ -3721,8 +3744,49 @@ class LogMixin:
         v.addWidget(fr)
         return fr
 
+    def _gmail_relogin(self):
+        import mail_oauth as mo
+        S = self._M().SETTINGS
+        try:
+            self.gmail_signed.disconnect()
+        except Exception:
+            pass
+        self.gmail_signed.connect(self._gmail_relogin_done)
+        self._inbox_label("waiting for Google in your browser...")
+        mo.sign_in_thread(S, "gmail", S.get("mail_address", ""), lambda ok, m: self.gmail_signed.emit(ok, m), extra_scope=mo.GMAIL_READ)
+
+    def _gmail_relogin_done(self, ok, msg):
+        S = self._M().SETTINGS
+        if ok:
+            S["gmail_expired"] = False
+            self._expired_told = False
+            self._M().save_settings()
+            self._inbox_label("signed in again")
+            self._update_banners()
+            self.inbox_check(manual=True)
+        else:
+            self._inbox_label("not allowed: %s" % msg)
+
+    def _gmail_expired_notice(self, err):
+        """Google ended the sign-in: say so in red, in a banner and once as a tray message, with a button to sign in again."""
+        S = self._M().SETTINGS
+        S["gmail_expired"] = True
+        self._update_banners()
+        if not getattr(self, "_expired_told", False):
+            self._expired_told = True
+            try:
+                tr = getattr(self.window(), "_tray", None)
+                if tr is not None:
+                    tr.showMessage("Gmail sign-in ended", "Open the program and press Sign in again, or new orders will not be read.", tr.MessageIcon.Warning, 10000)
+            except Exception:
+                pass
+
     def _update_banners(self):
         pl = lambda n, w: "%d %s%s" % (n, w, "" if n == 1 else "s")
+        gx = bool(self._M().SETTINGS.get("gmail_expired"))
+        for bn in (getattr(self, "_ban_g", None), getattr(self, "_ban_g2", None)):
+            if bn is not None:
+                bn.setVisible(gx)
         b = getattr(self, "_ban_c", None)
         if b is not None:
             nc = [e for e in self.log if e.get("type") == "Order" and not self._comp_of(e)]
@@ -3905,6 +3969,10 @@ class LogMixin:
         m.addAction("Help: how this works", self.orders_help)
         m.addAction("Text size...", self.orders_text_size)
         m.addSeparator()
+        m.addAction("Back up the orders...", self.orders_backup)
+        m.addAction("Restore from a backup...", self.orders_restore)
+        m.addAction("Open the automatic backups folder", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(self._backup_dir())))
+        m.addSeparator()
         m.addAction(del_label, del_fn)
         b.setMenu(m)
         return b
@@ -3971,6 +4039,71 @@ class LogMixin:
         d.exec()
 
     # --- picking houses for the client report ---
+    def _backup_dir(self):
+        d = os.path.join(self._M()._user_data_dir(), "backups")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _backup_payload(self):
+        S = self._M().SETTINGS
+        return {"version": 1, "saved": datetime.datetime.now().isoformat(timespec="seconds"), "log": self.log, "areas": self.areas, "companies": self.companies,
+                "settings": {k: S.get(k) for k in ("inbox_from", "inbox_words", "inbox_subject_search", "orders_scale") if k in S}}
+
+    def orders_backup(self, path=None, quiet=False):
+        """Saves every order, area and company (and the inbox lists) to one file."""
+        import json
+        if path is None:
+            path, _ = QFileDialog.getSaveFileName(self, "Back up the orders", os.path.join(os.path.expanduser("~"), "Orders backup %s.json" % datetime.date.today().isoformat()), "Backup (*.json)")
+            if not path:
+                return None
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(self._backup_payload(), f, ensure_ascii=False, indent=1)
+        if not quiet:
+            QMessageBox.information(self, "Orders", "Saved %d orders, %d areas and %d companies to:\n%s" % (sum(1 for e in self.log if e.get("type") == "Order"), len(self.areas), len(self.companies), path))
+        return path
+
+    def orders_restore(self):
+        import json
+        path, _ = QFileDialog.getOpenFileName(self, "Restore orders from a backup", self._backup_dir(), "Backup (*.json)")
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                d = json.load(f)
+            log, areas, comps = list(d["log"]), list(d.get("areas", [])), list(d.get("companies", []))
+        except Exception as ex:
+            QMessageBox.warning(self, "Orders", "That file is not an orders backup: %s" % ex)
+            return
+        n = sum(1 for e in log if e.get("type") == "Order")
+        if QMessageBox.question(self, "Orders", "Replace what is here now with the backup from %s (%d orders, %d areas, %d companies)?\n\nYou can undo this straight afterwards."
+                                % (str(d.get("saved", "?")).replace("T", " "), n, len(areas), len(comps))) != QMessageBox.StandardButton.Yes:
+            return
+        self._undo_snapshot("Restored the backup.")
+        self.log[:] = log
+        self.areas[:] = areas
+        self.companies[:] = comps
+        S = self._M().SETTINGS
+        for k, v_ in (d.get("settings") or {}).items():
+            S[k] = v_
+        self._M().save_settings()
+        self._lgroup["Order"] = None
+        self.refresh_log()
+
+    def _auto_backup(self):
+        """One copy a day (the last 14 are kept) in the program's backups folder."""
+        try:
+            if not any(e.get("type") == "Order" for e in self.log):
+                return
+            d = self._backup_dir()
+            fn = os.path.join(d, "orders_%s.json" % datetime.date.today().isoformat())
+            if not os.path.exists(fn):
+                self.orders_backup(fn, quiet=True)
+                old = sorted(x for x in os.listdir(d) if x.startswith("orders_") and x.endswith(".json"))
+                for x in old[:-14]:
+                    os.remove(os.path.join(d, x))
+        except Exception:
+            pass
+
     def _toggle_sel(self, name):
         s_ = getattr(self, "_sel_houses", None)
         if s_ is None:

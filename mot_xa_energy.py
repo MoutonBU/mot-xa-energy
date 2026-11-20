@@ -2619,6 +2619,34 @@ def load_settings():
         pass
 
 
+def set_autostart(on):
+    """Start with Windows: the program starts hidden in the tray (--tray) and keeps watching Gmail. Returns True when the setting was written (Windows only)."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import winreg
+        exe = sys.executable
+        if getattr(sys, "frozen", False):
+            cmd = '"%s" --tray' % exe
+        else:
+            pw = exe.replace("python.exe", "pythonw.exe") if exe.lower().endswith("python.exe") else exe
+            cmd = '"%s" "%s" --tray' % (pw, os.path.abspath(sys.argv[0]))
+        k = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE)
+        try:
+            if on:
+                winreg.SetValueEx(k, "MCP_XA_Energy", 0, winreg.REG_SZ, cmd)
+            else:
+                try:
+                    winreg.DeleteValue(k, "MCP_XA_Energy")
+                except FileNotFoundError:
+                    pass
+        finally:
+            winreg.CloseKey(k)
+        return True
+    except Exception:
+        return False
+
+
 def save_settings():
     try:
         os.makedirs(os.path.dirname(SETTINGS_PATH), exist_ok=True)
@@ -20730,7 +20758,12 @@ def main():
                 win.showMaximized()
         except Exception:
             pass
-    win.show()
+    if "--tray" in av and SETTINGS.get("inbox_on") and getattr(win, "_tray", None) is not None:
+        pass                                        # started with Windows: stay in the tray and keep watching Gmail
+    else:
+        win.show()
+    if SETTINGS.get("start_with_windows"):
+        set_autostart(True)                         # the path changes after an update: keep the entry pointing at this program
     if "--ready" in av:
         try:
             flagp = av[av.index("--ready") + 1]

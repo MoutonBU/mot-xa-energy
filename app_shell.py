@@ -446,6 +446,8 @@ class Ribbon(QFrame):
             m.addAction("Remove the selected line", lambda: c.remove_log())
             m.addSeparator()
             m.addAction("Text size...", lambda: c.orders_text_size())
+            m.addAction("Back up the orders...", lambda: c.orders_backup())
+            m.addAction("Restore from a backup...", lambda: c.orders_restore())
             m.addAction("Delete all orders...", lambda: c.delete_all_log("Order"))
             m.exec(QCursor.pos())
         self.pages[10] = self._page([

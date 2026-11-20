@@ -1,11 +1,15 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.63**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.64**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **Never miss an order after a restart.** Watch inbox now has 'Start the program with Windows and keep it in the tray': after a restart the program starts hidden in the tray and keeps watching Gmail (it only starts hidden when watching is on).
+- **Gmail sign-in expiry is no longer silent.** When Google ends the sign-in, a red banner ('Sign in again') appears on the Orders pages, the Gmail line turns red and a tray message is shown once. One click signs in again and checks straight away. (To stop it happening every 7 days, set the Google project's publishing status to In production once.)
+- **Backup and restore.** More > Back up the orders... saves all orders, areas and companies to one file; Restore from a backup... brings them back (with Undo). The program also keeps its own daily copy (the last 14) in its backups folder.
 
 - **Easier for new users.** (1) A **setup guide** (also on the ribbon under Help) walks through Gmail, the first company with its email addresses, the first area and switching watching on; it opens by itself the first time when there is no company. Empty screens now explain what to do and have a button. The Gmail line at the top is coloured: green watching, amber not watching or checking, red needs attention.
   (2) A yellow **banner** appears when orders have no company or no area, with a button that puts them there (and, for a company, remembers the senders' addresses). Every delete now shows a blue **Undo** bar for 25 seconds. A big first import (6 or more emails) shows the list and asks before bringing them in. A **Help** page explains the levels, the colours and everyday jobs.

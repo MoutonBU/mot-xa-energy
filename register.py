@@ -567,6 +567,7 @@ def _empty_register(name=""):
 class RegisterPage(LogMixin, MailMixin, QWidget):
     mail_done = Signal(bool, str)
     inbox_done = Signal(object, str)
+    gmail_signed = Signal(bool, str)
     is_costing = True
     report_title = "Drawing Register"
 
