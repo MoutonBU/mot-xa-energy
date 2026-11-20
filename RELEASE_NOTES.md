@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.24**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.25**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Allow Gmail reading only once, 1.86.25**: signing in with Google again for sending (or after a restart) no longer drops the permission to read your inbox: the read permission is asked for again automatically in every later sign-in, and the program now checks what Google really allowed each time it refreshes its access instead of relying on a saved note. You only press Allow Gmail reading once. (While the Google project is in testing mode, Google itself ends every sign-in after 7 days; that needs the project to be published in Google Cloud Console to stop.)
 - **Fix: the Gmail watcher could not read emails, 1.86.24**: the installed program does not contain Python's html.parser, which the table reader used ("No module named html.parser"). The tables are now read without it. The release check also compares the exact modules each release imports against the last full installer, so a code update can no longer need a part the installer lacks.
 - **Check now and a 10 second inbox watch, 1.86.23**: the Orders squares have a Check now button that looks in your Gmail straight away (it works even when watching is off, and brings in the matching emails of the last 14 days that are not in yet), and the watcher now looks every 10 seconds (the shortest you can set; earlier settings of 30 or 60 seconds become 10). The line next to the buttons says when it last looked and whether anything was new.
 - **Orders written as a stand number and a line, 1.86.22**: the Gmail inbox watcher now also reads the format where each stand number is on a line of its own, followed by what is wanted (for example 3339, then 91m2 (4+2) Extras: Patio with Extended Roof Structure). Each number becomes its own order; if the email says finals, masters or SDP, the matching kind of change is ticked on every order.

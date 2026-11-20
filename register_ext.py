@@ -1151,11 +1151,11 @@ class LogMixin:
         S = M.SETTINGS
         try:
             import mail_oauth as mo
-            allowed = bool(mo.signed_in(S, "gmail") and S.get("gmail_read"))
+            allowed = bool(mo.signed_in(S, "gmail") and S.get("gmail_read") is not False)
         except Exception:
             allowed = False
         if manual and not allowed:
-            self._inbox_label("press Watch my Gmail inbox for orders... and allow Gmail reading first")
+            self._inbox_label("press Watch my Gmail inbox for orders... and allow Gmail reading once")
             return
         if not (allowed and (S.get("inbox_on") or manual)) or self._inbox_busy:
             if manual and self._inbox_busy:

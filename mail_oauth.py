@@ -73,6 +73,8 @@ def sign_in(S, provider, hint="", timeout=240, opener=webbrowser.open, extra_sco
     cid = _g(S, P["id"])
     if not cid:
         raise RuntimeError("the one-time setup (client ID) has not been entered")
+    if provider == "gmail" and S.get("gmail_read") is not False and S.get("gmail_read") and GMAIL_READ not in extra_scope:
+        extra_scope = (extra_scope + " " + GMAIL_READ).strip()       # reading was allowed before: a later sign-in keeps it
     verifier = _b64u(secrets.token_bytes(48))
     state = secrets.token_urlsafe(12)
     got = {}
@@ -143,6 +145,8 @@ def access_token(S, provider):
         form["scope"] = P["scope"]
     st, txt = post(P["token"], form)
     tok = json.loads(txt or "{}")
+    if provider == "gmail" and st == 200 and tok.get("scope"):
+        S["gmail_read"] = "gmail.readonly" in str(tok["scope"])           # what Google really allowed
     if st != 200 or "access_token" not in tok:
         raise RuntimeError("sign in again (%s)" % (tok.get("error_description") or tok.get("error") or st))
     return tok["access_token"]
@@ -191,5 +195,7 @@ def gmail_get(S, path, params=None, timeout=60):
             return json.loads(r.read().decode("utf-8", "replace"))
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
+            if e.code == 403:
+                S["gmail_read"] = False
             raise RuntimeError("Google did not allow reading the mailbox: press Allow Gmail reading again (%s)" % e.code)
         raise RuntimeError("Gmail answered %s" % e.code)
