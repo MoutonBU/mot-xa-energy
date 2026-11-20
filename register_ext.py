@@ -751,10 +751,95 @@ def split_parts(files, limit_mb=LIMIT_MB):
     return parts
 
 
+class ManualIndexDialog(QDialog):
+    """A sheet index typed by hand, for people whose drawing program does not make one: block or house, drawing number, title, revision, size and whether it goes today."""
+
+    STATES = (("today", "Issued today"), ("earlier", "Issued earlier"), ("not", "Not yet issued"))
+
+    def __init__(self, page, rows, files=(), parent=None):
+        super().__init__(parent or page)
+        self.setWindowTitle("My own sheet index")
+        self.resize(900, 560)
+        v = QVBoxLayout(self)
+        n = QLabel("Type the drawings of the project here, or paste a list (one drawing per line: number, title, revision, size, separated by a tab, a comma or a |). "
+                   "Choose for each one if it goes today, went earlier or is not issued yet. The email and the sheet index PDF are made from this list.")
+        n.setWordWrap(True)
+        v.addWidget(n)
+        self.t = QTableWidget(0, 6)
+        self.t.setHorizontalHeaderLabels(["Block / house", "No", "Title", "Rev", "Size, scale", "Status"])
+        self.t.horizontalHeader().setStretchLastSection(False)
+        for i, w in enumerate((150, 80, 330, 60, 110, 140)):
+            self.t.setColumnWidth(i, w)
+        v.addWidget(self.t, 1)
+        for r in rows:
+            self._row(r)
+        bar = QHBoxLayout()
+        for text, fn in (("+ Add a drawing", lambda: self._row({})), ("Remove the selected", self._remove), ("Paste a list...", self._paste),
+                         ("Add the files I attached", lambda: self._from_files(files))):
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            bar.addWidget(b)
+        bar.addStretch(1)
+        v.addLayout(bar)
+        bb = QHBoxLayout()
+        bb.addStretch(1)
+        c = QPushButton("Cancel")
+        c.clicked.connect(self.reject)
+        ok = QPushButton("Use this sheet index")
+        ok.setStyleSheet("font-weight:700;")
+        ok.clicked.connect(self.accept)
+        bb.addWidget(c)
+        bb.addWidget(ok)
+        v.addLayout(bb)
+
+    def _row(self, r):
+        i = self.t.rowCount()
+        self.t.insertRow(i)
+        for c, k in enumerate(("group", "no", "title", "rev", "size")):
+            self.t.setItem(i, c, QTableWidgetItem(str(r.get(k, "") or "")))
+        cb = QComboBox()
+        for k, lab in self.STATES:
+            cb.addItem(lab, k)
+        cb.setCurrentIndex(max(0, cb.findData(r.get("status", "today"))))
+        self.t.setCellWidget(i, 5, cb)
+
+    def _remove(self):
+        for i in sorted({x.row() for x in self.t.selectedIndexes()}, reverse=True):
+            self.t.removeRow(i)
+
+    def _paste(self):
+        from PySide6.QtWidgets import QInputDialog
+        txt, ok = QInputDialog.getMultiLineText(self, "Paste a list", "One drawing per line: number, title, revision, size", "")
+        if not ok:
+            return
+        for ln in txt.split("\n"):
+            if not ln.strip():
+                continue
+            f = [x.strip() for x in re.split(r"\t|\||;|,|\s{2,}", ln) if x.strip()]
+            self._row({"no": f[0], "title": f[1] if len(f) > 1 else "", "rev": f[2] if len(f) > 2 else "", "size": f[3] if len(f) > 3 else ""} if len(f) > 1 else {"title": f[0]})
+
+    def _from_files(self, files):
+        have = {self.t.item(i, 1).text().strip().lower() for i in range(self.t.rowCount()) if self.t.item(i, 1)}
+        for pth in files:
+            b = re.sub(r"^\d+_\d+_", "", os.path.splitext(os.path.basename(pth))[0])
+            m = re.match(r"^([A-Za-z]{0,3}[-_ ]?\d{1,4}[A-Za-z]?)[\s_.-]+(.+)$", b)
+            no, title = (m.group(1), m.group(2)) if m else ("", b)
+            if no.lower() not in have or not no:
+                self._row({"no": no, "title": title.replace("_", " "), "status": "today"})
+
+    def rows(self):
+        out = []
+        for i in range(self.t.rowCount()):
+            g = lambda c: (self.t.item(i, c).text().strip() if self.t.item(i, c) else "")
+            if g(1) or g(2):
+                out.append({"group": g(0), "no": g(1), "title": g(2), "rev": g(3), "size": g(4), "status": self.t.cellWidget(i, 5).currentData()})
+        return out
+
+
 class OrderReplyDialog(QDialog):
     """Reply to the client about one or more houses: the text is filled in, the revised drawings are ticked, your signature goes at the bottom."""
 
-    def __init__(self, page, to, cc, subject, body, files, parent=None, regen=None, has_index=False):
+    def __init__(self, page, to, cc, subject, body, files, parent=None, regen=None, has_index=False, manual=None):
         super().__init__(parent or page)
         self._regen, self._v, self._page = regen, 0, page
         self._auto = body
@@ -828,8 +913,20 @@ class OrderReplyDialog(QDialog):
         v.addWidget(self.att, 2)
         for lab, pth, on in files:
             self._add(lab, pth, on)
+        mr = QHBoxLayout()
+        self.man_chk = QCheckBox("Use my own sheet index")
+        self.man_chk.setToolTip("For a project that has no sheet index in the register: type the drawings yourself and the email and the PDF are made from your list.")
+        self.manual = list(manual or [])
+        self.man_chk.setChecked(bool(self.manual) and not has_index)
+        mb = QPushButton("Type my own sheet index...")
+        mb.clicked.connect(self._edit_manual)
+        mr.addWidget(self.man_chk)
+        mr.addWidget(mb)
+        mr.addStretch(1)
+        v.addLayout(mr)
+        self.man_chk.toggled.connect(lambda *_: self._rebuild())
         self.idx_chk = QCheckBox("Also send the sheet index of these drawings (PDF, made from the drawing register)")
-        self.idx_chk.setChecked(bool(has_index))
+        self.idx_chk.setChecked(bool(has_index) or bool(manual) and self.man_chk.isChecked())
         self.idx_chk.setToolTip("Makes the same sheet index as the drawing register sends, listing only the ticked drawings that are in the register.")
         v.addWidget(self.idx_chk)
         row = QHBoxLayout()
@@ -855,6 +952,18 @@ class OrderReplyDialog(QDialog):
         self.idx_btn.toggled.connect(lambda *_: (self._style_idx(), self._rebuild()))
         self._size()
 
+    def _edit_manual(self):
+        d = ManualIndexDialog(self._page, self.manual, self.files(), self)
+        if d.exec():
+            self.manual = d.rows()
+            self.man_chk.blockSignals(True)
+            self.man_chk.setChecked(bool(self.manual))
+            self.man_chk.blockSignals(False)
+            self._rebuild()
+
+    def manual_rows(self):
+        return self.manual if (self.man_chk.isChecked() and self.manual) else None
+
     def _style_idx(self):
         on = self.idx_btn.isChecked()
         self.idx_btn.setText("Sheet index (what is still to come): ON" if on else "Sheet index (what is still to come): OFF")
@@ -865,6 +974,9 @@ class OrderReplyDialog(QDialog):
         if self._regen is not None:
             self._auto = self._regen(self._v, self._labels(), self._regtext())
             self.body.setPlainText(self._auto)
+        self.idx_chk.setEnabled(bool(self._page._rows_for_paths(self.files())) or bool(self.manual_rows()))
+        if self.manual_rows() and not self.idx_chk.isChecked():
+            self.idx_chk.setChecked(True)
         self._look(self.tabs.currentIndex())
 
     def _look(self, i):
@@ -885,7 +997,7 @@ class OrderReplyDialog(QDialog):
 
     def _regtext(self):
         try:
-            return self._page._register_sections(self.files(), self.kind_box.currentData(), self.idx_btn.isChecked())
+            return self._page._register_sections(self.files(), self.kind_box.currentData(), self.idx_btn.isChecked(), self.manual_rows())
         except Exception:
             return ""
 
@@ -900,7 +1012,7 @@ class OrderReplyDialog(QDialog):
             self._auto = self._regen(self._v, self._labels(), self._regtext())
             self.body.setPlainText(self._auto)
         if hasattr(self, "idx_chk"):
-            self.idx_chk.setEnabled(bool(self._page._rows_for_paths(self.files())))
+            self.idx_chk.setEnabled(bool(self._page._rows_for_paths(self.files())) or bool(self.manual_rows()))
 
     def _add(self, label, path, on=True):
         try:
@@ -3930,9 +4042,27 @@ class LogMixin:
         ps = set(paths)
         return [r for g in getattr(self, "groups", []) for r in g.get("rows", []) if r.get("path") in ps]
 
-    def _register_sections(self, paths, kind=None, show_index=None):
+    def _manual_swap(self, rows):
+        """(groups, history) built from a hand-typed sheet index, in the shape the register's own email and PDF code reads."""
+        groups, gm, earlier = [], {}, {}
+        for r in rows:
+            nm = (r.get("group") or "Drawings").strip() or "Drawings"
+            row = {"no": r.get("no", ""), "title": r.get("title", ""), "rev": r.get("rev", ""), "size": r.get("size", ""), "scale": "", "about": "", "status": "For information",
+                   "on": r.get("status") == "today", "path": ""}
+            if nm not in gm:
+                gm[nm] = {"name": nm, "rows": []}
+                groups.append(gm[nm])
+            gm[nm]["rows"].append(row)
+            if r.get("status") == "earlier":
+                earlier[self.key(row)] = {"rev": row["rev"], "rdate": "", "title": row["title"], "no": row["no"], "comment": ""}
+        hist = [{"issue": "0", "date": datetime.date.today().isoformat(), "rows": earlier}] if earlier else []
+        return groups, hist
+
+    def _register_sections(self, paths, kind=None, show_index=None, manual=None):
         """The drawing-register part of the register's own email for just these drawings: what changed since the last revision, and the sheet index
         (issued today / issued earlier / still to come, with revisions), exactly as the register writes it. '' when none of them is in the register."""
+        if manual:
+            return self._swapped(lambda: self._register_sections(["<manual>"], kind, show_index), manual)
         if not self._rows_for_paths(paths):
             return ""
         rows = [r for g in getattr(self, "groups", []) for r in g.get("rows", [])]
@@ -3946,7 +4076,8 @@ class LogMixin:
             if show_index is not None:
                 self.info["show_index"] = "1" if show_index else "0"
             for r in rows:
-                r["on"] = r.get("path") in ps
+                if not getattr(self, "_manual_paths", None):
+                    r["on"] = r.get("path") in ps
             self.write_mail()
             lines = self.mail.toPlainText().split("\n")
         except Exception:
@@ -3978,14 +4109,31 @@ class LogMixin:
             out.append(x)
         return "\n".join(out).strip()
 
-    def _index_pdf_for(self, paths, out):
+    def _swapped(self, fn, manual):
+        """Runs fn with the register's drawings and history replaced by the hand-typed sheet index, then puts everything back."""
+        g0, h0 = self.groups, self.history
+        try:
+            self.groups, self.history = self._manual_swap(manual)
+            for g in self.groups:
+                for r in g["rows"]:
+                    r["path"] = "<manual>"
+            self._manual_paths = {"<manual>"}
+            return fn()
+        finally:
+            self.groups, self.history = g0, h0
+            self._manual_paths = None
+
+    def _index_pdf_for(self, paths, out, manual=None):
         """The register's sheet index (same cover and look) listing only these drawings."""
+        if manual:
+            return self._swapped(lambda: self._index_pdf_for(["<manual>"], out), manual)
         rows = [r for g in getattr(self, "groups", []) for r in g.get("rows", [])]
         was = [r.get("on", True) for r in rows]
         ps = set(paths)
         try:
             for r in rows:
-                r["on"] = r.get("path") in ps
+                if not getattr(self, "_manual_paths", None):
+                    r["on"] = r.get("path") in ps
             self.write_index_pdf(out)
         finally:
             for r, w in zip(rows, was):
@@ -4056,8 +4204,10 @@ class LogMixin:
             if quoted.strip():
                 t += "\n\n----- Your original order -----\n" + "\n".join("> " + x for x in quoted.strip().split("\n"))
             return t
-        body = make_body(0, [self._file_label(p_) for _l, p_ in files], self._register_sections([p_ for _l, p_ in files]))
-        dlg = OrderReplyDialog(self, ", ".join(to_l), "", sub, body, [(l, p, True) for l, p in files], regen=make_body, has_index=bool(self._rows_for_paths([p_ for _l, p_ in files])))
+        _man0 = (S.get("reply_manual_index", {}) or {}).get(area or "_", [])
+        _has0 = bool(self._rows_for_paths([p_ for _l, p_ in files]))
+        body = make_body(0, [self._file_label(p_) for _l, p_ in files], self._register_sections([p_ for _l, p_ in files], None, None, (_man0 if (_man0 and not _has0) else None)))
+        dlg = OrderReplyDialog(self, ", ".join(to_l), "", sub, body, [(l, p, True) for l, p in files], regen=make_body, has_index=bool(self._rows_for_paths([p_ for _l, p_ in files])), manual=(S.get("reply_manual_index", {}) or {}).get(area or "_", []))
         if not dlg.exec():
             return
         frm = S.get("mail_address") or S.get("smtp_from") or S.get("smtp_user")
@@ -4095,9 +4245,15 @@ class LogMixin:
         import mimetypes
         sent_files = dlg.files()
         idx_path = ""
-        if dlg.idx_chk.isChecked() and self._rows_for_paths(sent_files):
+        man = dlg.manual_rows()
+        try:
+            S.setdefault("reply_manual_index", {})[area or "_"] = list(dlg.manual)
+            self._M().save_settings()
+        except Exception:
+            pass
+        if dlg.idx_chk.isChecked() and (man or self._rows_for_paths(sent_files)):
             try:
-                idx_path = self._index_pdf_for(sent_files, os.path.join(tempfile.mkdtemp(), re.sub(r'[\\/:*?"<>|]+', "-", "Sheet index - %s.pdf" % (area or self.project_name()))))
+                idx_path = self._index_pdf_for(sent_files, os.path.join(tempfile.mkdtemp(), re.sub(r'[\\/:*?"<>|]+', "-", "Sheet index - %s.pdf" % (area or self.project_name()))), man)
             except Exception:
                 idx_path = ""
         for pth in sent_files + ([idx_path] if idx_path else []):

@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.75**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.76**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **1.86.76 Orders reply: your own sheet index.** For projects whose drawing program has no sheet index, "Type my own sheet index..." in the reply window lets you type or paste the drawings (block or house, number, title, revision, size) and mark each as issued today, issued earlier or not yet issued. The email panels and the sheet index PDF are made from your list, and the list is remembered for that area.
 
 - **1.86.75 Orders reply has the same controls as the drawing register email.** An "Edit" and "How it will look" tab right inside the reply window, the "This email is:" choice (revised drawings, new set, these drawings) and the "Sheet index (what is still to come): ON/OFF" button. Changing them rewrites the drawings part of the text.
 
