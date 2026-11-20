@@ -16,39 +16,22 @@ def _norm(s):
     return re.sub(r"[^a-z0-9]+", "", str(s).lower())
 
 
-class _Tables(__import__("html.parser", fromlist=["HTMLParser"]).HTMLParser):
-    """All tables of an HTML email as rows of cell texts."""
-
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.tables, self._t, self._r, self._c = [], None, None, None
-
-    def handle_starttag(self, tag, attrs):
-        if tag == "table":
-            self._t = []
-        elif tag == "tr" and self._t is not None:
-            self._r = []
-        elif tag in ("td", "th") and self._r is not None:
-            self._c = []
-        elif tag in ("br", "p", "div") and self._c is not None:
-            self._c.append(" ")
-
-    def handle_endtag(self, tag):
-        if tag in ("td", "th") and self._c is not None and self._r is not None:
-            self._r.append(re.sub(r"\s+", " ", "".join(self._c)).strip())
-            self._c = None
-        elif tag == "tr" and self._r is not None and self._t is not None:
-            if any(self._r):
-                self._t.append(self._r)
-            self._r = None
-        elif tag == "table" and self._t is not None:
-            if self._t:
-                self.tables.append(self._t)
-            self._t = None
-
-    def handle_data(self, data):
-        if self._c is not None:
-            self._c.append(data)
+def _tables(html):
+    """All tables of an HTML email as rows of cell texts (plain text matching: no extra library is needed)."""
+    def txt(x):
+        x = re.sub(r"(?is)<(script|style).*?</\1>", "", x)
+        x = re.sub(r"(?i)<br\s*/?>|</p>|</div>", " ", x)
+        return re.sub(r"\s+", " ", _html.unescape(re.sub(r"(?s)<[^>]+>", "", x))).strip()
+    out = []
+    for tb in re.findall(r"(?is)<table\b.*?</table>", html or ""):
+        rows = []
+        for tr in re.findall(r"(?is)<tr\b.*?</tr>", tb):
+            cells = [txt(c) for c in re.findall(r"(?is)<t[dh]\b[^>]*>(.*?)</t[dh]>", tr)]
+            if any(cells):
+                rows.append(cells)
+        if rows:
+            out.append(rows)
+    return out
 
 
 STAND_COL = re.compile(r"stand\s*(no|nr|number|#)|^(erf|house|unit|plot|lot)\b.*(no|nr|number|#)?|^(stand|erf|house|unit|plot|lot)$", re.I)
@@ -56,13 +39,8 @@ STAND_COL = re.compile(r"stand\s*(no|nr|number|#)|^(erf|house|unit|plot|lot)\b.*
 
 def orders_from_tables(html, houses=()):
     """One order per row of the table that has a stand / erf / house number column (a client's order list). [] when there is no such table."""
-    p = _Tables()
-    try:
-        p.feed(html or "")
-    except Exception:
-        return []
     out = []
-    for rows in p.tables:
+    for rows in _tables(html):
         hi = next((i for i, r in enumerate(rows[:3]) if any(STAND_COL.search(c) for c in r)), None)
         if hi is None:
             continue

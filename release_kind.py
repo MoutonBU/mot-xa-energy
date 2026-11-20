@@ -17,13 +17,17 @@ def git(*a):
 
 
 def imports_of(src):
+    """Full dotted names of the modules imported (os.path, html.parser...). A frozen program only contains the modules it imported when it was built."""
     out = set()
+    std = getattr(sys, "stdlib_module_names", set())
     try:
         for n in ast.walk(ast.parse(src)):
             if isinstance(n, ast.Import):
-                out.update(a.name.split(".")[0] for a in n.names)
+                out.update(a.name for a in n.names)
             elif isinstance(n, ast.ImportFrom) and n.module and not n.level:
-                out.add(n.module.split(".")[0])
+                out.add(n.module)
+                if n.module.split(".")[0] in std:
+                    out.update(n.module + "." + a.name for a in n.names)      # from email import policy
     except SyntaxError:
         pass
     return out
@@ -38,22 +42,30 @@ def tree_imports(rev=None):
     return s, {os.path.splitext(os.path.basename(f))[0] for f in names}
 
 
+def non_code(a, b):
+    return [f for f in git("diff", "--name-only", a, b).split("\n") if f.strip() and not CODE_OK.match(f)]
+
+
 def decide():
     if "[full]" in git("log", "-1", "--format=%B"):
         return "full", "commit asks for a full build"
-    revs = [x for x in git("log", "--format=%H", "-n", "2", "--", "RELEASE_NUMBER").split() if x]
+    revs = [x for x in git("log", "--format=%H", "--", "RELEASE_NUMBER").split() if x]
     if len(revs) < 2:
         return "full", "no earlier release"
-    prev = revs[1]
-    changed = [f for f in git("diff", "--name-only", prev, "HEAD").split("\n") if f.strip()]
-    other = [f for f in changed if not CODE_OK.match(f)]
+    # the last release that was a full installer: the one code updates are measured against
+    base = revs[-1]
+    for k in range(1, len(revs) - 1):
+        if non_code(revs[k + 1], revs[k]) or "[full]" in git("log", "-1", "--format=%B", revs[k]):
+            base = revs[k]
+            break
+    other = non_code(base, "HEAD")
     if other:
         return "full", "changed: " + ", ".join(other[:5])
-    old, _ = tree_imports(prev)
+    old, _ = tree_imports(base)
     new, local = tree_imports()
-    added = sorted(x for x in new - old - local if x not in ("__future__",))
+    added = sorted(x for x in new - old if x.split(".")[0] not in local and x != "__future__")
     if added:
-        return "full", "new imports: " + ", ".join(added)
+        return "full", "new imports since the last installer: " + ", ".join(added[:8])
     return "code", "only program code changed"
 
 
