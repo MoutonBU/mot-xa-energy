@@ -17,7 +17,7 @@ from PySide6.QtCore import Qt, QTimer, QUrl, Signal, QPoint
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (QWidget, QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QTableWidget,
-                               QTableWidgetItem, QVBoxLayout, QStackedWidget, QScrollArea, QFrame, QSizePolicy)
+                               QApplication, QTableWidgetItem, QVBoxLayout, QStackedWidget, QScrollArea, QFrame, QSizePolicy)
 
 LOGK = ("group", "priority", "type", "rev", "date", "order", "text", "extras", "kinds", "by", "req_subject", "req_date", "req_from", "sent_date", "sent_to", "status", "by_name", "by_email", "sent_subject")
 LOGC = ["House or block", "Priority", "Type", "Rev", "Date", "Order number", "What was ordered or changed", "Extras the client wants", "Kind of change", "Asked by", "The client's email", "Received",
@@ -749,6 +749,90 @@ def split_parts(files, limit_mb=LIMIT_MB):
             parts.append([p])
             sizes.append(mb)
     return parts
+
+
+class OrderReplyDialog(QDialog):
+    """Reply to the client about one or more houses: the text is filled in, the revised drawings are ticked, your signature goes at the bottom."""
+
+    def __init__(self, page, to, cc, subject, body, files, parent=None):
+        super().__init__(parent or page)
+        self.setWindowTitle("Reply to the client")
+        self.resize(780, 680)
+        v = QVBoxLayout(self)
+        f = QFormLayout()
+        self.to, self.cc, self.sub = QLineEdit(to), QLineEdit(cc), QLineEdit(subject)
+        try:
+            import contacts
+            contacts.attach(self.to, lambda: page._M())
+            contacts.attach(self.cc, lambda: page._M())
+        except Exception:
+            pass
+        f.addRow("To", self.to)
+        f.addRow("Cc", self.cc)
+        f.addRow("Subject", self.sub)
+        v.addLayout(f)
+        v.addWidget(QLabel("The message (your signature goes under it when it is sent):"))
+        self.body = QPlainTextEdit(body)
+        v.addWidget(self.body, 3)
+        self.design_chk = QCheckBox("Send as a designed email with my signature (MCP look)")
+        self.design_chk.setChecked(page.designed_on())
+        v.addWidget(self.design_chk)
+        v.addWidget(QLabel("Drawings that go with it (tick what is sent):"))
+        self.att = QListWidget()
+        self.paths = []
+        v.addWidget(self.att, 2)
+        for lab, pth, on in files:
+            self._add(lab, pth, on)
+        row = QHBoxLayout()
+        ab = QPushButton("Add drawings or files...")
+        ab.clicked.connect(self._pick)
+        row.addWidget(ab)
+        self.size = QLabel("")
+        row.addWidget(self.size, 1)
+        v.addLayout(row)
+        bar = QHBoxLayout()
+        self.send = QPushButton("Send")
+        self.send.setDefault(True)
+        c = QPushButton("Cancel")
+        self.send.clicked.connect(self._go)
+        c.clicked.connect(self.reject)
+        bar.addStretch(1)
+        bar.addWidget(c)
+        bar.addWidget(self.send)
+        v.addLayout(bar)
+        self.att.itemChanged.connect(self._size)
+        self._size()
+
+    def _add(self, label, path, on=True):
+        try:
+            mb = os.path.getsize(path) / 1e6
+        except Exception:
+            return
+        it = QListWidgetItem("%s   (%.1f MB)" % (label, mb))
+        it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+        it.setCheckState(Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
+        self.att.addItem(it)
+        self.paths.append(path)
+
+    def _pick(self):
+        fs, _ = QFileDialog.getOpenFileNames(self, "Add drawings or files")
+        for x in fs:
+            if x not in self.paths:
+                self._add(os.path.basename(x), x, True)
+        self._size()
+
+    def files(self):
+        return [p for i, p in enumerate(self.paths) if self.att.item(i).checkState() == Qt.CheckState.Checked]
+
+    def _size(self, *_a):
+        tot = sum(os.path.getsize(p) for p in self.files() if os.path.exists(p)) / 1e6
+        self.size.setText("%d file%s, %.1f MB%s" % (len(self.files()), "" if len(self.files()) == 1 else "s", tot, "   (over 20 MB: many mail servers refuse this; use a download link)" if tot > 20 else ""))
+
+    def _go(self):
+        if not addresses(self.to.text()):
+            QMessageBox.information(self, "Reply", "Type who the email goes to first.")
+            return
+        self.accept()
 
 
 class SendDialog(QDialog):
@@ -1589,6 +1673,12 @@ class LogMixin:
         dn = QPushButton("\u2713  Mark completed")
         dn.setStyleSheet("font-weight:700;")
         dn.clicked.connect(lambda _c=False, k=kind: self._toggle_done(k))
+        if kind == "Order":
+            rb = QPushButton("\u2709  Reply to the client...")
+            rb.setStyleSheet("font-weight:700;")
+            rb.setToolTip("Reply with the order, the changes, the revised drawings and your signature")
+            rb.clicked.connect(lambda _c=False: self.reply_houses())
+            back.addWidget(rb)
         back.addWidget(dn)
         if not hasattr(self, "_done_btns"):
             self._done_btns = {}
@@ -3702,6 +3792,142 @@ class LogMixin:
             tiles.append(btn)
         self._reflow(kind)
 
+    # ----- reply to the client from the orders (one house, or several picked houses) -----
+    @staticmethod
+    def _stand_no(group):
+        m = re.search(r"(\d+)\s*$", str(group or "").strip()) or re.search(r"(\d+)", str(group or ""))
+        return m.group(1) if m else ""
+
+    def _drawings_for(self, group):
+        """Register drawings that belong to this house: the stand or PTN number stands on its own in the drawing number, title or file name."""
+        n = self._stand_no(group)
+        if not n:
+            return []
+        rx = re.compile(r"(?<![0-9])0*%s(?![0-9])" % re.escape(n))
+        out = []
+        for g in getattr(self, "groups", []):
+            for r in g.get("rows", []):
+                p = r.get("path")
+                if p and os.path.exists(p) and any(rx.search(str(r.get(k, "") or "")) for k in ("no", "title", "file")) and p not in [x[1] for x in out]:
+                    out.append((r, p))
+        return out
+
+    def reply_houses(self, names=None):
+        names = list(names or [])
+        if not names:
+            g = self._lgroup.get("Order")
+            names = [g] if g else []
+        if not names:
+            return
+        S = self._M().SETTINGS
+        area = self._larea.get("Order")
+        if not mail_ready(S):
+            QMessageBox.information(self, "Orders", "First choose the email you send from (Gmail or Outlook) and sign in.")
+            self.email_account()
+            if not mail_ready(S):
+                return
+        if not signature_text(S) and not getattr(self, "_sig_asked", False):
+            self._sig_asked = True
+            if QMessageBox.question(self, "Orders", "Your name and details are not set up for the bottom of the email yet. Set up your signature now?") == QMessageBox.StandardButton.Yes:
+                self.my_signature()
+        ents_all, to_l, cc_l, subj, who, files, blocks = [], [], [], "", "", [], []
+        for g in names:
+            ords = [e for e in self.log if e.get("type") == "Order" and _gnorm(e.get("group")) == _gnorm(g) and (area is None or self._area_of(e) == area)]
+            chs = sorted(self._changes_of(g, area), key=lambda c: str(c.get("date")))
+            ents_all += ords + chs
+            for e in ords + chs:
+                a = str(e.get("by_email") or "").strip()
+                if a and a.lower() not in [x.lower() for x in to_l]:
+                    to_l.append(a)
+                who = who or str(e.get("by_name") or "").strip()
+                subj = subj or str(e.get("req_subject") or "").strip()
+            ls = [g]
+            for e in ords:
+                t = str(e.get("text") or "").strip().split("\n")
+                ls.append("  Your order: " + (t[0] if t else "") + ("".join("\n    " + x for x in t[1:]) if len(t) > 1 else ""))
+            for c in chs:
+                kd = "major" if "Major" in str(c.get("kinds", "")) else "minor" if "Minor" in str(c.get("kinds", "")) else ""
+                ls.append("  Change %s%s: %s" % (c.get("rev") or "", (" (%s)" % kd) if kd else "", str(c.get("text") or "").strip().replace("\n", " ")))
+            dr = self._drawings_for(g)
+            if dr:
+                ls.append("  Drawings attached: " + ", ".join(("%s%s" % ((r.get("no") + " ") if r.get("no") else "", r.get("title", "")) + ((" rev " + r["rev"]) if r.get("rev") else "")).strip() for r, _p in dr))
+                files += [("%s: %s" % (g, os.path.basename(p)), p) for _r, p in dr]
+            else:
+                ls.append("  (no drawing for this house found in the register)")
+            blocks.append("\n".join(ls))
+        first = (who.split() or [""])[0]
+        sub = ("Re: " + re.sub(r"^\s*((re|fw|fwd)\s*:\s*)+", "", subj, flags=re.I)) if subj else ("Re: %s - %s" % (area or "orders", ", ".join(names[:3]) + ("..." if len(names) > 3 else "")))
+        body = ("Dear %s,\n\n" % first if first else "Good day,\n\n") + ("Thank you for your %s. Herewith the feedback on %s:\n\n" % ("order" if len(names) == 1 else "orders", names[0] if len(names) == 1 else "the following houses")) + "\n\n".join(blocks) + "\n\nPlease let me know if anything needs to change.\n\nKind regards,\n"
+        quoted = next((str(e.get("text") or "") for e in ents_all if e.get("type") == "Order"), "")
+        if quoted.strip():
+            body += "\n\n----- Your original order -----\n" + "\n".join("> " + x for x in quoted.strip().split("\n"))
+        dlg = OrderReplyDialog(self, ", ".join(to_l), "", sub, body, [(l, p, True) for l, p in files])
+        if not dlg.exec():
+            return
+        frm = S.get("mail_address") or S.get("smtp_from") or S.get("smtp_user")
+        to, cc = addresses(dlg.to.text()), addresses(dlg.cc.text())
+        m = EmailMessage()
+        m["From"], m["To"] = frm, ", ".join(to)
+        m["Subject"] = dlg.sub.text().strip()
+        if cc:
+            m["Cc"] = ", ".join(cc)
+        for e in ents_all:                                                  # reply inside the client's own email thread when we still have their email
+            rp = e.get("req_path")
+            if rp and os.path.exists(rp):
+                try:
+                    mid = _email.message_from_binary_file(open(rp, "rb"), policy=email.policy.default).get("Message-ID")
+                    if mid:
+                        m["In-Reply-To"] = mid
+                        m["References"] = mid
+                        break
+                except Exception:
+                    pass
+        text = dlg.body.toPlainText()
+        sig = signature_text(S)
+        m.set_content(text + (("\n\n" + sig) if sig and not dlg.design_chk.isChecked() else ""))
+        if dlg.design_chk.isChecked():
+            try:
+                m.add_alternative(self.design_html(dlg.sub.text().strip(), text, both=True), subtype="html")
+                m.get_payload()[1].add_related(self.design_png(), maintype="image", subtype="png", cid="<mcplogo>", filename="mcp-logo.png", disposition="inline")
+                m.get_payload()[1].add_related(self.design_png(True), maintype="image", subtype="png", cid="<mcplogod>", filename="mcp-logo-dark.png", disposition="inline")
+                if self.sig_picture_on():
+                    self.sig_parts()
+                    for _i, _b in enumerate(self._sig_cache[2]):
+                        m.get_payload()[1].add_related(_b, maintype="image", subtype="jpeg", cid="<mcpsig%d>" % _i, filename="signature%d.jpg" % _i, disposition="inline")
+            except Exception:
+                pass
+        import mimetypes
+        sent_files = dlg.files()
+        for pth in sent_files:
+            mt = (mimetypes.guess_type(pth)[0] or "application/octet-stream")
+            mn, sb = (mt.split("/", 1) + ["octet-stream"])[:2]
+            with open(pth, "rb") as fh:
+                m.add_attachment(fh.read(), maintype=mn, subtype=sb, filename=re.sub(r"^\d+_\d+_", "", os.path.basename(pth)))
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            deliver(S, m, bool(S.get("smtp_bcc_me", True)))
+        except Exception as ex:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, "Orders", "The email was not sent: %s\n\nCheck the account (Email account...) and the addresses." % ex)
+            return
+        QApplication.restoreOverrideCursor()
+        path = ""
+        try:
+            M = sys.modules[type(self.host).__module__]
+            d = os.path.join(M._user_data_dir(), "register_sent")
+            os.makedirs(d, exist_ok=True)
+            path = os.path.join(d, "%s - %s.eml" % (datetime.datetime.now().strftime("%Y-%m-%d %H%M"), re.sub(r'[\\/:*?"<>|]+', "-", m["Subject"])[:80]))
+            with open(path, "wb") as fh:
+                fh.write(bytes(m))
+        except Exception:
+            path = ""
+        now = datetime.date.today().isoformat()
+        for e in ents_all:
+            e["sent_date"], e["sent_to"], e["sent_subject"], e["sent_path"] = now, ", ".join(to + cc), m["Subject"], path
+            e["drawings"] = ", ".join(os.path.basename(x) for x in sent_files)[:400]
+        self.refresh_log()
+        QMessageBox.information(self, "Orders", "Sent to %s.\nEvery line of %s now shows the date and the email that was sent." % (", ".join(to), ", ".join(names)))
+
     def _tile_menu(self, kind, name, btn):
         from PySide6.QtWidgets import QMenu
         m = QMenu(btn)
@@ -3711,9 +3937,12 @@ class LogMixin:
         a3 = m.addAction("Move to another area...") if kind == "Order" else None
         insel = (self._larea.get("Order"), name) in getattr(self, "_sel_houses", set())
         a5 = m.addAction("Remove from the client report" if insel else "Select for the client report") if kind == "Order" else None
+        a6 = m.addAction("Reply to the client..." if not (insel and len(self._sel_names()) > 1) else "Reply to the client for the %d picked houses..." % len(self._sel_names())) if kind == "Order" else None
         a2 = m.addAction("Delete all the %s of %s..." % ("orders" if kind == "Order" else "changes", name))
         pick = m.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
-        if a5 is not None and pick is a5:
+        if a6 is not None and pick is a6:
+            self.reply_houses(self._sel_names() if (insel and len(self._sel_names()) > 1) else [name])
+        elif a5 is not None and pick is a5:
             self._toggle_sel(name)
         elif pick is a1:
             self._open_group(kind, name)
@@ -4206,6 +4435,7 @@ class LogMixin:
         ap = m.addAction("Preview report (PDF)...")
         ac = m.addAction("Save as PDF...")
         ae = m.addAction("Email it to the client...")
+        ar = m.addAction("Reply to the client about these houses (with drawings)...")
         m.addSeparator()
         am = m.addAction("Mark these houses as completed")
         ax = m.addAction("Clear the picks")
@@ -4216,6 +4446,8 @@ class LogMixin:
             self.area_progress_pdf(area, None, False, names)
         elif pick is ae:
             self.area_progress_email(area, None, False, names)
+        elif pick is ar:
+            self.reply_houses(names)
         elif pick is am:
             for g in names:
                 self.set_house_done("Order", g, True)
