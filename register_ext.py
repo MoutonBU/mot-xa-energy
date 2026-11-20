@@ -1742,6 +1742,7 @@ class LogMixin:
         if manual:
             self._inbox_label("checking...")
         self._inbox_busy = True
+        self._inbox_manual = bool(manual)
         if S.get("inbox_seen_v", 0) < 3:
             S["inbox_seen"], S["inbox_seen_v"] = [], 3            # emails set aside by earlier versions (Maybe orders...) are looked at again
         # Check now looks at every unread match again (an email already in the list is recognised by its id and its content, so nothing is added twice)
@@ -1827,7 +1828,7 @@ class LogMixin:
                     continue
                 ckey = ("change", _gnorm(e["group"]), re.sub(r"\s+", " ", (ctext + "|" + e["extras"]).lower()))
                 ch = "c" + hashlib.sha1(repr(ckey).encode("utf-8")).hexdigest()[:15]
-                if ch in mem or any(c.get("type") == "Change" and _gnorm(c.get("group")) == _gnorm(e["group"]) and re.sub(r"\s+", " ", (str(c.get("text", "")) + "|" + str(c.get("extras", ""))).lower()) == ckey[2]
+                if (ch in mem and not st.get("force")) or any(c.get("type") == "Change" and _gnorm(c.get("group")) == _gnorm(e["group"]) and re.sub(r"\s+", " ", (str(c.get("text", "")) + "|" + str(c.get("extras", ""))).lower()) == ckey[2]
                                     for c in self.log):
                     self._chase(existing, urgent, alerts, it)
                     took = True
@@ -1857,8 +1858,9 @@ class LogMixin:
                 kh = self._key_hash(e)
             else:
                 wanted = ""
-            if k in have or kh in mem:
-                continue                                              # the same order came in before: only added once
+            if k in have or (kh in mem and not st.get("force")):
+                st["dups"] = st.get("dups", 0) + 1
+                continue                                              # the same order came in before: only added once (Check now brings back one you deleted)
             if urgent:
                 e["priority"] = "Urgent"
                 alerts.append((e["group"], it["subject"], "new"))
@@ -1911,11 +1913,17 @@ class LogMixin:
         mem = list(S.get("inbox_keys", []))
         have_ids = {e.get("msg_id") for e in self.log if e.get("msg_id")}
         folder = os.path.join(M._user_data_dir(), "inbox")
-        st = {"made": 0, "changes": 0, "alerts": alerts, "news": news, "have": have, "mem": mem, "houses": houses, "folder": folder}
+        st = {"made": 0, "changes": 0, "alerts": alerts, "news": news, "have": have, "mem": mem, "houses": houses, "folder": folder, "dups": 0,
+              "force": bool(getattr(self, "_inbox_manual", False))}
+        self._inbox_manual = False
         for it in reversed(items):
-            if it["id"] in seen or it["id"] in have_ids:
+            if it["id"] in seen and not st["force"]:
                 continue
-            seen.append(it["id"])
+            if it["id"] in have_ids:
+                st["dups"] += 1
+                continue
+            if it["id"] not in seen:
+                seen.append(it["id"])
             if base:
                 continue
             if mail_inbox.ROBOT.search(mail_inbox.sender_addr(it["from"])):
@@ -1934,7 +1942,7 @@ class LogMixin:
                 QApplication.alert(self.window(), 0)
             except Exception:
                 pass
-        self._inbox_label("checked %s, %d unread email%s found%s" % (now, len(items), "" if len(items) == 1 else "s", ((", %d new order%s" % (made, "" if made == 1 else "s")) + ((", %d change%s" % (changes_made, "" if changes_made == 1 else "s")) if changes_made else "")) if (made or changes_made) else (", nothing new to add" if items else ", none match your words, areas or senders")) + "")
+        self._inbox_label("checked %s, %d unread email%s found%s" % (now, len(items), "" if len(items) == 1 else "s", ((", %d new order%s" % (made, "" if made == 1 else "s")) + ((", %d change%s" % (changes_made, "" if changes_made == 1 else "s")) if changes_made else "")) if (made or changes_made) else ((", nothing new to add" + ((" (%d already in your list)" % st["dups"]) if st["dups"] else "")) if items else ", none match your words, areas or senders")) + "")
 
     # ----- areas: the large squares (Blue Hills, another estate...) that the houses and orders sit in -----
     @staticmethod

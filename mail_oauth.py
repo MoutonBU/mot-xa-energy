@@ -148,7 +148,9 @@ def access_token(S, provider):
     if provider == "gmail" and st == 200 and tok.get("scope"):
         S["gmail_read"] = "gmail.readonly" in str(tok["scope"])           # what Google really allowed
     if st != 200 or "access_token" not in tok:
-        raise RuntimeError("sign in again (%s)" % (tok.get("error_description") or tok.get("error") or st))
+        if tok.get("error") == "invalid_grant":
+            raise RuntimeError("Google ended the Gmail sign-in (it does this after 7 days while the Google project is in Testing: set its publishing status to In production once, then sign in one last time)")
+        raise RuntimeError("could not reach Gmail just now (%s); it tries again by itself" % (tok.get("error_description") or tok.get("error") or st))
     return tok["access_token"]
 
 
@@ -194,8 +196,14 @@ def gmail_get(S, path, params=None, timeout=60):
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read().decode("utf-8", "replace"))
     except urllib.error.HTTPError as e:
-        if e.code in (401, 403):
-            if e.code == 403:
-                S["gmail_read"] = False
+        body = ""
+        try:
+            body = e.read().decode("utf-8", "replace").lower()
+        except Exception:
+            pass
+        if e.code in (401, 403) and ("insufficient" in body or "scope" in body):
+            S["gmail_read"] = False                       # only when Google really says the permission is missing
             raise RuntimeError("Google did not allow reading the mailbox: press Allow Gmail reading again (%s)" % e.code)
+        if e.code in (401, 403, 429):
+            raise RuntimeError("Gmail said wait a moment (%s); it tries again by itself" % e.code)
         raise RuntimeError("Gmail answered %s" % e.code)
