@@ -15,7 +15,7 @@ for pkg in ("ifcopenshell", "rapidocr_onnxruntime", "onnxruntime", "shapely", "f
         datas += d; binaries += b; hidden += h
     except Exception:
         pass
-a = Analysis(["mot_xa_energy.py"], datas=datas, binaries=binaries, hiddenimports=hidden, excludes=["tkinter", "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtQuick", "PySide6.QtQml", "PySide6.Qt3DCore", "PySide6.QtMultimedia", "PySide6.QtCharts", "PySide6.QtDataVisualization", "PySide6.QtPdf", "PySide6.QtPdfWidgets", "IPython", "pytest", "sphinx", "PyQt5", "PyQt6"])
+a = Analysis(["launcher.py"], datas=datas, binaries=binaries, hiddenimports=hidden + ["mot_xa_energy"], excludes=["tkinter", "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtQuick", "PySide6.QtQml", "PySide6.Qt3DCore", "PySide6.QtMultimedia", "PySide6.QtCharts", "PySide6.QtDataVisualization", "PySide6.QtPdf", "PySide6.QtPdfWidgets", "IPython", "pytest", "sphinx", "PyQt5", "PyQt6"])
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="MCP_XA_Energy", console=False, icon="mcp_logo.ico")
 coll = COLLECT(exe, a.binaries, a.datas, name="MCP_XA_Energy")

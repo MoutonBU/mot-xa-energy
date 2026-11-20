@@ -4,6 +4,11 @@ on:
     branches: [main]
     paths: ["RELEASE_NUMBER"]
   workflow_dispatch:
+    inputs:
+      full:
+        description: "Build a full installer even if only code changed"
+        type: boolean
+        default: false
 permissions:
   contents: write
 concurrency:
@@ -21,9 +26,28 @@ jobs:
         run: |
           try { Set-MpPreference -DisableRealtimeMonitoring $true } catch { Write-Host "could not switch the scanner off" }
       - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
       - uses: actions/setup-python@v5
         with: { python-version: "3.11", cache: pip }
-      - run: pip install -r requirements.txt
+      - name: Full installer or code-only update?
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN || github.token }}
+          FORCE_FULL: ${{ inputs.full }}
+        run: |
+          # Only program code changed since the last release -> a small code update (about a minute) instead of a new installer (about 12 minutes)
+          KIND="$(python release_kind.py)"
+          [ "$FORCE_FULL" = "true" ] && KIND=full
+          BASE=""
+          if [ "$KIND" = "code" ]; then
+            BASE="$(gh release list --repo "$REL_REPO" --exclude-pre-releases --limit 1 --json tagName -q '.[0].tagName' | tr -d 'v\r\n')"
+            [ -z "$BASE" ] && KIND=full
+          fi
+          echo "Release kind: $KIND (installer version it applies to: $BASE)"
+          echo "KIND=$KIND" >> "$GITHUB_ENV"
+          echo "BASE=$BASE" >> "$GITHUB_ENV"
+      - if: env.KIND == 'full'
+        run: pip install -r requirements.txt
       - name: Version files
         shell: bash
         run: |
@@ -32,6 +56,7 @@ jobs:
           echo "{\"repo\": \"${REL_REPO}\"}" > app_config.json
           echo "APP_VER=${VER}" >> "$GITHUB_ENV"
       - name: Cache the PyInstaller work
+        if: env.KIND == 'full'
         uses: actions/cache@v4
         with:
           path: |
@@ -39,8 +64,10 @@ jobs:
             ~\AppData\Local\pyinstaller
           key: pyi-${{ runner.os }}-${{ hashFiles('requirements.txt', 'mot_xa_energy.spec') }}
           restore-keys: pyi-${{ runner.os }}-
-      - run: pyinstaller --noconfirm mot_xa_energy.spec
+      - if: env.KIND == 'full'
+        run: pyinstaller --noconfirm mot_xa_energy.spec
       - name: Fetch the Tapir installer for Archicad (the Live design check needs it)
+        if: env.KIND == 'full'
         continue-on-error: true      # if GitHub or the file is not there, the build goes on without it
         shell: bash
         env:
@@ -52,16 +79,19 @@ jobs:
           gh release download --repo ENZYME-APD/tapir-archicad-automation --pattern "${NAME}" --dir tapir --clobber
           mv "tapir/${NAME}" tapir/TapirInstaller.exe
           echo "Tapir add-on for Archicad, by ENZYME-APD. https://github.com/ENZYME-APD/tapir-archicad-automation (installer: ${NAME})" > tapir/SOURCE.txt
-      - run: choco install innosetup -y --no-progress
-      - run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss'
+      - if: env.KIND == 'full'
+        run: choco install innosetup -y --no-progress
+      - if: env.KIND == 'full'
+        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss'
       - uses: actions/upload-artifact@v4
+        if: env.KIND == 'full'
         continue-on-error: true   # a full storage quota must never stop the release below
         with:
           name: installer
           retention-days: 1
           path: installer_out/MCP_XA_Energy_Setup_*.exe
       - name: Release
-        if: github.ref_type == 'branch'
+        if: github.ref_type == 'branch' && env.KIND == 'full'
         shell: bash
         env:
           RELEASES_TOKEN: ${{ secrets.RELEASES_TOKEN }}
@@ -71,3 +101,16 @@ jobs:
           [ "$REL_REPO" = "$GITHUB_REPOSITORY" ] && EXTRA="--target $GITHUB_SHA"
           cp "installer_out/MCP_XA_Energy_Setup_${APP_VER}.exe" installer_out/MCP_XA_Energy_Setup.exe
           gh release create "v${APP_VER}" "installer_out/MCP_XA_Energy_Setup_${APP_VER}.exe" installer_out/MCP_XA_Energy_Setup.exe --repo "$REL_REPO" $EXTRA --title "Version ${APP_VER}" --notes "MCP Architecture and Interiors XA Energy ${APP_VER}"
+      - name: Code-only update
+        if: github.ref_type == 'branch' && env.KIND == 'code'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN || github.token }}
+        run: |
+          # A small zip of the program's .py files. The installed program loads them in place of the ones in its installer (see launcher.py).
+          ZIP="MCP_XA_Energy_Code_${APP_VER}.zip"
+          echo "{\"ver\": \"${APP_VER}\", \"base\": \"${BASE}\"}" > meta.json
+          python -c "import subprocess,zipfile,sys; z=zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_DEFLATED); [z.write(f) for f in subprocess.check_output(['git','ls-files','*.py'],text=True).split() if f not in ('launcher.py','release_kind.py')]; z.write('RELEASE_NOTES.md'); z.write('meta.json')" "$ZIP"
+          EXTRA=""
+          [ "$REL_REPO" = "$GITHUB_REPOSITORY" ] && EXTRA="--target $GITHUB_SHA"
+          gh release create "v${APP_VER}" "$ZIP" --repo "$REL_REPO" $EXTRA --prerelease --title "Version ${APP_VER} (code update)" --notes "MCP Architecture and Interiors XA Energy ${APP_VER}, code update for installer ${BASE}. base=${BASE}"

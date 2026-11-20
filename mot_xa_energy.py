@@ -2357,8 +2357,24 @@ def _app_data_file(name):
     return os.path.join(base, name)
 
 
+def installed_version():
+    """Version of the installer this program was installed from, e.g. (1, 86, 17). () when running from the .py file."""
+    try:
+        with open(_app_data_file("version.txt"), encoding="utf-8") as f:
+            return tuple(int(x) for x in re.findall(r"\d+", f.read()))
+    except Exception:
+        return ()
+
+
+def code_update_dir():
+    return os.path.join(_user_data_dir(), "code_update")
+
+
 def app_version():
-    """Version of this installed program as numbers, e.g. (1, 0, 1). () when running from the .py file."""
+    """Version of this program as numbers, e.g. (1, 0, 1): the installer's, or a newer code-only update's. () when running from the .py file."""
+    cv = os.environ.get("MOT_CODE_VER")
+    if cv:
+        return tuple(int(x) for x in re.findall(r"\d+", cv))
     try:
         with open(_app_data_file("version.txt"), encoding="utf-8") as f:
             return tuple(int(x) for x in re.findall(r"\d+", f.read()))
@@ -2389,16 +2405,17 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def gh_latest_release(repo, token, timeout=15):
-    """The newest release of a (private) repository: {'ver', 'tag', 'name', 'asset_id', 'size', 'notes'}. Raises RuntimeError with a plain message."""
+def gh_latest_release(repo, token, timeout=15, base=()):
+    """The newest update of a repository: {'ver', 'tag', 'name', 'asset_id', 'size', 'notes', 'kind'}. kind is 'full' (an installer) or
+    'code' (a small file of program code, only for the installer version `base`). Raises RuntimeError with a plain message."""
     if not repo:
         raise RuntimeError("No update source is set.")
-    req = urllib.request.Request(GH_API + "/repos/%s/releases/latest" % repo,
+    req = urllib.request.Request(GH_API + "/repos/%s/releases?per_page=20" % repo,
                                  headers={"Accept": "application/vnd.github+json", "User-Agent": "MCP-XA-Energy",
                                           **({"Authorization": "Bearer " + token} if token else {})})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            d = json.loads(r.read().decode("utf-8"))
+            rels = json.loads(r.read().decode("utf-8"))
     except urllib.error.HTTPError as ex:
         if ex.code in (401, 403):
             raise RuntimeError("The update server refused the request. Try again later.")
@@ -2407,13 +2424,29 @@ def gh_latest_release(repo, token, timeout=15):
         raise RuntimeError("GitHub answered %s." % ex.code)
     except Exception as ex:
         raise RuntimeError("Could not reach GitHub: %s" % ex)
-    m_ = tuple(int(x) for x in re.findall(r"\d+", str(d.get("tag_name", ""))))
-    assets = [a for a in d.get("assets", []) if str(a.get("name", "")).lower().endswith("_setup.exe")]
-    if not m_ or not assets:
-        raise RuntimeError("The latest release has no installer file.")
-    a = assets[0]
-    return {"ver": m_, "tag": d.get("tag_name", ""), "name": a["name"], "asset_id": a["id"], "size": a.get("size", 0),
-            "notes": (d.get("body") or "").strip()}
+    best_full, best_code = None, None
+    for d in rels:
+        if d.get("draft"):
+            continue
+        v = tuple(int(x) for x in re.findall(r"\d+", str(d.get("tag_name", ""))))
+        if not v:
+            continue
+        notes = (d.get("body") or "").strip()
+        for a in d.get("assets", []):
+            nm = str(a.get("name", "")).lower()
+            rec = {"ver": v, "tag": d.get("tag_name", ""), "name": a["name"], "asset_id": a["id"], "size": a.get("size", 0), "notes": notes}
+            if nm.endswith("_setup.exe") and (best_full is None or v > best_full["ver"]):
+                best_full = dict(rec, kind="full")
+            elif nm.endswith(".zip") and "_code_" in nm:
+                mb = re.search(r"base=([0-9.]+)", notes)
+                rec["base"] = tuple(int(x) for x in re.findall(r"\d+", mb.group(1))) if mb else ()
+                if best_code is None or v > best_code["ver"]:
+                    best_code = dict(rec, kind="code")
+    if best_code and base and best_code["base"] == base and (not best_full or best_code["ver"] > best_full["ver"]):
+        return best_code
+    if best_full:
+        return best_full
+    raise RuntimeError("The latest release has no installer file.")
 
 
 def _parallel_download(url, dest, total, progress=None, workers=8, block=4 << 20, tries=4):
@@ -2523,7 +2556,7 @@ class _GhThread(QThread):
     def run(self):
         try:
             if self.kind == "check":
-                self.done.emit(gh_latest_release(self.repo, self.token), "")
+                self.done.emit(gh_latest_release(self.repo, self.token, base=installed_version()), "")
             else:
                 gh_download_asset(self.repo, self.token, self.asset_id, self.dest,
                                   lambda g, t: (self.prog.emit(g, t), not self.stop)[1])
@@ -9719,7 +9752,7 @@ class MainWindow(QMainWindow):
         if lastt >= cur:
             return
         txt = ""
-        for base in (_app_data_file("RELEASE_NOTES.md"), os.path.join(os.path.dirname(os.path.abspath(__file__)), "RELEASE_NOTES.md")):
+        for base in (os.path.join(code_update_dir(), "RELEASE_NOTES.md"), _app_data_file("RELEASE_NOTES.md"), os.path.join(os.path.dirname(os.path.abspath(__file__)), "RELEASE_NOTES.md")):
             try:
                 with open(base, encoding="utf-8") as f:
                     txt = f.read()
@@ -11734,7 +11767,7 @@ class MainWindow(QMainWindow):
             if res["ver"] > cur and cur:
                 self._gh_new = res
                 self._update_ready = True
-                self.update_btn.setText("\u27F3  Update available (version %s) - click to update" % vtext(res["ver"]))
+                self.update_btn.setText("\u27F3  Update available (version %s%s) - click to update" % (vtext(res["ver"]), ", quick" if res.get("kind") == "code" else ""))
                 self.update_btn.show()
                 self.update_act.setText("Update available - click to install")
                 if manual:
@@ -11754,7 +11787,9 @@ class MainWindow(QMainWindow):
     def _gh_install(self):
         """Save the work, download the installer, run it quietly and leave. The new program opens with the work restored."""
         info = self._gh_new
-        self._upd_log("update to %s clicked" % vtext(info["ver"]))
+        self._upd_log("update to %s clicked (%s)" % (vtext(info["ver"]), info.get("kind", "full")))
+        if info.get("kind") == "code":
+            return self._code_install(info)
         try:
             data = self.project_data()
             data["_current_file"] = self.current_file
@@ -11801,6 +11836,53 @@ class MainWindow(QMainWindow):
             self.update_btn.setEnabled(True)
             self.update_btn.setText("\u27F3  Update failed - click to retry")
             QMessageBox.warning(self, APP_NAME, "The installer could not be started:\n" + loop["path"])
+
+    def _code_install(self, info):
+        """Code-only update: a small zip of the program's .py files goes into ~/MCP_XA_Energy/code_update and the program restarts with them."""
+        import zipfile, shutil
+        dest = os.path.join(tempfile.gettempdir(), info["name"])
+        dlg = QProgressDialog("Downloading version %s..." % vtext(info["ver"]), "Cancel", 0, 100, self)
+        dlg.setWindowModality(Qt.WindowModality.WindowModal)
+        dlg.setMinimumDuration(0)
+        th = _GhThread("download", gh_repo_name(), SETTINGS.get("gh_token", ""), info["asset_id"], dest, parent=self)
+        self._gh_th = th
+        loop = {"err": None, "path": None, "fin": False}
+        th.prog.connect(lambda g, t: dlg.setValue(int(100 * g / t)) if t else None)
+        dlg.canceled.connect(lambda: setattr(th, "stop", True))
+
+        def done(res, err):
+            loop["fin"], loop["path"], loop["err"] = True, res, err
+        th.done.connect(done)
+        th.start()
+        while not loop["fin"]:
+            QApplication.processEvents()
+            th.wait(40)
+        dlg.close()
+        if loop["err"] or not loop["path"]:
+            self.update_btn.setEnabled(True)
+            self.update_btn.setText("\u27F3  Update failed - click to retry")
+            if loop["err"] and loop["err"] != "Cancelled.":
+                QMessageBox.warning(self, APP_NAME, "The update could not be downloaded:\n" + loop["err"])
+            return
+        d = code_update_dir()
+        tmp = d + ".new"
+        try:
+            shutil.rmtree(tmp, ignore_errors=True)
+            with zipfile.ZipFile(loop["path"]) as z:
+                names = z.namelist()
+                if "meta.json" not in names or "mot_xa_energy.py" not in names:
+                    raise RuntimeError("The update file is not complete.")
+                z.extractall(tmp)
+            shutil.rmtree(d, ignore_errors=True)
+            os.rename(tmp, d)
+        except Exception as ex:
+            shutil.rmtree(tmp, ignore_errors=True)
+            self.update_btn.setEnabled(True)
+            self.update_btn.setText("\u27F3  Update failed - click to retry")
+            QMessageBox.warning(self, APP_NAME, "The update could not be installed:\n%s" % ex)
+            return
+        self._upd_log("code update %s installed in %s" % (vtext(info["ver"]), d))
+        self.restart_app(seamless=True)
 
     def update_now(self):
         """One click: install the newer file (if it is a download), then reload inside the same window."""
@@ -17640,7 +17722,7 @@ class MainWindow(QMainWindow):
         """File > Release notes: what is new, what changed and what stays the same."""
         from PySide6.QtWidgets import QTextBrowser
         txt = ""
-        for base in (_app_data_file("RELEASE_NOTES.md"), os.path.join(os.path.dirname(os.path.abspath(__file__)), "RELEASE_NOTES.md")):
+        for base in (os.path.join(code_update_dir(), "RELEASE_NOTES.md"), _app_data_file("RELEASE_NOTES.md"), os.path.join(os.path.dirname(os.path.abspath(__file__)), "RELEASE_NOTES.md")):
             try:
                 with open(base, encoding="utf-8") as f:
                     txt = f.read()

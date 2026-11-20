@@ -843,7 +843,7 @@ class LivePanel(QDialog):
     def _setting(self, k, default):
         try:
             import sys
-            mod = sys.modules.get("__main__")
+            mod = sys.modules.get("mot_xa_energy") or sys.modules.get("__main__")
             return (getattr(mod, "SETTINGS", {}) or {}).get(k, default)
         except Exception:
             return default
@@ -851,7 +851,7 @@ class LivePanel(QDialog):
     def _ignore_changed(self):
         try:
             import sys
-            mod = sys.modules.get("__main__")
+            mod = sys.modules.get("mot_xa_energy") or sys.modules.get("__main__")
             mod.SETTINGS["ac_ignore"] = self.ignore.text()
             mod.save_settings()
         except Exception:
