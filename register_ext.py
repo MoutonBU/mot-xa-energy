@@ -1695,7 +1695,10 @@ class LogMixin:
         if manual:
             self._inbox_label("checking...")
         self._inbox_busy = True
-        words, seen, folder = self._search_words(), set(S.get("inbox_seen", [])), os.path.join(M._user_data_dir(), "inbox")
+        if S.get("inbox_seen_v", 0) < 3:
+            S["inbox_seen"], S["inbox_seen_v"] = [], 3            # emails set aside by earlier versions (Maybe orders...) are looked at again
+        # Check now looks at every unread match again (an email already in the list is recognised by its id and its content, so nothing is added twice)
+        words, seen, folder = self._search_words(), (set() if manual else set(S.get("inbox_seen", []))), os.path.join(M._user_data_dir(), "inbox")
 
         def work():
             try:
@@ -1881,7 +1884,7 @@ class LogMixin:
                 QApplication.alert(self.window(), 0)
             except Exception:
                 pass
-        self._inbox_label("checked %s%s" % (now, ((", %d new order%s" % (made, "" if made == 1 else "s")) + ((", %d change%s" % (changes_made, "" if changes_made == 1 else "s")) if changes_made else "")) if (made or changes_made) else ", nothing new") + "")
+        self._inbox_label("checked %s, %d unread email%s found%s" % (now, len(items), "" if len(items) == 1 else "s", ((", %d new order%s" % (made, "" if made == 1 else "s")) + ((", %d change%s" % (changes_made, "" if changes_made == 1 else "s")) if changes_made else "")) if (made or changes_made) else (", nothing new to add" if items else ", none match your words, areas or senders")) + "")
 
     # ----- areas: the large squares (Blue Hills, another estate...) that the houses and orders sit in -----
     @staticmethod
