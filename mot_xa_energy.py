@@ -9284,6 +9284,14 @@ class MainWindow(QMainWindow):
             except Exception as e_:
                 print("tool not started: orders_tool", e_)
                 self.orders_page = None
+        self.invoicing_page = None
+        try:
+            import invoicing_tool
+            self.invoicing_page = invoicing_tool.InvoicingPage(self)
+            self.main_tabs.addTab(self.invoicing_page, "Invoicing")
+        except Exception as e_:
+            print("tool not started: invoicing_tool", e_)
+            self.invoicing_page = None
         self._build_home()
 
         self.assign_table = QTableWidget(0, 8)
@@ -13434,6 +13442,7 @@ class MainWindow(QMainWindow):
         for i, (title, sub, ico, tgt) in enumerate((
                 ("Drawing register", "Issue drawings by email, with the sheet index and what is still to come.", "clipboard", "Drawing register"),
                 ("Orders", "The client's orders and changes, house by house. Watches your Gmail for new orders and flags the urgent ones.", "tag", "Orders"),
+                ("Invoicing", "Numbered invoices with VAT as a PDF. Only the people you allow can open it.", "calc", "Invoicing"),
                 ("Detail Notes", "Add construction detail notes to an Archicad detail.", "ruler", "Detail Notes"),
                 ("Costing", "Fixtures, materials and the budget for a job.", "calc", "Costing"),
                 ("SANS", "Light and ventilation, energy and coverage checks for the building regulations.", "sun", "SANS"),

@@ -7,10 +7,10 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton, QSizePo
                                QVBoxLayout, QWidget)
 
 # main tab index -> (rail label, icon name); order of the main tabs in the window
-SUBJECTS = [(0, "Project", "home"), (6, "Drawing register", "clipboard"), (10, "Orders", "tag"), (1, "Light && ventilation", "lightvent"), (2, "Energy (XA)", "bolt"),
+SUBJECTS = [(0, "Project", "home"), (6, "Drawing register", "clipboard"), (10, "Orders", "tag"), (11, "Invoicing", "calc"), (1, "Light && ventilation", "lightvent"), (2, "Energy (XA)", "bolt"),
             (3, "Coverage && FAR", "building"), (4, "Detail notes", "ruler"), (5, "Costing", "tag"),
             (7, "Area schedule", "layers"), (8, "Building lines", "land"), (9, "Guidelines review", "clipboard")]
-CTX = {10: "orders", 1: "sans", 2: "sans", 3: "sans", 4: "detail", 5: "costing", 6: "register", 7: "site", 8: "site", 9: "rules"}      # which tool a main tab belongs to
+CTX = {11: "invoicing", 10: "orders", 1: "sans", 2: "sans", 3: "sans", 4: "detail", 5: "costing", 6: "register", 7: "site", 8: "site", 9: "rules"}      # which tool a main tab belongs to
 PSUB_ICONS = {"Drawings": "clipboard", "Orders": "tag", "Client changes": "edit", "Sent and revisions": "export",
               "Fixtures and sanitary ware": "drop", "Building materials": "layers", "Whole building and budget": "calc"}
 LV_SUBS = [(0, "Windows", "window"), (1, "Doors", "door"), (2, "Rooms", "room"), (3, "Results", "results"), (4, "Plan", "plan")]
@@ -169,7 +169,7 @@ class Rail(QFrame):
         m = QMenu(self)
         w = self.win
         col = "#1c1f24" if self.light_fn() else "#eceef0"
-        for label, idx, ico in (("Drawing register", 6, "clipboard"), ("Orders", 10, "tag"), ("Detail Notes", 4, "ruler"), ("Costing", 5, "calc"), (None, None, None),
+        for label, idx, ico in (("Drawing register", 6, "clipboard"), ("Orders", 10, "tag"), ("Invoicing", 11, "calc"), ("Detail Notes", 4, "ruler"), ("Costing", 5, "calc"), (None, None, None),
                                 ("Light && Ventilation", 1, "lightvent"), ("Energy (XA)", 2, "bolt"), ("Coverage && FAR", 3, "building"), (None, None, None),
                                 ("Building lines", 8, "land"), ("Area schedule", 7, "layers"), ("Guidelines review", 9, "clipboard"), (None, None, None),
                                 ("Home (the four squares)", -1, "home")):
@@ -451,6 +451,19 @@ class Ribbon(QFrame):
             m.addAction("Restore from a backup...", lambda: c.orders_restore())
             m.addAction("Delete all orders...", lambda: c.delete_all_log("Order"))
             m.exec(QCursor.pos())
+        def invo(name, *a):
+            def f():
+                c = getattr(w, "invoicing_page", None)
+                if c is None:
+                    return
+                w.main_tabs.setCurrentIndex(11)
+                getattr(c, name)(*a)
+            return f
+        self.pages[11] = self._page([
+            ("Invoices", [T("New invoice", "add", invo("new_invoice"), hot=True), T("Edit", "edit", invo("edit_invoice")), T("Copy", "layers", invo("copy_invoice"))]),
+            ("PDF", [T("Preview", "eye", invo("preview"), hot=True), T("Save PDF", "pdf", invo("save_pdf"))]),
+            ("Status", [T("Paid / unpaid", "tag", invo("toggle_paid")), T("Delete", "trash", invo("delete_invoice"))]),
+            ("Setup", [T("My business", "settings", invo("business")), T("Who can use", "clipboard", invo("manage_access")), T("Lock", "eye", invo("lock"))])])
         self.pages[10] = self._page([
             ("Gmail", [T("Watch inbox", "clipboard", ordr("inbox_dialog"), hot=True), T("Check now", "refresh", ordr("inbox_check_now"))]),
             ("Orders", [T("New order", "add", ordr("new_order"), hot=True), T("Search", "search", ordr("orders_search")), T("More", "settings", ordr_more)]),
