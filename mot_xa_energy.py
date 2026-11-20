@@ -11409,7 +11409,63 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Restored from the automatic copy. Save the project to keep it.", 12000)
         return True
 
+    def _tray_keeps_running(self):
+        """True when closing the window should only hide it: Gmail watching is on, so the program keeps looking for orders from the tray."""
+        try:
+            from PySide6.QtWidgets import QSystemTrayIcon
+            from PySide6.QtGui import QGuiApplication
+            if getattr(self, "_really_quit", False) or not SETTINGS.get("inbox_on") or not QSystemTrayIcon.isSystemTrayAvailable():
+                return False
+            if QGuiApplication.instance().isSavingSession():
+                return False
+            return True
+        except Exception:
+            return False
+
+    def _setup_tray(self):
+        from PySide6.QtWidgets import QSystemTrayIcon, QMenu, QApplication
+        if getattr(self, "_tray", None) is not None or not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+        QApplication.setQuitOnLastWindowClosed(False)
+        tr = QSystemTrayIcon(app_icon(), self)
+        tr.setToolTip(APP_NAME + " - watching Gmail for orders")
+        m = QMenu()
+        m.addAction("Open " + APP_NAME, self._tray_show)
+        m.addAction("Open the Orders", lambda: (self._tray_show(), self.register_page.show_orders("Order")))
+        m.addSeparator()
+        m.addAction("Quit", self._tray_quit)
+        tr.setContextMenu(m)
+        tr.activated.connect(lambda r: self._tray_show() if r == QSystemTrayIcon.ActivationReason.Trigger else None)
+        self._tray_menu = m
+        self._tray = tr
+        tr.show()
+
+    def _tray_show(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _tray_quit(self):
+        self._really_quit = True
+        self._tray_show()
+        self.close()
+        if self.isVisible():              # the close was cancelled (unsaved work, Cancel)
+            self._really_quit = False
+        else:
+            QApplication.quit()
+
     def closeEvent(self, ev):
+        if self._tray_keeps_running():
+            ev.ignore()
+            self.hide()
+            try:
+                if getattr(self, "_tray", None) is not None and not getattr(self, "_tray_told", False):
+                    self._tray_told = True
+                    self._tray.showMessage(APP_NAME, "Still running in the background to watch your Gmail for orders. Right-click this icon to open or quit.",
+                                           self._tray.MessageIcon.Information, 6000)
+            except Exception:
+                pass
+            return
         try:
             if self._has_work() and self._data_hash() != getattr(self, "_clean_hash", None):
                 b = QMessageBox(self)
@@ -11431,6 +11487,10 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         ev.accept()
+        try:
+            QApplication.quit()
+        except Exception:
+            pass
 
     def _rev_dir(self):
         if not self.current_file:
@@ -20638,6 +20698,10 @@ def main():
     app.installEventFilter(app._icon_filter)
     apply_icons(win)
     wrap_long_labels(win)
+    try:
+        win._setup_tray()
+    except Exception:
+        pass
     win.setMinimumWidth(0)
     try:
         _av = app.primaryScreen().availableGeometry()

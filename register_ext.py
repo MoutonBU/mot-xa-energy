@@ -13,7 +13,7 @@ from collections import Counter
 from email.message import EmailMessage
 from email.utils import parsedate_to_datetime
 
-from PySide6.QtCore import Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal, QPoint
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (QWidget, QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QTableWidget,
@@ -1107,6 +1107,130 @@ class _ExtrasCell(QWidget):
         self.btn.setText(("\u25BE " if opened else "\u25B8 ") + ("Extras (%d)" % n if n else "Extras (none)"))
 
 
+class AreaTile(QPushButton):
+    """A large area square: the photo (if there is one) fills it, darkened, with the text centred over it."""
+    def __init__(self, photo="", urgent=False, light=False):
+        super().__init__()
+        self._pm = None
+        self._urgent, self._light = urgent, light
+        if photo and os.path.exists(photo):
+            from PySide6.QtGui import QPixmap
+            pm = QPixmap(photo)
+            self._pm = pm if not pm.isNull() else None
+
+    def paintEvent(self, ev):
+        from PySide6.QtGui import QPainter, QPainterPath, QPen
+        from PySide6.QtCore import QRectF
+        if self._pm is None:
+            return super().paintEvent(ev)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        path = QPainterPath()
+        path.addRoundedRect(r, 14, 14)
+        p.setClipPath(path)
+        sc = self._pm.scaled(self.size() * self.devicePixelRatioF(), Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
+        sc.setDevicePixelRatio(self.devicePixelRatioF())
+        dw, dh = sc.width() / self.devicePixelRatioF(), sc.height() / self.devicePixelRatioF()
+        p.drawPixmap(int((self.width() - dw) / 2), int((self.height() - dh) / 2), sc)
+        p.fillRect(self.rect(), QColor(0, 0, 0, 130 if not self.underMouse() else 95))
+        p.setClipping(False)
+        p.setPen(QPen(QColor("#d8132b") if (self._urgent or self.underMouse()) else QColor(255, 255, 255, 70), 2 if self._urgent else 1.5))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(r, 14, 14)
+
+
+class OrderToast(QWidget):
+    """The corner pop-up for new orders: MCP logo, the new orders by area and house, and a bright red look when something is urgent."""
+    def __init__(self, rows, logo_png, on_open, urgent):
+        super().__init__(None, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+        from PySide6.QtGui import QPixmap
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self._urgent, self._on_open, self._pulse = urgent, on_open, 0
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedWidth(400)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(18, 14, 18, 14)
+        v.setSpacing(8)
+        top = QHBoxLayout()
+        lg = QLabel()
+        pm = QPixmap()
+        pm.loadFromData(logo_png, "PNG")
+        lg.setPixmap(pm.scaledToHeight(44, Qt.TransformationMode.SmoothTransformation))
+        top.addWidget(lg)
+        n = sum(r["count"] for r in rows)
+        t = QLabel("<div style='font-size:17px;font-weight:800;color:%s'>%s</div><div style='color:#aab0b8'>%d new order%s in</div>" % (
+            "#ff4d5e" if urgent else "#ffffff", "URGENT ORDERS" if urgent else "New orders", n, "" if n == 1 else "s"))
+        top.addWidget(t, 1)
+        x = QPushButton("\u00d7")
+        x.setFixedSize(26, 26)
+        x.setStyleSheet("QPushButton{border:none;color:#aab0b8;font-size:20px;background:transparent;}QPushButton:hover{color:#ffffff;}")
+        x.clicked.connect(self.close)
+        top.addWidget(x, 0, Qt.AlignmentFlag.AlignTop)
+        v.addLayout(top)
+        for r in rows[:6]:
+            lab = QLabel(self._row_html(r))
+            lab.setWordWrap(True)
+            lab.setTextFormat(Qt.TextFormat.RichText)
+            if r["urgent"]:
+                lab.setStyleSheet("background:#ff1f3a;color:#ffffff;border-radius:8px;padding:7px 10px;")
+            else:
+                lab.setStyleSheet("background:#262a30;color:#eceef0;border-radius:8px;padding:7px 10px;")
+            lab.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            v.addWidget(lab)
+        if len(rows) > 6:
+            more = QLabel("and %d more..." % (len(rows) - 6))
+            more.setStyleSheet("color:#aab0b8;")
+            v.addWidget(more)
+        f = QLabel("Click to open the Orders")
+        f.setStyleSheet("color:#8a919a;font-size:11px;")
+        v.addWidget(f)
+        self.adjustSize()
+        if urgent:
+            self._tm = QTimer(self)
+            self._tm.timeout.connect(self._tick)
+            self._tm.start(450)
+        else:
+            QTimer.singleShot(16000, self.close)
+
+    @staticmethod
+    def _row_html(r):
+        esc = lambda x: str(x).replace("&", "&amp;").replace("<", "&lt;")
+        tag = "<b>URGENT</b> &nbsp;" if r["urgent"] else ""
+        cnt = (" &nbsp;<span style='opacity:.8'>%d lines</span>" % r["count"]) if r["count"] > 1 else ""
+        note = ("<br><span style='opacity:.85'>%s</span>" % esc(r["note"])) if r.get("note") else ""
+        return "%s<b>%s</b> &nbsp;%s%s%s" % (tag, esc(r["group"]), esc(r["area"]), cnt, note)
+
+    def _tick(self):
+        self._pulse ^= 1
+        self.update()
+
+    def paintEvent(self, ev):
+        from PySide6.QtGui import QPainter, QPen, QLinearGradient
+        from PySide6.QtCore import QRectF
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self.rect()).adjusted(3, 3, -3, -3)
+        g = QLinearGradient(0, 0, 0, self.height())
+        g.setColorAt(0, QColor("#2a0d12") if self._urgent else QColor("#1b1e23"))
+        g.setColorAt(1, QColor("#16181c"))
+        p.setBrush(g)
+        p.setPen(QPen(QColor("#ff2a40" if (self._urgent and self._pulse) else "#d8132b") if self._urgent else QColor("#3a3f46"), 3 if self._urgent else 1.5))
+        p.drawRoundedRect(r, 14, 14)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor("#ff2a40" if self._urgent else "#d8132b"))
+        p.drawRoundedRect(QRectF(3, 16, 5, self.height() - 32), 2.5, 2.5)
+
+    def mousePressEvent(self, ev):
+        try:
+            self._on_open()
+        finally:
+            self.close()
+
+
 class LogMixin:
     """The orders-and-revisions log."""
 
@@ -1253,6 +1377,79 @@ class LogMixin:
         if lines and urgent:
             alerts.append((lines[0].get("group", ""), it["subject"], "again"))
 
+    def _order_toast(self, news, alerts):
+        """The corner pop-up for orders that just came in (also when the program sits in the tray)."""
+        rows, idx = [], {}
+        for e in news:
+            key = (self._area_of(e), e["group"])
+            r = idx.get(key)
+            if r is None:
+                r = idx[key] = {"area": key[0], "group": key[1], "count": 0, "urgent": False, "note": ""}
+                rows.append(r)
+            r["count"] += 1
+            r["urgent"] = r["urgent"] or e.get("priority") == "Urgent"
+        for g, subj, how in alerts:
+            if how == "again":
+                ue = next((x for x in self.log if x.get("group") == g and x.get("type") == "Order"), None)
+                key = (self._area_of(ue) if ue else NOT_SORTED, g)
+                r = idx.get(key)
+                if r is None:
+                    r = idx[key] = {"area": key[0], "group": g, "count": 0, "urgent": True, "note": ""}
+                    rows.append(r)
+                r["urgent"] = True
+                r["note"] = "the client wrote again"
+        if not rows:
+            return
+        rows.sort(key=lambda r: not r["urgent"])
+        urgent = rows[0]["urgent"]
+        first = rows[0]
+
+        def open_it():
+            try:
+                w = self.window()
+                w.showNormal()
+                w.raise_()
+                w.activateWindow()
+                self.show_orders("Order")
+                self._open_area(first["area"])
+                self._open_group("Order", first["group"])
+            except Exception:
+                pass
+        try:
+            from PySide6.QtWidgets import QApplication
+            old = getattr(self, "_toast", None)
+            if old is not None:
+                try:
+                    old.close()
+                except Exception:
+                    pass
+            t = OrderToast(rows, self.design_png(True), open_it, urgent)
+            self._toast = t
+            ag = (self.screen() or QApplication.primaryScreen()).availableGeometry()
+            end = QPoint(ag.right() - t.width() - 16, ag.bottom() - t.height() - 16)
+            t.move(end.x() + 60, end.y())
+            t.setWindowOpacity(0.0)
+            t.show()
+            from PySide6.QtCore import QPropertyAnimation, QEasingCurve, QParallelAnimationGroup
+            a1 = QPropertyAnimation(t, b"pos", t)
+            a1.setStartValue(QPoint(end.x() + 60, end.y()))
+            a1.setEndValue(end)
+            a1.setDuration(320)
+            a1.setEasingCurve(QEasingCurve.Type.OutCubic)
+            a2 = QPropertyAnimation(t, b"windowOpacity", t)
+            a2.setStartValue(0.0)
+            a2.setEndValue(1.0)
+            a2.setDuration(320)
+            grp = QParallelAnimationGroup(t)
+            grp.addAnimation(a1)
+            grp.addAnimation(a2)
+            grp.start()
+            t._anim = grp
+            if urgent:
+                QApplication.beep()
+        except Exception:
+            pass
+
     def _urgent_popup(self, alerts):
         from PySide6.QtWidgets import QApplication
         seen_, rows = set(), []
@@ -1366,7 +1563,7 @@ class LogMixin:
             if gx and gx != "Not sure which house" and gx not in houses:
                 houses.append(gx)
         made = 0
-        alerts = []
+        alerts, news = [], []
         have = {self._order_key(e) for e in self.log if e.get("type") == "Order"}
         mem = list(S.get("inbox_keys", []))
         have_ids = {e.get("msg_id") for e in self.log if e.get("msg_id")}
@@ -1402,6 +1599,7 @@ class LogMixin:
                 if urgent:
                     e["priority"] = "Urgent"
                     alerts.append((e["group"], it["subject"], "new"))
+                news.append(e)
                 have.add(k)
                 mem.append(kh)
                 self.log.append(e)
@@ -1412,8 +1610,7 @@ class LogMixin:
         removed = self.inbox_dedupe()
         if made or removed or alerts:
             self.refresh_log()
-            if alerts:
-                self._urgent_popup(alerts)
+            self._order_toast(news, alerts)
             try:
                 from PySide6.QtWidgets import QApplication
                 QApplication.alert(self.window(), 0)
@@ -1607,18 +1804,32 @@ class LogMixin:
             lines = ["<b style='font-size:19px'>%s</b>" % name.replace("<", "&lt;"),
                      ("%d house%s, %d order%s" % (houses, "" if houses == 1 else "s", len(ents), "" if len(ents) == 1 else "s")) if ents else "nothing yet"]
             if nurg:
-                lines.insert(1, "<b style='color:#d8132b'>URGENT</b>")
+                lines.insert(1, "<b style='color:#ff4d5e'>URGENT</b>")
             if new:
-                lines.append("<b style='color:#d8132b'>%d new</b>" % new)
-            btn = QPushButton()
+                lines.append("<b style='color:#ff4d5e'>%d new</b>" % new)
+            ar = next((a for a in self.areas if a["name"] == name), None)
+            photo = (ar or {}).get("photo", "")
+            btn = AreaTile(photo, bool(nurg), lt)
             btn.setFixedSize(350, 170)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setStyleSheet(qss + ("QPushButton{border:2px solid #d8132b;}" if nurg else "") + ("QPushButton{background:%s;}" % ("#ffe3e6" if lt else "#3a1b20") if nurg else ""))
+            has_ph = btn._pm is not None
+            if has_ph:
+                btn.setStyleSheet("QPushButton{background:transparent;border:none;}")
+            else:
+                btn.setStyleSheet(qss + ("QPushButton{border:2px solid #d8132b;}" if nurg else "") + ("QPushButton{background:%s;}" % ("#ffe3e6" if lt else "#3a1b20") if nurg else ""))
             lab = QLabel("<br>".join(lines), btn)
-            lab.setStyleSheet("background:transparent;border:none;color:%s;" % txt)
+            lab.setStyleSheet("background:transparent;border:none;color:%s;" % ("#ffffff" if has_ph else txt))
             lab.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-            lab.setGeometry(18, 14, 314, 142)
+            lab.setGeometry(12, 8, 326, 154)
+            lab.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lab.setWordWrap(True)
+            if has_ph:
+                from PySide6.QtWidgets import QGraphicsDropShadowEffect
+                sh = QGraphicsDropShadowEffect(lab)
+                sh.setBlurRadius(8)
+                sh.setOffset(0, 1)
+                sh.setColor(QColor(0, 0, 0, 220))
+                lab.setGraphicsEffect(sh)
             btn.clicked.connect(lambda _c=False, n_=name: self._open_area(n_))
             btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
             btn.customContextMenuRequested.connect(lambda _p, n_=name, b_=btn: self._area_menu(n_, b_))
@@ -1643,14 +1854,46 @@ class LogMixin:
         m = QMenu(btn)
         a1 = m.addAction("Open")
         a2 = m.addAction("Edit name and email words...") if name != NOT_SORTED else None
+        ap = m.addAction("Set photo...") if name != NOT_SORTED else None
+        ar = next((a for a in self.areas if a["name"] == name), None)
+        ax = m.addAction("Remove photo") if (ar and ar.get("photo")) else None
         a3 = m.addAction("Delete this area and its orders...")
         pick = m.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
+        if ap is not None and pick is ap:
+            self.set_area_photo(name)
+            return
+        if ax is not None and pick is ax:
+            ar["photo"] = ""
+            self.refresh_log()
+            return
         if pick is a1:
             self._open_area(name)
         elif a2 is not None and pick is a2:
             self.edit_area(name)
         elif pick is a3:
             self.delete_area(name)
+
+    def set_area_photo(self, name):
+        a = next((x for x in self.areas if x["name"] == name), None)
+        if a is None:
+            return
+        fn, _ = QFileDialog.getOpenFileName(self, "Photo for %s" % name, "", "Pictures (*.jpg *.jpeg *.png *.webp *.bmp)")
+        if not fn:
+            return
+        from PySide6.QtGui import QImage
+        im = QImage(fn)
+        if im.isNull():
+            QMessageBox.warning(self, "Orders", "That picture could not be opened.")
+            return
+        im = im.scaled(900, 440, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
+        d_ = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "MCP_XA_Energy", "area_photos")
+        os.makedirs(d_, exist_ok=True)
+        out = os.path.join(d_, "%s_%d.jpg" % (re.sub(r"\W+", "_", name)[:40], int(datetime.datetime.now().timestamp())))
+        if not im.save(out, "JPG", 88):
+            QMessageBox.warning(self, "Orders", "The picture could not be saved.")
+            return
+        a["photo"] = out
+        self.refresh_log()
 
     def _area_dialog(self, name="", keys=""):
         d = QDialog(self)
@@ -1692,6 +1935,8 @@ class LogMixin:
             return
         self.areas.append({"name": r[0], "keys": r[1]})
         self.refresh_log()
+        if QMessageBox.question(self, "Orders", "Choose a photo for the %s square now?" % r[0]) == QMessageBox.StandardButton.Yes:
+            self.set_area_photo(r[0])
 
     def edit_area(self, name):
         a = next((x for x in self.areas if x["name"] == name), None)
@@ -1896,11 +2141,11 @@ class LogMixin:
             urg = sum(1 for e in ents if self._is_urgent(e))
             asked = sum(1 for e in ents if e.get("priority") == "Asked again" and not e.get("sent_date"))
             if urg:
-                lines.insert(1, "<b style='color:#d8132b'>URGENT</b>")
+                lines.insert(1, "<b style='color:#ff4d5e'>URGENT</b>")
             elif asked:
                 lines.insert(1, "<b style='color:#d8932f'>client asked again</b>")
             if new:
-                lines.append("<b style='color:#d8132b'>%d new</b>" % new)
+                lines.append("<b style='color:#ff4d5e'>%d new</b>" % new)
             elif open_:
                 lines.append("%d not sent yet" % open_)
             elif last:
