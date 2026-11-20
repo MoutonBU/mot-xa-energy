@@ -1266,7 +1266,7 @@ class LogMixin:
         def clicked(b):
             if b is op:
                 try:
-                    self.sub.setCurrentIndex(self.sub.indexOf(self.lpages["Order"]))
+                    self.show_orders("Order")
                     self._open_group("Order", first)
                 except Exception:
                     pass
@@ -1278,6 +1278,18 @@ class LogMixin:
             QApplication.alert(self.window(), 0)
         except Exception:
             pass
+
+    def show_orders(self, kind="Order"):
+        """Opens the Orders tool (or the register's own page when the tool is not there) on the Orders or Client changes page."""
+        op_ = getattr(self, "orders_page", None)
+        if op_ is not None:
+            self.host.main_tabs.setCurrentIndex(self.host.main_tabs.indexOf(op_))
+            op_.sub.setCurrentIndex(op_.sub.indexOf(self.lpages[kind]))
+        else:
+            self.sub.setCurrentIndex(self.sub.indexOf(self.lpages[kind]))
+
+    def inbox_check_now(self):
+        self.inbox_check(manual=True)
 
     def inbox_dialog(self):
         InboxDialog(self, self).exec()
@@ -1605,7 +1617,8 @@ class LogMixin:
     def _cur_log(self):
         """(entry, kind) of the selected line in the tab that is open, or (None, None)."""
         kinds = list(self.ltabs)
-        cur = self.sub.currentWidget() if hasattr(self, "sub") else None
+        op_ = getattr(self, "orders_page", None)
+        cur = (op_.sub if op_ is not None else self.sub).currentWidget() if hasattr(self, "sub") else None
         mine = [k for k in kinds if cur is not None and (self.lpages[k] is cur or self.lpages[k].isAncestorOf(cur))]
         for k in (mine or kinds):
             r = self.ltabs[k].currentRow()

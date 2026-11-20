@@ -7,10 +7,10 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton, QSizePo
                                QVBoxLayout, QWidget)
 
 # main tab index -> (rail label, icon name); order of the main tabs in the window
-SUBJECTS = [(0, "Project", "home"), (6, "Drawing register", "clipboard"), (1, "Light && ventilation", "lightvent"), (2, "Energy (XA)", "bolt"),
+SUBJECTS = [(0, "Project", "home"), (6, "Drawing register", "clipboard"), (10, "Orders", "tag"), (1, "Light && ventilation", "lightvent"), (2, "Energy (XA)", "bolt"),
             (3, "Coverage && FAR", "building"), (4, "Detail notes", "ruler"), (5, "Costing", "tag"),
             (7, "Area schedule", "layers"), (8, "Building lines", "land"), (9, "Guidelines review", "clipboard")]
-CTX = {1: "sans", 2: "sans", 3: "sans", 4: "detail", 5: "costing", 6: "register", 7: "site", 8: "site", 9: "rules"}      # which tool a main tab belongs to
+CTX = {10: "orders", 1: "sans", 2: "sans", 3: "sans", 4: "detail", 5: "costing", 6: "register", 7: "site", 8: "site", 9: "rules"}      # which tool a main tab belongs to
 PSUB_ICONS = {"Drawings": "clipboard", "Orders": "tag", "Client changes": "edit", "Sent and revisions": "export",
               "Fixtures and sanitary ware": "drop", "Building materials": "layers", "Whole building and budget": "calc"}
 LV_SUBS = [(0, "Windows", "window"), (1, "Doors", "door"), (2, "Rooms", "room"), (3, "Results", "results"), (4, "Plan", "plan")]
@@ -160,8 +160,8 @@ class Rail(QFrame):
 
     def _inner_tabs(self, idx):
         """The tab widget inside the Drawing register (6) or the Costing (5), whose sections the bar lists."""
-        pg = getattr(self.win, "register_page" if idx == 6 else "costing_page" if idx == 5 else "", None) if idx in (5, 6) else None
-        tw = getattr(pg, "sub" if idx == 6 else "main", None) if pg is not None else None
+        pg = getattr(self.win, "orders_page" if idx == 10 else "register_page" if idx == 6 else "costing_page" if idx == 5 else "", None) if idx in (5, 6, 10) else None
+        tw = getattr(pg, "sub" if idx in (6, 10) else "main", None) if pg is not None else None
         return tw
 
     def _switch_menu(self, btn):
@@ -169,7 +169,7 @@ class Rail(QFrame):
         m = QMenu(self)
         w = self.win
         col = "#1c1f24" if self.light_fn() else "#eceef0"
-        for label, idx, ico in (("Drawing register", 6, "clipboard"), ("Detail Notes", 4, "ruler"), ("Costing", 5, "calc"), (None, None, None),
+        for label, idx, ico in (("Drawing register", 6, "clipboard"), ("Orders", 10, "tag"), ("Detail Notes", 4, "ruler"), ("Costing", 5, "calc"), (None, None, None),
                                 ("Light && Ventilation", 1, "lightvent"), ("Energy (XA)", 2, "bolt"), ("Coverage && FAR", 3, "building"), (None, None, None),
                                 ("Building lines", 8, "land"), ("Area schedule", 7, "layers"), ("Guidelines review", 9, "clipboard"), (None, None, None),
                                 ("Home (the four squares)", -1, "home")):
@@ -425,6 +425,20 @@ class Ribbon(QFrame):
             ("Drawings", [T("Add files", "add", reg("add_pdfs"), hot=True), T("Add folder", "folder", reg("add_folder")), T("Remove", "trash", reg("remove_row"))]),
             ("Send", [T("Send to client", "export", reg("send_mail"), hot=True), T("Email account", "settings", reg("email_account"))]),
             ("PDF", [T("Preview", "eye", reg("preview_pdf")), T("Save PDF", "pdf", reg("export_pdf"))])])
+        def ordr(name, *a):
+            def f():
+                c = getattr(w, "register_page", None)
+                if c is None:
+                    return
+                c.show_orders("Change" if (name == "changes_from_drawings" or a == ("Change",)) else "Order")
+                getattr(c, name)(*a)
+            return f
+        self.pages[10] = self._page([
+            ("Gmail", [T("Watch inbox", "clipboard", ordr("inbox_dialog"), hot=True), T("Check now", "refresh", ordr("inbox_check_now"))]),
+            ("Orders", [T("New order", "add", ordr("add_log", "Order"), hot=True), T("Delete all", "trash", ordr("delete_all_log", "Order"))]),
+            ("Client changes", [T("From drawings", "edit", ordr("changes_from_drawings")), T("New change", "add", ordr("add_log", "Change")),
+                                T("Delete all", "trash", ordr("delete_all_log", "Change"))]),
+            ("Client's email", [T("Attach", "import", ordr("attach_ref")), T("Open", "eye", ordr("open_ref")), T("Remove line", "trash", ordr("remove_log"))])])
         def tool(attr, name, *a):
             def f():
                 c = getattr(w, attr, None)

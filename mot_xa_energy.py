@@ -9247,6 +9247,15 @@ class MainWindow(QMainWindow):
             except Exception as e_:
                 print("tool not started:", mod_, e_)
                 setattr(self, attr_, None)
+        self.orders_page = None
+        if getattr(self, "register_page", None) is not None:
+            try:
+                import orders_tool
+                self.orders_page = orders_tool.OrdersPage(self, self.register_page)
+                self.main_tabs.addTab(self.orders_page, "Orders")
+            except Exception as e_:
+                print("tool not started: orders_tool", e_)
+                self.orders_page = None
         self._build_home()
 
         self.assign_table = QTableWidget(0, 8)
@@ -9478,6 +9487,10 @@ class MainWindow(QMainWindow):
             for i in range(rp.sub.count()):
                 out.append(("Drawing register  \u203A  " + rp.sub.tabText(i),
                             lambda i=i: (self.goto_main_tab("Drawing register"), rp.sub.setCurrentIndex(i)), ""))
+            op_ = getattr(self, "orders_page", None)
+            if op_ is not None:
+                for i in range(op_.sub.count()):
+                    out.append(("Orders  \u203A  " + op_.sub.tabText(i), lambda i=i: (self.goto_main_tab("Orders"), op_.sub.setCurrentIndex(i)), ""))
             for label, meth in (("Add drawing PDFs", "add_pdfs"), ("Add a whole folder of drawings", "add_folder"), ("Send the register to the client", "send_mail"),
                                 ("Preview the register PDF", "preview_pdf"), ("Preview and edit the email", "preview_email"), ("Email account", "email_account"),
                                 ("My signature", "my_signature")):
@@ -13330,13 +13343,14 @@ class MainWindow(QMainWindow):
         g.setSpacing(24)
         for i, (title, sub, ico, tgt) in enumerate((
                 ("Drawing register", "Issue drawings by email, with the sheet index and what is still to come.", "clipboard", "Drawing register"),
+                ("Orders", "The client's orders and changes, house by house. Watches your Gmail for new orders and flags the urgent ones.", "tag", "Orders"),
                 ("Detail Notes", "Add construction detail notes to an Archicad detail.", "ruler", "Detail Notes"),
                 ("Costing", "Fixtures, materials and the budget for a job.", "calc", "Costing"),
                 ("SANS", "Light and ventilation, energy and coverage checks for the building regulations.", "sun", "SANS"),
                 ("Site and areas", "Building lines on the stand, and the area schedule with unit mix and floor area ratio.", "land", "Site and"),
                 ("Guidelines review", "Check the plans against the estate's architectural guidelines and the council's or state's checklist.", "clipboard", "Guidelines review"))):
             g.addWidget(tile(title, sub, ico, tgt), i // 3, i % 3)
-        for k in (0, 1):
+        for k in (0, 1, 2):
             g.setRowStretch(k, 1)
         for k in (0, 1, 2):
             g.setColumnStretch(k, 1)

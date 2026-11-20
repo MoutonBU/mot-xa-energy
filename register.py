@@ -951,8 +951,8 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         wl.addWidget(sc, 1)
         wl.addLayout(nav)                      # Back / Next stay in view at the bottom
         self.sub.addTab(wrap, "Drawings")
-        self.sub.addTab(self.build_log("Order"), "Orders")
-        self.sub.addTab(self.build_log("Change"), "Client changes")
+        self.orders_page = None                 # set by orders_tool.OrdersPage: the orders live in a tool of their own
+        self.order_pages = (self.build_log("Order"), self.build_log("Change"))
         self.sub.addTab(self.build_history(), "Sent and revisions")
         self.mail_done.connect(self._mail_finished)
         self.add_group("Main house", quiet=True)
