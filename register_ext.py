@@ -23,7 +23,21 @@ LOGK = ("group", "priority", "type", "rev", "date", "order", "text", "extras", "
 LOGC = ["House or block", "Priority", "Type", "Rev", "Date", "Order number", "What was ordered or changed", "Extras the client wants", "Kind of change", "Asked by", "The client's email", "Received",
         "From", "Sent to the client on", "Sent to", "Status", "Client name", "Client email", "Email that was sent"]
 TYPES = ["Order", "Change", "Issue"]
-KINDS = ["Minor changes", "Major changes", "Masters", "Final plans", "SDP"]
+KINDS = ["Minor changes", "Medium changes", "Major changes", "Masters", "Final plans", "SDP"]
+
+
+def kind_size(kinds):
+    """'major', 'medium', 'minor' or '' from the kinds text of a change."""
+    k = str(kinds or "")
+    return "major" if "Major" in k else "medium" if "Medium" in k else "minor" if "Minor" in k else ""
+
+
+def kind_label(kinds, upper=False):
+    """The tags of a change for people to read: 'major, SDP, final'."""
+    k = str(kinds or "")
+    bits = [x for x in (kind_size(k), "SDP" if re.search(r"\bSDP\b", k) else "", "final" if "Final" in k else "") if x]
+    t = ", ".join(bits)
+    return t.upper() if upper else t
 PRIO = ["", "Urgent", "Asked again"]
 NOT_SORTED = "Not sorted"
 NO_COMPANY = "No company"
@@ -2475,7 +2489,7 @@ class LogMixin:
             head.setCheckable(True)
             head.setStyleSheet("QPushButton{border:none;background:transparent;text-align:left;font-weight:700;padding:4px;%s}" % ("color:#ff4d5e;" if urg else ""))
             when = "%s%s" % (c.get("req_date") or c.get("date", ""), (", " + c["by_name"]) if c.get("by_name") else "")
-            kd_ = lambda ent: ("MAJOR   " if "Major" in str(ent.get("kinds", "")) else ("MINOR   " if "Minor" in str(ent.get("kinds", "")) else ""))
+            kd_ = lambda ent: ((kind_label(ent.get("kinds", ""), True).replace(", ", " + ") + "   ") if kind_label(ent.get("kinds", "")) else "")
             head.setText("%s  Change %s   %s   %s%s%s%s" % ("\u25be" if id(c) in self._ch_open else "\u25b8", c.get("rev") or "-", when,
                                                       "URGENT   " if urg else "", kd_(c), ("NEW   " if c.get("status") == "New" else ""), first))
             head.setChecked(id(c) in self._ch_open)
@@ -2493,15 +2507,29 @@ class LogMixin:
             row = QHBoxLayout()
             row.addWidget(QLabel("This change is:" if not c.get("kinds_auto") else "This change is (suggested from the wording, change it if wrong):"))
             kb = QComboBox()
-            kb.addItems(["Not tagged", "Minor change", "Major change"])
-            kb.setCurrentIndex(2 if "Major" in str(c.get("kinds", "")) else (1 if "Minor" in str(c.get("kinds", "")) else 0))
+            kb.addItems(["Not tagged", "Minor change", "Medium change", "Major change"])
+            kb.setCurrentIndex({"": 0, "minor": 1, "medium": 2, "major": 3}[kind_size(c.get("kinds", ""))])
 
-            def tagged(i_, ent=c):
-                ent["kinds"] = ("", "Minor changes", "Major changes")[i_]
+            def retag(ent, size=None, sdp=None, fin=None):
+                k0 = str(ent.get("kinds", ""))
+                sz = size if size is not None else kind_size(k0)
+                sdp = sdp if sdp is not None else bool(re.search(r"\bSDP\b", k0))
+                fin = fin if fin is not None else ("Final" in k0)
+                ent["kinds"] = ", ".join(x for x in ({"minor": "Minor changes", "medium": "Medium changes", "major": "Major changes"}.get(sz, ""), "SDP" if sdp else "", "Final plans" if fin else "") if x)
                 ent["kinds_auto"] = False
                 self._rebuild_changes()
-            kb.currentIndexChanged.connect(lambda i_, f_=tagged: QTimer.singleShot(0, lambda: f_(i_)))
+            kb.currentIndexChanged.connect(lambda i_, f_=retag, ent=c: QTimer.singleShot(0, lambda: f_(ent, ("", "minor", "medium", "major")[i_])))
             row.addWidget(kb)
+            sdpb = QCheckBox("SDP")
+            sdpb.setToolTip("This change is for the site development plan")
+            sdpb.setChecked(bool(re.search(r"\bSDP\b", str(c.get("kinds", "")))))
+            sdpb.toggled.connect(lambda on, f_=retag, ent=c: QTimer.singleShot(0, lambda: f_(ent, None, on, None)))
+            row.addWidget(sdpb)
+            finb = QCheckBox("Final")
+            finb.setToolTip("This change is on the final plans")
+            finb.setChecked("Final" in str(c.get("kinds", "")))
+            finb.toggled.connect(lambda on, f_=retag, ent=c: QTimer.singleShot(0, lambda: f_(ent, None, None, on)))
+            row.addWidget(finb)
             if c.get("req_path") and os.path.exists(c["req_path"]):
                 ob = QPushButton("Open the client's email")
                 ob.clicked.connect(lambda _c=False, pth=c["req_path"]: QDesktopServices.openUrl(QUrl.fromLocalFile(pth)))
@@ -3845,7 +3873,7 @@ class LogMixin:
                 who = " ".join(x for x in (str(c.get("by_name") or "").strip(), ("&lt;%s&gt;" % e_(c.get("by_email"))) if c.get("by_email") else "") if x)
                 if who or c.get("req_date"):
                     t += '<br><span style="font-size:8pt;color:#666;"><i>Requested by %s on %s</i></span>' % (who.replace("&amp;", "&") if False else (e_(c.get("by_name")) + (" &lt;%s&gt;" % e_(c.get("by_email")) if c.get("by_email") else "")).strip() or "-", e_(dt_(c.get("req_date") or c.get("date"))))
-                r.append('<tr><td>%s</td><td>Change %s%s</td><td>%s</td></tr>' % (e_(dt_(c.get("date"))), e_(c.get("rev") or ""), (" <b>(%s)</b>" % ("major" if "Major" in str(c.get("kinds", "")) else "minor")) if re.search("Major|Minor", str(c.get("kinds", ""))) else "", t))
+                r.append('<tr><td>%s</td><td>Change %s%s</td><td>%s</td></tr>' % (e_(dt_(c.get("date"))), e_(c.get("rev") or ""), (" <b>(%s)</b>" % kind_label(c.get("kinds", ""))) if kind_label(c.get("kinds", "")) else "", t))
             return "".join(r)
         sections = (("Completed", done, True),) if only_done else (("Completed", done, True), ("Still to be done", todo, False))
         for i_, (t_, lst, tick) in enumerate(sections):
@@ -4579,7 +4607,7 @@ class LogMixin:
                     t = ["new order"]
                 ls.append("  - Order: " + (t[0] if t else "") + ("".join("\n    " + x for x in t[1:]) if len(t) > 1 else ""))
             for c in chs:
-                kd = "major" if "Major" in str(c.get("kinds", "")) else "minor" if "Minor" in str(c.get("kinds", "")) else ""
+                kd = kind_label(c.get("kinds", ""))
                 ls.append("  - Change %s%s: %s" % (c.get("rev") or "", (" (%s)" % kd) if kd else "", str(c.get("text") or "").strip().replace("\n", " ")))
             dr = self._drawings_for(g)
             files += [("%s: %s" % (g, os.path.basename(p)), p) for _r, p in dr]
