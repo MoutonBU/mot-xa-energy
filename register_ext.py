@@ -2307,7 +2307,7 @@ class LogMixin:
         m = QMenu(btn)
         a1 = m.addAction("Open")
         real = name != NO_COMPANY
-        a2 = m.addAction("Edit name, email addresses and words...") if real else None
+        a2 = m.addAction("Edit name, email addresses and words..." if real else "Make this a company (name and email addresses)...")
         ap = m.addAction("Set photo...") if real else None
         c = next((x for x in self.companies if x["name"] == name), None)
         ax = m.addAction("Remove photo") if (c and c.get("photo")) else None
@@ -2316,7 +2316,7 @@ class LogMixin:
         if pick is a1:
             self._open_company(name)
         elif a2 is not None and pick is a2:
-            self.edit_company(name)
+            self.edit_company(name) if real else self.adopt_no_company()
         elif ap is not None and pick is ap:
             self._set_photo(c, name)
         elif ax is not None and pick is ax:
@@ -2371,6 +2371,23 @@ class LogMixin:
         self.refresh_log()
         if QMessageBox.question(self, "Orders", "Choose a photo for the %s square now?" % r[0]) == QMessageBox.StandardButton.Yes:
             self._set_photo(self.companies[-1], r[0])
+
+    def adopt_no_company(self):
+        """Turns the No company square into a real company: its areas and orders move into it."""
+        r = self._company_dialog()
+        if r is None:
+            return
+        if any(_gnorm(c["name"]) == _gnorm(r[0]) for c in self.companies) or r[0] == NO_COMPANY:
+            QMessageBox.information(self, "Orders", "There is already a company called %s." % r[0])
+            return
+        self.companies.append({"name": r[0], "emails": r[1], "keys": r[2]})
+        for a in self.areas:
+            if not a.get("company"):
+                a["company"] = r[0]
+        for e in self.log:
+            if e.get("type") in ("Order", "Change") and not self._comp_of(e):
+                e["company"] = r[0]
+        self.refresh_log()
 
     def edit_company(self, name):
         c = next((x for x in self.companies if x["name"] == name), None)
