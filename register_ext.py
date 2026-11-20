@@ -1300,7 +1300,13 @@ class LogMixin:
             from PySide6.QtWidgets import QScrollArea as _SA
             ct = QLabel("Changes the client asked for on this house, newest first. Click a change to open it.")
             ct.setStyleSheet("font-size:14px;font-weight:700;padding-top:6px;")
-            v.addWidget(ct)
+            chrow = QHBoxLayout()
+            chrow.addWidget(ct, 1)
+            addc = QPushButton("+ Add a change")
+            addc.setStyleSheet("font-weight:700;")
+            addc.clicked.connect(self.add_order_change)
+            chrow.addWidget(addc)
+            v.addLayout(chrow)
             sa = _SA()
             sa.setWidgetResizable(True)
             sa.setFrameShape(QFrame.Shape.NoFrame)
@@ -1333,7 +1339,48 @@ class LogMixin:
 
     # ----- watching the Gmail inbox for orders -----
     def _changes_of(self, group):
-        return [c for c in self.log if c.get("type") == "Change" and group and _gnorm(c.get("group")) == _gnorm(group)]
+        """The changes that live inside this house's order (from emails or added by hand); the Client changes tab keeps the others (drawing revisions, blocks)."""
+        return [c for c in self.log if c.get("type") == "Change" and c.get("of_order") and group and _gnorm(c.get("group")) == _gnorm(group)]
+
+    def add_order_change(self):
+        g = self._lgroup.get("Order")
+        if not g:
+            return
+        from PySide6.QtWidgets import QPlainTextEdit
+        d = QDialog(self)
+        d.setWindowTitle("Add a change to %s" % g)
+        d.setMinimumWidth(480)
+        v = QVBoxLayout(d)
+        v.addWidget(QLabel("What must be changed on %s?" % g))
+        te = QPlainTextEdit()
+        te.setFixedHeight(110)
+        v.addWidget(te)
+        ur = QCheckBox("Urgent")
+        v.addWidget(ur)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        ok = QPushButton("Add the change")
+        ok.setStyleSheet("font-weight:700;")
+        ok.clicked.connect(d.accept)
+        cn = QPushButton("Cancel")
+        cn.clicked.connect(d.reject)
+        row.addWidget(ok)
+        row.addWidget(cn)
+        v.addLayout(row)
+        if d.exec() != QDialog.DialogCode.Accepted or not te.toPlainText().strip():
+            return
+        order = next((x for x in self.log if x.get("type") == "Order" and x.get("group") == g), None)
+        ce = {k: "" for k in LOGK}
+        ce.update({"group": g, "type": "Change", "rev": str(1 + len(self._changes_of(g))), "date": datetime.date.today().isoformat(), "text": te.toPlainText().strip(),
+                   "status": "Draft", "req_path": "", "sent_path": "", "drawings": "", "by_name": self.info.get("to", ""), "by_email": self.info.get("email", ""),
+                   "area": (order or {}).get("area", ""), "priority": "Urgent" if ur.isChecked() else "", "of_order": True})
+        self.log.append(ce)
+        if ur.isChecked() and order:
+            order["priority"] = "Urgent"
+        if not hasattr(self, "_ch_open"):
+            self._ch_open = set()
+        self._ch_open.add(id(ce))
+        self.refresh_log()
 
     def _rebuild_changes(self):
         lay = getattr(self, "_ch_lay", None)
@@ -1888,10 +1935,10 @@ class LogMixin:
                     took = True
                     continue
                 ce = {k_: "" for k_ in LOGK}
-                nrev = 1 + sum(1 for c in self.log if c.get("type") == "Change" and _gnorm(c.get("group")) == _gnorm(e["group"]) and c.get("msg_id"))
+                nrev = 1 + sum(1 for c in self.log if c.get("type") == "Change" and c.get("of_order") and _gnorm(c.get("group")) == _gnorm(e["group"]))
                 ce.update({"group": e["group"], "type": "Change", "rev": str(nrev), "date": e["date"], "text": ctext or "(extras)", "extras": e["extras"], "status": "New",
                            "req_subject": it["subject"], "req_date": rd, "req_from": it["from"], "req_path": "", "sent_path": "", "drawings": "", "by_name": nm, "by_email": addr,
-                           "msg_id": it["id"], "area": e["area"], "priority": "Urgent" if urgent else ""})
+                           "msg_id": it["id"], "area": e["area"], "priority": "Urgent" if urgent else "", "of_order": True})
                 self.log.append(ce)
                 mem.append(ch)
                 if urgent:
@@ -1924,7 +1971,7 @@ class LogMixin:
                 ce = {k_: "" for k_ in LOGK}
                 ce.update({"group": e["group"], "type": "Change", "rev": "1", "date": e["date"], "text": wanted, "status": "New", "req_subject": it["subject"], "req_date": rd,
                            "req_from": it["from"], "req_path": "", "sent_path": "", "drawings": "", "by_name": nm, "by_email": addr, "msg_id": it["id"], "area": e["area"],
-                           "priority": "Urgent" if urgent else ""})
+                           "priority": "Urgent" if urgent else "", "of_order": True})
                 self.log.append(ce)
                 news.append(dict(ce, type="Change"))
                 st["changes"] += 1
@@ -2511,6 +2558,8 @@ class LogMixin:
         """The line belongs to this kind and, for orders, to the area that is open."""
         if self.log_kind(e) != kind:
             return False
+        if kind == "Change" and e.get("of_order"):
+            return False                      # a change that lives inside an order is shown in its house, not here
         if kind == "Order" and self._larea.get("Order") is not None:
             return self._area_of(e) == self._larea["Order"]
         return True
@@ -3093,6 +3142,9 @@ class LogMixin:
             self._extras_closed = set()
         try:
             self._migrate_extras()
+            for e_ in self.log:
+                if e_.get("type") == "Change" and e_.get("msg_id") and "of_order" not in e_:
+                    e_["of_order"] = True       # changes that came in by email belong to their order
             for kind, t in getattr(self, "ltabs", {}).items():
                 keep_row = t.currentRow()
                 gsel = self._lgroup.get(kind)
