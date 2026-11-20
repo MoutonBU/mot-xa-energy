@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.72**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.73**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **1.86.73 Orders reply works like the drawing register.** The drawings you tick are listed in the email the way the register lists them (number, title, revision) and the list follows your ticks, so it no longer says "No drawing attached yet" when one is attached. A new tick box sends the register's sheet index (same cover and look) listing just those drawings.
 
 - **1.86.72 Orders reply: "Write the text again" and plainer wording.** The reply text is now short and plain ("Hi Hennie, thanks for the order...", "Attached: ...", "No drawing attached yet."). The new button writes it again in a different voice each click; your own edits in the box are replaced.
 

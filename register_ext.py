@@ -754,9 +754,10 @@ def split_parts(files, limit_mb=LIMIT_MB):
 class OrderReplyDialog(QDialog):
     """Reply to the client about one or more houses: the text is filled in, the revised drawings are ticked, your signature goes at the bottom."""
 
-    def __init__(self, page, to, cc, subject, body, files, parent=None, regen=None):
+    def __init__(self, page, to, cc, subject, body, files, parent=None, regen=None, has_index=False):
         super().__init__(parent or page)
-        self._regen, self._v = regen, 0
+        self._regen, self._v, self._page = regen, 0, page
+        self._auto = body
         self.setWindowTitle("Reply to the client")
         self.resize(780, 680)
         v = QVBoxLayout(self)
@@ -802,6 +803,10 @@ class OrderReplyDialog(QDialog):
         v.addWidget(self.att, 2)
         for lab, pth, on in files:
             self._add(lab, pth, on)
+        self.idx_chk = QCheckBox("Also send the sheet index of these drawings (PDF, made from the drawing register)")
+        self.idx_chk.setChecked(bool(has_index))
+        self.idx_chk.setToolTip("Makes the same sheet index as the drawing register sends, listing only the ticked drawings that are in the register.")
+        v.addWidget(self.idx_chk)
         row = QHBoxLayout()
         ab = QPushButton("Add drawings or files...")
         ab.clicked.connect(self._pick)
@@ -822,9 +827,21 @@ class OrderReplyDialog(QDialog):
         self.att.itemChanged.connect(self._size)
         self._size()
 
+    def _labels(self):
+        return [self._page._file_label(p) for p in self.files()]
+
     def _again(self):
         self._v += 1
-        self.body.setPlainText(self._regen(self._v))
+        self._auto = self._regen(self._v, self._labels())
+        self.body.setPlainText(self._auto)
+
+    def _refresh_list(self):
+        """The drawings listed in the text follow the ticks, as long as the text has not been edited by hand."""
+        if self._regen is not None and self.body.toPlainText() == self._auto:
+            self._auto = self._regen(self._v, self._labels())
+            self.body.setPlainText(self._auto)
+        if hasattr(self, "idx_chk"):
+            self.idx_chk.setEnabled(bool(self._page._rows_for_paths(self.files())))
 
     def _add(self, label, path, on=True):
         try:
@@ -848,6 +865,7 @@ class OrderReplyDialog(QDialog):
         return [p for i, p in enumerate(self.paths) if self.att.item(i).checkState() == Qt.CheckState.Checked]
 
     def _size(self, *_a):
+        self._refresh_list()
         tot = sum(os.path.getsize(p) for p in self.files() if os.path.exists(p)) / 1e6
         self.size.setText("%d file%s, %.1f MB%s" % (len(self.files()), "" if len(self.files()) == 1 else "s", tot, "   (over 20 MB: many mail servers refuse this; use a download link)" if tot > 20 else ""))
 
@@ -3835,6 +3853,38 @@ class LogMixin:
                     out.append((r, p))
         return out
 
+    def _row_of_path(self, path):
+        for g in getattr(self, "groups", []):
+            for r in g.get("rows", []):
+                if r.get("path") == path:
+                    return r
+        return None
+
+    def _file_label(self, path):
+        """How a drawing is listed in the email, like the register: number, title, revision."""
+        r = self._row_of_path(path)
+        if r is None:
+            return re.sub(r"^\d+_\d+_", "", os.path.splitext(os.path.basename(path))[0])
+        return ("%s  %s%s" % (r.get("no") or "-", (r.get("title") or os.path.basename(path)).upper(), ("  (REVISION %s)" % r["rev"]) if r.get("rev") else "")).strip()
+
+    def _rows_for_paths(self, paths):
+        ps = set(paths)
+        return [r for g in getattr(self, "groups", []) for r in g.get("rows", []) if r.get("path") in ps]
+
+    def _index_pdf_for(self, paths, out):
+        """The register's sheet index (same cover and look) listing only these drawings."""
+        rows = [r for g in getattr(self, "groups", []) for r in g.get("rows", [])]
+        was = [r.get("on", True) for r in rows]
+        ps = set(paths)
+        try:
+            for r in rows:
+                r["on"] = r.get("path") in ps
+            self.write_index_pdf(out)
+        finally:
+            for r, w in zip(rows, was):
+                r["on"] = w
+        return out
+
     def reply_houses(self, names=None):
         names = list(names or [])
         if not names:
@@ -3876,18 +3926,14 @@ class LogMixin:
                 kd = "major" if "Major" in str(c.get("kinds", "")) else "minor" if "Minor" in str(c.get("kinds", "")) else ""
                 ls.append("  Change %s%s: %s" % (c.get("rev") or "", (" (%s)" % kd) if kd else "", str(c.get("text") or "").strip().replace("\n", " ")))
             dr = self._drawings_for(g)
-            if dr:
-                ls.append("  Attached: " + ", ".join(("%s%s" % ((r.get("no") + " ") if r.get("no") else "", r.get("title", "")) + ((" rev " + r["rev"]) if r.get("rev") else "")).strip() for r, _p in dr))
-                files += [("%s: %s" % (g, os.path.basename(p)), p) for _r, p in dr]
-            else:
-                ls.append("  No drawing attached yet.")
+            files += [("%s: %s" % (g, os.path.basename(p)), p) for _r, p in dr]
             blocks.append("\n".join(ls))
         first = (who.split() or [""])[0]
         sub = ("Re: " + re.sub(r"^\s*((re|fw|fwd)\s*:\s*)+", "", subj, flags=re.I)) if subj else ("Re: %s - %s" % (area or "orders", ", ".join(names[:3]) + ("..." if len(names) > 3 else "")))
         quoted = next((str(e.get("text") or "") for e in ents_all if e.get("type") == "Order"), "")
         what = names[0] if len(names) == 1 else "these %d houses" % len(names)
 
-        def make_body(v=0):
+        def make_body(v=0, labels=()):
             """Short, plain wording in a few different voices; 'Write the text again' moves to the next one."""
             hi = ("Hi %s," % first) if first else "Hi,"
             gd = ("Good day %s," % first) if first else "Good day,"
@@ -3898,12 +3944,13 @@ class LogMixin:
                 (hi, "Quick update on %s:" % what, "Tell me if something looks off and I will sort it out.", "Thanks,"),
             )
             g_, intro, outro, close = tops[v % len(tops)]
-            t = g_ + "\n\n" + intro + "\n\n" + "\n\n".join(blocks) + "\n\n" + outro + "\n\n" + close + "\n"
+            dl = ("Drawings attached:\n" + "\n".join("  " + x for x in labels)) if labels else "No drawings attached yet."
+            t = g_ + "\n\n" + intro + "\n\n" + "\n\n".join(blocks) + "\n\n" + dl + "\n\n" + outro + "\n\n" + close + "\n"
             if quoted.strip():
                 t += "\n\n----- Your original order -----\n" + "\n".join("> " + x for x in quoted.strip().split("\n"))
             return t
-        body = make_body(0)
-        dlg = OrderReplyDialog(self, ", ".join(to_l), "", sub, body, [(l, p, True) for l, p in files], regen=make_body)
+        body = make_body(0, [self._file_label(p_) for _l, p_ in files])
+        dlg = OrderReplyDialog(self, ", ".join(to_l), "", sub, body, [(l, p, True) for l, p in files], regen=make_body, has_index=bool(self._rows_for_paths([p_ for _l, p_ in files])))
         if not dlg.exec():
             return
         frm = S.get("mail_address") or S.get("smtp_from") or S.get("smtp_user")
@@ -3940,7 +3987,13 @@ class LogMixin:
                 pass
         import mimetypes
         sent_files = dlg.files()
-        for pth in sent_files:
+        idx_path = ""
+        if dlg.idx_chk.isChecked() and self._rows_for_paths(sent_files):
+            try:
+                idx_path = self._index_pdf_for(sent_files, os.path.join(tempfile.mkdtemp(), re.sub(r'[\\/:*?"<>|]+', "-", "Sheet index - %s.pdf" % (area or self.project_name()))))
+            except Exception:
+                idx_path = ""
+        for pth in sent_files + ([idx_path] if idx_path else []):
             mt = (mimetypes.guess_type(pth)[0] or "application/octet-stream")
             mn, sb = (mt.split("/", 1) + ["octet-stream"])[:2]
             with open(pth, "rb") as fh:
