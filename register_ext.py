@@ -3737,6 +3737,10 @@ class LogMixin:
             self._extras_closed = set()
         try:
             self._migrate_extras()
+            for e_ in self.log:                 # houses made as "ARF670-PTN38" are just the stand, "PTN 38" (the farm is the area)
+                mm_ = re.fullmatch(r"[A-Za-z]{2,5}\s?\d{1,5}\s*[-_/ ]\s*PTN\s*\.?\s*(\d{1,4})", str(e_.get("group", "")).strip(), re.I)
+                if mm_:
+                    e_["group"] = "PTN %d" % int(mm_.group(1))
             for e_ in self.log:
                 if e_.get("type") == "Change" and e_.get("msg_id") and "of_order" not in e_:
                     e_["of_order"] = True       # changes that came in by email belong to their order

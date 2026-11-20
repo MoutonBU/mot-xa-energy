@@ -146,16 +146,14 @@ def portion_area(text):
 
 
 def _portion_house(code, houses):
-    """The existing house that is this portion code (ARF670-PTN4, or PTN4 when only the portion is written), else the code itself."""
-    same = lambda x: _norm(x).replace("arf", "erf")
+    """The house for a portion code: just the stand number, 'PTN 38' (the farm/erf part is the area, not part of the house name).
+    An existing house with the same portion number is reused."""
+    ptn = code.split("-")[-1]
     for h in houses:
-        if same(h) == same(code):
+        pc = portion_code(h)
+        if pc and pc.split("-")[-1] == ptn:
             return h
-    if "-" not in code:
-        hit = [h for h in houses if _norm(h).endswith(_norm(code)) and portion_code(h)]
-        if len(hit) == 1:
-            return hit[0]
-    return code
+    return "PTN " + re.sub(r"\D", "", ptn)
 
 
 def _known_in(text, houses):

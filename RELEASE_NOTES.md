@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.57**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.58**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **Houses from portion codes are just the stand.** 'Urbika ARF670-PTN38' now files the house as 'PTN 38' inside the area 'Urbika Erf 670' (the ARF670 part is the area, not the house name). Houses already made as ARF670-PTN38 are renamed to PTN 38 automatically.
 
 - **Cleaner area names from the subject.** Filler in front of the area ('Or fo', 'Order for', 'New', 'Urgent:', typos of those) is dropped, so 'Or fo Urbika Erf 670 | PTN 38' gives the area 'Urbika Erf 670'. An area that was already made with that filler is renamed to the clean name and its orders move with it.
 
