@@ -1670,9 +1670,13 @@ class LogMixin:
         return stack
 
     # ----- watching the Gmail inbox for orders -----
-    def _changes_of(self, group):
-        """The changes that live inside this house's order (from emails or added by hand); the Client changes tab keeps the others (drawing revisions, blocks)."""
-        return [c for c in self.log if c.get("type") == "Change" and c.get("of_order") and group and _gnorm(c.get("group")) == _gnorm(group)]
+    def _changes_of(self, group, area=False):
+        """The changes that live inside this house's order (from emails or added by hand); the Client changes tab keeps the others (drawing revisions, blocks).
+        The house is the stand inside its area: the same number in another area is another house. area=False means the area that is open (None: any area)."""
+        if area is False:
+            area = self._larea.get("Order")
+        return [c for c in self.log if c.get("type") == "Change" and c.get("of_order") and group and _gnorm(c.get("group")) == _gnorm(group)
+                and (area is None or self._area_of(c) == area)]
 
     def add_order_change(self):
         g = self._lgroup.get("Order")
@@ -1878,7 +1882,7 @@ class LogMixin:
         lines = [n(x) for x in str(e.get("text", "")).split("\n") if x.strip()]
         body = lines[1:] if len(lines) > 1 else lines
         ex = sorted({n(x) for x in LogMixin.extras_of(e)})
-        return (e.get("type", ""), n(e.get("group", "")), tuple(body), tuple(ex))
+        return (e.get("type", ""), n(e.get("group", "")), tuple(body), tuple(ex), n(e.get("area", "")))
 
     @classmethod
     def _key_hash(cls, e):
@@ -2162,10 +2166,14 @@ class LogMixin:
         took = False
         for o in mail_inbox.parse_email_orders(it, houses):
             grp = o["group"] or "Not sure which house"
-            area = force_area if force_area is not None else self._area_for(it["subject"], it["body"], o["group"], o.get("area", ""))
-            existing = [x for x in self.log if x.get("type") == "Order" and o["group"] and _gnorm(x.get("group")) == _gnorm(grp)]
-            if existing and existing[0].get("area"):
-                area = existing[0]["area"]
+            area = force_area if force_area is not None else self._area_for(it["subject"], it["body"], o["group"], o.get("area", ""), allow_same=False)
+            same_g = [x for x in self.log if x.get("type") == "Order" and o["group"] and _gnorm(x.get("group")) == _gnorm(grp)]
+            if area:
+                existing = [x for x in same_g if self._area_of(x) == area]        # the same stand number in another area is another house
+            else:
+                existing = same_g                                                # the email names no area: it is about the house that is already there
+                if existing and existing[0].get("area"):
+                    area = existing[0]["area"]
             comp = self._comp_of(existing[0]) if existing else self._company_for(it["subject"], it["body"], addr, area, grp)
             ad_ = next((x for x in self.areas if x["name"] == area), None) if area else None
             if ad_ is not None and not ad_.get("company") and comp:
@@ -2185,7 +2193,7 @@ class LogMixin:
                     continue
                 ckey = ("change", _gnorm(e["group"]), re.sub(r"\s+", " ", (ctext + "|" + e["extras"]).lower()))
                 ch = "c" + hashlib.sha1(repr(ckey).encode("utf-8")).hexdigest()[:15]
-                if (ch in mem and not st.get("force")) or any(c.get("type") == "Change" and _gnorm(c.get("group")) == _gnorm(e["group"]) and re.sub(r"\s+", " ", (str(c.get("text", "")) + "|" + str(c.get("extras", ""))).lower()) == ckey[2]
+                if (ch in mem and not st.get("force")) or any(c.get("type") == "Change" and _gnorm(c.get("group")) == _gnorm(e["group"]) and self._area_of(c) == self._area_of(e) and re.sub(r"\s+", " ", (str(c.get("text", "")) + "|" + str(c.get("extras", ""))).lower()) == ckey[2]
                                     for c in self.log):
                     self._chase(existing, urgent, alerts, it)
                     took = True
@@ -2194,7 +2202,7 @@ class LogMixin:
                     if x.get("status") == "Done":
                         x["status"] = "New"                          # the client came back: the house is open again
                 ce = {k_: "" for k_ in LOGK}
-                nrev = 1 + sum(1 for c in self.log if c.get("type") == "Change" and c.get("of_order") and _gnorm(c.get("group")) == _gnorm(e["group"]))
+                nrev = 1 + sum(1 for c in self.log if c.get("type") == "Change" and c.get("of_order") and _gnorm(c.get("group")) == _gnorm(e["group"]) and self._area_of(c) == self._area_of(e))
                 mrev = re.search(r"\brev(?:ision)?\.?\s*(\d{1,3})\b", it["subject"], re.I)
                 if mrev:
                     nrev = int(mrev.group(1))                        # "Urbika Erf 670 | PTN 38 | Rev 3 | Urgent": the client's own revision number
@@ -2401,7 +2409,7 @@ class LogMixin:
                     return a["name"]
         return ""
 
-    def _area_for(self, subject, body, group, from_table=""):
+    def _area_for(self, subject, body, group, from_table="", allow_same=True):
         """The area (name, or "" for Not sorted) for an incoming order. In order: the Township column; an existing area whose name or email words appear in the subject
         or top of the email; an estate written like 'Albertsdal Ext 46' (a missing area is made for it); the area this house already sits in."""
         if from_table.strip():
@@ -2422,7 +2430,7 @@ class LogMixin:
         if found:
             return self._ensure_area(self._area_base(found) or found)
         same = Counter(self._area_of(x) for x in self.log if x.get("type") == "Order" and _gnorm(x.get("group")) == _gnorm(group) and x.get("area"))
-        if same:
+        if same and allow_same:
             return same.most_common(1)[0][0]
         return ""
 
@@ -3008,9 +3016,11 @@ class LogMixin:
         t = d.strftime("%A, %d %B %Y")
         return ("Today - " + t) if d == datetime.date.today() else t
 
-    def _house_day(self, g):
+    def _house_day(self, g, area=False):
         """The day the house's first order came in."""
-        ds = sorted(k for k in (self._day_key(e.get("date")) for e in self.log if self.log_kind(e) == "Order" and e.get("group") == g) if k)
+        if area is False:
+            area = self._larea.get("Order")
+        ds = sorted(k for k in (self._day_key(e.get("date")) for e in self.log if self.log_kind(e) == "Order" and e.get("group") == g and (area is None or self._area_of(e) == area)) if k)
         return ds[0] if ds else ""
 
     def area_progress_html(self, name, day=None, only_done=False, only_houses=None):
@@ -3024,7 +3034,7 @@ class LogMixin:
             if e.get("group") not in houses:
                 houses.append(e.get("group"))
         if day is not None:
-            houses = [g for g in houses if self._house_day(g) == day]
+            houses = [g for g in houses if self._house_day(g, name) == day]
         if only_houses:
             houses = [g for g in houses if g in only_houses]
         def nat(g):
@@ -3034,7 +3044,7 @@ class LogMixin:
         info = {}
         for g in houses:
             ents = [e for e in orders if e.get("group") == g]
-            info[g] = (ents, self._changes_of(g), all(e.get("status") == "Done" for e in ents))
+            info[g] = (ents, self._changes_of(g, name), all(e.get("status") == "Done" for e in ents))
         done = [g for g in houses if info[g][2]]
         todo = [g for g in houses if not info[g][2]]
         comp = next((self._comp_of(e) for e in orders if self._comp_of(e)), "")
@@ -3107,7 +3117,7 @@ class LogMixin:
 
     def area_progress_preview(self, name, day=None, only_done=False, only_houses=None):
         """Preview the report in the program (zoom, Save PDF...), like the other reports."""
-        if not any(self.log_kind(e) == "Order" and self._area_of(e) == name and (day is None or self._house_day(e.get("group")) == day) for e in self.log):
+        if not any(self.log_kind(e) == "Order" and self._area_of(e) == name and (day is None or self._house_day(e.get("group"), name) == day) for e in self.log):
             QMessageBox.information(self, "Orders", "There are no orders to report on here.")
             return
         class _W:
@@ -3119,7 +3129,7 @@ class LogMixin:
         self.window().preview_pdf_report(wr.write, lambda: None)
 
     def area_progress_pdf(self, name, day=None, only_done=False, only_houses=None):
-        if not any(self.log_kind(e) == "Order" and self._area_of(e) == name and (day is None or self._house_day(e.get("group")) == day) for e in self.log):
+        if not any(self.log_kind(e) == "Order" and self._area_of(e) == name and (day is None or self._house_day(e.get("group"), name) == day) for e in self.log):
             QMessageBox.information(self, "Orders", "There are no orders to report on here.")
             return
         dflt = re.sub(r'[\\/:*?"<>|]+', "-", "%s - %s%s.pdf" % ("Completed orders" if only_done else "Order progress", name, (" - " + day) if day else ""))
@@ -3136,7 +3146,7 @@ class LogMixin:
         M = self._M()
         S = M.SETTINGS
         ents = [e for e in self.log if self.log_kind(e) == "Order" and self._area_of(e) == name and (not only_houses or e.get("group") in only_houses)
-                and (day is None or self._house_day(e.get("group")) == day)]
+                and (day is None or self._house_day(e.get("group"), name) == day)]
         if not ents:
             QMessageBox.information(self, "Orders", "There are no orders to report on here.")
             return
@@ -3219,9 +3229,9 @@ class LogMixin:
             self.area_progress_email(name, day)
         elif pick is am:
             for g in {e.get("group") for e in self.log if self.log_kind(e) == "Order" and self._area_of(e) == name}:
-                if self._house_day(g) == day:
+                if self._house_day(g, name) == day:
                     for e in self.log:
-                        if e.get("group") == g and (self.log_kind(e) == "Order" or (e.get("type") == "Change" and e.get("of_order"))):
+                        if e.get("group") == g and self._area_of(e) == name and (self.log_kind(e) == "Order" or (e.get("type") == "Change" and e.get("of_order"))):
                             e["status"] = "Done"
             self.refresh_log()
 
@@ -3337,7 +3347,7 @@ class LogMixin:
         for e in self.log:
             if e.get("type") == "Order" and e.get("group") == group and self._area_of(e) == cur:
                 e["area"] = "" if pick == NOT_SORTED else pick
-        for c in self._changes_of(group):
+        for c in self._changes_of(group, cur):
             c["area"] = "" if pick == NOT_SORTED else pick
         if pick != NOT_SORTED:
             for e in self.log:
@@ -3503,7 +3513,7 @@ class LogMixin:
         for e in self.log:
             if e.get("group") != name:
                 continue
-            if self._in_scope(e, kind) or (kind == "Order" and e.get("type") == "Change" and e.get("of_order")):
+            if self._in_scope(e, kind) or (kind == "Order" and e.get("type") == "Change" and e.get("of_order") and self._area_of(e) == self._larea.get("Order")):
                 if done:
                     e["status"] = "Done"
                 elif e.get("status") == "Done":
@@ -4181,8 +4191,8 @@ class LogMixin:
         self._undo_snapshot("Deleted %d %s." % (len(ents), what))
         gone = {id(e) for e in ents}
         if kind == "Order":
-            gs = {_gnorm(e.get("group")) for e in ents}
-            gone |= {id(c) for c in self.log if c.get("type") == "Change" and c.get("msg_id") and _gnorm(c.get("group")) in gs}
+            gs = {(_gnorm(e.get("group")), self._area_of(e)) for e in ents}
+            gone |= {id(c) for c in self.log if c.get("type") == "Change" and c.get("msg_id") and (_gnorm(c.get("group")), self._area_of(c)) in gs}
         self.log[:] = [e for e in self.log if id(e) not in gone]
         if kind == "Order" and group is None and self._larea.get("Order") is None and self._lcomp.get("Order") is None:
             S = self._M().SETTINGS

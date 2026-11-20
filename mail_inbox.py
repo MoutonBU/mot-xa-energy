@@ -135,7 +135,7 @@ def portion_area(text):
     fm = re.match(r"([A-Za-z]+)(\d+)", farm)
     fdisp = ""
     if fm:
-        fdisp = ("Erf" if fm.group(1).upper() in ("ARF", "ERF", "ERVEN", "RF") else fm.group(1).upper()) + " " + fm.group(2)
+        fdisp = ("Erf" if fm.group(1).upper() in ("ARF", "ERF", "ERVEN", "RF") else ("Ext" if fm.group(1).upper() == "EXT" else ("Phase" if fm.group(1).upper() in ("PHASE", "FASE") else fm.group(1).upper()))) + " " + fm.group(2)
     words = re.findall(r"[A-Za-z][\w'\u2019-]*", re.sub(r"^\s*((re|fwd?|aw)\s*:\s*)+", "", t[:m.start()], flags=re.I))
     name = []
     for w in reversed(words):

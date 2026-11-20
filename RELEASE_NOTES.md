@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.65**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.66**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **The same stand number in different areas stays separate.** 'PTN 38' in Urbika Erf 670 and 'PTN 38' in Blue Hills Ext 120 are two houses, each with its own order, changes, completed state and report. A follow-up email goes to the house in the area its subject names (an email that names no area still goes to the house that already exists).
 
 - **Order sheets in attachments.** The program now reads attached PDF, Excel (.xlsx) and CSV order sheets. A sheet with a stand column becomes one order per row (the Township column or a heading like 'Urbika Erf 670' gives the area); a PDF that lists stands as lines (PTN 42 braai, PTN 43 carport) works too. Orders found in both the email and its attachment are listed once, and the email picture shows 'Attached: file names'.
 
