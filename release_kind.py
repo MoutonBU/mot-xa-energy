@@ -9,7 +9,7 @@ import re
 import subprocess
 import sys
 
-CODE_OK = re.compile(r"^(.*\.py|RELEASE_NOTES\.md|RELEASE_NUMBER|README\.md|.*\.sql)$")
+CODE_OK = re.compile(r"^(.*\.py|RELEASE_NOTES\.md|RELEASE_NUMBER|FULL_BASE|README\.md|.*\.sql)$")
 
 
 def git(*a):
@@ -58,6 +58,12 @@ def decide():
         if non_code(revs[k + 1], revs[k]) or "[full]" in git("log", "-1", "--format=%B", revs[k]):
             base = revs[k]
             break
+    try:                                                      # FULL_BASE: the commit of the last installer that really was built (cancelled builds do not count)
+        fb = open("FULL_BASE").read().strip()
+        if fb and git("cat-file", "-t", fb).strip() == "commit":
+            base = fb
+    except OSError:
+        pass
     other = non_code(base, "HEAD")
     if other:
         return "full", "changed: " + ", ".join(other[:5])

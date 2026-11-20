@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.69**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.70**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **1.86.70 Faster updates again.** The build now remembers which version was the last real installer, so a small change is a ~1-minute code update instead of a 12-minute installer.
 
 - **1.86.69 Orders reply: "See how it looks" button** in the reply window shows the email with the MCP look and your signature before you send. The order line in the reply no longer repeats the email heading ("New order Urbika Erf 670 | PTN 38").
 
