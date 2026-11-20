@@ -23,7 +23,7 @@ LOGK = ("group", "priority", "type", "rev", "date", "order", "text", "extras", "
 LOGC = ["House or block", "Priority", "Type", "Rev", "Date", "Order number", "What was ordered or changed", "Extras the client wants", "Kind of change", "Asked by", "The client's email", "Received",
         "From", "Sent to the client on", "Sent to", "Status", "Client name", "Client email", "Email that was sent"]
 TYPES = ["Order", "Change", "Issue"]
-KINDS = ["Minor changes", "Medium changes", "Major changes", "Masters", "Final plans", "SDP"]
+KINDS = ["Minor changes", "Medium changes", "Major changes", "Masters", "Final plans", "SDP", "NMD"]
 
 
 def kind_size(kinds):
@@ -35,7 +35,7 @@ def kind_size(kinds):
 def kind_label(kinds, upper=False):
     """The tags of a change for people to read: 'major, SDP, final'."""
     k = str(kinds or "")
-    bits = [x for x in (kind_size(k), "SDP" if re.search(r"\bSDP\b", k) else "", "final" if "Final" in k else "") if x]
+    bits = [x for x in (kind_size(k), "SDP" if re.search(r"\bSDP\b", k) else "", "NMD" if re.search(r"\bNMD\b", k) else "", "final" if "Final" in k else "") if x]
     t = ", ".join(bits)
     return t.upper() if upper else t
 PRIO = ["", "Urgent", "Asked again"]
@@ -2510,12 +2510,13 @@ class LogMixin:
             kb.addItems(["Not tagged", "Minor change", "Medium change", "Major change"])
             kb.setCurrentIndex({"": 0, "minor": 1, "medium": 2, "major": 3}[kind_size(c.get("kinds", ""))])
 
-            def retag(ent, size=None, sdp=None, fin=None):
+            def retag(ent, size=None, sdp=None, fin=None, nmd=None):
                 k0 = str(ent.get("kinds", ""))
+                nmd = nmd if nmd is not None else bool(re.search(r"\bNMD\b", k0))
                 sz = size if size is not None else kind_size(k0)
                 sdp = sdp if sdp is not None else bool(re.search(r"\bSDP\b", k0))
                 fin = fin if fin is not None else ("Final" in k0)
-                ent["kinds"] = ", ".join(x for x in ({"minor": "Minor changes", "medium": "Medium changes", "major": "Major changes"}.get(sz, ""), "SDP" if sdp else "", "Final plans" if fin else "") if x)
+                ent["kinds"] = ", ".join(x for x in ({"minor": "Minor changes", "medium": "Medium changes", "major": "Major changes"}.get(sz, ""), "SDP" if sdp else "", "NMD" if nmd else "", "Final plans" if fin else "") if x)
                 ent["kinds_auto"] = False
                 self._rebuild_changes()
             kb.currentIndexChanged.connect(lambda i_, f_=retag, ent=c: QTimer.singleShot(0, lambda: f_(ent, ("", "minor", "medium", "major")[i_])))
@@ -2525,6 +2526,11 @@ class LogMixin:
             sdpb.setChecked(bool(re.search(r"\bSDP\b", str(c.get("kinds", "")))))
             sdpb.toggled.connect(lambda on, f_=retag, ent=c: QTimer.singleShot(0, lambda: f_(ent, None, on, None)))
             row.addWidget(sdpb)
+            nmdb = QCheckBox("NMD")
+            nmdb.setToolTip("NMD = New Master Development: this change belongs to a new master development")
+            nmdb.setChecked(bool(re.search(r"\bNMD\b", str(c.get("kinds", "")))))
+            nmdb.toggled.connect(lambda on, f_=retag, ent=c: QTimer.singleShot(0, lambda: f_(ent, None, None, None, on)))
+            row.addWidget(nmdb)
             finb = QCheckBox("Final")
             finb.setToolTip("This change is on the final plans")
             finb.setChecked("Final" in str(c.get("kinds", "")))

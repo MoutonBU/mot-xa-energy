@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.78**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.79**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **1.86.79 New change tag: NMD (New Master Development)** next to SDP and Final on each change; it shows in the client report and the reply email.
 
 - **1.86.78 Change tags: Medium, SDP and Final.** Each change on a house now has a size (Not tagged, Minor, Medium, Major) plus "SDP" and "Final" tick boxes. The tags show on the change heading, in the client report (for example "medium, SDP") and in the reply email.
 
