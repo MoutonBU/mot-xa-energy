@@ -63,7 +63,7 @@ QTabWidget::pane {{ border:0; }}
 QTabBar::tab {{ background:transparent; color:#a8a8b0; padding:10px 22px; margin-right:6px; border-bottom:2px solid transparent; font-size:14px; }}
 QTabBar::tab:selected {{ color:white; font-weight:700; background:#232326; border-radius:9px; border-bottom:2px solid {RED}; }}
 QTableWidget {{ background:#1b1b1d; gridline-color:#2a2a2e; border:1px solid #2c2c30; border-radius:8px; selection-background-color:#5a0a18; }}
-QHeaderView::section {{ background:#222226; color:#cfcfd4; padding:5px; border:0; }}
+QHeaderView::section {{ background:#222226; color:#cfcfd4; padding:5px; border:0; border-right:2px solid #f2c200; }}
 QLineEdit, QDoubleSpinBox {{ background:#151517; border:1px solid #34343a; padding:6px 8px; border-radius:7px; }}
 QCheckBox::indicator {{ width:17px; height:17px; border:1px solid #4a4a52; border-radius:4px; background:#151517; }}
 QCheckBox::indicator:checked {{ background:{RED}; border:1px solid {RED}; }}

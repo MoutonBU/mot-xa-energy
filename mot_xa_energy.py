@@ -19536,6 +19536,8 @@ QHeaderView::section { background: rgba(255,255,255,30); color: rgba(255,255,255
     border-bottom: 1px solid rgba(255,255,255,70); padding: 11px 8px; font-weight: 700; font-size: 12px; }
 QHeaderView::section:vertical { border-bottom: 1px solid rgba(255,255,255,20); padding: 6px;
     font-weight: 500; color: rgba(255,255,255,150); }
+QHeaderView::section:horizontal { border-right: 2px solid #f2c200; }
+QHeaderView::section:horizontal:last { border-right: 2px solid #f2c200; }
 QTableCornerButton::section { background: rgba(255,255,255,30); border: none; }
 
 QLineEdit, QPlainTextEdit, QTextEdit, QDoubleSpinBox, QSpinBox { background: rgba(0,0,0,70);
@@ -19626,6 +19628,8 @@ QHeaderView { background: transparent; }
 QHeaderView::section { background: #1f2125; color: #9aa0a8; border: none; border-bottom: 1px solid #34383e;
     padding: 11px 8px; font-weight: 600; font-size: 12px; }
 QHeaderView::section:vertical { border-bottom: 1px solid #2a2e34; padding: 6px; font-weight: 500; color: #6b7179; }
+QHeaderView::section:horizontal { border-right: 2px solid #f2c200; }
+QHeaderView::section:horizontal:last { border-right: 2px solid #f2c200; }
 QTableCornerButton::section { background: #1f2125; border: none; }
 
 QLineEdit, QPlainTextEdit, QTextEdit, QDoubleSpinBox, QSpinBox { background: #121316; border: 1px solid #34383e;
