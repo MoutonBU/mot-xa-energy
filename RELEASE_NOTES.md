@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.42**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.43**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **1.86.43** - Only unread mail is taken in. Check now (and the watcher) only picks up emails that are unread in Gmail; an email you have already read is left alone and is not put into the orders or an area. The program still never marks or changes your mail. Read an order email in Gmail before the program has seen it (it looks every 10 seconds while watching) and it is not imported; use New order to add it by hand.
 - **1.86.42** - Senders to always look at. In **Watch my Gmail inbox for orders...** there is a new box, *Always look at mail from*: list the clients' email addresses (or a whole company with @company.co.za), one per line. Mail from them is found whatever the subject says, next to the subject search for order words, area names and short codes.
 - **1.86.41** - Back to searching the subject, built from your areas. **Maybe orders** and the clients list are gone. Check now looks only at the **subject** of inbox emails (never the whole email) for the order words (order, bestelling, extension, ext, uitbreiding), your own extra words, and for every area its name (Blue Hills Ext 120 and Blue Hills), its email words (Cosmo...) and its short codes. Codes are made automatically (Blue Hills: BH and BHE; a single name such as Albertsdal: AL and ALE) and you can type your own in the area (right-click > Edit). A subject starting with a code (BH 2037, BHE 12) goes to that area; an estate named in the email that has no square yet (Albertsdal Ext 46, Kingfisher Ext 3) gets one by itself, with its codes, and its name and codes are searched from then on.
 - **1.86.40** - Client changes and order changes are now separate. The **Client changes** page works as before for your other projects and blocks (for example the IFC blocks): houses and blocks, changes made from the drawings' revision rows, or added by hand. Changes that belong to an order (from the client's emails, or added by you) live inside that order's house instead: open the house in Orders and press **+ Add a change** to write one yourself (with an Urgent tick); each is numbered, dated and can be opened, edited or deleted there. They no longer also appear on the Client changes page.

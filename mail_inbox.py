@@ -294,7 +294,7 @@ def fetch_new(S, keywords, seen, folder, days=14, limit=40, stubs=False, senders
     frm = [x.strip() for x in senders if "@" in str(x)]
     if frm:
         cond = "(%s OR from:(%s))" % (cond, " OR ".join(frm))
-    q = "in:inbox newer_than:%dd -from:me %s" % (days, cond)
+    q = "in:inbox is:unread newer_than:%dd -from:me %s" % (days, cond)
     lst = mo.gmail_get(S, "messages", {"q": q, "maxResults": limit})
     out = []
     for m in lst.get("messages", []) or []:
