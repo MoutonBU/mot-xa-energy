@@ -1,11 +1,16 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.62**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.63**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **Easier for new users.** (1) A **setup guide** (also on the ribbon under Help) walks through Gmail, the first company with its email addresses, the first area and switching watching on; it opens by itself the first time when there is no company. Empty screens now explain what to do and have a button. The Gmail line at the top is coloured: green watching, amber not watching or checking, red needs attention.
+  (2) A yellow **banner** appears when orders have no company or no area, with a button that puts them there (and, for a company, remembers the senders' addresses). Every delete now shows a blue **Undo** bar for 25 seconds. A big first import (6 or more emails) shows the list and asks before bringing them in. A **Help** page explains the levels, the colours and everyday jobs.
+  (3) A subject like 'Urbika Erf 670 | PTN 38 | Rev 3 | Urgent' now uses the client's **Rev 3** as the change number and Urgent as the flag. New changes are **suggested Minor or Major** from their wording (change it if wrong). Right-click houses > **Select for the client report**, then report on just those (preview, PDF or **email to the client** with the PDF attached). The date-header menu can email too. **Search** finds any house, area, company or word and opens it.
+  (4) A colour key under every page, a **Text size** choice (Normal, Large, Extra large) and a tidier ribbon: Delete all, Attach, Open and Remove line moved into **More**.
 
 - **A picture of the client's email inside the order.** Every email taken in is drawn as a picture (subject, sender, date and the text, laid out like Gmail) and saved next to the .eml. It shows under each change ('The client's email, as it came in') and as 'The order email' at the top of the house page. Click the picture to open it full size.
 

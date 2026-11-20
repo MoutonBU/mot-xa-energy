@@ -433,10 +433,25 @@ class Ribbon(QFrame):
                 c.show_orders("Change" if (name == "changes_from_drawings" or a == ("Change",)) else "Order")
                 getattr(c, name)(*a)
             return f
+        def ordr_more():
+            from PySide6.QtWidgets import QMenu
+            from PySide6.QtGui import QCursor
+            c = getattr(w, "register_page", None)
+            if c is None:
+                return
+            c.show_orders("Order")
+            m = QMenu(w)
+            m.addAction("Attach the client's email to the selected line...", lambda: c.attach_ref())
+            m.addAction("Open the client's email", lambda: c.open_ref())
+            m.addAction("Remove the selected line", lambda: c.remove_log())
+            m.addSeparator()
+            m.addAction("Text size...", lambda: c.orders_text_size())
+            m.addAction("Delete all orders...", lambda: c.delete_all_log("Order"))
+            m.exec(QCursor.pos())
         self.pages[10] = self._page([
             ("Gmail", [T("Watch inbox", "clipboard", ordr("inbox_dialog"), hot=True), T("Check now", "refresh", ordr("inbox_check_now"))]),
-            ("Orders", [T("New order", "add", ordr("new_order"), hot=True), T("Delete all", "trash", ordr("delete_all_log", "Order"))]),
-            ("Client's email", [T("Attach", "import", ordr("attach_ref")), T("Open", "eye", ordr("open_ref")), T("Remove line", "trash", ordr("remove_log"))])])
+            ("Orders", [T("New order", "add", ordr("new_order"), hot=True), T("Search", "search", ordr("orders_search")), T("More", "settings", ordr_more)]),
+            ("Help", [T("Setup guide", "clipboard", ordr("setup_guide")), T("Help", "eye", ordr("orders_help"))])])
         def tool(attr, name, *a):
             def f():
                 c = getattr(w, attr, None)

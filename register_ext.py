@@ -997,6 +997,175 @@ class SendDialog(QDialog):
         self.accept()
 
 
+class OrdersWizard(QDialog):
+    """A step-by-step first set-up of the Orders tool: Gmail, the first company with its email addresses, the first area, then switch watching on."""
+    signed = Signal(bool, str)
+
+    def __init__(self, host):
+        super().__init__(host)
+        import mail_oauth
+        from PySide6.QtWidgets import QStackedWidget
+        self.host, self.mo = host, mail_oauth
+        self.M = host._M()
+        self.S = self.M.SETTINGS
+        self.setWindowTitle("Orders setup guide")
+        self.setMinimumSize(640, 480)
+        v = QVBoxLayout(self)
+        self.head = QLabel("")
+        self.head.setStyleSheet("font-size:18px;font-weight:800;")
+        v.addWidget(self.head)
+        self.stack = QStackedWidget()
+        v.addWidget(self.stack, 1)
+        self.titles = ["Welcome", "Connect your Gmail", "Your first company", "Your first area (optional)", "Switch it on"]
+
+        def page(html):
+            w = QWidget()
+            l = QVBoxLayout(w)
+            t = QLabel(html)
+            t.setWordWrap(True)
+            t.setTextFormat(Qt.TextFormat.RichText)
+            t.setAlignment(Qt.AlignmentFlag.AlignTop)
+            l.addWidget(t)
+            self.stack.addWidget(w)
+            return l
+        page("<p style='font-size:14px'>This guide sets up your orders in about two minutes. When it is done, orders that your clients email you arrive by themselves, "
+             "filed under the right <b>company</b>, <b>area</b> and <b>house</b>.</p>"
+             "<p>How it works:</p><ol><li><b>Company</b>: who you do the work for (for example Cosmo or CityDev). You list the email addresses they write from.</li>"
+             "<li><b>Area</b>: the estate or development (for example Blue Hills Ext 120). The program makes areas by itself from the email subject, for example "
+             "<i>Urbika Erf 670 | PTN 38</i>.</li><li><b>House</b>: the stand number inside the area. Later emails about the same house become <b>changes</b> inside its order.</li></ol>"
+             "<p>The program only reads your mail. It never deletes or changes it.</p>")
+        l = page("<p>The program needs your permission to <b>read</b> your Gmail. Press the button, sign in with Google and press Allow. "
+                 "Google may say the program is not verified: press Advanced, then continue.</p>")
+        self.gstat = QLabel("")
+        self.gstat.setWordWrap(True)
+        l.addWidget(self.gstat)
+        self.gbtn = QPushButton("Allow Gmail reading (opens Google)")
+        self.gbtn.setStyleSheet("font-weight:700;")
+        self.gbtn.clicked.connect(self._allow)
+        l.addWidget(self.gbtn)
+        l.addStretch(1)
+        l = page("<p>Type the name of the company and the email addresses its people write from. Only mail from these addresses is read. "
+                 "Use a whole domain like <b>@cosmo.co.za</b> to cover everyone at the company.</p>")
+        f = QFormLayout()
+        self.cname = QLineEdit()
+        self.cname.setPlaceholderText("for example Cosmo")
+        f.addRow("Company name", self.cname)
+        self.cemails = QPlainTextEdit()
+        self.cemails.setPlaceholderText("orders@cosmo.co.za\n@cosmo.co.za")
+        self.cemails.setFixedHeight(110)
+        f.addRow("Email addresses (one per line)", self.cemails)
+        l.addLayout(f)
+        l.addStretch(1)
+        l = page("<p>You can skip this: the program makes an area by itself when an email names one (for example <i>Blue Hills Ext 120 | Stand 2037</i> or <i>BH 2037</i>). "
+                 "If you want one ready, type its name.</p>")
+        f = QFormLayout()
+        self.aname = QLineEdit()
+        self.aname.setPlaceholderText("for example Blue Hills Ext 120")
+        f.addRow("Area name", self.aname)
+        l.addLayout(f)
+        l.addStretch(1)
+        l = page("<p>Last step. You can change all of this later (Orders > Watch inbox).</p>")
+        self.watch = QCheckBox("Watch my Gmail for new orders while the program is open")
+        self.watch.setChecked(True)
+        l.addWidget(self.watch)
+        self.old = QCheckBox("Also bring in the unread emails of the last 14 days from these addresses")
+        self.old.setChecked(True)
+        l.addWidget(self.old)
+        l.addStretch(1)
+        row = QHBoxLayout()
+        self.back = QPushButton("\u2039 Back")
+        self.nxt = QPushButton("Next \u203a")
+        self.nxt.setStyleSheet("font-weight:700;")
+        cl = QPushButton("Cancel")
+        row.addWidget(cl)
+        row.addStretch(1)
+        row.addWidget(self.back)
+        row.addWidget(self.nxt)
+        v.addLayout(row)
+        cl.clicked.connect(self.reject)
+        self.back.clicked.connect(lambda: self._go(-1))
+        self.nxt.clicked.connect(lambda: self._go(1))
+        self.signed.connect(self._signed)
+        self._show()
+
+    def _show(self):
+        i = self.stack.currentIndex()
+        self.head.setText("Step %d of %d: %s" % (i + 1, len(self.titles), self.titles[i]))
+        self.back.setEnabled(i > 0)
+        self.nxt.setText("Finish" if i == len(self.titles) - 1 else "Next \u203a")
+        if i == 1:
+            self._gmail_status()
+
+    def _gmail_status(self):
+        ok = False
+        try:
+            ok = bool(self.mo.signed_in(self.S, "gmail") and self.S.get("gmail_read"))
+        except Exception:
+            pass
+        self.gstat.setText("<b style='color:#3fb868'>Gmail reading is allowed.</b> You can go on." if ok else "Gmail reading is not allowed yet. You can also do this later and carry on.")
+        self.gbtn.setText("Allow Gmail reading again" if ok else "Allow Gmail reading (opens Google)")
+
+    def _allow(self):
+        self.gbtn.setEnabled(False)
+        self.gstat.setText("Waiting for Google in your browser...")
+        self.mo.sign_in_thread(self.S, "gmail", self.S.get("mail_address", ""), lambda ok, m: self.signed.emit(ok, m), extra_scope=self.mo.GMAIL_READ)
+
+    def _signed(self, ok, msg):
+        self.gbtn.setEnabled(True)
+        if ok:
+            if msg and not self.S.get("mail_address"):
+                self.S["mail_address"] = msg
+            self.M.save_settings()
+            self._gmail_status()
+        else:
+            self.gstat.setText("Not allowed: %s" % msg)
+
+    def _go(self, d):
+        i = self.stack.currentIndex()
+        if d > 0 and i == 2 and self.cname.text().strip() and not [x for x in re.split(r"[\n,;]+", self.cemails.toPlainText()) if "@" in x]:
+            QMessageBox.information(self, "Setup guide", "Add at least one email address for %s (or clear the company name to skip)." % self.cname.text().strip())
+            return
+        if d > 0 and i == len(self.titles) - 1:
+            self._finish()
+            return
+        self.stack.setCurrentIndex(max(0, min(len(self.titles) - 1, i + d)))
+        self._show()
+
+    def _finish(self):
+        h, S = self.host, self.S
+        name = self.cname.text().strip()
+        emails = "\n".join(x.strip() for x in re.split(r"[\n,;]+", self.cemails.toPlainText()) if "@" in x)
+        if name:
+            c = next((x for x in h.companies if _gnorm(x["name"]) == _gnorm(name)), None)
+            if c is None:
+                h.companies.append({"name": name, "emails": emails, "keys": ""})
+            elif emails:
+                c["emails"] = (str(c.get("emails", "")) + "\n" + emails).strip()
+        an = self.aname.text().strip()
+        if an:
+            got = h._ensure_area(an)
+            a = next((x for x in h.areas if x["name"] == got), None)
+            if a is not None and name and not a.get("company"):
+                a["company"] = name
+        S["orders_wizard_done"] = True
+        ok = False
+        try:
+            ok = bool(self.mo.signed_in(S, "gmail") and S.get("gmail_read"))
+        except Exception:
+            pass
+        if self.watch.isChecked() and ok:
+            if not S.get("inbox_on") and not self.old.isChecked():
+                S["inbox_baseline"] = True
+            S["inbox_on"] = True
+            if self.old.isChecked():
+                S["inbox_seen"] = []
+                S.pop("inbox_baseline", None)
+        self.M.save_settings()
+        h.refresh_log()
+        h._inbox_apply(now=True)
+        self.accept()
+
+
 class InboxDialog(QDialog):
     """Watch the Gmail inbox: new emails whose subject has your words become order lines, one per house, flagged New."""
     signed = Signal(bool, str)
@@ -1595,13 +1764,14 @@ class LogMixin:
                 bl.addWidget(QLabel("Extras: " + str(c["extras"])))
             self._email_thumb(bl, c)
             row = QHBoxLayout()
-            row.addWidget(QLabel("This change is:"))
+            row.addWidget(QLabel("This change is:" if not c.get("kinds_auto") else "This change is (suggested from the wording, change it if wrong):"))
             kb = QComboBox()
             kb.addItems(["Not tagged", "Minor change", "Major change"])
             kb.setCurrentIndex(2 if "Major" in str(c.get("kinds", "")) else (1 if "Minor" in str(c.get("kinds", "")) else 0))
 
             def tagged(i_, ent=c):
                 ent["kinds"] = ("", "Minor changes", "Major changes")[i_]
+                ent["kinds_auto"] = False
                 self._rebuild_changes()
             kb.currentIndexChanged.connect(lambda i_, f_=tagged: QTimer.singleShot(0, lambda: f_(i_)))
             row.addWidget(kb)
@@ -1661,6 +1831,7 @@ class LogMixin:
     def _delete_change(self, ent):
         if QMessageBox.question(self, "Orders", "Delete this change?\n\nThis cannot be undone.") != QMessageBox.StandardButton.Yes:
             return
+        self._undo_snapshot("Deleted the change.")
         self.log[:] = [x for x in self.log if x is not ent]
         self.refresh_log()
 
@@ -1880,8 +2051,14 @@ class LogMixin:
 
     def _inbox_label(self, extra=""):
         S = self._M().SETTINGS
-        txt = ("Watching Gmail (every %d s)" % InboxDialog._secs(S)) if S.get("inbox_on") else "Not watching Gmail"
-        self.inbox_lbl.setText(txt + (" - " + extra if extra else ""))
+        on = bool(S.get("inbox_on"))
+        txt = ("Watching Gmail (every %d s)" % InboxDialog._secs(S)) if on else "Not watching Gmail"
+        bad = bool(re.search(r"could not|no email addresses|press Watch|not allowed|sign in|expired|cancelled", extra, re.I))
+        busy = bool(re.search(r"checking|still", extra, re.I))
+        col = "#ff4d5e" if bad else ("#d8932f" if (busy or not on) else "#3fb868")
+        self.inbox_lbl.setText("\u25cf " + txt + (" - " + extra if extra else ""))
+        self.inbox_lbl.setStyleSheet("font-weight:700;color:%s;" % col)
+        self.inbox_lbl.setToolTip("Green: Gmail is being watched. Amber: not watching or checking now. Red: something needs your attention.")
 
     def inbox_check(self, manual=False):
         M = self._M()
@@ -2009,9 +2186,13 @@ class LogMixin:
                         x["status"] = "New"                          # the client came back: the house is open again
                 ce = {k_: "" for k_ in LOGK}
                 nrev = 1 + sum(1 for c in self.log if c.get("type") == "Change" and c.get("of_order") and _gnorm(c.get("group")) == _gnorm(e["group"]))
+                mrev = re.search(r"\brev(?:ision)?\.?\s*(\d{1,3})\b", it["subject"], re.I)
+                if mrev:
+                    nrev = int(mrev.group(1))                        # "Urbika Erf 670 | PTN 38 | Rev 3 | Urgent": the client's own revision number
                 ce.update({"group": e["group"], "type": "Change", "rev": str(nrev), "date": e["date"], "text": ctext or "(extras)", "extras": e["extras"], "status": "New",
                            "req_subject": it["subject"], "req_date": rd, "req_from": it["from"], "req_path": "", "sent_path": "", "drawings": "", "by_name": nm, "by_email": addr,
-                           "msg_id": it["id"], "area": e["area"], "company": e["company"], "priority": "Urgent" if urgent else "", "of_order": True})
+                           "msg_id": it["id"], "area": e["area"], "company": e["company"], "priority": "Urgent" if urgent else "", "of_order": True,
+                           "kinds": self._guess_kind(ctext), "kinds_auto": True})
                 self.log.append(ce)
                 mem.append(ch)
                 if urgent:
@@ -2045,7 +2226,7 @@ class LogMixin:
                 ce = {k_: "" for k_ in LOGK}
                 ce.update({"group": e["group"], "type": "Change", "rev": "1", "date": e["date"], "text": wanted, "status": "New", "req_subject": it["subject"], "req_date": rd,
                            "req_from": it["from"], "req_path": "", "sent_path": "", "drawings": "", "by_name": nm, "by_email": addr, "msg_id": it["id"], "area": e["area"],
-                           "priority": "Urgent" if urgent else "", "of_order": True})
+                           "priority": "Urgent" if urgent else "", "of_order": True, "kinds": self._guess_kind(wanted), "kinds_auto": True})
                 self.log.append(ce)
                 news.append(dict(ce, type="Change"))
                 st["changes"] += 1
@@ -2091,6 +2272,13 @@ class LogMixin:
         st = {"made": 0, "changes": 0, "alerts": alerts, "news": news, "have": have, "mem": mem, "houses": houses, "folder": folder, "dups": 0,
               "force": bool(getattr(self, "_inbox_manual", False))}
         self._inbox_manual = False
+        if not base and self.isVisible():
+            okl = list(S.get("inbox_from", [])) + [x for c in self.companies for x in self._company_emails(c)]
+            cands = [it for it in items if (it["id"] not in seen or st["force"]) and it["id"] not in have_ids
+                     and (S.get("inbox_subject_search", False) or self._addr_in(mail_inbox.sender_addr(it["from"]), okl))]
+            if len(cands) >= 6 and not self._confirm_import(cands):
+                self._inbox_label("import cancelled: %d emails left unread in Gmail, press Check now to bring them in" % len(cands))
+                return
         for it in reversed(items):
             if it["id"] in seen and not st["force"]:
                 continue
@@ -2258,18 +2446,19 @@ class LogMixin:
                    "Give a company its email addresses and the orders from those senders are filed in it by themselves.")
         n.setWordWrap(True)
         v.addWidget(n)
+        self._ban_c = self._make_banner(v, self._assign_company)
         bar = QHBoxLayout()
         nc = QPushButton("+ New company")
         nc.setStyleSheet("font-weight:700;")
         nc.clicked.connect(self.new_company)
         bar.addWidget(nc)
         self._gmail_bar(bar)
-        da = QPushButton("Delete all orders...")
-        da.clicked.connect(lambda: self.delete_all_log("Order"))
-        bar.addWidget(da)
+        bar.addWidget(self._search_button())
+        bar.addWidget(self._more_button("Delete all orders...", lambda: self.delete_all_log("Order")))
         bar.addStretch(1)
         v.addLayout(bar)
         host, gl, sc = self._tile_scroll(v)
+        self._legend(v)
         self._ctiles = (host, gl, sc, [])
         sc.viewport().installEventFilter(self._area_filter("company"))
         return pg
@@ -2292,17 +2481,18 @@ class LogMixin:
                    "Add your own with New area; the program also makes a square when an order names a new township.")
         n.setWordWrap(True)
         v.addWidget(n)
+        self._ban_a = self._make_banner(v, self._assign_area)
         bar = QHBoxLayout()
         na = QPushButton("+ New area")
         na.setStyleSheet("font-weight:700;")
         na.clicked.connect(self.new_area)
         bar.addWidget(na)
-        da = QPushButton("Delete all this company's orders...")
-        da.clicked.connect(lambda: self.delete_all_log("Order"))
-        bar.addWidget(da)
+        bar.addWidget(self._search_button())
+        bar.addWidget(self._more_button("Delete all this company's orders...", lambda: self.delete_all_log("Order")))
         bar.addStretch(1)
         v.addLayout(bar)
         host, gl, sc = self._tile_scroll(v)
+        self._legend(v)
         self._atiles = (host, gl, sc, [])
         sc.viewport().installEventFilter(self._area_filter("area"))
         return pg
@@ -2323,7 +2513,7 @@ class LogMixin:
         host, gl, sc, tiles = self._ctiles if level == "company" else self._atiles
         while gl.count():
             gl.takeAt(0)
-        cols = max(1, (sc.viewport().width() - 4) // 372)
+        cols = max(1, (sc.viewport().width() - 4) // (self._sc(350) + 22))
         row = col = 0
         for w in tiles:
             if getattr(w, "_full", False):
@@ -2415,11 +2605,13 @@ class LogMixin:
             if rest:
                 heads[rest] = "All companies"
         if not names:
-            hl = QLabel("No company yet. Press + New company to add the first one (for example Cosmo).")
-            hl._full = True
-            hl.setParent(host)
-            hl.show()
-            tiles.append(hl)
+            tiles.append(self._empty_card(host, "Welcome. Let's set up your orders.",
+                                          "A company is who you work for (for example Cosmo or CityDev). Add one with the email addresses it writes from, and its orders will arrive by themselves. "
+                                          "The setup guide takes you through it step by step.",
+                                          [("Start the setup guide", self.setup_guide, True), ("+ New company", self.new_company, False)]))
+            if not self._M().SETTINGS.get("orders_wizard_done") and not getattr(self, "_wiz_offered", False) and self.isVisible():
+                self._wiz_offered = True
+                QTimer.singleShot(600, self.setup_guide)
         for name in order:
             if name in heads:
                 hl = QLabel(heads[name])
@@ -2434,7 +2626,7 @@ class LogMixin:
             new = sum(1 for e in ents if e.get("status") == "New")
             hdone = {g_ for g_ in houses if all(e.get("status") == "Done" for e in ents if e.get("group") == g_)}
             alldone = bool(houses) and len(hdone) == len(houses)
-            lines = ["<b style='font-size:21px'>%s</b>" % name.replace("<", "&lt;"),
+            lines = ["<b style='font-size:%dpx'>%s</b>" % (self._sc(21), name.replace("<", "&lt;")),
                      "%d area%s, %d house%s, %d order%s" % (areas_n, "" if areas_n == 1 else "s", len(houses), "" if len(houses) == 1 else "s", len(ents), "" if len(ents) == 1 else "s")]
             if nurg:
                 lines.insert(1, "<b style='color:#ff4d5e'>URGENT</b>")
@@ -2444,12 +2636,12 @@ class LogMixin:
                 lines.append("<b style='color:#ff4d5e'>%d new</b>" % new)
             c = next((x for x in self.companies if x["name"] == name), None)
             btn = AreaTile((c or {}).get("photo", ""), bool(nurg), lt, (c or {}).get("logo", ""), (c or {}).get("accent", ""), alldone)
-            btn.setFixedSize(350, 170)
+            btn.setFixedSize(self._sc(350), self._sc(170))
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             has_ph = btn._pm is not None
             has_logo = btn._logo is not None
             if has_logo:
-                lines = ["<b style='font-size:17px'>%s</b>" % name.replace("<", "&lt;")] + [x.replace("font-size:21px", "font-size:17px") for x in lines[1:]]
+                lines = ["<b style='font-size:%dpx'>%s</b>" % (self._sc(17), name.replace("<", "&lt;"))] + [x.replace("font-size:%dpx" % self._sc(21), "font-size:%dpx" % self._sc(17)) for x in lines[1:]]
                 has_ph = True                                            # white text on the coloured tile
             if has_ph:
                 btn.setStyleSheet("QPushButton{background:transparent;border:none;}")
@@ -2463,7 +2655,7 @@ class LogMixin:
                 lab.setGeometry(12, 94, 326, 70)
                 lab.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
             else:
-                lab.setGeometry(12, 8, 326, 154)
+                lab.setGeometry(12, 8, self._sc(350) - 24, self._sc(170) - 16)
                 lab.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lab.setWordWrap(True)
             if has_ph:
@@ -2635,6 +2827,7 @@ class LogMixin:
         ents = [e for e in self.log if e.get("type") == "Order" and self._comp_matches(e, name)]
         if QMessageBox.question(self, "Orders", "Delete %s and its %d order%s?\n\nIts areas are deleted too. This cannot be undone." % (name, len(ents), "" if len(ents) == 1 else "s")) != QMessageBox.StandardButton.Yes:
             return
+        self._undo_snapshot("Deleted the company %s." % name)
         gs = {_gnorm(e.get("group")) for e in ents}
         gone = {id(e) for e in ents} | {id(c) for c in self.log if c.get("type") == "Change" and c.get("of_order") and _gnorm(c.get("group")) in gs}
         self.log[:] = [e for e in self.log if id(e) not in gone]
@@ -2704,7 +2897,7 @@ class LogMixin:
             ar = next((a for a in self.areas if a["name"] == name), None)
             photo = (ar or {}).get("photo", "")
             btn = AreaTile(photo, bool(nurg), lt)
-            btn.setFixedSize(350, 170)
+            btn.setFixedSize(self._sc(350), self._sc(170))
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             has_ph = btn._pm is not None
             if has_ph:
@@ -2715,7 +2908,7 @@ class LogMixin:
             lab = QLabel("<br>".join(lines), btn)
             lab.setStyleSheet("background:transparent;border:none;color:%s;" % ("#ffffff" if has_ph else txt))
             lab.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-            lab.setGeometry(12, 8, 326, 154)
+            lab.setGeometry(12, 8, self._sc(350) - 24, self._sc(170) - 16)
             lab.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lab.setWordWrap(True)
             if has_ph:
@@ -2729,6 +2922,11 @@ class LogMixin:
             btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
             btn.customContextMenuRequested.connect(lambda _p, n_=name, b_=btn: self._area_menu(n_, b_))
             tiles.append(btn)
+        if not tiles:
+            tiles.append(self._empty_card(host, "No area yet",
+                                          "Areas make themselves: when an email subject names one (for example Blue Hills Ext 120 | Stand 2037, or a short code like BH 2037) the program creates its square and files the order in it. "
+                                          "You can also add one yourself.",
+                                          [("+ New area", self.new_area, True)]))
         self._reflow_areas("area")
 
     def _open_area(self, name):
@@ -2792,7 +2990,7 @@ class LogMixin:
         ds = sorted(k for k in (self._day_key(e.get("date")) for e in self.log if self.log_kind(e) == "Order" and e.get("group") == g) if k)
         return ds[0] if ds else ""
 
-    def area_progress_html(self, name, day=None, only_done=False):
+    def area_progress_html(self, name, day=None, only_done=False, only_houses=None):
         """The client's scope-of-work list for one area (or for the orders of one day in it): completed and still to be done, every house with its order lines, extras and changes.
         Front page in the same look as the other reports."""
         import html as _h
@@ -2804,6 +3002,8 @@ class LogMixin:
                 houses.append(e.get("group"))
         if day is not None:
             houses = [g for g in houses if self._house_day(g) == day]
+        if only_houses:
+            houses = [g for g in houses if g in only_houses]
         def nat(g):
             m_ = re.findall(r"\d+", str(g))
             return [int(x) for x in m_] or [0]
@@ -2867,7 +3067,7 @@ class LogMixin:
         h.append('<p style="font-size:7.5pt;color:#666;margin-top:16px;">%s. Status as at %s.</p>' % (e_(rd.get("company")), datetime.date.today().strftime("%d %B %Y")))
         return "".join(h)
 
-    def _progress_write(self, path, name, day=None, only_done=False):
+    def _progress_write(self, path, name, day=None, only_done=False, only_houses=None):
         from PySide6.QtCore import QMarginsF, QUrl
         from PySide6.QtGui import QFont, QPageLayout, QPageSize, QPdfWriter, QTextDocument
         w = QPdfWriter(path)
@@ -2879,10 +3079,10 @@ class LogMixin:
         except Exception:
             pass
         d.setDefaultFont(QFont("Arial", 9))
-        d.setHtml('<html><body style="font-family:Arial;color:#111;">' + self.area_progress_html(name, day, only_done) + "</body></html>")
+        d.setHtml('<html><body style="font-family:Arial;color:#111;">' + self.area_progress_html(name, day, only_done, only_houses) + "</body></html>")
         d.print_(w)
 
-    def area_progress_preview(self, name, day=None, only_done=False):
+    def area_progress_preview(self, name, day=None, only_done=False, only_houses=None):
         """Preview the report in the program (zoom, Save PDF...), like the other reports."""
         if not any(self.log_kind(e) == "Order" and self._area_of(e) == name and (day is None or self._house_day(e.get("group")) == day) for e in self.log):
             QMessageBox.information(self, "Orders", "There are no orders to report on here.")
@@ -2891,11 +3091,11 @@ class LogMixin:
             KEY = "areas"
             report_title = "Order progress - %s%s" % (name, (" - " + day) if day else "")
             def write(_s, path):
-                self._progress_write(path, name, day, only_done)
+                self._progress_write(path, name, day, only_done, only_houses)
         wr = _W()
         self.window().preview_pdf_report(wr.write, lambda: None)
 
-    def area_progress_pdf(self, name, day=None, only_done=False):
+    def area_progress_pdf(self, name, day=None, only_done=False, only_houses=None):
         if not any(self.log_kind(e) == "Order" and self._area_of(e) == name and (day is None or self._house_day(e.get("group")) == day) for e in self.log):
             QMessageBox.information(self, "Orders", "There are no orders to report on here.")
             return
@@ -2903,8 +3103,78 @@ class LogMixin:
         fn, _ = QFileDialog.getSaveFileName(self, "Save report", dflt, "PDF (*.pdf)")
         if not fn:
             return
-        self._progress_write(fn, name, day, only_done)
+        self._progress_write(fn, name, day, only_done, only_houses)
         QDesktopServices.openUrl(QUrl.fromLocalFile(fn))
+
+    def area_progress_email(self, name, day=None, only_done=False, only_houses=None):
+        """Emails the client report as a PDF attachment through the mail account already set up for the drawing register."""
+        from collections import Counter as _C
+        from PySide6.QtWidgets import QPlainTextEdit as _PT
+        M = self._M()
+        S = M.SETTINGS
+        ents = [e for e in self.log if self.log_kind(e) == "Order" and self._area_of(e) == name and (not only_houses or e.get("group") in only_houses)
+                and (day is None or self._house_day(e.get("group")) == day)]
+        if not ents:
+            QMessageBox.information(self, "Orders", "There are no orders to report on here.")
+            return
+        if not mail_ready(S):
+            QMessageBox.information(self, "Orders", "Set up your email account first (Drawing register > Email account), then try again. You can save the PDF meanwhile.")
+            return
+        senders = _C(str(e.get("by_email", "")).lower() for e in ents if e.get("by_email"))
+        comp = next((self._comp_of(e) for e in ents if self._comp_of(e)), "")
+        c = next((x for x in self.companies if x["name"] == comp), None)
+        guess = senders.most_common(1)[0][0] if senders else ((self._company_emails(c) or [""])[0] if c else "")
+        guess = "" if guess.startswith("@") else guess
+        nm = next((e.get("by_name") for e in ents if e.get("by_name")), "")
+        houses = []
+        for e in ents:
+            if e.get("group") not in houses:
+                houses.append(e.get("group"))
+        ndone = sum(1 for g in houses if all(x.get("status") == "Done" for x in ents if x.get("group") == g))
+        d = QDialog(self)
+        d.setWindowTitle("Email the order report")
+        d.setMinimumWidth(560)
+        v = QVBoxLayout(d)
+        f = QFormLayout()
+        to = QLineEdit(guess)
+        sub = QLineEdit("Order progress - %s%s" % (name, (" - " + self._day_label(day).replace("Today - ", "")) if day else ""))
+        f.addRow("To", to)
+        f.addRow("Subject", sub)
+        v.addLayout(f)
+        body = _PT("Dear %s,\n\nPlease find attached the progress on your orders for %s: %d of %d houses completed, %d still to be done.\n\nKind regards,\n%s"
+                   % ((nm.split()[0] if nm else "client"), name, ndone, len(houses), len(houses) - ndone, M.RD_DEFAULTS.get("company", "")))
+        body.setMinimumHeight(150)
+        v.addWidget(body)
+        v.addWidget(QLabel("The report is attached as a PDF."))
+        row = QHBoxLayout()
+        cl = QPushButton("Cancel")
+        sn = QPushButton("Send")
+        sn.setStyleSheet("font-weight:700;")
+        row.addStretch(1)
+        row.addWidget(cl)
+        row.addWidget(sn)
+        v.addLayout(row)
+        cl.clicked.connect(d.reject)
+        sn.clicked.connect(d.accept)
+        if d.exec() != QDialog.DialogCode.Accepted:
+            return
+        if "@" not in to.text():
+            QMessageBox.information(self, "Orders", "Type the client's email address first.")
+            return
+        import tempfile
+        pdf = os.path.join(tempfile.gettempdir(), re.sub(r'[\\/:*?"<>|]+', "-", "Order progress - %s.pdf" % name))
+        try:
+            self._progress_write(pdf, name, day, only_done, only_houses)
+            m = EmailMessage()
+            m["From"] = S.get("mail_address", "") or S.get("smtp_user", "")
+            m["To"], m["Subject"] = to.text().strip(), sub.text().strip()
+            m.set_content(body.toPlainText())
+            with open(pdf, "rb") as fh:
+                m.add_attachment(fh.read(), maintype="application", subtype="pdf", filename=os.path.basename(pdf))
+            deliver(S, m, bcc_me=True)
+            QMessageBox.information(self, "Orders", "Sent to %s." % to.text().strip())
+        except Exception as ex:
+            QMessageBox.warning(self, "Orders", "Could not send: %s\n\nYou can save the PDF and send it yourself." % ex)
 
     def _day_menu(self, name, day, btn):
         from PySide6.QtWidgets import QMenu
@@ -2912,6 +3182,7 @@ class LogMixin:
         ap = m.addAction("Preview report (PDF)...")
         ac = m.addAction("Save the whole list as PDF...")
         ad = m.addAction("Save completed list only as PDF...")
+        ae = m.addAction("Email it to the client...")
         m.addSeparator()
         am = m.addAction("Mark all of these houses as completed")
         pick = m.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
@@ -2921,6 +3192,8 @@ class LogMixin:
             self.area_progress_pdf(name, day)
         elif pick is ad:
             self.area_progress_pdf(name, day, True)
+        elif pick is ae:
+            self.area_progress_email(name, day)
         elif pick is am:
             for g in {e.get("group") for e in self.log if self.log_kind(e) == "Order" and self._area_of(e) == name}:
                 if self._house_day(g) == day:
@@ -3023,6 +3296,7 @@ class LogMixin:
         ents = [e for e in self.log if e.get("type") == "Order" and self._area_of(e) == name]
         if QMessageBox.question(self, "Orders", "Delete the area %s and its %d order%s?\n\nThis cannot be undone." % (name, len(ents), "" if len(ents) == 1 else "s")) != QMessageBox.StandardButton.Yes:
             return
+        self._undo_snapshot("Deleted the area %s." % name)
         gone = {id(e) for e in ents}
         self.log[:] = [e for e in self.log if id(e) not in gone]
         self.areas[:] = [a for a in self.areas if a["name"] != name]
@@ -3102,9 +3376,13 @@ class LogMixin:
             nb.setStyleSheet("font-weight:700;")
             nb.clicked.connect(self.new_order)
             bar.addWidget(nb)
-            da = QPushButton("Delete this area's orders...")
-            da.clicked.connect(lambda: self.delete_all_log("Order", None))
-            bar.addWidget(da)
+            bar.addWidget(self._search_button())
+            self._selbar = QPushButton("")
+            self._selbar.setStyleSheet("font-weight:700;color:#4aa3ff;")
+            self._selbar.clicked.connect(self._sel_menu)
+            self._selbar.hide()
+            bar.addWidget(self._selbar)
+            bar.addWidget(self._more_button("Delete this area's orders...", lambda: self.delete_all_log("Order", None)))
         else:
             b = QPushButton("Get changes from the drawings")
             b.setStyleSheet("font-weight:700;")
@@ -3127,6 +3405,8 @@ class LogMixin:
         gl.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         sc.setWidget(host)
         v.addWidget(sc, 1)
+        if kind == "Order":
+            self._legend(v)
         self._ltiles[kind] = (host, gl, sc, [])
         sc.viewport().installEventFilter(self._tile_filter(kind))
         return pg
@@ -3147,7 +3427,7 @@ class LogMixin:
         host, gl, sc, tiles = self._ltiles[kind]
         while gl.count():
             gl.takeAt(0)
-        cols = max(1, (sc.viewport().width() - 4) // 232)
+        cols = max(1, (sc.viewport().width() - 4) // (self._sc(220) + 12))
         row = col = 0
         for w in tiles:
             if getattr(w, "_full", False):
@@ -3284,7 +3564,7 @@ class LogMixin:
             new = sum(1 for e in ents if e.get("status") == "New")
             open_ = sum(1 for e in ents if not e.get("sent_date"))
             last = max([str(e.get("date", "")) for e in ents] or [""])
-            lines = ["<b style='font-size:14px'>%s</b>" % name.replace("<", "&lt;"),
+            lines = ["<b style='font-size:%dpx'>%s</b>" % (self._sc(14), name.replace("<", "&lt;")),
                      ("%d %s" % (len(ents), ("order" if kind == "Order" else "change") + ("" if len(ents) == 1 else "s"))) if ents else "nothing yet"]
             if kind == "Order":
                 chs = self._changes_of(name)
@@ -3292,6 +3572,7 @@ class LogMixin:
                     lines[1] += ", %d change%s" % (len(chs), "" if len(chs) == 1 else "s")
                     new += sum(1 for c in chs if c.get("status") == "New")
             isdone = name in done_set
+            insel = kind == "Order" and (self._larea.get("Order"), name) in getattr(self, "_sel_houses", set())
             urg = sum(1 for e in ents if self._is_urgent(e))
             asked = sum(1 for e in ents if e.get("priority") == "Asked again" and not e.get("sent_date"))
             if isdone:
@@ -3310,14 +3591,17 @@ class LogMixin:
             elif last:
                 lines.append("last: %s" % last)
             btn = QPushButton()
-            btn.setFixedSize(220, 100)
+            btn.setFixedSize(self._sc(220), self._sc(100))
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setStyleSheet(qss + ("QPushButton{border:2px solid #d8132b;}" if urg else "") + ("QPushButton{background:%s;}" % ("#ffe3e6" if lt else "#3a1b20") if urg else "")
                               + ("QPushButton{border:2px solid #2ea44f;background:%s;}" % ("#dff5e5" if lt else "#17361f") if isdone else ""))
+            if insel:
+                lines.append("<b style='color:#4aa3ff'>\u2713 in the client report</b>")
+                btn.setStyleSheet(btn.styleSheet() + "QPushButton{border:2px dashed #4aa3ff;}")
             lab = QLabel("<br>".join(lines), btn)
             lab.setStyleSheet("background:transparent;border:none;color:%s;" % txt)
             lab.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-            lab.setGeometry(12, 8, 196, 84)
+            lab.setGeometry(12, 8, self._sc(220) - 24, self._sc(100) - 16)
             lab.setWordWrap(True)
             btn.clicked.connect(lambda _c=False, k=kind, n_=name: self._open_group(k, n_))
             btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -3332,9 +3616,13 @@ class LogMixin:
         isdone = name in self._done_houses(kind)
         a4 = m.addAction("Reopen (not completed)" if isdone else "Mark as completed")
         a3 = m.addAction("Move to another area...") if kind == "Order" else None
+        insel = (self._larea.get("Order"), name) in getattr(self, "_sel_houses", set())
+        a5 = m.addAction("Remove from the client report" if insel else "Select for the client report") if kind == "Order" else None
         a2 = m.addAction("Delete all the %s of %s..." % ("orders" if kind == "Order" else "changes", name))
         pick = m.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
-        if pick is a1:
+        if a5 is not None and pick is a5:
+            self._toggle_sel(name)
+        elif pick is a1:
             self._open_group(kind, name)
         elif pick is a2:
             self.delete_all_log(kind, name)
@@ -3342,6 +3630,406 @@ class LogMixin:
             self.move_house(name)
         elif pick is a4:
             self.set_house_done(kind, name, not isdone)
+
+    # ----- friendly helpers: setup guide, help, empty screens, banners, undo -----
+    def setup_guide(self):
+        OrdersWizard(self).exec()
+
+    def orders_help(self):
+        from PySide6.QtWidgets import QTextBrowser
+        d = QDialog(self)
+        d.setWindowTitle("Orders help")
+        d.resize(700, 620)
+        v = QVBoxLayout(d)
+        tb = QTextBrowser()
+        tb.setHtml(
+            "<h2>How the Orders tool works</h2>"
+            "<p>Your clients email you orders. The program reads <b>unread</b> mail from the addresses you list and files each order for you: "
+            "<b>Company &rsaquo; Area &rsaquo; House</b>.</p>"
+            "<h3>The three levels</h3><ul>"
+            "<li><b>Company</b>: who you work for. Right-click a square to edit its email addresses, add a logo or a colour.</li>"
+            "<li><b>Area</b>: an estate or development. The subject <i>Urbika Erf 670 | PTN 38</i> makes the area <i>Urbika Erf 670</i>. Short codes like BH or AD also work. "
+            "Right-click an area for its photo and its client report.</li>"
+            "<li><b>House</b>: the stand number. A follow-up email about the same house becomes a <b>change</b> inside its order.</li></ul>"
+            "<h3>What the colours mean</h3><ul>"
+            "<li><b style='color:#d8132b'>Red frame</b>: urgent.</li><li><b style='color:#2ea44f'>Green frame</b>: completed.</li>"
+            "<li><b style='color:#ff4d5e'>Red &lsquo;new&rsquo;</b>: you have not opened it yet.</li>"
+            "<li><b style='color:#4aa3ff'>Blue dashed frame</b>: picked for the client report.</li></ul>"
+            "<h3>Everyday jobs</h3><ul>"
+            "<li><b>Check now</b>: look for new mail straight away.</li>"
+            "<li><b>Mark completed</b>: open a house and press the button. It drops to the green Completed row.</li>"
+            "<li><b>Client report</b>: click a date header (or right-click houses and choose Select for the client report) to preview, save or email a PDF.</li>"
+            "<li><b>Mistake?</b> After a delete, press <b>Undo</b> on the blue bar.</li>"
+            "<li><b>Search</b>: find any house, area or word across everything.</li></ul>"
+            "<h3>If something does not arrive</h3><ul>"
+            "<li>The sender's address must be on a company's list (right-click the company &rsaquo; Edit).</li>"
+            "<li>Only <b>unread</b> mail is read: mark the email unread in Gmail and press Check now.</li>"
+            "<li>The green/red line at the top shows whether Gmail is being watched.</li></ul>")
+        v.addWidget(tb)
+        row = QHBoxLayout()
+        sg = QPushButton("Open the setup guide")
+        sg.clicked.connect(lambda: (d.accept(), self.setup_guide()))
+        cl = QPushButton("Close")
+        cl.clicked.connect(d.accept)
+        row.addWidget(sg)
+        row.addStretch(1)
+        row.addWidget(cl)
+        v.addLayout(row)
+        d.exec()
+
+    def _empty_card(self, host, title, text, buttons):
+        card = QFrame()
+        card.setObjectName("emptycard")
+        card.setStyleSheet("QFrame#emptycard{border:2px dashed #3a3f46;border-radius:14px;}")
+        cl = QVBoxLayout(card)
+        cl.setContentsMargins(22, 18, 22, 18)
+        t = QLabel(title)
+        t.setStyleSheet("font-size:20px;font-weight:800;border:none;")
+        cl.addWidget(t)
+        x = QLabel(text)
+        x.setWordWrap(True)
+        x.setStyleSheet("border:none;")
+        cl.addWidget(x)
+        row = QHBoxLayout()
+        for label, fn, bold in buttons:
+            b = QPushButton(label)
+            if bold:
+                b.setStyleSheet("font-weight:700;")
+            b.clicked.connect(lambda _c=False, f=fn: f())
+            row.addWidget(b)
+        row.addStretch(1)
+        cl.addLayout(row)
+        card._full = True
+        card.setParent(host)
+        card.show()
+        return card
+
+    def _make_banner(self, v, fn):
+        fr = QFrame()
+        fr.setObjectName("homebar")
+        fr.setStyleSheet("QFrame#homebar{background:#3a2d12;border:1px solid #d8932f;border-radius:8px;} QLabel{color:#ffe2b0;border:none;}")
+        hl = QHBoxLayout(fr)
+        hl.setContentsMargins(10, 6, 10, 6)
+        fr.lbl = QLabel("")
+        fr.lbl.setWordWrap(True)
+        hl.addWidget(fr.lbl, 1)
+        fr.btn = QPushButton("")
+        fr.btn.setStyleSheet("font-weight:700;")
+        fr.btn.clicked.connect(fn)
+        hl.addWidget(fr.btn)
+        fr.hide()
+        v.addWidget(fr)
+        return fr
+
+    def _update_banners(self):
+        pl = lambda n, w: "%d %s%s" % (n, w, "" if n == 1 else "s")
+        b = getattr(self, "_ban_c", None)
+        if b is not None:
+            nc = [e for e in self.log if e.get("type") == "Order" and not self._comp_of(e)]
+            b.setVisible(bool(nc) and bool(self.companies))
+            b.lbl.setText("%s came from addresses that are not on any company's list, so they sit in No company." % pl(len(nc), "order"))
+            b.btn.setText("Put them in a company...")
+        b = getattr(self, "_ban_a", None)
+        if b is not None:
+            cur = self._lcomp.get("Order")
+            na = [e for e in self.log if e.get("type") == "Order" and not e.get("area") and (cur is None or self._comp_matches(e, cur))]
+            b.setVisible(bool(na))
+            b.lbl.setText("%s could not be placed in an area (the email names none the program knows)." % pl(len(na), "order"))
+            b.btn.setText("Choose an area...")
+
+    def _assign_company(self):
+        from PySide6.QtWidgets import QInputDialog
+        names = [c["name"] for c in self.companies]
+        if not names:
+            return
+        pick, ok = QInputDialog.getItem(self, "Put orders in a company", "These orders belong to:", names, 0, False)
+        if not ok:
+            return
+        self._undo_snapshot("Moved the orders into %s." % pick)
+        c = next(x for x in self.companies if x["name"] == pick)
+        senders = set()
+        for e in self.log:
+            if e.get("type") in ("Order", "Change") and not self._comp_of(e):
+                e["company"] = pick
+                if e.get("by_email"):
+                    senders.add(str(e["by_email"]).lower())
+        for a in self.areas:
+            if not a.get("company"):
+                a["company"] = pick
+        have = self._company_emails(c)
+        new = [x for x in sorted(senders) if not self._addr_in(x, have)]
+        if new:
+            c["emails"] = (str(c.get("emails", "")) + "\n" + "\n".join(new)).strip()          # next time these senders file themselves
+        self.refresh_log()
+
+    def _assign_area(self):
+        from PySide6.QtWidgets import QInputDialog
+        cur = self._lcomp.get("Order")
+        opts = [n for n in self._area_names(cur) if n != NOT_SORTED] + ["+ A new area..."]
+        pick, ok = QInputDialog.getItem(self, "Choose an area", "These orders belong to:", opts, 0, False)
+        if not ok:
+            return
+        if pick == "+ A new area...":
+            pick, ok = QInputDialog.getText(self, "New area", "Name of the area:")
+            pick = pick.strip()
+            if not ok or not pick:
+                return
+        self._undo_snapshot("Moved the orders into %s." % pick)
+        pick = self._ensure_area(pick)
+        a = next((x for x in self.areas if x["name"] == pick), None)
+        if a is not None and cur and cur != NO_COMPANY and not a.get("company"):
+            a["company"] = cur
+        for e in self.log:
+            if e.get("type") in ("Order", "Change") and not e.get("area") and (cur is None or self._comp_matches(e, cur)):
+                e["area"] = pick
+                if e.get("req_subject"):
+                    self._learn_code(e["req_subject"], pick)
+        self.refresh_log()
+
+    def _undo_snapshot(self, label):
+        """Keeps a copy of everything before a delete, so the blue bar can bring it back."""
+        import copy
+        S = self._M().SETTINGS
+        self._undo = {"label": label, "log": copy.deepcopy(self.log), "areas": copy.deepcopy(self.areas), "companies": copy.deepcopy(self.companies),
+                      "seen": list(S.get("inbox_seen", [])), "keys": list(S.get("inbox_keys", []))}
+        QTimer.singleShot(0, self._show_undo)
+
+    def _show_undo(self):
+        if not getattr(self, "_undo", None):
+            return
+        host = (getattr(self, "order_pages", None) or [self])[0]
+        bar = getattr(self, "_undo_bar", None)
+        if bar is None:
+            bar = QFrame(host)
+            bar.setObjectName("undobar")
+            bar.setStyleSheet("QFrame#undobar{background:#1f2f45;border:1px solid #4aa3ff;border-radius:8px;} QLabel{color:#ffffff;border:none;}")
+            hl = QHBoxLayout(bar)
+            hl.setContentsMargins(12, 6, 8, 6)
+            self._undo_lbl = QLabel("")
+            hl.addWidget(self._undo_lbl, 1)
+            ub = QPushButton("Undo")
+            ub.setStyleSheet("font-weight:700;")
+            ub.clicked.connect(self._do_undo)
+            hl.addWidget(ub)
+            xb = QPushButton("\u2715")
+            xb.setFixedWidth(30)
+            xb.clicked.connect(bar.hide)
+            hl.addWidget(xb)
+            self._undo_bar = bar
+            self._undo_timer = QTimer(self)
+            self._undo_timer.setSingleShot(True)
+            self._undo_timer.timeout.connect(bar.hide)
+        bar.setParent(host)
+        self._undo_lbl.setText(self._undo["label"] + "  Made a mistake?")
+        bar.setFixedWidth(min(560, max(320, host.width() - 40)))
+        bar.adjustSize()
+        bar.move(20, max(0, host.height() - bar.height() - 16))
+        bar.show()
+        bar.raise_()
+        self._undo_timer.start(25000)
+
+    def _do_undo(self):
+        u = getattr(self, "_undo", None)
+        if not u:
+            return
+        import copy
+        S = self._M().SETTINGS
+        self.log[:] = copy.deepcopy(u["log"])
+        self.areas[:] = copy.deepcopy(u["areas"])
+        self.companies[:] = copy.deepcopy(u["companies"])
+        S["inbox_seen"], S["inbox_keys"] = list(u["seen"]), list(u["keys"])
+        self._M().save_settings()
+        self._undo = None
+        if getattr(self, "_undo_bar", None) is not None:
+            self._undo_bar.hide()
+        self._lgroup["Order"] = None
+        self.refresh_log()
+
+    def _confirm_import(self, items):
+        """Before a big first import: a list of what was found, so nothing floods in unseen. True to go on."""
+        d = QDialog(self)
+        d.setWindowTitle("Bring these emails in?")
+        d.resize(640, 420)
+        v = QVBoxLayout(d)
+        v.addWidget(QLabel("Found <b>%d unread emails</b> from your listed senders. Bring them in as orders?" % len(items)))
+        lw = QListWidget()
+        for it in items[:200]:
+            lw.addItem("%s   |   %s" % (str(it.get("subject", ""))[:70], re.sub(r"<.*", "", str(it.get("from", ""))).strip()[:30]))
+        v.addWidget(lw, 1)
+        row = QHBoxLayout()
+        no = QPushButton("Not now")
+        yes = QPushButton("Bring them in")
+        yes.setStyleSheet("font-weight:700;")
+        no.clicked.connect(d.reject)
+        yes.clicked.connect(d.accept)
+        row.addStretch(1)
+        row.addWidget(no)
+        row.addWidget(yes)
+        v.addLayout(row)
+        return d.exec() == QDialog.DialogCode.Accepted
+
+    # ----- text size, search, legend, more menu, report selection -----
+    def _sc(self, n):
+        return int(round(n * int(self._M().SETTINGS.get("orders_scale", 100) or 100) / 100.0))
+
+    def _apply_scale(self):
+        host = (getattr(self, "order_pages", None) or [None])[0]
+        if host is None:
+            return
+        if not hasattr(self, "_base_pt"):
+            self._base_pt = host.font().pointSizeF() if host.font().pointSizeF() > 0 else 9.0
+        f = host.font()
+        f.setPointSizeF(self._base_pt * int(self._M().SETTINGS.get("orders_scale", 100) or 100) / 100.0)
+        host.setFont(f)
+
+    def orders_text_size(self):
+        from PySide6.QtWidgets import QInputDialog
+        S = self._M().SETTINGS
+        opts = ["Normal", "Large", "Extra large"]
+        cur = {100: 0, 118: 1, 136: 2}.get(int(S.get("orders_scale", 100) or 100), 0)
+        pick, ok = QInputDialog.getItem(self, "Text size", "Size of the text and squares in Orders:", opts, cur, False)
+        if not ok:
+            return
+        S["orders_scale"] = (100, 118, 136)[opts.index(pick)]
+        self._M().save_settings()
+        self._apply_scale()
+        self.refresh_log()
+
+    def _more_button(self, del_label, del_fn):
+        from PySide6.QtWidgets import QMenu
+        b = QPushButton("More  \u25be")
+        b.setToolTip("Search, setup guide, help, text size and the delete-all button")
+        m = QMenu(b)
+        m.addAction("Search all orders...", self.orders_search)
+        m.addAction("Setup guide...", self.setup_guide)
+        m.addAction("Help: how this works", self.orders_help)
+        m.addAction("Text size...", self.orders_text_size)
+        m.addSeparator()
+        m.addAction(del_label, del_fn)
+        b.setMenu(m)
+        return b
+
+    def _search_button(self):
+        b = QPushButton("\U0001F50D Search")
+        b.setToolTip("Find any house, area, company or word in all your orders")
+        b.clicked.connect(self.orders_search)
+        return b
+
+    def _legend(self, v):
+        lt = QLabel("<span style='color:#d8132b'>\u25a0</span> red frame = urgent &nbsp;&nbsp; <span style='color:#2ea44f'>\u25a0</span> green frame = completed &nbsp;&nbsp; "
+                    "<span style='color:#ff4d5e'>new</span> = not opened yet &nbsp;&nbsp; <span style='color:#4aa3ff'>\u25a0</span> blue dashed = picked for the client report")
+        lt.setStyleSheet("color:#8d939b;font-size:11px;padding:2px 2px;")
+        v.addWidget(lt)
+        return lt
+
+    def orders_search(self):
+        from PySide6.QtWidgets import QLineEdit as _LE
+        d = QDialog(self)
+        d.setWindowTitle("Search all orders")
+        d.resize(720, 460)
+        v = QVBoxLayout(d)
+        q = _LE()
+        q.setPlaceholderText("a house or stand (PTN 38, 2037), an area, a company, or a word from the order")
+        v.addWidget(q)
+        lw = QListWidget()
+        v.addWidget(lw, 1)
+        info = QLabel("Double-click a result to open it.")
+        v.addWidget(info)
+        hits = []
+
+        def run():
+            lw.clear()
+            hits.clear()
+            toks = [t for t in re.split(r"\s+", q.text().lower().strip()) if t]
+            if not toks:
+                return
+            for e in self.log:
+                if not (e.get("type") == "Order" or (e.get("type") == "Change" and e.get("of_order"))):
+                    continue
+                hay = " ".join(str(e.get(k, "")) for k in ("group", "area", "text", "extras", "req_subject", "by_name", "order")) + " " + (self._comp_of(e) or NO_COMPANY)
+                hay = hay.lower()
+                if all(t in hay for t in toks):
+                    first = str(e.get("text", "")).split("\n")[0][:70]
+                    lw.addItem("%s  \u203a  %s  \u203a  %s   %s%s" % (self._comp_of(e) or NO_COMPANY, self._area_of(e), e.get("group", ""),
+                                                                     "(change %s) " % (e.get("rev") or "") if e.get("type") == "Change" else "", first))
+                    hits.append(e)
+                if len(hits) >= 200:
+                    break
+            info.setText("%d found. Double-click a result to open it." % len(hits))
+
+        def go(i):
+            e = hits[lw.row(i)]
+            d.accept()
+            self.show_orders("Order")
+            comp = self._comp_of(e) or NO_COMPANY
+            self._open_company(comp)
+            self._open_area(self._area_of(e))
+            self._open_group("Order", e.get("group"))
+        q.textChanged.connect(run)
+        lw.itemDoubleClicked.connect(go)
+        q.setFocus()
+        d.exec()
+
+    # --- picking houses for the client report ---
+    def _toggle_sel(self, name):
+        s_ = getattr(self, "_sel_houses", None)
+        if s_ is None:
+            s_ = self._sel_houses = set()
+        key = (self._larea.get("Order"), name)
+        s_.symmetric_difference_update({key})
+        self._rebuild_tiles("Order")
+        self._update_selbar()
+
+    def _sel_names(self):
+        a = self._larea.get("Order")
+        return [n for (ar, n) in getattr(self, "_sel_houses", set()) if ar == a]
+
+    def _update_selbar(self):
+        b = getattr(self, "_selbar", None)
+        if b is None:
+            return
+        n = len(self._sel_names())
+        b.setVisible(n > 0)
+        b.setText("Client report for the %d picked house%s  \u25be" % (n, "" if n == 1 else "s"))
+
+    def _sel_menu(self):
+        from PySide6.QtWidgets import QMenu
+        names = self._sel_names()
+        if not names:
+            return
+        area = self._larea.get("Order")
+        m = QMenu(self._selbar)
+        ap = m.addAction("Preview report (PDF)...")
+        ac = m.addAction("Save as PDF...")
+        ae = m.addAction("Email it to the client...")
+        m.addSeparator()
+        am = m.addAction("Mark these houses as completed")
+        ax = m.addAction("Clear the picks")
+        pick = m.exec(self._selbar.mapToGlobal(self._selbar.rect().bottomLeft()))
+        if pick is ap:
+            self.area_progress_preview(area, None, False, names)
+        elif pick is ac:
+            self.area_progress_pdf(area, None, False, names)
+        elif pick is ae:
+            self.area_progress_email(area, None, False, names)
+        elif pick is am:
+            for g in names:
+                self.set_house_done("Order", g, True)
+            self._sel_houses = {k for k in self._sel_houses if k[0] != area}
+            self.refresh_log()
+        elif pick is ax:
+            self._sel_houses = {k for k in self._sel_houses if k[0] != area}
+            self._rebuild_tiles("Order")
+            self._update_selbar()
+
+    def _guess_kind(self, text):
+        """Suggests Minor or Major from the wording; the person can change it."""
+        t = str(text or "")
+        if re.search(r"\b(add|added|new|remov|delet|extend|extension|room|bedroom|garage|stor[e]?y|floor|roof|stair|enlarg|redesign|re-design|relocat)", t, re.I):
+            return "Major changes"
+        if re.search(r"\d+([.,]\d+)?\s*(mm|cm|m|meter|metre|meters|metres)\b", t, re.I) or len(t.strip()) < 60:
+            return "Minor changes"
+        return "Major changes" if self.MAJOR.search(t) else "Minor changes"
 
     def delete_all_log(self, kind, group=None):
         """Removes every order (or change) line, or only those of one house. Deleting all orders also makes the inbox watcher forget what it has read,
@@ -3356,6 +4044,7 @@ class LogMixin:
                                                                   ("\n%d of them were already sent to the client." % sent) if sent else "")
         if QMessageBox.question(self, "Drawing register", txt) != QMessageBox.StandardButton.Yes:
             return
+        self._undo_snapshot("Deleted %d %s." % (len(ents), what))
         gone = {id(e) for e in ents}
         if kind == "Order":
             gs = {_gnorm(e.get("group")) for e in ents}
@@ -3778,6 +4467,7 @@ class LogMixin:
     def remove_log(self):
         e, _k = self._cur_log()
         if e is not None and e in self.log:
+            self._undo_snapshot("Removed the line.")
             self.log.remove(e)
             self.refresh_log()
 
@@ -3885,6 +4575,9 @@ class LogMixin:
                 b_.setText("Reopen this house" if (g_ and g_ in self._done_houses(k_)) else "\u2713  Mark completed")
             self._rebuild_areas()
             self._rebuild_companies()
+            self._update_banners()
+            self._apply_scale()
+            self._update_selbar()
         finally:
             self._busy = False
         self.update_mail()
