@@ -1,6 +1,6 @@
 import sys, json, csv, re, os, tempfile, html, datetime
 from dataclasses import dataclass
-from PySide6.QtWidgets import (QStackedWidget, QSizePolicy, QLayout, 
+from PySide6.QtWidgets import (QTableView, QStyledItemDelegate, QStackedWidget, QSizePolicy, QLayout, 
     QGroupBox, QListWidgetItem, QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
     QTableWidget, QTableWidgetItem, QPushButton, QLabel, QComboBox, QSplitter, QSplitterHandle,
     QFileDialog, QMessageBox, QHeaderView, QCheckBox, QProgressDialog, QDialog,
@@ -19498,6 +19498,9 @@ class _HeaderMarks(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.setGeometry(header.viewport().rect())
         header.viewport().installEventFilter(self)
+        self._drag = False
+        self._busy = False
+        header.sectionResized.connect(self._neighbour)
         for sig in (header.sectionResized, header.sectionMoved, header.geometriesChanged, header.sectionCountChanged):
             try:
                 sig.connect(lambda *_a: self.update())
@@ -19507,10 +19510,37 @@ class _HeaderMarks(QWidget):
         self.raise_()
 
     def eventFilter(self, obj, ev):
-        if ev.type() in (QEvent.Type.Resize, QEvent.Type.Show):
+        t = ev.type()
+        if t in (QEvent.Type.Resize, QEvent.Type.Show):
             self.setGeometry(self.h.viewport().rect())
             self.raise_()
+        elif t == QEvent.Type.MouseButtonPress:
+            self._drag = True
+        elif t == QEvent.Type.MouseButtonRelease:
+            self._drag = False
         return False
+
+    def _neighbour(self, li, old, new):
+        """Dragging a divider moves it: the column next to it gives up (or takes) the width, so the columns beyond it stay where they are."""
+        h = self.h
+        if not self._drag or self._busy or h.orientation() != Qt.Orientation.Horizontal:
+            return
+        vi = h.visualIndex(li)
+        nxt = -1
+        for k in range(vi + 1, h.count()):
+            c = h.logicalIndex(k)
+            if not h.isSectionHidden(c):
+                nxt = c
+                break
+        if nxt < 0 or h.sectionResizeMode(nxt) != QHeaderView.ResizeMode.Interactive:
+            return
+        if h.stretchLastSection() and h.visualIndex(nxt) == h.count() - 1:
+            return
+        self._busy = True
+        try:
+            h.resizeSection(nxt, max(h.minimumSectionSize(), 30, h.sectionSize(nxt) - (new - old)))
+        finally:
+            self._busy = False
 
     def paintEvent(self, _ev):
         h = self.h
@@ -19539,10 +19569,24 @@ class _HeaderMarks(QWidget):
         p.end()
 
 
+class _CenterDelegate(QStyledItemDelegate):
+    def initStyleOption(self, option, index):
+        super().initStyleOption(option, index)
+        option.displayAlignment = Qt.AlignmentFlag.AlignCenter
+
+
 class _HeaderMarker(QObject):
-    """Application-wide: gives every table heading its resize markers the first time it is shown."""
+    """Application-wide: gives every table heading its resize markers the first time it is shown, and centres the cell text under the headings."""
 
     def eventFilter(self, obj, ev):
+        if ev.type() == QEvent.Type.Show and isinstance(obj, QTableView) and not obj.property("mot_centre"):
+            obj.setProperty("mot_centre", True)
+            try:
+                if type(obj.itemDelegate()) is QStyledItemDelegate:
+                    obj._mot_cd = _CenterDelegate(obj)
+                    obj.setItemDelegate(obj._mot_cd)
+            except Exception:
+                pass
         if ev.type() == QEvent.Type.Show and isinstance(obj, QHeaderView) and obj.orientation() == Qt.Orientation.Horizontal \
                 and not obj.property("mot_marks"):
             obj.setProperty("mot_marks", True)
