@@ -267,7 +267,7 @@ def _title_parts(subject):
     return (subject or "Drawing register").strip(), ""
 
 
-def build(subject, body, logo_src="cid:mcplogo", attached="", logo_dark_src="", company="MCP Architecture & Interiors", preview=False, sig_src="", sig_parts=None):
+def build(subject, body, logo_src="cid:mcplogo", attached="", logo_dark_src="", company="MCP Architecture & Interiors", preview=False, sig_src="", sig_parts=None, pics=None):
     _pv["on"] = bool(preview)
     _pv["res"] = {}
     project, strip = _title_parts(subject)
@@ -304,7 +304,17 @@ def build(subject, body, logo_src="cid:mcplogo", attached="", logo_dark_src="", 
             rest.append(r)
 
     sections = ""
+    pics_html, pics_done = "", True
+    if pics:
+        pics_done = False
+        for src_, cap_ in pics:
+            pics_html += ('<tr><td style="padding:14px 0 4px 0;font-family:%s;font-size:14px;font-weight:700;color:%s;">%s</td></tr>' % (FONT, STRONG, _e(cap_))) if cap_ else ""
+            pics_html += ('<tr><td style="padding:6px 0 10px 0;"><img src="%s" width="%d" alt="%s" style="display:block;width:100%%;height:auto;border:1px solid #C9C9C9;border-radius:10px;"></td></tr>'
+                          % (src_, 600 if _pv["on"] else 680, _e(cap_ or "Picture")))
     for r in rest:
+        if not pics_done and not isinstance(r, str) and r[0] == "G":
+            sections += pics_html
+            pics_done = True
         if isinstance(r, str):
             sections += ('<tr><td class="tx" style="padding:14px 6px 0 6px;font-family:%s;font-size:15px;line-height:24px;color:%s;">%s</td></tr>' % (FONT, TXT, r.split(">", 2)[-1].rsplit("</td>", 1)[0]))
         elif r[0] == "H":
@@ -368,6 +378,8 @@ def build(subject, body, logo_src="cid:mcplogo", attached="", logo_dark_src="", 
                              '<span style="color:%s;font-size:12px;letter-spacing:3px;font-weight:700;">REGARDS</span><br><b class="st" style="font-size:17px;color:%s;">%s</b><br>%s%s</td></tr></table></td></tr>'
                              % (CARD, LINE, CARD, RED, RED, FONT, TXT, RED, STRONG, _e(name), _e(role), more))
 
+    if not pics_done:
+        sections += pics_html
     attached_html = ('<tr><td align="center" class="mu" style="padding:18px 10px 0 10px;font-family:%s;font-size:12px;color:%s;">%s</td></tr>' % (FONT, MUTED, _e(attached))) if attached else ""
     sub_line = ('<div class="mu" style="font-family:%s;font-size:14px;color:%s;padding-top:6px;">%s</div>' % (FONT, MUTED, _e(strip))) if strip else ""
     title_inner = ('<div class="st" style="font-family:%s;font-size:34px;line-height:38px;font-weight:700;color:%s;">DRAWING REGISTER</div>%s'

@@ -13,7 +13,7 @@ from collections import Counter
 from email.message import EmailMessage
 from email.utils import parsedate_to_datetime
 
-from PySide6.QtCore import Qt, QTimer, QUrl, Signal, QPoint
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal, QPoint, QSize
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (QWidget, QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QTableWidget,
@@ -836,6 +836,320 @@ class ManualIndexDialog(QDialog):
         return out
 
 
+class MarkupCanvas(QWidget):
+    """A picture you can draw on: pen, marker, box, circle, arrow, text, and an area to crop to. Everything is kept as shapes, so Undo works."""
+
+    def __init__(self, img, parent=None):
+        super().__init__(parent)
+        self.img = img
+        self.shapes, self.cur, self.tool, self.color, self.thick, self.zoom, self.crop = [], None, "pen", "#E01E37", 2, 1.0, None
+        self.setMouseTracking(False)
+        self._fit(900)
+
+    def _fit(self, w):
+        self.zoom = max(0.05, min(1.0, w / max(1, self.img.width())))
+        self._resize()
+
+    def _resize(self):
+        self.setFixedSize(int(self.img.width() * self.zoom), int(self.img.height() * self.zoom))
+        self.update()
+
+    def set_zoom(self, z):
+        self.zoom = max(0.05, min(4.0, z))
+        self._resize()
+
+    def _unit(self):
+        return max(2.0, self.img.width() / 450.0)
+
+    def _paint_shapes(self, p, shapes):
+        from PySide6.QtCore import QPointF, QRectF
+        from PySide6.QtGui import QColor, QFont, QPen, QPolygonF
+        import math
+        for sh in shapes:
+            col = QColor(sh["color"])
+            w = self._unit() * sh["w"]
+            k = sh["kind"]
+            if k == "marker":
+                col.setAlpha(110)
+                p.setPen(QPen(col, w * 5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.FlatCap, Qt.PenJoinStyle.RoundJoin))
+            else:
+                p.setPen(QPen(col, w, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            pts = sh["pts"]
+            if k in ("pen", "marker") and len(pts) > 1:
+                for a, b in zip(pts, pts[1:]):
+                    p.drawLine(QPointF(*a), QPointF(*b))
+            elif k == "rect" and len(pts) > 1:
+                p.drawRect(QRectF(QPointF(*pts[0]), QPointF(*pts[-1])).normalized())
+            elif k == "ellipse" and len(pts) > 1:
+                p.drawEllipse(QRectF(QPointF(*pts[0]), QPointF(*pts[-1])).normalized())
+            elif k == "arrow" and len(pts) > 1:
+                (x1, y1), (x2, y2) = pts[0], pts[-1]
+                p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+                ang = math.atan2(y2 - y1, x2 - x1)
+                hl = w * 5
+                tri = QPolygonF([QPointF(x2, y2), QPointF(x2 - hl * math.cos(ang - 0.45), y2 - hl * math.sin(ang - 0.45)),
+                                 QPointF(x2 - hl * math.cos(ang + 0.45), y2 - hl * math.sin(ang + 0.45))])
+                p.setBrush(col)
+                p.drawPolygon(tri)
+            elif k == "text" and sh.get("text"):
+                f = QFont("Arial")
+                f.setPixelSize(int(self._unit() * 7 * sh["w"] / 2 + 8))
+                f.setBold(True)
+                p.setFont(f)
+                p.setPen(col)
+                p.drawText(QPointF(*pts[0]), sh["text"])
+
+    def paintEvent(self, _e):
+        from PySide6.QtGui import QPainter, QPen, QColor
+        from PySide6.QtCore import QRectF
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.scale(self.zoom, self.zoom)
+        p.drawImage(0, 0, self.img)
+        self._paint_shapes(p, self.shapes + ([self.cur] if self.cur else []))
+        if self.crop is not None:
+            pen = QPen(QColor("#1E90FF"), self._unit() * 1.5, Qt.PenStyle.DashLine)
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRect(self.crop)
+        p.end()
+
+    def _pt(self, e):
+        pos = e.position()
+        return (pos.x() / self.zoom, pos.y() / self.zoom)
+
+    def mousePressEvent(self, e):
+        if e.button() != Qt.MouseButton.LeftButton:
+            return
+        pt = self._pt(e)
+        if self.tool == "text":
+            from PySide6.QtWidgets import QInputDialog
+            t, ok = QInputDialog.getText(self, "Write on the picture", "Text:")
+            if ok and t.strip():
+                self.shapes.append({"kind": "text", "color": self.color, "w": self.thick, "pts": [pt], "text": t.strip()})
+                self.update()
+            return
+        self.cur = {"kind": self.tool, "color": self.color, "w": self.thick, "pts": [pt, pt]}
+
+    def mouseMoveEvent(self, e):
+        if self.cur is None:
+            return
+        pt = self._pt(e)
+        if self.cur["kind"] in ("pen", "marker"):
+            self.cur["pts"].append(pt)
+        else:
+            self.cur["pts"][-1] = pt
+        self.update()
+
+    def mouseReleaseEvent(self, e):
+        if self.cur is None:
+            return
+        from PySide6.QtCore import QRectF, QPointF
+        sh, self.cur = self.cur, None
+        if sh["kind"] == "crop":
+            r = QRectF(QPointF(*sh["pts"][0]), QPointF(*sh["pts"][-1])).normalized()
+            self.crop = r if r.width() > 8 and r.height() > 8 else None
+        elif len(sh["pts"]) > 1:
+            self.shapes.append(sh)
+        self.update()
+
+    def undo(self):
+        if self.shapes:
+            self.shapes.pop()
+        elif self.crop is not None:
+            self.crop = None
+        self.update()
+
+    def clear(self):
+        self.shapes, self.crop = [], None
+        self.update()
+
+    def result(self, max_w=1800):
+        """The finished picture (everything drawn on it, cropped) as (bytes, 'png' or 'jpeg')."""
+        from PySide6.QtCore import QBuffer, QIODevice
+        from PySide6.QtGui import QImage, QPainter
+        out = QImage(self.img.size(), QImage.Format.Format_ARGB32)
+        out.fill(Qt.GlobalColor.white)
+        p = QPainter(out)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.drawImage(0, 0, self.img)
+        self._paint_shapes(p, self.shapes)
+        p.end()
+        if self.crop is not None:
+            out = out.copy(self.crop.toRect().intersected(out.rect()))
+        if out.width() > max_w:
+            out = out.scaledToWidth(max_w, Qt.TransformationMode.SmoothTransformation)
+        for fmt, q in (("PNG", -1), ("JPEG", 88)):
+            buf = QBuffer()
+            buf.open(QIODevice.OpenModeFlag.WriteOnly)
+            (out.convertToFormat(QImage.Format.Format_RGB32) if fmt == "JPEG" else out).save(buf, fmt, q)
+            data = bytes(buf.data())
+            if fmt == "JPEG" or len(data) < 1_500_000:
+                return data, fmt.lower()
+
+
+class MarkupDialog(QDialog):
+    """Draw on a picture or a PDF page before it goes into the email."""
+
+    def __init__(self, img, caption="", parent=None):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QButtonGroup, QScrollArea as _SA
+        self.setWindowTitle("Mark up the picture")
+        self.resize(1100, 780)
+        v = QVBoxLayout(self)
+        self.cv = MarkupCanvas(img)
+        bar = QHBoxLayout()
+        self.grp = QButtonGroup(self)
+        for key, lab in (("pen", "\u270e Pen"), ("marker", "Marker"), ("rect", "Box"), ("ellipse", "Circle"), ("arrow", "Arrow"), ("text", "Text"), ("crop", "Crop area")):
+            b = QPushButton(lab)
+            b.setCheckable(True)
+            b.setChecked(key == "pen")
+            b.clicked.connect(lambda _c=False, k=key: setattr(self.cv, "tool", k))
+            self.grp.addButton(b)
+            bar.addWidget(b)
+        bar.addSpacing(10)
+        for col in ("#E01E37", "#1E6FE0", "#18A058", "#F2C200", "#111111", "#FFFFFF"):
+            c = QPushButton("")
+            c.setFixedSize(26, 26)
+            c.setStyleSheet("background:%s;border:2px solid #888;border-radius:13px;" % col)
+            c.clicked.connect(lambda _c=False, k=col: setattr(self.cv, "color", k))
+            bar.addWidget(c)
+        self.tk = QComboBox()
+        for lab, w in (("Thin", 1), ("Normal", 2), ("Thick", 4), ("Extra thick", 7)):
+            self.tk.addItem(lab, w)
+        self.tk.setCurrentIndex(1)
+        self.tk.currentIndexChanged.connect(lambda *_: setattr(self.cv, "thick", self.tk.currentData()))
+        bar.addWidget(self.tk)
+        bar.addStretch(1)
+        for lab, fn in (("Undo", self.cv.undo), ("Clear", self.cv.clear), ("\u2212", lambda: self.cv.set_zoom(self.cv.zoom / 1.25)), ("+", lambda: self.cv.set_zoom(self.cv.zoom * 1.25)),
+                        ("Fit", lambda: self.cv._fit(self.sa.viewport().width() - 20))):
+            b = QPushButton(lab)
+            b.clicked.connect(fn)
+            bar.addWidget(b)
+        v.addLayout(bar)
+        self.sa = _SA()
+        self.sa.setWidget(self.cv)
+        self.sa.setStyleSheet("QScrollArea{background:#333;}")
+        v.addWidget(self.sa, 1)
+        cr = QHBoxLayout()
+        cr.addWidget(QLabel("Words under the picture in the email (optional):"))
+        self.cap = QLineEdit(caption)
+        self.cap.setPlaceholderText("for example: Ground floor plan, is the passage wide enough here?")
+        cr.addWidget(self.cap, 1)
+        v.addLayout(cr)
+        bb = QHBoxLayout()
+        bb.addStretch(1)
+        c = QPushButton("Cancel")
+        c.clicked.connect(self.reject)
+        ok = QPushButton("Put it in the email")
+        ok.setStyleSheet("font-weight:700;")
+        ok.clicked.connect(self.accept)
+        bb.addWidget(c)
+        bb.addWidget(ok)
+        v.addLayout(bb)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self.cv._fit(self.sa.viewport().width() - 20)
+
+    def result(self):
+        data, ext = self.cv.result()
+        return {"bytes": data, "ext": ext, "caption": self.cap.text().strip()}
+
+
+class PdfPageDialog(QDialog):
+    """Choose a PDF (one of the drawings going with the email, or any PDF) and the page to mark up."""
+
+    def __init__(self, files, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Choose the PDF page")
+        self.resize(560, 520)
+        v = QVBoxLayout(self)
+        self.pdf = QComboBox()
+        for pth in files:
+            if pth.lower().endswith(".pdf") and os.path.exists(pth):
+                self.pdf.addItem(re.sub(r"^\d+_\d+_", "", os.path.basename(pth)), pth)
+        row = QHBoxLayout()
+        row.addWidget(self.pdf, 1)
+        br = QPushButton("Another PDF...")
+        br.clicked.connect(self._browse)
+        row.addWidget(br)
+        v.addLayout(row)
+        pr = QHBoxLayout()
+        pr.addWidget(QLabel("Page"))
+        self.pg = QSpinBox()
+        self.pg.setMinimum(1)
+        pr.addWidget(self.pg)
+        self.of = QLabel("")
+        pr.addWidget(self.of)
+        pr.addStretch(1)
+        v.addLayout(pr)
+        self.th = QLabel("")
+        self.th.setMinimumHeight(340)
+        self.th.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        v.addWidget(self.th, 1)
+        bb = QHBoxLayout()
+        bb.addStretch(1)
+        c = QPushButton("Cancel")
+        c.clicked.connect(self.reject)
+        ok = QPushButton("Open to mark up")
+        ok.setStyleSheet("font-weight:700;")
+        ok.clicked.connect(self.accept)
+        bb.addWidget(c)
+        bb.addWidget(ok)
+        v.addLayout(bb)
+        self.pdf.currentIndexChanged.connect(self._load)
+        self.pg.valueChanged.connect(self._thumb)
+        self._doc = None
+        self._load()
+
+    def _browse(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Choose a PDF", "", "PDF (*.pdf)")
+        if f:
+            self.pdf.addItem(os.path.basename(f), f)
+            self.pdf.setCurrentIndex(self.pdf.count() - 1)
+
+    def _load(self, *_a):
+        self._doc = None
+        pth = self.pdf.currentData()
+        if pth:
+            try:
+                import fitz
+                self._doc = fitz.open(pth)
+            except Exception:
+                self._doc = None
+        n = len(self._doc) if self._doc is not None else 0
+        self.pg.setMaximum(max(1, n))
+        self.pg.setValue(1)
+        self.of.setText("of %d" % n if n else "(no PDF chosen)")
+        self._thumb()
+
+    @staticmethod
+    def render(doc, page, long_side):
+        import fitz
+        from PySide6.QtGui import QImage
+        pg = doc[page - 1]
+        r = pg.rect
+        z = max(0.2, min(4.0, long_side / max(r.width, r.height)))
+        pm = pg.get_pixmap(matrix=fitz.Matrix(z, z), alpha=False)
+        img = QImage(pm.samples, pm.width, pm.height, pm.stride, QImage.Format.Format_RGB888)
+        return img.copy()
+
+    def _thumb(self, *_a):
+        if self._doc is None:
+            self.th.setText("")
+            return
+        try:
+            from PySide6.QtGui import QPixmap
+            self.th.setPixmap(QPixmap.fromImage(self.render(self._doc, self.pg.value(), 520)))
+        except Exception:
+            self.th.setText("Cannot show this page")
+
+    def image(self):
+        return self.render(self._doc, self.pg.value(), 2600) if self._doc is not None else None
+
+
 class OrderReplyDialog(QDialog):
     """Reply to the client about one or more houses: the text is filled in, the revised drawings are ticked, your signature goes at the bottom."""
 
@@ -913,6 +1227,24 @@ class OrderReplyDialog(QDialog):
         v.addWidget(self.att, 2)
         for lab, pth, on in files:
             self._add(lab, pth, on)
+        v.addWidget(QLabel("Pictures in the email (shown inside the email, not as attachments):"))
+        self.pics = []
+        self.pl = QListWidget()
+        self.pl.setViewMode(QListWidget.ViewMode.IconMode)
+        self.pl.setIconSize(QSize(150, 100))
+        self.pl.setFixedHeight(128)
+        self.pl.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self.pl.setMovement(QListWidget.Movement.Static)
+        self.pl.itemDoubleClicked.connect(lambda *_: self._pic_edit())
+        v.addWidget(self.pl)
+        pr = QHBoxLayout()
+        for text, fn in (("Paste a picture", self._pic_paste), ("Mark up a PDF page...", self._pic_pdf), ("Add a picture file...", self._pic_file),
+                         ("Edit the selected", self._pic_edit), ("Remove the selected", self._pic_remove)):
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            pr.addWidget(b)
+        pr.addStretch(1)
+        v.addLayout(pr)
         mr = QHBoxLayout()
         self.man_chk = QCheckBox("Use my own sheet index")
         self.man_chk.setToolTip("For a project that has no sheet index in the register: type the drawings yourself and the email and the PDF are made from your list.")
@@ -952,6 +1284,71 @@ class OrderReplyDialog(QDialog):
         self.idx_btn.toggled.connect(lambda *_: (self._style_idx(), self._rebuild()))
         self._size()
 
+    # ----- pictures inside the email -----
+    def _pic_add(self, img, caption=""):
+        d = MarkupDialog(img, caption, self)
+        if d.exec():
+            self.pics.append(d.result())
+            self._pic_list()
+
+    def _pic_list(self):
+        from PySide6.QtGui import QIcon, QPixmap
+        self.pl.clear()
+        for i, pc in enumerate(self.pics):
+            pm = QPixmap()
+            pm.loadFromData(pc["bytes"])
+            it = QListWidgetItem(QIcon(pm), (pc.get("caption") or "Picture %d" % (i + 1))[:28])
+            self.pl.addItem(it)
+        if self.pics and not self.design_chk.isChecked():
+            self.design_chk.setChecked(True)                 # pictures sit inside the designed email
+        self.design_chk.setEnabled(not self.pics)
+        self._look(self.tabs.currentIndex())
+
+    def _pic_paste(self):
+        img = QApplication.clipboard().image()
+        if img.isNull():
+            QMessageBox.information(self, "Picture", "There is no picture on the clipboard. Copy or screenshot one first (for example Win + Shift + S), then click Paste a picture.")
+            return
+        self._pic_add(img)
+
+    def _pic_pdf(self):
+        pd = PdfPageDialog(self.files() + [x for x in self._page_pdfs()], self)
+        if pd.exec():
+            img = pd.image()
+            if img is not None:
+                self._pic_add(img, "")
+
+    def _page_pdfs(self):
+        return [p for g in getattr(self._page, "groups", []) for r in g.get("rows", []) for p in [r.get("path")] if p and p not in self.files()]
+
+    def _pic_file(self):
+        from PySide6.QtGui import QImage
+        f, _ = QFileDialog.getOpenFileName(self, "Add a picture", "", "Pictures (*.png *.jpg *.jpeg *.bmp *.gif *.webp)")
+        if f:
+            img = QImage(f)
+            if not img.isNull():
+                self._pic_add(img)
+
+    def _pic_edit(self):
+        from PySide6.QtGui import QImage
+        i = self.pl.currentRow()
+        if not (0 <= i < len(self.pics)):
+            return
+        img = QImage.fromData(self.pics[i]["bytes"])
+        d = MarkupDialog(img, self.pics[i].get("caption", ""), self)
+        if d.exec():
+            self.pics[i] = d.result()
+            self._pic_list()
+
+    def _pic_remove(self):
+        i = self.pl.currentRow()
+        if 0 <= i < len(self.pics):
+            self.pics.pop(i)
+            self._pic_list()
+
+    def pic_srcs(self, preview=False):
+        return [("cid:mcppic%d" % i, pc.get("caption", "")) for i, pc in enumerate(self.pics)]
+
     def _edit_manual(self):
         d = ManualIndexDialog(self._page, self.manual, self.files(), self)
         if d.exec():
@@ -986,7 +1383,11 @@ class OrderReplyDialog(QDialog):
         sub, body = self.sub.text(), self.body.toPlainText()
         if self.design_chk.isChecked():
             try:
-                self._page.show_corners(self.view, self._page.design_html(sub, body, preview=True))
+                from PySide6.QtCore import QUrl
+                from PySide6.QtGui import QImage, QTextDocument
+                for i, pc in enumerate(self.pics):
+                    self.view.document().addResource(QTextDocument.ResourceType.ImageResource, QUrl("cid:mcppic%d" % i), QImage.fromData(pc["bytes"]))
+                self._page.show_corners(self.view, self._page.design_html(sub, body, preview=True, pics=self.pic_srcs()))
                 return
             except Exception:
                 pass
@@ -4230,10 +4631,12 @@ class LogMixin:
                     pass
         text = dlg.body.toPlainText()
         sig = signature_text(S)
-        m.set_content(text + (("\n\n" + sig) if sig and not dlg.design_chk.isChecked() else ""))
-        if dlg.design_chk.isChecked():
+        m.set_content(text + (("\n\n" + sig) if sig and not (dlg.design_chk.isChecked() or dlg.pics) else ""))
+        if dlg.design_chk.isChecked() or dlg.pics:
             try:
-                m.add_alternative(self.design_html(dlg.sub.text().strip(), text, both=True), subtype="html")
+                m.add_alternative(self.design_html(dlg.sub.text().strip(), text, both=True, pics=dlg.pic_srcs()), subtype="html")
+                for _i, _pc in enumerate(dlg.pics):
+                    m.get_payload()[1].add_related(_pc["bytes"], maintype="image", subtype=_pc["ext"], cid="<mcppic%d>" % _i, filename="picture%d.%s" % (_i + 1, "jpg" if _pc["ext"] == "jpeg" else "png"), disposition="inline")
                 m.get_payload()[1].add_related(self.design_png(), maintype="image", subtype="png", cid="<mcplogo>", filename="mcp-logo.png", disposition="inline")
                 m.get_payload()[1].add_related(self.design_png(True), maintype="image", subtype="png", cid="<mcplogod>", filename="mcp-logo-dark.png", disposition="inline")
                 if self.sig_picture_on():
@@ -5549,9 +5952,9 @@ class MailMixin:
         import sig_banner
         return sig_banner.jpeg_bytes(self._M().SETTINGS)
 
-    def design_html(self, subject, body, src="cid:mcplogo", attached="", both=False, preview=False):
+    def design_html(self, subject, body, src="cid:mcplogo", attached="", both=False, preview=False, pics=None):
         import mail_design
-        return mail_design.build(subject, body, logo_src=src, logo_dark_src=("cid:mcplogod" if both else ""), preview=preview, attached=attached,
+        return mail_design.build(subject, body, pics=pics, logo_src=src, logo_dark_src=("cid:mcplogod" if both else ""), preview=preview, attached=attached,
                                  company=self._M().SETTINGS.get("sig_company") or "MCP Architecture & Interiors", sig_src=("cid:mcpsig" if self.sig_picture_on() else ""),
                                  sig_parts=(self.sig_parts() if (both and self.sig_picture_on()) else None))
 
