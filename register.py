@@ -577,6 +577,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         self.history = []    # issues already sent: {issue, date, rows:{key: {rev, rdate, title, comment}}}
         self.info = {"project": "", "client": "", "issued_by": "", "to": "", "email": "", "note": "", "issue_no": "0", "date": "", "cc": "", "client_logo": "", "sheet_index": "1", "show_index": "1", "issue_kind": "", "show_orders": "0", "show_changes": "0"}
         self.log = []        # orders and revisions, see register_ext
+        self.companies = []  # the companies (Cosmo, Central...) the areas belong to: {name, emails, keys, photo}
         self.areas = []      # the areas (developments) the orders are sorted into: {name, keys}
         self.cur = 0
         self._busy = False
@@ -1074,7 +1075,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             self.link_bar.refresh()
 
     def _state(self):
-        return {"groups": self.groups, "info": self.info, "cur": self.cur, "mail": self.mail.toPlainText(), "mail_manual": bool(self._mail_manual), "history": self.history, "log": self.log, "areas": self.areas,
+        return {"groups": self.groups, "info": self.info, "cur": self.cur, "mail": self.mail.toPlainText(), "mail_manual": bool(self._mail_manual), "history": self.history, "log": self.log, "areas": self.areas, "companies": self.companies,
                 "reports": [k for k, c in getattr(self, "rep_chk", {}).items() if c.isChecked()]}
 
     def set_state(self, d):
@@ -1224,6 +1225,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             c.setChecked(k in (d.get("reports") or []))
             c.blockSignals(False)
         self.log = [dict(x) for x in d.get("log", []) if isinstance(x, dict)]
+        self.companies = [dict(x) for x in d.get("companies", []) if isinstance(x, dict) and x.get("name")]
         self.areas = [dict(x) for x in d.get("areas", []) if isinstance(x, dict) and x.get("name")]
         self.history = [dict(h) for h in d.get("history", []) if isinstance(h, dict)]
         self.cur = min(int(d.get("cur", 0) or 0), len(self.groups) - 1)
