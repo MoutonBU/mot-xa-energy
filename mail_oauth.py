@@ -67,7 +67,7 @@ def signed_in(S, provider):
     return bool(S.get(PROVIDERS[provider]["refresh"]))
 
 
-def sign_in(S, provider, hint="", timeout=240, opener=webbrowser.open):
+def sign_in(S, provider, hint="", timeout=240, opener=webbrowser.open, extra_scope=""):
     """Opens the browser, waits for the redirect on a local port, swaps the code for a refresh token. Returns the account's email."""
     P = PROVIDERS[provider]
     cid = _g(S, P["id"])
@@ -95,7 +95,7 @@ def sign_in(S, provider, hint="", timeout=240, opener=webbrowser.open):
     srv = HTTPServer(("127.0.0.1", 0), H)
     srv.timeout = 1
     redirect = "http://%s:%d" % (P["host"], srv.server_address[1])
-    params = {"client_id": cid, "redirect_uri": redirect, "response_type": "code", "scope": P["scope"], "state": state,
+    params = {"client_id": cid, "redirect_uri": redirect, "response_type": "code", "scope": (P["scope"] + " " + extra_scope).strip(), "state": state,
               "code_challenge": _b64u(hashlib.sha256(verifier.encode()).digest()), "code_challenge_method": "S256"}
     if provider == "gmail":
         params.update({"access_type": "offline", "prompt": "consent"})
@@ -124,6 +124,8 @@ def sign_in(S, provider, hint="", timeout=240, opener=webbrowser.open):
     if st != 200 or "refresh_token" not in tok:
         raise RuntimeError(tok.get("error_description") or tok.get("error") or "no sign-in token came back (%s)" % st)
     S[P["refresh"]] = tok["refresh_token"]
+    if provider == "gmail":
+        S["gmail_read"] = "gmail.readonly" in str(tok.get("scope", "")) or "gmail.readonly" in extra_scope
     c = _claims(tok.get("id_token", ""))
     return c.get("email") or c.get("preferred_username") or hint
 
@@ -167,10 +169,27 @@ def send(S, provider, msg):
         raise RuntimeError("%s (%s)" % (err or "the mail service refused it", st))
 
 
-def sign_in_thread(S, provider, hint, done):
+def sign_in_thread(S, provider, hint, done, extra_scope=""):
     def work():
         try:
-            done(True, sign_in(S, provider, hint) or hint)
+            done(True, sign_in(S, provider, hint, extra_scope=extra_scope) or hint)
         except Exception as e:
             done(False, str(e))
     threading.Thread(target=work, daemon=True).start()
+
+
+GMAIL_READ = "https://www.googleapis.com/auth/gmail.readonly"
+
+
+def gmail_get(S, path, params=None, timeout=60):
+    """GET https://gmail.googleapis.com/gmail/v1/users/me/<path>; returns the decoded JSON."""
+    tok = access_token(S, "gmail")
+    url = "https://gmail.googleapis.com/gmail/v1/users/me/" + path + (("?" + urllib.parse.urlencode(params, doseq=True)) if params else "")
+    req = urllib.request.Request(url, headers={"Authorization": "Bearer " + tok})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            raise RuntimeError("Google did not allow reading the mailbox: press Allow Gmail reading again (%s)" % e.code)
+        raise RuntimeError("Gmail answered %s" % e.code)

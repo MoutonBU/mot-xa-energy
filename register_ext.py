@@ -17,14 +17,14 @@ from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (QWidget, QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QTableWidget,
-                               QTableWidgetItem, QVBoxLayout)
+                               QTableWidgetItem, QVBoxLayout, QStackedWidget, QScrollArea, QFrame)
 
 LOGK = ("group", "type", "rev", "date", "order", "text", "kinds", "by", "req_subject", "req_date", "req_from", "sent_date", "sent_to", "status", "by_name", "by_email", "sent_subject")
 LOGC = ["House or block", "Type", "Rev", "Date", "Order number", "What was ordered or changed", "Kind of change", "Asked by", "The client's email", "Received",
         "From", "Sent to the client on", "Sent to", "Status", "Client name", "Client email", "Email that was sent"]
 TYPES = ["Order", "Change", "Issue"]
 KINDS = ["Minor changes", "Major changes", "Masters", "Final plans", "SDP"]
-LSTAT = ["Draft", "Final", "Issued", "Superseded"]
+LSTAT = ["New", "Draft", "Final", "Issued", "Superseded"]
 PRESETS = {"Gmail": ("smtp.gmail.com", 465, "SSL"), "Outlook / Office 365": ("smtp.office365.com", 587, "STARTTLS"), "Other": ("", 587, "STARTTLS")}
 
 
@@ -947,6 +947,104 @@ class SendDialog(QDialog):
         self.accept()
 
 
+class InboxDialog(QDialog):
+    """Watch the Gmail inbox: new emails whose subject has your words become order lines, one per house, flagged New."""
+    signed = Signal(bool, str)
+
+    def __init__(self, host, parent=None):
+        super().__init__(parent)
+        self.host = host
+        self.M = host._M()
+        self.S = self.M.SETTINGS
+        import mail_oauth
+        self.mo = mail_oauth
+        self.setWindowTitle("Watch my Gmail inbox for orders")
+        self.setMinimumWidth(560)
+        v = QVBoxLayout(self)
+        t = QLabel("The program looks at your Gmail inbox every minute. An email whose subject has one of your words is saved, split into one order per house "
+                   "(a line that names a stand, erf, house, unit, plot or block starts a new order), and added to the Orders squares marked <b>New</b>. "
+                   "The program only reads; it never deletes or changes your mail.")
+        t.setWordWrap(True)
+        v.addWidget(t)
+        self.status = QLabel("")
+        self.status.setWordWrap(True)
+        v.addWidget(self.status)
+        self.allow = QPushButton("Allow Gmail reading (opens Google)")
+        self.allow.setStyleSheet("font-weight:700;")
+        self.allow.clicked.connect(self._allow)
+        v.addWidget(self.allow)
+        f = QFormLayout()
+        self.words = QLineEdit(self.S.get("inbox_words", "order"))
+        self.words.setPlaceholderText("order, new order, bestelling")
+        f.addRow("Subject words (any of them)", self.words)
+        self.secs = QSpinBox()
+        self.secs.setRange(30, 600)
+        self.secs.setSuffix(" seconds")
+        self.secs.setValue(int(self.S.get("inbox_secs", 60)))
+        f.addRow("Look every", self.secs)
+        v.addLayout(f)
+        self.on = QCheckBox("Watch my inbox while the program is open")
+        self.on.setChecked(bool(self.S.get("inbox_on")))
+        v.addWidget(self.on)
+        self.old = QCheckBox("Also bring in the matching emails of the last 14 days (otherwise only emails that arrive from now on)")
+        self.old.setChecked(False)
+        v.addWidget(self.old)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        now = QPushButton("Save and check now")
+        now.setStyleSheet("font-weight:700;")
+        now.clicked.connect(self._save)
+        cl = QPushButton("Close")
+        cl.clicked.connect(self.reject)
+        row.addWidget(now)
+        row.addWidget(cl)
+        v.addLayout(row)
+        self.signed.connect(self._signed)
+        self._refresh()
+
+    def _refresh(self):
+        mo, S = self.mo, self.S
+        if not mo.configured(S, "gmail"):
+            self.status.setText("Gmail sign-in is not set up in this program yet (Email account > Gmail).")
+            self.allow.setEnabled(False)
+        elif mo.signed_in(S, "gmail") and S.get("gmail_read"):
+            self.status.setText("Gmail reading is allowed for %s." % (S.get("mail_address", "") or "your account"))
+            self.allow.setText("Allow Gmail reading again")
+        else:
+            self.status.setText("Press the button, sign in with Google and press Allow. Google will say the program is not verified: press Advanced, then continue.")
+
+    def _allow(self):
+        self.allow.setEnabled(False)
+        self.status.setText("Waiting for Google in your browser...")
+        self.mo.sign_in_thread(self.S, "gmail", self.S.get("mail_address", ""), lambda ok, m: self.signed.emit(ok, m), extra_scope=self.mo.GMAIL_READ)
+
+    def _signed(self, ok, msg):
+        self.allow.setEnabled(True)
+        if ok:
+            if msg and not self.S.get("mail_address"):
+                self.S["mail_address"] = msg
+            self.M.save_settings()
+        else:
+            self.status.setText("Not allowed: %s" % msg)
+            return
+        self._refresh()
+
+    def _save(self):
+        S = self.S
+        if self.on.isChecked() and not (self.mo.signed_in(S, "gmail") and S.get("gmail_read")):
+            QMessageBox.information(self, "Gmail inbox", "Press Allow Gmail reading first.")
+            return
+        if self.on.isChecked() and not S.get("inbox_on") and not self.old.isChecked():
+            S["inbox_baseline"] = True            # the first look only notes what is already there
+        S["inbox_words"], S["inbox_secs"], S["inbox_on"] = self.words.text().strip() or "order", self.secs.value(), self.on.isChecked()
+        if self.old.isChecked():
+            S["inbox_seen"] = []
+            S.pop("inbox_baseline", None)
+        self.M.save_settings()
+        self.host._inbox_apply(now=True)
+        self.accept()
+
+
 class LogMixin:
     """The orders-and-revisions log."""
 
@@ -960,6 +1058,19 @@ class LogMixin:
         v.setContentsMargins(0, 6, 0, 0)
         if not hasattr(self, "ltabs"):
             self.ltabs, self.lpages, self.lall = {}, {}, {}
+            self._lgroup, self._ltiles, self._ltitle, self._lstack = {}, {}, {}, {}
+        self._lgroup[kind] = None
+        back = QHBoxLayout()
+        bb = QPushButton("\u2039  All houses and blocks")
+        bb.setStyleSheet("font-weight:700;")
+        bb.clicked.connect(lambda _c=False, k=kind: self._close_group(k))
+        ttl = QLabel("")
+        ttl.setStyleSheet("font-size:16px;font-weight:700;")
+        back.addWidget(bb)
+        back.addWidget(ttl)
+        back.addStretch(1)
+        v.addLayout(back)
+        self._ltitle[kind] = ttl
         if kind == "Order":
             note = "The orders the client placed, house by house. Add the line, attach the client's email as proof, and when you send the drawings the rest is filled in for you."
             btns = (("+ New order", lambda: self.add_log("Order"), True), ("Attach the client's email...", self.attach_ref, False), ("Open the client's email", self.open_ref, False),
@@ -995,11 +1106,221 @@ class LogMixin:
         chk = QCheckBox("Show all details (rev, dates, who asked, sent to, status)")
         chk.toggled.connect(self._log_columns)
         v.addWidget(chk)
-        self.ltabs[kind], self.lpages[kind], self.lall[kind] = t, w, chk
+        self.ltabs[kind], self.lall[kind] = t, chk
         self._lrows = getattr(self, "_lrows", {})
         self._lrows[kind] = []
         self._log_columns()
-        return w
+        stack = QStackedWidget()
+        stack.addWidget(self._tile_page(kind))
+        stack.addWidget(w)
+        self.lpages[kind], self._lstack[kind] = stack, stack
+        return stack
+
+    # ----- watching the Gmail inbox for orders -----
+    def _inbox_setup(self):
+        self._inbox_busy = False
+        self._inbox_timer = QTimer(self)
+        self._inbox_timer.timeout.connect(self.inbox_check)
+        self.inbox_done.connect(self._inbox_result)
+        QTimer.singleShot(4000, self._inbox_apply)
+
+    def inbox_dialog(self):
+        InboxDialog(self, self).exec()
+
+    def _inbox_apply(self, now=False):
+        S = self._M().SETTINGS
+        self._inbox_timer.stop()
+        if S.get("inbox_on"):
+            self._inbox_timer.start(max(30, int(S.get("inbox_secs", 60))) * 1000)
+            if now or True:
+                self.inbox_check()
+        self._inbox_label()
+
+    def _inbox_label(self, extra=""):
+        S = self._M().SETTINGS
+        txt = ("Watching Gmail (every %d s)" % int(S.get("inbox_secs", 60))) if S.get("inbox_on") else "Not watching Gmail"
+        self.inbox_lbl.setText(txt + (" - " + extra if extra else ""))
+
+    def inbox_check(self):
+        M = self._M()
+        S = M.SETTINGS
+        try:
+            import mail_oauth as mo
+            ok = S.get("inbox_on") and mo.signed_in(S, "gmail") and S.get("gmail_read")
+        except Exception:
+            ok = False
+        if not ok or self._inbox_busy:
+            return
+        self._inbox_busy = True
+        words, seen, folder = S.get("inbox_words", "order"), set(S.get("inbox_seen", [])), os.path.join(M._user_data_dir(), "inbox")
+
+        def work():
+            try:
+                import mail_inbox
+                self.inbox_done.emit(mail_inbox.fetch_new(S, words, seen, folder), "")
+            except Exception as ex:
+                self.inbox_done.emit([], str(ex))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _inbox_result(self, items, err):
+        self._inbox_busy = False
+        M = self._M()
+        S = M.SETTINGS
+        now = datetime.datetime.now().strftime("%H:%M")
+        if err:
+            self._inbox_label("could not check at %s: %s" % (now, err))
+            return
+        import mail_inbox
+        from email.utils import parseaddr
+        base = S.pop("inbox_baseline", False)
+        seen = list(S.get("inbox_seen", []))
+        houses = [g["name"] for g in self.groups]
+        made = 0
+        for it in reversed(items):
+            seen.append(it["id"])
+            if base:
+                continue
+            nm, addr = parseaddr(it["from"])
+            try:
+                rd = short_date(parsedate_to_datetime(it["date"]).date().isoformat())
+            except Exception:
+                rd = it["date"][:16]
+            for o in mail_inbox.parse_orders(it["subject"], it["body"], houses):
+                e = {k: "" for k in LOGK}
+                e.update({"group": o["group"] or "Not sure which house", "type": "Order", "date": datetime.date.today().isoformat(), "order": o["order"], "text": o["text"],
+                          "status": "New", "req_subject": it["subject"], "req_date": rd, "req_from": it["from"], "req_path": it["path"], "sent_path": "", "drawings": "",
+                          "by_name": nm, "by_email": addr})
+                self.log.append(e)
+                made += 1
+        S["inbox_seen"] = seen[-500:]
+        M.save_settings()
+        if made:
+            self.refresh_log()
+            try:
+                from PySide6.QtWidgets import QApplication
+                QApplication.alert(self.window(), 0)
+            except Exception:
+                pass
+        self._inbox_label("checked %s%s" % (now, (", %d new order%s from %d email%s" % (made, "" if made == 1 else "s", len(items), "" if len(items) == 1 else "s")) if made else ""))
+
+    # ----- the house and block squares -----
+    TILE_QSS = ("QPushButton{text-align:left;padding:10px 12px;border-radius:10px;border:1px solid palette(mid);background:palette(base);}"
+                "QPushButton:hover{border-color:#d8132b;}")
+
+    def _tile_page(self, kind):
+        from flow_layout import FlowLayout
+        pg = QWidget()
+        v = QVBoxLayout(pg)
+        v.setContentsMargins(0, 6, 0, 0)
+        n = QLabel("Click a house or block to open its orders." if kind == "Order" else "Click a house or block to open the changes the client asked for. Add a change inside it, or let the program make them from the revision rows of the drawings.")
+        n.setWordWrap(True)
+        v.addWidget(n)
+        bar = QHBoxLayout()
+        if kind == "Order":
+            b = QPushButton("Watch my Gmail inbox for orders...")
+            b.setStyleSheet("font-weight:700;")
+            b.clicked.connect(self.inbox_dialog)
+            self.inbox_btn = b
+            bar.addWidget(b)
+            self.inbox_lbl = QLabel("")
+            bar.addWidget(self.inbox_lbl)
+            self._inbox_setup()
+        else:
+            b = QPushButton("Get changes from the drawings")
+            b.setStyleSheet("font-weight:700;")
+            b.clicked.connect(self.changes_from_drawings)
+            bar.addWidget(b)
+        bar.addStretch(1)
+        v.addLayout(bar)
+        sc = QScrollArea()
+        sc.setWidgetResizable(True)
+        sc.setFrameShape(QFrame.Shape.NoFrame)
+        sc.setStyleSheet("QScrollArea{background:transparent;} QScrollArea > QWidget > QWidget{background:transparent;}")
+        host = QWidget()
+        from PySide6.QtWidgets import QGridLayout
+        gl = QGridLayout(host)
+        gl.setContentsMargins(2, 4, 2, 4)
+        gl.setSpacing(12)
+        gl.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        sc.setWidget(host)
+        v.addWidget(sc, 1)
+        self._ltiles[kind] = (host, gl, sc, [])
+        sc.viewport().installEventFilter(self._tile_filter(kind))
+        return pg
+
+    def _tile_filter(self, kind):
+        from PySide6.QtCore import QObject, QEvent
+
+        class F(QObject):
+            def eventFilter(_s, obj, ev):
+                if ev.type() == QEvent.Type.Resize:
+                    QTimer.singleShot(0, lambda: self._reflow(kind))
+                return False
+        f = F(self)
+        self._tile_filters = getattr(self, "_tile_filters", []) + [f]
+        return f
+
+    def _reflow(self, kind):
+        host, gl, sc, tiles = self._ltiles[kind]
+        cols = max(1, (sc.viewport().width() - 4) // 232)
+        for i, b in enumerate(tiles):
+            gl.addWidget(b, i // cols, i % cols)
+
+    def _tile_names(self, kind):
+        names = [g["name"] for g in self.groups]
+        for e in self.log:
+            g = e.get("group", "")
+            if g and g not in names and self.log_kind(e) == kind:
+                names.append(g)
+        return names
+
+    def _rebuild_tiles(self, kind):
+        host, gl, sc, tiles = self._ltiles[kind]
+        for b in tiles:
+            gl.removeWidget(b)
+            b.setParent(None)
+            b.deleteLater()
+        tiles.clear()
+        lt = self._M().light()
+        txt = "#1c1f23" if lt else "#eceef0"
+        qss = ("QPushButton{border-radius:10px;border:1px solid %s;background:%s;}QPushButton:hover{border-color:#d8132b;}"
+               % (("#c3c9d0", "#ffffff") if lt else ("#3a3f46", "#1f2125")))
+        for name in self._tile_names(kind):
+            ents = [e for e in self.log if e.get("group") == name and self.log_kind(e) == kind]
+            new = sum(1 for e in ents if e.get("status") == "New")
+            open_ = sum(1 for e in ents if not e.get("sent_date"))
+            last = max([str(e.get("date", "")) for e in ents] or [""])
+            lines = ["<b style='font-size:14px'>%s</b>" % name.replace("<", "&lt;"),
+                     ("%d %s" % (len(ents), ("order" if kind == "Order" else "change") + ("" if len(ents) == 1 else "s"))) if ents else "nothing yet"]
+            if new:
+                lines.append("<b style='color:#d8132b'>%d new</b>" % new)
+            elif open_:
+                lines.append("%d not sent yet" % open_)
+            elif last:
+                lines.append("last: %s" % last)
+            btn = QPushButton()
+            btn.setFixedSize(220, 100)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setStyleSheet(qss + ("QPushButton{border:2px solid #d8132b;}" if new else ""))
+            lab = QLabel("<br>".join(lines), btn)
+            lab.setStyleSheet("background:transparent;border:none;color:%s;" % txt)
+            lab.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            lab.setGeometry(12, 8, 196, 84)
+            lab.setWordWrap(True)
+            btn.clicked.connect(lambda _c=False, k=kind, n_=name: self._open_group(k, n_))
+            tiles.append(btn)
+        self._reflow(kind)
+
+    def _open_group(self, kind, name):
+        self._lgroup[kind] = name
+        self._ltitle[kind].setText(name)
+        self.refresh_log()
+        self._lstack[kind].setCurrentIndex(1)
+
+    def _close_group(self, kind):
+        self._lgroup[kind] = None
+        self._lstack[kind].setCurrentIndex(0)
+        self.refresh_log()
 
     @staticmethod
     def log_kind(e):
@@ -1382,7 +1703,7 @@ class LogMixin:
 
     def add_log(self, typ):
         e = {k: "" for k in LOGK}
-        e.update({"group": self.groups[self.cur]["name"], "type": typ, "date": datetime.date.today().isoformat(), "status": "Draft",
+        e.update({"group": (getattr(self, "_lgroup", {}).get(self.log_kind({"type": typ})) or self.groups[self.cur]["name"]), "type": typ, "date": datetime.date.today().isoformat(), "status": "Draft",
                   "text": "New order" if typ == "Order" else "", "req_path": "", "sent_path": "", "drawings": "",
                   "by_name": self.info.get("to", ""), "by_email": self.info.get("email", "")})
         self.log.append(e)
@@ -1448,7 +1769,8 @@ class LogMixin:
         try:
             for kind, t in getattr(self, "ltabs", {}).items():
                 keep_row = t.currentRow()
-                ents = [e for e in self.log if self.log_kind(e) == kind]
+                gsel = self._lgroup.get(kind)
+                ents = [e for e in self.log if self.log_kind(e) == kind and (gsel is None or e.get("group") == gsel)]
                 self._lrows[kind] = ents
                 t.setRowCount(0)
                 t.setRowCount(len(ents))
@@ -1474,6 +1796,7 @@ class LogMixin:
                 t.resizeRowsToContents()
                 if 0 <= keep_row < len(ents):
                     t.selectRow(keep_row)
+                self._rebuild_tiles(kind)
         finally:
             self._busy = False
         self.update_mail()
