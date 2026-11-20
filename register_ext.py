@@ -2725,24 +2725,22 @@ class LogMixin:
         except Exception:
             rd = {"company": "MCP Architecture & Interiors", "project": "", "owner": "", "architect": "", "prepared_by": "", "reg_no": "", "contact": ""}
         title = "ORDER PROGRESS" if not only_done else "COMPLETED ORDERS"
-        sub = "Scope of work" + ((" received " + self._day_label(day)) if day else "")
+        sub = "Scope of work" + ((" for orders received " + self._day_label(day).replace("Today - ", "")) if day else "")
         h = ['<p style="font-size:40pt;">&nbsp;</p><p align="center"><img src="logo" height="90"></p>',
              '<p align="center" style="font-size:11pt; color:#444444;">%s</p><p style="font-size:30pt;">&nbsp;</p>' % e_(rd.get("company")),
              '<table width="100%%" cellspacing="0" cellpadding="14" border="0"><tr><td bgcolor="%s" style="color:#222222;"><span style="font-size:24pt; font-weight:bold;">%s</span><br>'
              '<span style="font-size:9pt; color:#555555;">%s &nbsp;|&nbsp; %s</span></td></tr></table>'
              '<table width="100%%" cellspacing="0" cellpadding="0" border="0"><tr><td bgcolor="%s" height="4"></td></tr></table>' % (DARK, title, e_(sub), datetime.date.today().strftime("%d %B %Y"), RED),
-             '<p style="font-size:12pt;">&nbsp;</p><p style="font-size:9pt; color:#666666;">AREA / DEVELOPMENT</p>'
+             '<p style="font-size:12pt;">&nbsp;</p><p style="font-size:9pt; color:#666666;">PROJECT</p>'
              '<p style="font-size:16pt; font-weight:bold; color:#222222; margin-top:0px;">%s</p>' % e_(name)]
-        if comp:
-            h.append('<p style="font-size:9pt; color:#666666;">PREPARED FOR</p><p style="font-size:13pt; font-weight:bold; color:#222222; margin-top:0px;">%s</p>' % e_(comp))
         if day:
-            h.append('<p style="font-size:9pt; color:#666666;">ORDERS RECEIVED</p><p style="font-size:13pt; font-weight:bold; color:#222222; margin-top:0px;">%s</p>' % e_(self._day_label(day)))
+            h.append('<p style="font-size:9pt; color:#666666;">ORDERS RECEIVED</p><p style="font-size:13pt; font-weight:bold; color:#222222; margin-top:0px;">%s</p>' % e_(self._day_label(day).replace("Today - ", "")))
         h.append('<p style="font-size:9pt; color:#666666;">HOUSES</p><p style="font-size:13pt; font-weight:bold; color:#222222; margin-top:0px;">%d in total: <span style="color:#1B7F3B;">%d completed</span>, %d still to be done</p>'
                  % (len(houses), len(done), len(todo)))
         h.append('<p style="font-size:12pt;">&nbsp;</p><table width="100%%" cellspacing="0" cellpadding="3" border="0"><tr>'
-                 '<td width="50%%" style="font-size:8.5pt; color:#666666;">PROJECT<br><span style="font-size:12pt; font-weight:bold; color:#222222;">%s</span></td>'
+                 '<td width="50%%" style="font-size:8.5pt; color:#666666;">PREPARED FOR<br><span style="font-size:12pt; font-weight:bold; color:#222222;">%s</span></td>'
                  '<td width="50%%" style="font-size:8.5pt; color:#666666;">ARCHITECTURE FIRM<br><span style="font-size:12pt; font-weight:bold; color:#222222;">%s</span></td></tr></table>'
-                 % (e_(rd.get("project") or "-"), e_(rd.get("architect") or rd.get("company") or "-")))
+                 % (e_(comp or rd.get("owner") or "-"), e_(rd.get("architect") or rd.get("company") or "-")))
         h.append('<p style="font-size:24pt;">&nbsp;</p><p style="font-size:9pt; color:#666666;">THIS REPORT WAS COMPILED BY</p>'
                  '<p style="font-size:12pt; font-weight:bold; color:#222222; margin-top:0px;">%s</p>' % e_(rd.get("prepared_by") or rd.get("company")))
         if rd.get("contact"):

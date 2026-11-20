@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.58**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.59**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **Order progress report: the project is the area.** The cover now shows the area (for example Blue Hills Ext 120) as the PROJECT, with the company under Prepared for, and the date without the word 'Today'.
 
 - **Houses from portion codes are just the stand.** 'Urbika ARF670-PTN38' now files the house as 'PTN 38' inside the area 'Urbika Erf 670' (the ARF670 part is the area, not the house name). Houses already made as ARF670-PTN38 are renamed to PTN 38 automatically.
 
