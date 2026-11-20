@@ -243,19 +243,25 @@ def _list(items):
     for it in items:
         tags = re.findall(r"\[([^\]]+)\]", it)
         main = re.sub(r"\s*\[[^\]]+\]", "", it).strip()
+        old = "earlier" in [t.strip().lower() for t in tags]
+        new = "new" in [t.strip().lower() for t in tags]
+        tags = [t for t in tags if t.strip().lower() not in ("earlier", "new")]
+        stripe = "#9A9A9A" if old else RED
         if ": " in main and len(main.split(": ", 1)[0]) < 70:
             lead, rest = main.split(": ", 1)
-            main_html = '<b class="st" style="color:%s;">%s</b><br><span class="tx" style="color:%s;">%s</span>' % (STRONG, _e(lead), TXT, _e(rest))
+            main_html = '<b class="st" style="color:%s;">%s</b><br><span class="tx" style="color:%s;">%s</span>' % (MUTED if old else STRONG, _e(lead), MUTED if old else TXT, _e(rest))
         else:
-            main_html = '<span class="tx" style="color:%s;">%s</span>' % (TXT, _e(main))
+            main_html = '<span class="tx" style="color:%s;">%s</span>' % (MUTED if old else TXT, _e(main))
+        if old or new:
+            main_html += '<br><span style="font-size:11px;letter-spacing:2px;font-weight:700;color:%s;">%s</span>' % ("#8A8A8A" if old else RED, "EARLIER CHANGE" if old else "NEW")
         tag_html = "".join('<br><span class="mu" style="color:%s;font-size:12px;">%s</span>' % (MUTED, _e(t)) for t in tags)
         if _pv["on"]:
             out += ('<tr><td>%s</td></tr><tr><td height="6" style="font-size:1px;line-height:1px;">&nbsp;</td></tr>'
-                    % _wrap('<div style="font-family:%s;font-size:14px;line-height:21px;">%s%s</div>' % (FONT, main_html, tag_html), TAB, 8, accent=RED))
+                    % _wrap('<div style="font-family:%s;font-size:14px;line-height:21px;">%s%s</div>' % (FONT, main_html, tag_html), TAB, 8, accent=stripe))
             continue
         out += ('<tr><td width="5" bgcolor="%s" style="background-color:%s;border-radius:6px 0 0 6px;font-size:0;line-height:0;">&nbsp;</td>'
                 '<td class="cd" style="padding:10px 14px;font-family:%s;font-size:14px;line-height:21px;background-color:%s;border-radius:0 10px 10px 0;" bgcolor="%s">%s%s</td></tr>'
-                '<tr><td colspan="2" height="6" style="font-size:0;line-height:0;">&nbsp;</td></tr>') % (RED, RED, FONT, TAB, TAB, main_html, tag_html)
+                '<tr><td colspan="2" height="6" style="font-size:0;line-height:0;">&nbsp;</td></tr>') % (stripe, stripe, FONT, TAB, TAB, main_html, tag_html)
     return '<table width="100%%" cellpadding="0" cellspacing="0" border="0">%s</table>' % out
 
 

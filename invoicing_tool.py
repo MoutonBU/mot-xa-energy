@@ -192,14 +192,30 @@ class BusinessDialog(QDialog):
 class AccessDialog(QDialog):
     """The owner's list of the people who may use the invoicing tool."""
 
-    def __init__(self, allowed, parent=None):
+    def __init__(self, allowed, users=(), parent=None):
         super().__init__(parent)
         self.setWindowTitle("Who can use invoicing")
-        self.resize(520, 420)
+        self.resize(560, 520)
+        self.new_user, self.removed_users = "", []
         v = QVBoxLayout(self)
-        v.addWidget(QLabel("One email address per line. These people open the tool without the PIN. Use the email each person sends from (Email account...)."))
+        v.addWidget(QLabel("One email address per line. These people open the tool without a PIN. Use the email each person sends from (Email account...)."))
         self.t = QPlainTextEdit("\n".join(allowed))
         v.addWidget(self.t, 1)
+        v.addWidget(QLabel("<b>People with their own PIN</b> (they open the tool by typing the PIN you give them):"))
+        from PySide6.QtWidgets import QListWidget
+        self.ul = QListWidget()
+        self.ul.setFixedHeight(90)
+        self.ul.addItems(list(users))
+        v.addWidget(self.ul)
+        ur = QHBoxLayout()
+        nb = QPushButton("Give a person a PIN...")
+        nb.clicked.connect(self._new)
+        rb = QPushButton("Remove the selected person's PIN")
+        rb.clicked.connect(self._rm)
+        ur.addWidget(nb)
+        ur.addWidget(rb)
+        ur.addStretch(1)
+        v.addLayout(ur)
         bb = QHBoxLayout()
         pb = QPushButton("Change the owner PIN...")
         pb.clicked.connect(lambda: setattr(self, "want_pin", True) or self.accept())
@@ -215,6 +231,18 @@ class AccessDialog(QDialog):
         bb.addWidget(ok)
         v.addLayout(bb)
 
+    def _new(self):
+        n, ok = QInputDialog.getText(self, "Give a person a PIN", "Name of the person:")
+        if ok and n.strip():
+            self.new_user = n.strip()
+            self.accept()
+
+    def _rm(self):
+        it = self.ul.currentItem()
+        if it is not None:
+            self.removed_users.append(it.text())
+            self.ul.takeItem(self.ul.row(it))
+
     def emails(self):
         return [x.strip().lower() for x in re.split(r"[\n,;]+", self.t.toPlainText()) if "@" in x]
 
@@ -224,6 +252,7 @@ class InvoicingPage(QWidget):
         super().__init__(parent)
         self.win = win
         self._unlocked = False
+        self._is_owner = False
         self.invoices = []
         self._load()
         v = QVBoxLayout(self)
@@ -353,6 +382,23 @@ class InvoicingPage(QWidget):
         o = self._S().get("inv_owner") or {}
         return bool(o.get("hash")) and secrets.compare_digest(_hash(pin, o["salt"]), o["hash"])
 
+    def _user_pin(self, pin):
+        """The name of the person whose own PIN this is, or ''."""
+        for u in (self._S().get("inv_users") or []):
+            if u.get("hash") and secrets.compare_digest(_hash(pin, u["salt"]), u["hash"]):
+                return u.get("name", "") or "user"
+        return ""
+
+    def new_user_pin(self, name):
+        """Makes a PIN for a person (the owner hands it to them). Returns the PIN, which is only shown now: the program keeps only a scrambled copy."""
+        pin = "".join(secrets.choice("0123456789") for _ in range(6))
+        salt = secrets.token_hex(16)
+        users = [u for u in (self._S().get("inv_users") or []) if u.get("name", "").lower() != name.lower()]
+        users.append({"name": name, "salt": salt, "hash": _hash(pin, salt)})
+        self._S()["inv_users"] = users
+        self._save_settings()
+        return pin
+
     def _set_pin(self, parent=None):
         p1, ok = QInputDialog.getText(parent or self, "Owner PIN", "Choose an owner PIN (at least 4 characters):", QLineEdit.EchoMode.Password)
         if not ok or len(p1) < 4:
@@ -387,23 +433,41 @@ class InvoicingPage(QWidget):
         return True
 
     def _unlock_clicked(self):
+        if self.owner_set() and (self._S().get("inv_users") or []):
+            pin, ok = QInputDialog.getText(self, "Invoicing", "Your PIN:", QLineEdit.EchoMode.Password)
+            if not ok:
+                return
+            if self._check_pin(pin):
+                self._unlocked, self._is_owner = True, True
+            elif self._user_pin(pin):
+                self._unlocked, self._is_owner = True, False
+            else:
+                QMessageBox.warning(self, "Invoicing", "That PIN is not right.")
+                return
+            self.refresh()
+            return
         if self._owner_ok():
-            self._unlocked = True
+            self._unlocked, self._is_owner = True, True
             self.refresh()
 
     def lock(self):
         self._unlocked = False
+        self._is_owner = False
         self.refresh()
 
     def manage_access(self):
         if not self._owner_ok():
             return
-        d = AccessDialog(self._S().get("inv_allowed") or [], self)
+        d = AccessDialog(self._S().get("inv_allowed") or [], [u.get("name", "") for u in (self._S().get("inv_users") or [])], self)
         if d.exec():
             self._S()["inv_allowed"] = d.emails()
+            self._S()["inv_users"] = [u for u in (self._S().get("inv_users") or []) if u.get("name") not in d.removed_users]
             self._save_settings()
             if d.want_pin:
                 self._set_pin()
+            if d.new_user:
+                pin = self.new_user_pin(d.new_user)
+                QInputDialog.getText(self, "PIN for %s" % d.new_user, "Give %s this PIN. It is shown only now, so copy it before you close this:" % d.new_user, QLineEdit.EchoMode.Normal, pin)
         self.refresh()
 
     def showEvent(self, e):

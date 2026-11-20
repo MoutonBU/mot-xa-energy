@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.80**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.81**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **1.86.81 Orders reply: revisions, earlier vs new changes, register report. Invoicing: PINs for people.** In the reply email the changes already sent are now grey ("earlier change") and the new ones red ("new"). A Revision box puts the revision number in the email title and, when sent, records the revision and the drawings in the drawing register (so the next email shows what was issued earlier). The drawing register report (PDF) goes with the email as well as the sheet index. Invoicing: in "Who can use this..." the owner can give a person their own PIN (shown once, kept only scrambled); a PIN opens the tool but not the access settings.
 
 - **1.86.80 New tool: Invoicing (restricted).** Numbered invoices with VAT as a PDF in the MCP look, with a list showing paid, unpaid and overdue and what is outstanding. Only allowed people can open it: the owner sets a PIN, adds the allowed people by email in "Who can use this...", and everyone else sees a locked screen. Fill in "My business details..." once (VAT number, banking details, payment terms). Find it on the home screen, in Switch tool, and as the Invoicing tab.
 

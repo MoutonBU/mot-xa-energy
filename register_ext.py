@@ -1204,6 +1204,12 @@ class OrderReplyDialog(QDialog):
         self.kind_box.setCurrentIndex(max(0, self.kind_box.findData(page.issue_kind())))
         self.kind_box.setToolTip("Revised: the email says what changed since the last issue. New set or These drawings: just the list, with no changes shown.")
         rk.addWidget(self.kind_box)
+        rk.addSpacing(8)
+        rk.addWidget(QLabel("<b>Revision</b>"))
+        self.rev = QLineEdit(str(page.info.get("issue_no") or "0"))
+        self.rev.setFixedWidth(60)
+        self.rev.setToolTip("The revision number shown in the email and put in the drawing register when you send")
+        rk.addWidget(self.rev)
         self.idx_btn = QPushButton()
         self.idx_btn.setCheckable(True)
         self.idx_btn.setChecked(page.info.get("show_index") != "0")
@@ -1271,6 +1277,14 @@ class OrderReplyDialog(QDialog):
         mr.addStretch(1)
         v.addLayout(mr)
         self.man_chk.toggled.connect(lambda *_: self._rebuild())
+        self.reg_chk = QCheckBox("Also send the drawing register report (PDF)")
+        self.reg_chk.setChecked(True)
+        self.reg_chk.setToolTip("The same drawing register report as the drawing register tool sends, listing the drawings in this email with their revisions.")
+        v.addWidget(self.reg_chk)
+        self.rec_chk = QCheckBox("Record this as a revision in the drawing register when it is sent")
+        self.rec_chk.setChecked(True)
+        self.rec_chk.setToolTip("The register remembers what went and which revision, so the next email can show what changed and what was issued earlier.")
+        v.addWidget(self.rec_chk)
         self.idx_chk = QCheckBox("Also send the sheet index of these drawings (PDF, made from the drawing register)")
         self.idx_chk.setChecked(bool(has_index) or bool(manual) and self.man_chk.isChecked())
         self.idx_chk.setToolTip("Makes the same sheet index as the drawing register sends, listing only the ticked drawings that are in the register.")
@@ -1296,6 +1310,7 @@ class OrderReplyDialog(QDialog):
         self._style_idx()
         self.kind_box.currentIndexChanged.connect(self._rebuild)
         self.idx_btn.toggled.connect(lambda *_: (self._style_idx(), self._rebuild()))
+        self.rev.editingFinished.connect(self._rebuild)
         self._size()
 
     # ----- pictures inside the email -----
@@ -1360,6 +1375,11 @@ class OrderReplyDialog(QDialog):
             self.pics.pop(i)
             self._pic_list()
 
+    def display_subject(self):
+        """The title of the designed email: the subject, the revision and the date, as the register writes it."""
+        base = re.sub(r"^\s*((re|fw|fwd)\s*:\s*)+", "", self.sub.text().strip(), flags=re.I)
+        return "%s - revision %s (%s)" % (base, self.rev.text().strip() or "0", self._page.issue_date())
+
     def pic_srcs(self, preview=False):
         return [("cid:mcppic%d" % i, pc.get("caption", "")) for i, pc in enumerate(self.pics)]
 
@@ -1401,7 +1421,7 @@ class OrderReplyDialog(QDialog):
                 from PySide6.QtGui import QImage, QTextDocument
                 for i, pc in enumerate(self.pics):
                     self.view.document().addResource(QTextDocument.ResourceType.ImageResource, QUrl("cid:mcppic%d" % i), QImage.fromData(pc["bytes"]))
-                self._page.show_corners(self.view, self._page.design_html(sub, body, preview=True, pics=self.pic_srcs()))
+                self._page.show_corners(self.view, self._page.design_html(self.display_subject(), body, preview=True, pics=self.pic_srcs()))
                 return
             except Exception:
                 pass
@@ -1412,7 +1432,7 @@ class OrderReplyDialog(QDialog):
 
     def _regtext(self):
         try:
-            return self._page._register_sections(self.files(), self.kind_box.currentData(), self.idx_btn.isChecked(), self.manual_rows())
+            return self._page._register_sections(self.files(), self.kind_box.currentData(), self.idx_btn.isChecked(), self.manual_rows(), self.rev.text().strip() or None)
         except Exception:
             return ""
 
@@ -4493,11 +4513,11 @@ class LogMixin:
         hist = [{"issue": "0", "date": datetime.date.today().isoformat(), "rows": earlier}] if earlier else []
         return groups, hist
 
-    def _register_sections(self, paths, kind=None, show_index=None, manual=None):
+    def _register_sections(self, paths, kind=None, show_index=None, manual=None, rev=None):
         """The drawing-register part of the register's own email for just these drawings: what changed since the last revision, and the sheet index
         (issued today / issued earlier / still to come, with revisions), exactly as the register writes it. '' when none of them is in the register."""
         if manual:
-            return self._swapped(lambda: self._register_sections(["<manual>"], kind, show_index), manual)
+            return self._swapped(lambda: self._register_sections(["<manual>"], kind, show_index, None, rev), manual)
         if not self._rows_for_paths(paths):
             return ""
         rows = [r for g in getattr(self, "groups", []) for r in g.get("rows", [])]
@@ -4505,7 +4525,10 @@ class LogMixin:
         old_txt, old_man = self.mail.toPlainText(), getattr(self, "_mail_manual", False)
         ps = set(paths)
         old_info = (self.info.get("issue_kind"), self.info.get("show_index"))
+        old_no = self.info.get("issue_no")
         try:
+            if rev:
+                self.info["issue_no"] = rev
             if kind:
                 self.info["issue_kind"] = kind
             if show_index is not None:
@@ -4520,6 +4543,7 @@ class LogMixin:
         finally:
             for r, w in zip(rows, was):
                 r["on"] = w
+            self.info["issue_no"] = old_no
             for k_, v_ in zip(("issue_kind", "show_index"), old_info):
                 if v_ is None:
                     self.info.pop(k_, None)
@@ -4558,22 +4582,44 @@ class LogMixin:
             self.groups, self.history = g0, h0
             self._manual_paths = None
 
-    def _index_pdf_for(self, paths, out, manual=None):
-        """The register's sheet index (same cover and look) listing only these drawings."""
+    def _index_pdf_for(self, paths, out, manual=None, register=False, rev=None):
+        """The register's sheet index, or with register=True the full drawing register report (same cover and look), listing only these drawings."""
         if manual:
-            return self._swapped(lambda: self._index_pdf_for(["<manual>"], out), manual)
+            return self._swapped(lambda: self._index_pdf_for(["<manual>"], out, None, register, rev), manual)
+        rows = [r for g in getattr(self, "groups", []) for r in g.get("rows", [])]
+        was = [r.get("on", True) for r in rows]
+        ps = set(paths)
+        old_no = self.info.get("issue_no")
+        try:
+            if rev:
+                self.info["issue_no"] = rev
+            for r in rows:
+                if not getattr(self, "_manual_paths", None):
+                    r["on"] = r.get("path") in ps
+            (self.write_pdf if register else self.write_index_pdf)(out)
+        finally:
+            for r, w in zip(rows, was):
+                r["on"] = w
+            self.info["issue_no"] = old_no
+        return out
+
+    def _record_issue(self, paths, rev, sent):
+        """Records an Orders reply as an issue in the drawing register: the revision number, which drawings went and when, so the next one shows 'issued earlier'."""
         rows = [r for g in getattr(self, "groups", []) for r in g.get("rows", [])]
         was = [r.get("on", True) for r in rows]
         ps = set(paths)
         try:
             for r in rows:
-                if not getattr(self, "_manual_paths", None):
-                    r["on"] = r.get("path") in ps
-            self.write_index_pdf(out)
+                r["on"] = r.get("path") in ps
+            self.info["issue_no"] = rev
+            self.mark_issued(sent=sent, ask=False)
         finally:
             for r, w in zip(rows, was):
                 r["on"] = w
-        return out
+            try:
+                self.refresh()
+            except Exception:
+                pass
 
     def reply_houses(self, names=None):
         names = list(names or [])
@@ -4611,10 +4657,10 @@ class LogMixin:
                     t = t[1:]                                       # the first line is only the heading of the email ("New order Urbika Erf 670 | PTN 38")
                 elif t and ("|" in t[0] or _gnorm(g) in _gnorm(t[0])):
                     t = ["new order"]
-                ls.append("  - Order: " + (t[0] if t else "") + ("".join("\n    " + x for x in t[1:]) if len(t) > 1 else ""))
+                ls.append("  - Order: " + (t[0] if t else "") + ("".join("\n    " + x for x in t[1:]) if len(t) > 1 else "") + (" [earlier]" if e.get("sent_date") else " [new]"))
             for c in chs:
                 kd = kind_label(c.get("kinds", ""))
-                ls.append("  - Change %s%s: %s" % (c.get("rev") or "", (" (%s)" % kd) if kd else "", str(c.get("text") or "").strip().replace("\n", " ")))
+                ls.append("  - Change %s%s: %s%s" % (c.get("rev") or "", (" (%s)" % kd) if kd else "", str(c.get("text") or "").strip().replace("\n", " "), " [earlier]" if c.get("sent_date") else " [new]"))
             dr = self._drawings_for(g)
             files += [("%s: %s" % (g, os.path.basename(p)), p) for _r, p in dr]
             blocks.append("\n".join(ls))
@@ -4668,7 +4714,7 @@ class LogMixin:
         m.set_content(text + (("\n\n" + sig) if sig and not (dlg.design_chk.isChecked() or dlg.pics) else ""))
         if dlg.design_chk.isChecked() or dlg.pics:
             try:
-                m.add_alternative(self.design_html(dlg.sub.text().strip(), text, both=True, pics=dlg.pic_srcs()), subtype="html")
+                m.add_alternative(self.design_html(dlg.display_subject(), text, both=True, pics=dlg.pic_srcs()), subtype="html")
                 for _i, _pc in enumerate(dlg.pics):
                     m.get_payload()[1].add_related(_pc["bytes"], maintype="image", subtype=_pc["ext"], cid="<mcppic%d>" % _i, filename="picture%d.%s" % (_i + 1, "jpg" if _pc["ext"] == "jpeg" else "png"), disposition="inline")
                 m.get_payload()[1].add_related(self.design_png(), maintype="image", subtype="png", cid="<mcplogo>", filename="mcp-logo.png", disposition="inline")
@@ -4693,7 +4739,14 @@ class LogMixin:
                 idx_path = self._index_pdf_for(sent_files, os.path.join(tempfile.mkdtemp(), re.sub(r'[\\/:*?"<>|]+', "-", "Sheet index - %s.pdf" % (area or self.project_name()))), man)
             except Exception:
                 idx_path = ""
-        for pth in sent_files + ([idx_path] if idx_path else []):
+        reg_path = ""
+        rev = dlg.rev.text().strip() or "0"
+        if dlg.reg_chk.isChecked() and (man or self._rows_for_paths(sent_files)):
+            try:
+                reg_path = self._index_pdf_for(sent_files, os.path.join(tempfile.mkdtemp(), re.sub(r'[\\/:*?"<>|]+', "-", "Drawing register - %s - revision %s.pdf" % (area or self.project_name(), rev))), man, True, rev)
+            except Exception:
+                reg_path = ""
+        for pth in sent_files + ([reg_path] if reg_path else []) + ([idx_path] if idx_path else []):
             mt = (mimetypes.guess_type(pth)[0] or "application/octet-stream")
             mn, sb = (mt.split("/", 1) + ["octet-stream"])[:2]
             with open(pth, "rb") as fh:
@@ -4717,6 +4770,12 @@ class LogMixin:
         except Exception:
             path = ""
         now = datetime.date.today().isoformat()
+        if dlg.rec_chk.isChecked() and not man and self._rows_for_paths(sent_files):
+            try:
+                self._record_issue(sent_files, rev, {"to": ", ".join(to + cc), "subject": m["Subject"], "path": path, "body": text, "cc": ", ".join(cc),
+                                                    "files": [os.path.basename(x) for x in sent_files], "emails": 1})
+            except Exception:
+                pass
         for e in ents_all:
             e["sent_date"], e["sent_to"], e["sent_subject"], e["sent_path"] = now, ", ".join(to + cc), m["Subject"], path
             e["drawings"] = ", ".join(os.path.basename(x) for x in sent_files)[:400]
