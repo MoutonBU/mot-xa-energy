@@ -62,8 +62,9 @@ def email_picture(it, path):
              'style="color:#ffffff;font-size:17pt;">%s</td></tr></table></td>'
              '<td><b style="font-size:11pt;">%s</b> <span style="color:#5f6368;font-size:9pt;">&lt;%s&gt;</span><br>'
              '<span style="color:#5f6368;font-size:9pt;">%s</span></td></tr></table>'
-             '<p style="font-size:11pt;margin-top:16px;">%s</p></div>'
-             % (e(it.get("subject")), e(initial), e(name or addr), e(addr), e(it.get("date")), e(body).replace("\n", "<br>")))
+             '<p style="font-size:11pt;margin-top:16px;">%s</p>%s</div>'
+             % (e(it.get("subject")), e(initial), e(name or addr), e(addr), e(it.get("date")), e(body).replace("\n", "<br>"),
+                ('<p style="color:#5f6368;font-size:9pt;">\U0001F4CE Attached: %s</p>' % e(", ".join(it.get("attach_names") or []))) if it.get("attach_names") else ""))
         d = QTextDocument()
         d.setDefaultFont(QFont("Arial", 10))
         d.setHtml(h)
@@ -2159,7 +2160,7 @@ class LogMixin:
             rd = it["date"][:16]
         urgent = mail_inbox.is_urgent(it["subject"], it["body"])
         took = False
-        for o in mail_inbox.parse_orders(it["subject"], it["body"], houses, it.get("html", "")):
+        for o in mail_inbox.parse_email_orders(it, houses):
             grp = o["group"] or "Not sure which house"
             area = force_area if force_area is not None else self._area_for(it["subject"], it["body"], o["group"], o.get("area", ""))
             existing = [x for x in self.log if x.get("type") == "Order" and o["group"] and _gnorm(x.get("group")) == _gnorm(grp)]

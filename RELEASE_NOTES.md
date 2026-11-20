@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.64**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.65**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **Order sheets in attachments.** The program now reads attached PDF, Excel (.xlsx) and CSV order sheets. A sheet with a stand column becomes one order per row (the Township column or a heading like 'Urbika Erf 670' gives the area); a PDF that lists stands as lines (PTN 42 braai, PTN 43 carport) works too. Orders found in both the email and its attachment are listed once, and the email picture shows 'Attached: file names'.
 
 - **Never miss an order after a restart.** Watch inbox now has 'Start the program with Windows and keep it in the tray': after a restart the program starts hidden in the tray and keeps watching Gmail (it only starts hidden when watching is on).
 - **Gmail sign-in expiry is no longer silent.** When Google ends the sign-in, a red banner ('Sign in again') appears on the Orders pages, the Gmail line turns red and a tray message is shown once. One click signs in again and checks straight away. (To stop it happening every 7 days, set the Google project's publishing status to In production once.)

@@ -228,10 +228,16 @@ def parse_orders(subject, body, houses=(), html=""):
             o["order"] = allno.group("n").strip(" .,;") if allno else ""
         return out
     out, cur = [], None
+    has_ptn = any(portion_code(ln) for ln in lines)
+    hdr = ""
     for ln in lines:
+        mh = re.fullmatch(r"\s*([A-Za-z][\w'\u2019 -]*?)\s+(?:erf|arf|erven)\s?(\d+)\s*[:\-]?\s*", ln, re.I) if has_ptn else None
+        if mh:
+            hdr = " ".join(_trim_lead(mh.group(1).split())) + " Erf " + mh.group(2)      # "Urbika Erf 670" on a line of its own heads the portions below it
+            continue
         g = group_of(ln)
         if g and (cur is None or g != cur["group"] or BULLET.match(ln)):
-            cur = {"group": g, "order": "", "text": ln.strip()}
+            cur = {"group": g, "order": "", "text": ln.strip(), "hdr": hdr}
             out.append(cur)
         elif cur is not None:
             cur["text"] += "\n" + ln.strip()
@@ -249,15 +255,16 @@ def parse_orders(subject, body, houses=(), html=""):
     for o in out:
         if portion_code(o.get("group", "")) and not o.get("area"):
             a = portion_area(o["text"].split("\n")[0])
-            if not re.search(r"\d", a) and sub_area:       # "Urbika PTN 38" in the body, the farm only in the subject
-                a = sub_area
+            if not re.search(r"\d", a) and (o.get("hdr") or sub_area):       # "Urbika PTN 38" in the body, the farm only in a heading line or the subject
+                a = o.get("hdr") or sub_area
             elif not a:
-                a = sub_area
+                a = o.get("hdr") or sub_area
             if a:
                 o["area"] = a
         m = ORDER_NO.search(o["text"])
         o["order"] = (m or allno).group("n").strip(" .,;") if (m or allno) else ""
         o["text"] = o["text"].strip()[:1500]
+        o.pop("hdr", None)
     return out
 
 
@@ -275,6 +282,126 @@ def _body_text(msg):
     return txt
 
 
+def _rows_html(rows):
+    return "<table>" + "".join("<tr>" + "".join("<%s>%s</%s>" % ("th" if i == 0 else "td", _html.escape(str(c or "").strip()), "th" if i == 0 else "td") for c in r) + "</tr>"
+                               for i, r in enumerate(rows) if any(str(c or "").strip() for c in r)) + "</table>"
+
+
+def _xlsx_rows(data):
+    """Rows of the first sheets of an .xlsx: openpyxl when it is there, otherwise read straight from the file (no extra library needed)."""
+    import io
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+        out = []
+        for ws in wb.worksheets[:3]:
+            out.append([[("" if c is None else str(c)) for c in row] for row in ws.iter_rows(values_only=True)])
+        return out
+    except Exception:
+        pass
+    import zipfile
+    from xml.etree import ElementTree as ET
+    ns = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+    z = zipfile.ZipFile(io.BytesIO(data))
+    sst = []
+    if "xl/sharedStrings.xml" in z.namelist():
+        for si in ET.fromstring(z.read("xl/sharedStrings.xml")).findall("m:si", ns):
+            sst.append("".join(t.text or "" for t in si.iter("{%s}t" % ns["m"])))
+
+    def colno(ref):
+        n = 0
+        for ch in re.match(r"[A-Z]+", ref).group(0):
+            n = n * 26 + ord(ch) - 64
+        return n - 1
+    out = []
+    for nm in sorted(x for x in z.namelist() if re.match(r"xl/worksheets/sheet\d+\.xml", x))[:3]:
+        rows = []
+        for r in ET.fromstring(z.read(nm)).iter("{%s}row" % ns["m"]):
+            cells = {}
+            for c in r.findall("m:c", ns):
+                v = c.find("m:v", ns)
+                if c.get("t") == "s" and v is not None:
+                    val = sst[int(v.text)]
+                elif c.get("t") == "inlineStr":
+                    val = "".join(t.text or "" for t in c.iter("{%s}t" % ns["m"]))
+                else:
+                    val = v.text if v is not None and v.text is not None else ""
+                cells[colno(c.get("r", "A1"))] = val
+            if cells:
+                rows.append([cells.get(i, "") for i in range(max(cells) + 1)])
+        out.append(rows)
+    return out
+
+
+def attachment_texts(msg):
+    """Reads the attachments of an email that can hold an order sheet: PDF, Excel (.xlsx) and CSV. Returns (text, html, names): text lines for the order parser,
+    the sheets as HTML tables (so a stand column becomes one order per row), and the file names."""
+    texts, htmls, names = [], [], []
+    try:
+        parts = list(msg.iter_attachments())
+    except Exception:
+        return "", "", []
+    for part in parts:
+        try:
+            name = part.get_filename() or ""
+            ext = os.path.splitext(name)[1].lower()
+            data = part.get_payload(decode=True) or b""
+            if not data or len(data) > 12 * 1024 * 1024:
+                continue
+            if ext == ".pdf" or part.get_content_type() == "application/pdf":
+                try:
+                    import fitz
+                except Exception:
+                    import pymupdf as fitz
+                doc = fitz.open(stream=data, filetype="pdf")
+                tx = []
+                for pg in list(doc)[:12]:
+                    tx.append(pg.get_text())
+                    try:
+                        for t in pg.find_tables().tables:
+                            htmls.append(_rows_html(t.extract()))
+                    except Exception:
+                        pass
+                texts.append("\n".join(tx))
+                names.append(name or "attachment.pdf")
+            elif ext in (".xlsx", ".xlsm"):
+                for rows in _xlsx_rows(data):
+                    if rows:
+                        htmls.append(_rows_html(rows))
+                        texts.append("\n".join(" ".join(str(c) for c in r if str(c).strip()) for r in rows))
+                names.append(name)
+            elif ext in (".csv", ".txt", ".tsv"):
+                import csv
+                import io
+                raw = data.decode("utf-8-sig", "replace")
+                if ext == ".txt":
+                    texts.append(raw)
+                else:
+                    rows = list(csv.reader(io.StringIO(raw), delimiter="\t" if ext == ".tsv" else (";" if raw.count(";") > raw.count(",") else ",")))
+                    htmls.append(_rows_html(rows))
+                    texts.append("\n".join(" ".join(r) for r in rows))
+                names.append(name)
+        except Exception:
+            continue
+    return "\n".join(texts)[:20000], "".join(htmls), names
+
+
+def parse_email_orders(it, houses=()):
+    """The orders of one email: from its text and tables, plus those of an attached order sheet (PDF, Excel, CSV). Houses found in both are listed once."""
+    out = parse_orders(it["subject"], it["body"], houses, it.get("html", ""))
+    if not (it.get("attach_text") or it.get("attach_html")):
+        return out
+    try:
+        att = [o for o in parse_orders(it["subject"], it.get("attach_text", ""), houses, it.get("attach_html", "")) if o.get("group")]
+    except Exception:
+        att = []
+    if not att:
+        return out
+    have = {_norm(o["group"]) for o in out if o.get("group")}
+    merged = [o for o in out if o.get("group")] + [o for o in att if _norm(o["group"]) not in have]
+    return merged or out
+
+
 def read_eml(raw, path=""):
     msg = email.message_from_bytes(raw, policy=email.policy.default)
     h = msg.get_body(preferencelist=("html",))
@@ -282,8 +409,9 @@ def read_eml(raw, path=""):
         html = h.get_content() if h is not None else ""
     except Exception:
         html = ""
+    at, ah, an = attachment_texts(msg)
     return {"subject": str(msg.get("Subject", "")), "from": str(msg.get("From", "")), "date": str(msg.get("Date", "")),
-            "body": _body_text(msg), "html": html, "path": path, "raw": raw}
+            "body": _body_text(msg), "html": html, "path": path, "raw": raw, "attach_text": at, "attach_html": ah, "attach_names": an}
 
 
 ORDERISH = re.compile(r"\b(orders?|bestelling(s)?|stands?|erf|erwe|standplaas|changes?|wysigings?|extras?|urgent|dringend|ext(ension)?|uitbreiding|plans?|tekeninge|drawings?|revisions?|nominations?|braai|patio|ibr)\b", re.I)
