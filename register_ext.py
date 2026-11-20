@@ -1648,12 +1648,16 @@ class LogMixin:
         self.areas.append({"name": name.strip(), "keys": ""})
         return name.strip()
 
-    _EXT_RX = re.compile(r"([A-Z][\w'\u2019-]+(?:\s+[A-Z][\w'\u2019-]+){0,3})\s*,?\s*(?i:ext(?:ension)?\.?|uitbreiding|uitb\.?|phase|fase)\s*\.?\s*\d+")
+    _EXT_RX = re.compile(r"([A-Z][\w'\u2019-]+(?:[ \t]+[A-Z][\w'\u2019-]+){0,3})[ \t]*,?[ \t]*(?i:(?:ext(?:ension)?|uitbreiding|uitb)\b\.?(?:[ \t]*\d+)?|(?:phase|fase)[ \t]*\.?[ \t]*\d+)")
+    _REV_RX = re.compile(r"(?i:ext(?:ension)?|uitbreiding)\.?[ \t]*\d+[ \t]*[-,:]?[ \t]*(?i:of|in|at|van)?[ \t]*([A-Z][\w'\u2019-]+(?:[ \t]+[A-Z][\w'\u2019-]+)?)")
     _LEAD = {"new", "order", "orders", "urgent", "re", "fwd", "fw", "for", "stand", "erf", "please", "hi", "dear", "dringend", "bestelling", "bestellings",
              "the", "from", "at", "in", "of", "to", "house", "houses", "list", "sheet"}
 
     def _area_from_text(self, text):
         """An estate name written as 'Albertsdal Ext 46' / 'Blue Hills Extension 120' in the text, without the number; "" when none."""
+        rev = self._REV_RX.search(str(text))
+        if rev and rev.group(1).lower() not in self._LEAD and not self._EXT_RX.search(str(text)):
+            return rev.group(1)
         for m in self._EXT_RX.finditer(str(text)):
             words = m.group(1).split()
             while words and words[0].lower().strip(".,:-") in self._LEAD:
