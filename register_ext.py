@@ -781,16 +781,41 @@ class OrderReplyDialog(QDialog):
             rg.clicked.connect(self._again)
             hl.addWidget(rg)
         v.addLayout(hl)
+        from PySide6.QtWidgets import QTabWidget, QTextBrowser
+        rk = QHBoxLayout()
+        rk.addWidget(QLabel("<b>This email is:</b>"))
+        self.kind_box = QComboBox()
+        self.kind_box.addItem("Revised drawings (shows what changed)", "revised")
+        self.kind_box.addItem("A new set of drawings", "new")
+        self.kind_box.addItem("These drawings (just the list, no changes shown)", "these")
+        self.kind_box.setCurrentIndex(max(0, self.kind_box.findData(page.issue_kind())))
+        self.kind_box.setToolTip("Revised: the email says what changed since the last issue. New set or These drawings: just the list, with no changes shown.")
+        rk.addWidget(self.kind_box)
+        self.idx_btn = QPushButton()
+        self.idx_btn.setCheckable(True)
+        self.idx_btn.setChecked(page.info.get("show_index") != "0")
+        self.idx_btn.setToolTip("On: the email also lists every drawing of the register and what is still to come. Off: only the drawings you are sending.")
+        rk.addWidget(self.idx_btn)
+        rk.addStretch(1)
+        v.addLayout(rk)
+        self.tabs = QTabWidget()
         self.body = QPlainTextEdit(body)
-        v.addWidget(self.body, 3)
+        self.tabs.addTab(self.body, "Edit")
+        self.view = QTextBrowser()
+        try:
+            from PySide6.QtCore import QUrl
+            from PySide6.QtGui import QImage, QTextDocument
+            self.view.document().addResource(QTextDocument.ResourceType.ImageResource, QUrl("cid:mcplogo"), QImage.fromData(page.design_png()))
+        except Exception:
+            pass
+        self.tabs.addTab(self.view, "How it will look")
+        self.tabs.currentChanged.connect(self._look)
+        v.addWidget(self.tabs, 3)
         self.design_chk = QCheckBox("Send as a designed email with my signature (MCP look)")
         self.design_chk.setChecked(page.designed_on())
+        self.design_chk.toggled.connect(lambda *_: self._look(self.tabs.currentIndex()))
         dr_ = QHBoxLayout()
         dr_.addWidget(self.design_chk)
-        seeb = QPushButton("See how it looks")
-        seeb.setToolTip("Shows the email as the client will see it, with the MCP look and your signature")
-        seeb.clicked.connect(lambda: page.show_design(self.sub.text(), self.body.toPlainText()))
-        dr_.addWidget(seeb)
         sgb = QPushButton("My email signature...")
         sgb.setToolTip("Change your name, position, phone, email and photo that go at the bottom of the email")
         sgb.clicked.connect(page.my_signature)
@@ -825,14 +850,42 @@ class OrderReplyDialog(QDialog):
         bar.addWidget(self.send)
         v.addLayout(bar)
         self.att.itemChanged.connect(self._size)
+        self._style_idx()
+        self.kind_box.currentIndexChanged.connect(self._rebuild)
+        self.idx_btn.toggled.connect(lambda *_: (self._style_idx(), self._rebuild()))
         self._size()
+
+    def _style_idx(self):
+        on = self.idx_btn.isChecked()
+        self.idx_btn.setText("Sheet index (what is still to come): ON" if on else "Sheet index (what is still to come): OFF")
+        self.idx_btn.setStyleSheet("QPushButton{background-color:%s;color:#FFFFFF;font-weight:700;border:1px solid %s;border-radius:8px;padding:6px 14px;}" % (("#0F7C8C", "#0B5F6B") if on else ("#5A5F66", "#444A50")))
+
+    def _rebuild(self, *_a):
+        """The kind of email or the sheet index switch changed: write the drawings part of the text again."""
+        if self._regen is not None:
+            self._auto = self._regen(self._v, self._labels(), self._regtext())
+            self.body.setPlainText(self._auto)
+        self._look(self.tabs.currentIndex())
+
+    def _look(self, i):
+        if i != 1:
+            return
+        import html
+        sub, body = self.sub.text(), self.body.toPlainText()
+        if self.design_chk.isChecked():
+            try:
+                self._page.show_corners(self.view, self._page.design_html(sub, body, preview=True))
+                return
+            except Exception:
+                pass
+        self.view.setHtml('<div style="font-family:Segoe UI,Arial;font-size:10pt;"><b>%s</b><hr><div style="white-space:pre-wrap;">%s</div></div>' % (html.escape(sub), html.escape(body)))
 
     def _labels(self):
         return [self._page._file_label(p) for p in self.files()]
 
     def _regtext(self):
         try:
-            return self._page._register_sections(self.files())
+            return self._page._register_sections(self.files(), self.kind_box.currentData(), self.idx_btn.isChecked())
         except Exception:
             return ""
 
@@ -3877,7 +3930,7 @@ class LogMixin:
         ps = set(paths)
         return [r for g in getattr(self, "groups", []) for r in g.get("rows", []) if r.get("path") in ps]
 
-    def _register_sections(self, paths):
+    def _register_sections(self, paths, kind=None, show_index=None):
         """The drawing-register part of the register's own email for just these drawings: what changed since the last revision, and the sheet index
         (issued today / issued earlier / still to come, with revisions), exactly as the register writes it. '' when none of them is in the register."""
         if not self._rows_for_paths(paths):
@@ -3886,7 +3939,12 @@ class LogMixin:
         was = [r.get("on", True) for r in rows]
         old_txt, old_man = self.mail.toPlainText(), getattr(self, "_mail_manual", False)
         ps = set(paths)
+        old_info = (self.info.get("issue_kind"), self.info.get("show_index"))
         try:
+            if kind:
+                self.info["issue_kind"] = kind
+            if show_index is not None:
+                self.info["show_index"] = "1" if show_index else "0"
             for r in rows:
                 r["on"] = r.get("path") in ps
             self.write_mail()
@@ -3896,6 +3954,11 @@ class LogMixin:
         finally:
             for r, w in zip(rows, was):
                 r["on"] = w
+            for k_, v_ in zip(("issue_kind", "show_index"), old_info):
+                if v_ is None:
+                    self.info.pop(k_, None)
+                else:
+                    self.info[k_] = v_
             self.mail.setPlainText(old_txt)
             self._mail_manual = old_man
         start = next((i for i, x in enumerate(lines) if re.match(r"^(WHAT CHANGED|THE DRAWINGS|THE FULL LIST)", x)), None)
