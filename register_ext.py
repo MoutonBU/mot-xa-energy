@@ -754,8 +754,9 @@ def split_parts(files, limit_mb=LIMIT_MB):
 class OrderReplyDialog(QDialog):
     """Reply to the client about one or more houses: the text is filled in, the revised drawings are ticked, your signature goes at the bottom."""
 
-    def __init__(self, page, to, cc, subject, body, files, parent=None):
+    def __init__(self, page, to, cc, subject, body, files, parent=None, regen=None):
         super().__init__(parent or page)
+        self._regen, self._v = regen, 0
         self.setWindowTitle("Reply to the client")
         self.resize(780, 680)
         v = QVBoxLayout(self)
@@ -771,7 +772,14 @@ class OrderReplyDialog(QDialog):
         f.addRow("Cc", self.cc)
         f.addRow("Subject", self.sub)
         v.addLayout(f)
-        v.addWidget(QLabel("The message (your signature goes under it when it is sent):"))
+        hl = QHBoxLayout()
+        hl.addWidget(QLabel("The message (your signature goes under it when it is sent):"), 1)
+        if regen is not None:
+            rg = QPushButton("Write the text again")
+            rg.setToolTip("Writes the message again in a different voice. It replaces what is in the box.")
+            rg.clicked.connect(self._again)
+            hl.addWidget(rg)
+        v.addLayout(hl)
         self.body = QPlainTextEdit(body)
         v.addWidget(self.body, 3)
         self.design_chk = QCheckBox("Send as a designed email with my signature (MCP look)")
@@ -813,6 +821,10 @@ class OrderReplyDialog(QDialog):
         v.addLayout(bar)
         self.att.itemChanged.connect(self._size)
         self._size()
+
+    def _again(self):
+        self._v += 1
+        self.body.setPlainText(self._regen(self._v))
 
     def _add(self, label, path, on=True):
         try:
@@ -3859,24 +3871,39 @@ class LogMixin:
                     t = t[1:]                                       # the first line is only the heading of the email ("New order Urbika Erf 670 | PTN 38")
                 elif t and ("|" in t[0] or _gnorm(g) in _gnorm(t[0])):
                     t = ["new order"]
-                ls.append("  Your order: " + (t[0] if t else "") + ("".join("\n    " + x for x in t[1:]) if len(t) > 1 else ""))
+                ls.append("  Order: " + (t[0] if t else "") + ("".join("\n    " + x for x in t[1:]) if len(t) > 1 else ""))
             for c in chs:
                 kd = "major" if "Major" in str(c.get("kinds", "")) else "minor" if "Minor" in str(c.get("kinds", "")) else ""
                 ls.append("  Change %s%s: %s" % (c.get("rev") or "", (" (%s)" % kd) if kd else "", str(c.get("text") or "").strip().replace("\n", " ")))
             dr = self._drawings_for(g)
             if dr:
-                ls.append("  Drawings attached: " + ", ".join(("%s%s" % ((r.get("no") + " ") if r.get("no") else "", r.get("title", "")) + ((" rev " + r["rev"]) if r.get("rev") else "")).strip() for r, _p in dr))
+                ls.append("  Attached: " + ", ".join(("%s%s" % ((r.get("no") + " ") if r.get("no") else "", r.get("title", "")) + ((" rev " + r["rev"]) if r.get("rev") else "")).strip() for r, _p in dr))
                 files += [("%s: %s" % (g, os.path.basename(p)), p) for _r, p in dr]
             else:
-                ls.append("  (no drawing for this house found in the register)")
+                ls.append("  No drawing attached yet.")
             blocks.append("\n".join(ls))
         first = (who.split() or [""])[0]
         sub = ("Re: " + re.sub(r"^\s*((re|fw|fwd)\s*:\s*)+", "", subj, flags=re.I)) if subj else ("Re: %s - %s" % (area or "orders", ", ".join(names[:3]) + ("..." if len(names) > 3 else "")))
-        body = ("Dear %s,\n\n" % first if first else "Good day,\n\n") + ("Thank you for your %s. Herewith the feedback on %s:\n\n" % ("order" if len(names) == 1 else "orders", names[0] if len(names) == 1 else "the following houses")) + "\n\n".join(blocks) + "\n\nPlease let me know if anything needs to change.\n\nKind regards,\n"
         quoted = next((str(e.get("text") or "") for e in ents_all if e.get("type") == "Order"), "")
-        if quoted.strip():
-            body += "\n\n----- Your original order -----\n" + "\n".join("> " + x for x in quoted.strip().split("\n"))
-        dlg = OrderReplyDialog(self, ", ".join(to_l), "", sub, body, [(l, p, True) for l, p in files])
+        what = names[0] if len(names) == 1 else "these %d houses" % len(names)
+
+        def make_body(v=0):
+            """Short, plain wording in a few different voices; 'Write the text again' moves to the next one."""
+            hi = ("Hi %s," % first) if first else "Hi,"
+            gd = ("Good day %s," % first) if first else "Good day,"
+            tops = (
+                (hi, "Thanks for the order. This is where %s stands:" % what, "Shout if anything needs changing.", "Regards,"),
+                (hi, "Got your order, thanks. Here is what I have for %s:" % what, "Let me know if I missed anything.", "Cheers,"),
+                (gd, "I have been through %s. The summary is below:" % what, "If you have any questions just reply here or give me a call.", "Kind regards,"),
+                (hi, "Quick update on %s:" % what, "Tell me if something looks off and I will sort it out.", "Thanks,"),
+            )
+            g_, intro, outro, close = tops[v % len(tops)]
+            t = g_ + "\n\n" + intro + "\n\n" + "\n\n".join(blocks) + "\n\n" + outro + "\n\n" + close + "\n"
+            if quoted.strip():
+                t += "\n\n----- Your original order -----\n" + "\n".join("> " + x for x in quoted.strip().split("\n"))
+            return t
+        body = make_body(0)
+        dlg = OrderReplyDialog(self, ", ".join(to_l), "", sub, body, [(l, p, True) for l, p in files], regen=make_body)
         if not dlg.exec():
             return
         frm = S.get("mail_address") or S.get("smtp_from") or S.get("smtp_user")
