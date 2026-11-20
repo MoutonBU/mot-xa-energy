@@ -285,12 +285,16 @@ def save_eml(folder, rec):
     return path
 
 
-def fetch_new(S, keywords, seen, folder, days=14, limit=40, stubs=False):
+def fetch_new(S, keywords, seen, folder, days=14, limit=40, stubs=False, senders=()):
     """The newest inbox emails whose SUBJECT has one of the words (order words, area names, short codes) and that have not been looked at yet (your own mail left out): [{'id', 'subject', 'from', 'date', 'body', 'html', 'raw'}].
     Nothing is written to disk here; the caller decides which emails are orders. With stubs=True only the ids come back (the first look at the inbox)."""
     import mail_oauth as mo
     words = [w.strip() for w in re.split(r"[,;\n]", keywords or "") if w.strip()] or ["order", "orders"]
-    q = "in:inbox newer_than:%dd -from:me subject:(%s)" % (days, " OR ".join('"%s"' % w if " " in w else w for w in words))
+    cond = "subject:(%s)" % " OR ".join('"%s"' % w if " " in w else w for w in words)
+    frm = [x.strip() for x in senders if "@" in str(x)]
+    if frm:
+        cond = "(%s OR from:(%s))" % (cond, " OR ".join(frm))
+    q = "in:inbox newer_than:%dd -from:me %s" % (days, cond)
     lst = mo.gmail_get(S, "messages", {"q": q, "maxResults": limit})
     out = []
     for m in lst.get("messages", []) or []:

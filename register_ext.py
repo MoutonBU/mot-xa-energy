@@ -964,7 +964,7 @@ class InboxDialog(QDialog):
         self.setMinimumWidth(560)
         v = QVBoxLayout(self)
         t = QLabel("The program looks at the <b>subjects</b> of your Gmail inbox (never the whole email) for order words and for the name and short codes of each of your areas "
-                   "(for example Blue Hills, BH, BHE). Each email found is split into one order per house and added to the area's square marked <b>New</b>; a later email about a "
+                   "(for example Blue Hills, BH, BHE), and always looks at mail from the addresses you list below, whatever the subject says. Each email found is split into one order per house and added to the area's square marked <b>New</b>; a later email about a "
                    "house that already has its order is added to that order as a <b>change</b>. An estate that is not there yet gets its own square. "
                    "The program only reads; it never deletes or changes your mail.")
         t.setWordWrap(True)
@@ -980,6 +980,10 @@ class InboxDialog(QDialog):
         self.words = QLineEdit(self.S.get("inbox_words", "order, orders, bestelling, bestellings"))
         self.words.setPlaceholderText("order, new order, bestelling")
         f.addRow("Extra subject words (optional)", self.words)
+        self.froms = QPlainTextEdit("\n".join(self.S.get("inbox_from", [])))
+        self.froms.setFixedHeight(80)
+        self.froms.setPlaceholderText("client@example.co.za\n@developer.co.za")
+        f.addRow("Always look at mail from (one address or @domain per line)", self.froms)
         self.secs = QSpinBox()
         self.secs.setRange(10, 600)
         self.secs.setSuffix(" seconds")
@@ -1044,6 +1048,7 @@ class InboxDialog(QDialog):
             return
         if self.on.isChecked() and not S.get("inbox_on") and not self.old.isChecked():
             S["inbox_baseline"] = True            # the first look only notes what is already there
+        S["inbox_from"] = [x.strip() for x in re.split(r"[\n,;]+", self.froms.toPlainText()) if x.strip() and ("@" in x)]
         S["inbox_words"], S["inbox_secs"], S["inbox_on"] = self.words.text().strip() or "order, orders, bestelling, bestellings", self.secs.value(), self.on.isChecked()
         if self.old.isChecked():
             S["inbox_seen"] = []
@@ -1695,7 +1700,7 @@ class LogMixin:
         def work():
             try:
                 import mail_inbox
-                self.inbox_done.emit(mail_inbox.fetch_new(S, words, seen, folder, stubs=bool(S.get("inbox_baseline"))), "")
+                self.inbox_done.emit(mail_inbox.fetch_new(S, words, seen, folder, stubs=bool(S.get("inbox_baseline")), senders=list(S.get("inbox_from", []))), "")
             except Exception as ex:
                 self.inbox_done.emit([], str(ex))
         threading.Thread(target=work, daemon=True).start()
