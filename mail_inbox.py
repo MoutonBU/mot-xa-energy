@@ -75,6 +75,16 @@ def orders_from_tables(html, houses=()):
     return out
 
 
+def _known_in(text, houses):
+    """The houses whose number appears in the text on its own (2037 for Stand 2037), when no house word is used."""
+    found = []
+    for h in houses:
+        mm = re.search(r"(\d{2,}[A-Za-z]?(?:[+/\-]\d+)?)\s*$", str(h))
+        if mm and re.search(r"(?<![\w+/\-])%s(?![\w+/\-])" % re.escape(mm.group(1)), text, re.I) and h not in found:
+            found.append(h)
+    return found
+
+
 def parse_orders(subject, body, houses=(), html=""):
     """Splits one email into orders: [{'group', 'order', 'text'}].
     A new order starts on every line that names a stand, erf, house, unit, plot, block or site (or one of your own house and block names).
@@ -140,7 +150,14 @@ def parse_orders(subject, body, houses=(), html=""):
         elif cur is not None:
             cur["text"] += "\n" + ln.strip()
     if not out:        # no house named in the body: one order for the whole email, the house from the subject if it names one
-        out = [{"group": group_of(subject), "order": "", "text": "\n".join(lines).strip() or str(subject)}]
+        txt_all = "\n".join(lines).strip() or str(subject)
+        g0 = group_of(subject)
+        if not g0:
+            known = _known_in(str(subject) + "\n" + "\n".join(lines), houses)      # "2037 is urgent": a number that is one of your houses
+            if known:
+                out = [{"group": h, "order": "", "text": txt_all} for h in known]
+        if not out:
+            out = [{"group": g0, "order": "", "text": txt_all}]
     allno = ORDER_NO.search(str(subject) + "\n" + "\n".join(lines))
     for o in out:
         m = ORDER_NO.search(o["text"])

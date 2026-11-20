@@ -1339,6 +1339,10 @@ class LogMixin:
         base = S.pop("inbox_baseline", False)
         seen = list(S.get("inbox_seen", []))
         houses = [g["name"] for g in self.groups]
+        for x in self.log:
+            gx = x.get("group", "")
+            if gx and gx != "Not sure which house" and gx not in houses:
+                houses.append(gx)
         made = 0
         alerts = []
         have = {self._order_key(e) for e in self.log if e.get("type") == "Order"}
@@ -1460,9 +1464,21 @@ class LogMixin:
 
     def _reflow(self, kind):
         host, gl, sc, tiles = self._ltiles[kind]
+        while gl.count():
+            gl.takeAt(0)
         cols = max(1, (sc.viewport().width() - 4) // 232)
-        for i, b in enumerate(tiles):
-            gl.addWidget(b, i // cols, i % cols)
+        row = col = 0
+        for w in tiles:
+            if getattr(w, "_full", False):
+                if col:
+                    row, col = row + 1, 0
+                gl.addWidget(w, row, 0, 1, cols)
+                row, col = row + 1, 0
+            else:
+                gl.addWidget(w, row, col)
+                col += 1
+                if col >= cols:
+                    row, col = row + 1, 0
 
     @staticmethod
     def _is_urgent(e):
@@ -1488,7 +1504,22 @@ class LogMixin:
         txt = "#1c1f23" if lt else "#eceef0"
         qss = ("QPushButton{border-radius:10px;border:1px solid %s;background:%s;}QPushButton:hover{border-color:#d8132b;}"
                % (("#c3c9d0", "#ffffff") if lt else ("#3a3f46", "#1f2125")))
-        for name in self._tile_names(kind):
+        names_ = self._tile_names(kind)
+        urgent_names = [n_ for n_ in names_ if any(self._is_urgent(e) for e in self.log if e.get("group") == n_ and self.log_kind(e) == kind)]
+        heads = {}
+        if urgent_names:
+            heads[urgent_names[0]] = "Priority"
+            first_rest = next((n_ for n_ in names_ if n_ not in urgent_names), None)
+            if first_rest:
+                heads[first_rest] = "All houses and blocks"
+        for name in names_:
+            if name in heads:
+                hl = QLabel(heads[name])
+                hl.setStyleSheet("font-size:14px;font-weight:700;padding:6px 0 0 2px;%s" % ("color:#d8132b;" if heads[name] == "Priority" else ""))
+                hl._full = True
+                hl.setParent(host)
+                hl.show()
+                tiles.append(hl)
             ents = [e for e in self.log if e.get("group") == name and self.log_kind(e) == kind]
             new = sum(1 for e in ents if e.get("status") == "New")
             open_ = sum(1 for e in ents if not e.get("sent_date"))
@@ -1510,7 +1541,7 @@ class LogMixin:
             btn = QPushButton()
             btn.setFixedSize(220, 100)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setStyleSheet(qss + ("QPushButton{border:2px solid #d8132b;}" if new or urg else "") + ("QPushButton{background:%s;}" % ("#ffe3e6" if lt else "#3a1b20") if urg else ""))
+            btn.setStyleSheet(qss + ("QPushButton{border:2px solid #d8132b;}" if urg else "") + ("QPushButton{background:%s;}" % ("#ffe3e6" if lt else "#3a1b20") if urg else ""))
             lab = QLabel("<br>".join(lines), btn)
             lab.setStyleSheet("background:transparent;border:none;color:%s;" % txt)
             lab.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
