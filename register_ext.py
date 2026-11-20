@@ -830,15 +830,21 @@ class OrderReplyDialog(QDialog):
     def _labels(self):
         return [self._page._file_label(p) for p in self.files()]
 
+    def _regtext(self):
+        try:
+            return self._page._register_sections(self.files())
+        except Exception:
+            return ""
+
     def _again(self):
         self._v += 1
-        self._auto = self._regen(self._v, self._labels())
+        self._auto = self._regen(self._v, self._labels(), self._regtext())
         self.body.setPlainText(self._auto)
 
     def _refresh_list(self):
         """The drawings listed in the text follow the ticks, as long as the text has not been edited by hand."""
         if self._regen is not None and self.body.toPlainText() == self._auto:
-            self._auto = self._regen(self._v, self._labels())
+            self._auto = self._regen(self._v, self._labels(), self._regtext())
             self.body.setPlainText(self._auto)
         if hasattr(self, "idx_chk"):
             self.idx_chk.setEnabled(bool(self._page._rows_for_paths(self.files())))
@@ -3871,6 +3877,44 @@ class LogMixin:
         ps = set(paths)
         return [r for g in getattr(self, "groups", []) for r in g.get("rows", []) if r.get("path") in ps]
 
+    def _register_sections(self, paths):
+        """The drawing-register part of the register's own email for just these drawings: what changed since the last revision, and the sheet index
+        (issued today / issued earlier / still to come, with revisions), exactly as the register writes it. '' when none of them is in the register."""
+        if not self._rows_for_paths(paths):
+            return ""
+        rows = [r for g in getattr(self, "groups", []) for r in g.get("rows", [])]
+        was = [r.get("on", True) for r in rows]
+        old_txt, old_man = self.mail.toPlainText(), getattr(self, "_mail_manual", False)
+        ps = set(paths)
+        try:
+            for r in rows:
+                r["on"] = r.get("path") in ps
+            self.write_mail()
+            lines = self.mail.toPlainText().split("\n")
+        except Exception:
+            return ""
+        finally:
+            for r, w in zip(rows, was):
+                r["on"] = w
+            self.mail.setPlainText(old_txt)
+            self._mail_manual = old_man
+        start = next((i for i, x in enumerate(lines) if re.match(r"^(WHAT CHANGED|THE DRAWINGS|THE FULL LIST)", x)), None)
+        if start is None:
+            return ""
+        out, skip = [], False
+        for x in lines[start:]:
+            if re.match(r"^(REPORTS SENT|Status of this revision|Please let me know)", x):
+                break
+            if re.match(r"^(ORDERS COVERED|CLIENT CHANGES COVERED)", x):
+                skip = True
+                continue
+            if skip:
+                if not x.strip():
+                    skip = False
+                continue
+            out.append(x)
+        return "\n".join(out).strip()
+
     def _index_pdf_for(self, paths, out):
         """The register's sheet index (same cover and look) listing only these drawings."""
         rows = [r for g in getattr(self, "groups", []) for r in g.get("rows", [])]
@@ -3921,10 +3965,10 @@ class LogMixin:
                     t = t[1:]                                       # the first line is only the heading of the email ("New order Urbika Erf 670 | PTN 38")
                 elif t and ("|" in t[0] or _gnorm(g) in _gnorm(t[0])):
                     t = ["new order"]
-                ls.append("  Order: " + (t[0] if t else "") + ("".join("\n    " + x for x in t[1:]) if len(t) > 1 else ""))
+                ls.append("  - Order: " + (t[0] if t else "") + ("".join("\n    " + x for x in t[1:]) if len(t) > 1 else ""))
             for c in chs:
                 kd = "major" if "Major" in str(c.get("kinds", "")) else "minor" if "Minor" in str(c.get("kinds", "")) else ""
-                ls.append("  Change %s%s: %s" % (c.get("rev") or "", (" (%s)" % kd) if kd else "", str(c.get("text") or "").strip().replace("\n", " ")))
+                ls.append("  - Change %s%s: %s" % (c.get("rev") or "", (" (%s)" % kd) if kd else "", str(c.get("text") or "").strip().replace("\n", " ")))
             dr = self._drawings_for(g)
             files += [("%s: %s" % (g, os.path.basename(p)), p) for _r, p in dr]
             blocks.append("\n".join(ls))
@@ -3933,7 +3977,7 @@ class LogMixin:
         quoted = next((str(e.get("text") or "") for e in ents_all if e.get("type") == "Order"), "")
         what = names[0] if len(names) == 1 else "these %d houses" % len(names)
 
-        def make_body(v=0, labels=()):
+        def make_body(v=0, labels=(), reg=""):
             """Short, plain wording in a few different voices; 'Write the text again' moves to the next one."""
             hi = ("Hi %s," % first) if first else "Hi,"
             gd = ("Good day %s," % first) if first else "Good day,"
@@ -3944,12 +3988,12 @@ class LogMixin:
                 (hi, "Quick update on %s:" % what, "Tell me if something looks off and I will sort it out.", "Thanks,"),
             )
             g_, intro, outro, close = tops[v % len(tops)]
-            dl = ("Drawings attached:\n" + "\n".join("  " + x for x in labels)) if labels else "No drawings attached yet."
+            dl = reg or (("Drawings attached:\n" + "\n".join("  - " + x for x in labels)) if labels else "No drawings attached yet.")
             t = g_ + "\n\n" + intro + "\n\n" + "\n\n".join(blocks) + "\n\n" + dl + "\n\n" + outro + "\n\n" + close + "\n"
             if quoted.strip():
                 t += "\n\n----- Your original order -----\n" + "\n".join("> " + x for x in quoted.strip().split("\n"))
             return t
-        body = make_body(0, [self._file_label(p_) for _l, p_ in files])
+        body = make_body(0, [self._file_label(p_) for _l, p_ in files], self._register_sections([p_ for _l, p_ in files]))
         dlg = OrderReplyDialog(self, ", ".join(to_l), "", sub, body, [(l, p, True) for l, p in files], regen=make_body, has_index=bool(self._rows_for_paths([p_ for _l, p_ in files])))
         if not dlg.exec():
             return

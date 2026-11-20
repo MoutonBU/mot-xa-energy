@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.73**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.74**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **1.86.74 Orders reply now carries the drawing register's sheet index in the email.** When the drawings you tick are in the register, the email gets the same panels as the register's own email: what changed since the last revision, and the sheet index with issued today / issued earlier / not yet issued and each drawing's revision. The sheet index PDF still goes as an attachment.
 
 - **1.86.73 Orders reply works like the drawing register.** The drawings you tick are listed in the email the way the register lists them (number, title, revision) and the list follows your ticks, so it no longer says "No drawing attached yet" when one is attached. A new tick box sends the register's sheet index (same cover and look) listing just those drawings.
 
