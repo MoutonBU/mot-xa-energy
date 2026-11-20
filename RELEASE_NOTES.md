@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.81**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.82**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **1.86.82 Orders and Invoicing are linked; shared access code.** In an area, "Select the completed" picks every completed house, or drag a box with the left mouse button over houses to pick them (hold Ctrl to add). Right-click a house or use the picked-houses button, or the "Send to invoicing" button inside one house: you give the price per house and they go to the Invoicing tool's new "Waiting to be invoiced" list. There "Make invoice(s)" creates one invoice per client with a line per house. The houses show "waiting to be invoiced", "invoiced INV-..." and "paid" live on their tiles in Orders. Only allowed people can send to invoicing. The owner can also choose a shared access code (Invoicing > Who can use this...) to give to the people who may use the tool.
 
 - **1.86.81 Orders reply: revisions, earlier vs new changes, register report. Invoicing: PINs for people.** In the reply email the changes already sent are now grey ("earlier change") and the new ones red ("new"). A Revision box puts the revision number in the email title and, when sent, records the revision and the drawings in the drawing register (so the next email shows what was issued earlier). The drawing register report (PDF) goes with the email as well as the sheet index. Invoicing: in "Who can use this..." the owner can give a person their own PIN (shown once, kept only scrambled); a PIN opens the tool but not the access settings.
 

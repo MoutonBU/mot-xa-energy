@@ -196,7 +196,7 @@ class AccessDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Who can use invoicing")
         self.resize(560, 520)
-        self.new_user, self.removed_users = "", []
+        self.new_user, self.removed_users, self.shared_code = "", [], ""
         v = QVBoxLayout(self)
         v.addWidget(QLabel("One email address per line. These people open the tool without a PIN. Use the email each person sends from (Email account...)."))
         self.t = QPlainTextEdit("\n".join(allowed))
@@ -208,6 +208,10 @@ class AccessDialog(QDialog):
         self.ul.addItems(list(users))
         v.addWidget(self.ul)
         ur = QHBoxLayout()
+        sb = QPushButton("Set the shared access code...")
+        sb.setToolTip("You choose a code and share it with the people who may use invoicing. Anyone who types it opens the tool (not these settings).")
+        sb.clicked.connect(self._shared)
+        v.addWidget(sb)
         nb = QPushButton("Give a person a PIN...")
         nb.clicked.connect(self._new)
         rb = QPushButton("Remove the selected person's PIN")
@@ -230,6 +234,14 @@ class AccessDialog(QDialog):
         bb.addWidget(c)
         bb.addWidget(ok)
         v.addLayout(bb)
+
+    def _shared(self):
+        c, ok = QInputDialog.getText(self, "Shared access code", "Choose the access code (at least 4 characters):")
+        if ok and len(c.strip()) >= 4:
+            self.shared_code = c.strip()
+            self.accept()
+        elif ok:
+            QMessageBox.information(self, "Invoicing", "The code needs at least 4 characters.")
 
     def _new(self):
         n, ok = QInputDialog.getText(self, "Give a person a PIN", "Name of the person:")
@@ -254,7 +266,9 @@ class InvoicingPage(QWidget):
         self._unlocked = False
         self._is_owner = False
         self.invoices = []
+        self.queue = []
         self._load()
+        self._qload()
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
         self.stack = QStackedWidget()
@@ -301,6 +315,8 @@ class InvoicingPage(QWidget):
             bar.addWidget(b)
         bar.addStretch(1)
         mv.addLayout(bar)
+        from PySide6.QtWidgets import QTabWidget
+        self.tabs = QTabWidget()
         self.tbl = QTableWidget(0, 6)
         self.tbl.setHorizontalHeaderLabels(["Invoice no", "Date", "Client", "Reference", "Total", "Status"])
         self.tbl.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -309,7 +325,28 @@ class InvoicingPage(QWidget):
         self.tbl.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         self.tbl.verticalHeader().setVisible(False)
         self.tbl.doubleClicked.connect(lambda *_: self.edit_invoice())
-        mv.addWidget(self.tbl, 1)
+        self.tabs.addTab(self.tbl, "Invoices")
+        qw = QWidget()
+        qv = QVBoxLayout(qw)
+        qv.addWidget(QLabel("Houses sent here from Orders, waiting to be invoiced. Pick some (or none for all) and make the invoice: one invoice per client."))
+        qb = QHBoxLayout()
+        for text, fn, bold in (("Make invoice(s) from the selected", self.invoice_from_queue, True), ("Set the price...", self.queue_price, False), ("Remove from this list", self.queue_remove, False)):
+            b = QPushButton(text)
+            if bold:
+                b.setStyleSheet("font-weight:700;")
+            b.clicked.connect(fn)
+            qb.addWidget(b)
+        qb.addStretch(1)
+        qv.addLayout(qb)
+        self.qtbl = QTableWidget(0, 6)
+        self.qtbl.setHorizontalHeaderLabels(["Client", "Area", "House", "Description", "Price (excl. VAT)", "Sent here"])
+        self.qtbl.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.qtbl.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.qtbl.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.qtbl.verticalHeader().setVisible(False)
+        qv.addWidget(self.qtbl, 1)
+        self.tabs.addTab(qw, "Waiting to be invoiced")
+        mv.addWidget(self.tabs, 1)
         self.stack.addWidget(mp)
         self.refresh()
 
@@ -337,6 +374,56 @@ class InvoicingPage(QWidget):
                 self.invoices = [x for x in json.load(f) if isinstance(x, dict)]
         except Exception:
             self.invoices = []
+
+    def _qpath(self):
+        return os.path.join(self._M()._user_data_dir(), "invoice_queue.json")
+
+    def _qload(self):
+        try:
+            with open(self._qpath(), encoding="utf-8") as f:
+                self.queue = [x for x in json.load(f) if isinstance(x, dict)]
+        except Exception:
+            self.queue = []
+
+    def _qsave(self):
+        try:
+            tmp = self._qpath() + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self.queue, f, indent=1, ensure_ascii=False)
+            os.replace(tmp, self._qpath())
+        except Exception as e:
+            QMessageBox.warning(self, "Invoicing", "The list could not be saved: %s" % e)
+
+    def queue_houses(self, items):
+        """Orders sends its houses here. items: dicts with area, group, company, email, desc, price. Returns how many were added (a house already waiting or invoiced is not added twice)."""
+        n = 0
+        for it in items:
+            k = (it.get("area") or "", it.get("group") or "")
+            if any((q.get("area"), q.get("group")) == k and not q.get("invoice_void") for q in self.queue):
+                continue
+            q = dict(it)
+            q["queued"] = datetime.date.today().isoformat()
+            q["invoice"] = ""
+            self.queue.append(q)
+            n += 1
+        self._qsave()
+        self.refresh()
+        return n
+
+    def state_of(self, area, group):
+        """('', ...) when the house is not in invoicing, otherwise ('to invoice'|'invoiced'|'paid', invoice no)."""
+        for q in self.queue:
+            if (q.get("area") or "", q.get("group") or "") == (area or "", group or ""):
+                if not q.get("invoice"):
+                    return "to invoice", ""
+                inv = next((x for x in self.invoices if x.get("no") == q["invoice"]), None)
+                return ("paid" if inv is not None and inv.get("status") == "Paid" else "invoiced"), q["invoice"]
+        return "", ""
+
+    def unqueue(self, area, group):
+        self.queue = [q for q in self.queue if not ((q.get("area") or "", q.get("group") or "") == (area or "", group or "") and not q.get("invoice"))]
+        self._qsave()
+        self.refresh()
 
     def _save(self):
         try:
@@ -389,6 +476,15 @@ class InvoicingPage(QWidget):
                 return u.get("name", "") or "user"
         return ""
 
+    def _shared_ok(self, code):
+        o = self._S().get("inv_shared") or {}
+        return bool(o.get("hash")) and secrets.compare_digest(_hash(code, o["salt"]), o["hash"])
+
+    def set_shared_code(self, code):
+        salt = secrets.token_hex(16)
+        self._S()["inv_shared"] = {"salt": salt, "hash": _hash(code, salt)}
+        self._save_settings()
+
     def new_user_pin(self, name):
         """Makes a PIN for a person (the owner hands it to them). Returns the PIN, which is only shown now: the program keeps only a scrambled copy."""
         pin = "".join(secrets.choice("0123456789") for _ in range(6))
@@ -433,13 +529,13 @@ class InvoicingPage(QWidget):
         return True
 
     def _unlock_clicked(self):
-        if self.owner_set() and (self._S().get("inv_users") or []):
-            pin, ok = QInputDialog.getText(self, "Invoicing", "Your PIN:", QLineEdit.EchoMode.Password)
+        if self.owner_set() and ((self._S().get("inv_users") or []) or (self._S().get("inv_shared") or {}).get("hash")):
+            pin, ok = QInputDialog.getText(self, "Invoicing", "Your PIN or access code:", QLineEdit.EchoMode.Password)
             if not ok:
                 return
             if self._check_pin(pin):
                 self._unlocked, self._is_owner = True, True
-            elif self._user_pin(pin):
+            elif self._shared_ok(pin) or self._user_pin(pin):
                 self._unlocked, self._is_owner = True, False
             else:
                 QMessageBox.warning(self, "Invoicing", "That PIN is not right.")
@@ -465,6 +561,9 @@ class InvoicingPage(QWidget):
             self._save_settings()
             if d.want_pin:
                 self._set_pin()
+            if d.shared_code:
+                self.set_shared_code(d.shared_code)
+                QMessageBox.information(self, "Invoicing", "The shared access code is set. Give it to the people who may use invoicing.")
             if d.new_user:
                 pin = self.new_user_pin(d.new_user)
                 QInputDialog.getText(self, "PIN for %s" % d.new_user, "Give %s this PIN. It is shown only now, so copy it before you close this:" % d.new_user, QLineEdit.EchoMode.Normal, pin)
@@ -504,6 +603,22 @@ class InvoicingPage(QWidget):
             if inv.get("status") != "Paid":
                 out += tot
         self.sum_lbl.setText("Outstanding: <b>%s</b>" % money(out))
+        waiting = [q for q in self.queue if not q.get("invoice")]
+        self.tabs.setTabText(1, "Waiting to be invoiced (%d)" % len(waiting))
+        self.qtbl.setRowCount(0)
+        for q in waiting:
+            i = self.qtbl.rowCount()
+            self.qtbl.insertRow(i)
+            for c, x in enumerate((q.get("company") or "(no client)", q.get("area") or "", q.get("group") or "", q.get("desc") or "", money(q.get("price")) if q.get("price") not in (None, "") else "to fill in", q.get("queued", ""))):
+                it = QTableWidgetItem(str(x))
+                it.setData(Qt.ItemDataRole.UserRole, (q.get("area") or "", q.get("group") or ""))
+                self.qtbl.setItem(i, c, it)
+        try:                                                     # Orders shows what is waiting, invoiced or paid on its houses
+            rp_ = getattr(self.win, "register_page", None)
+            if rp_ is not None and getattr(rp_, "_ltiles", None) and "Order" in rp_._ltiles:
+                rp_._rebuild_tiles("Order")
+        except Exception:
+            pass
 
     def _cur(self):
         r = self.tbl.currentRow()
@@ -512,6 +627,58 @@ class InvoicingPage(QWidget):
             return None
         no = self.tbl.item(r, 0).data(Qt.ItemDataRole.UserRole)
         return next((x for x in self.invoices if x.get("no") == no), None)
+
+    def _qsel(self):
+        keys = {self.qtbl.item(r, 0).data(Qt.ItemDataRole.UserRole) for r in {x.row() for x in self.qtbl.selectedIndexes()}}
+        waiting = [q for q in self.queue if not q.get("invoice")]
+        return [q for q in waiting if (q.get("area") or "", q.get("group") or "") in keys] if keys else waiting
+
+    def queue_price(self):
+        sel = self._qsel()
+        if not sel:
+            return
+        t, ok = QInputDialog.getText(self, "Price", "Price per house, excluding VAT (for the %d chosen):" % len(sel))
+        if ok:
+            try:
+                v = float(t.replace(" ", "").replace(",", ".").replace("R", ""))
+            except ValueError:
+                return
+            for q in sel:
+                q["price"] = v
+            self._qsave()
+            self.refresh()
+
+    def queue_remove(self):
+        sel = self._qsel()
+        if sel and QMessageBox.question(self, "Invoicing", "Remove %d house%s from this list? They stay in Orders." % (len(sel), "" if len(sel) == 1 else "s")) == QMessageBox.StandardButton.Yes:
+            self.queue = [q for q in self.queue if q not in sel]
+            self._qsave()
+            self.refresh()
+
+    def invoice_from_queue(self):
+        sel = self._qsel()
+        if not sel:
+            QMessageBox.information(self, "Invoicing", "Nothing is waiting to be invoiced.")
+            return
+        byc = {}
+        for q in sel:
+            byc.setdefault(q.get("company") or "", []).append(q)
+        for comp, qs in byc.items():
+            b = self.biz()
+            try:
+                terms = int(b.get("terms", 30))
+            except ValueError:
+                terms = 30
+            today = datetime.date.today()
+            areas = sorted({q.get("area") for q in qs if q.get("area")})
+            inv = {"no": self.next_no(), "date": today.isoformat(), "due": (today + datetime.timedelta(days=terms)).isoformat(), "vat": True, "notes": b.get("note", ""),
+                   "client": comp, "client_email": next((q.get("email") for q in qs if q.get("email")), ""), "ref": ", ".join(areas),
+                   "lines": [{"desc": q.get("desc") or q.get("group"), "qty": 1, "price": q.get("price") or 0} for q in qs]}
+            if self._edit(inv, True, [(q.get("area"), q.get("group")) for q in qs]):
+                for q in qs:
+                    q["invoice"] = inv["no"]
+                self._qsave()
+        self.refresh()
 
     def next_no(self):
         b = self.biz()
@@ -542,20 +709,24 @@ class InvoicingPage(QWidget):
             c.pop("paid_date", None)
             self._edit(c, True)
 
-    def _edit(self, inv, new):
+    def _edit(self, inv, new, houses=None):
         d = InvoiceDialog(inv, self.vat_rate(), self)
         if not d.exec():
-            return
+            return False
         v = d.values()
         if not v["no"] or any(x.get("no") == v["no"] and x is not inv for x in self.invoices):
             QMessageBox.information(self, "Invoicing", "That invoice number is empty or already used. Pick another number.")
-            return self._edit(dict(inv, **v), new)
+            inv.update(v)
+            return self._edit(inv, new, houses)
         inv.update(v)
         inv.setdefault("status", "Unpaid")
+        if houses:
+            inv["houses"] = [list(h) for h in houses]
         if new:
             self.invoices.append(inv)
         self._save()
         self.refresh()
+        return True
 
     def toggle_paid(self):
         inv = self._cur()
@@ -575,6 +746,10 @@ class InvoicingPage(QWidget):
             return
         if QMessageBox.question(self, "Invoicing", "Delete invoice %s? This cannot be undone. (Invoice numbers should not be reused, so only delete mistakes.)" % inv.get("no")) == QMessageBox.StandardButton.Yes:
             self.invoices = [x for x in self.invoices if x is not inv]
+            for q in self.queue:
+                if q.get("invoice") == inv.get("no"):
+                    q["invoice"] = ""                         # the houses wait to be invoiced again
+            self._qsave()
             self._save()
             self.refresh()
 

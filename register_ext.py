@@ -17,7 +17,7 @@ from PySide6.QtCore import Qt, QTimer, QUrl, Signal, QPoint, QSize
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (QWidget, QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QTableWidget,
-                               QApplication, QTableWidgetItem, QVBoxLayout, QStackedWidget, QScrollArea, QFrame, QSizePolicy)
+                               QApplication, QInputDialog, QTableWidgetItem, QVBoxLayout, QStackedWidget, QScrollArea, QFrame, QSizePolicy)
 
 LOGK = ("group", "priority", "type", "rev", "date", "order", "text", "extras", "kinds", "by", "req_subject", "req_date", "req_from", "sent_date", "sent_to", "status", "by_name", "by_email", "sent_subject")
 LOGC = ["House or block", "Priority", "Type", "Rev", "Date", "Order number", "What was ordered or changed", "Extras the client wants", "Kind of change", "Asked by", "The client's email", "Received",
@@ -2326,6 +2326,11 @@ class LogMixin:
             rb.setToolTip("Reply with the order, the changes, the revised drawings and your signature")
             rb.clicked.connect(lambda _c=False: self.reply_houses())
             back.addWidget(rb)
+            ib = QPushButton("R  Send to invoicing")
+            ib.setStyleSheet("font-weight:700;")
+            ib.setToolTip("Sends this house to the invoicing tool, where it waits to be invoiced")
+            ib.clicked.connect(lambda _c=False: self.send_to_invoicing())
+            back.addWidget(ib)
         back.addWidget(dn)
         if not hasattr(self, "_done_btns"):
             self._done_btns = {}
@@ -4221,6 +4226,11 @@ class LogMixin:
             nb.clicked.connect(self.new_order)
             bar.addWidget(nb)
             bar.addWidget(self._search_button())
+            sc_b = QPushButton("\u2713  Select the completed")
+            sc_b.setStyleSheet("font-weight:700;")
+            sc_b.setToolTip("Picks every completed house of this area. You can also drag a box around houses with the mouse to pick them.")
+            sc_b.clicked.connect(self._select_completed)
+            bar.addWidget(sc_b)
             self._selbar = QPushButton("")
             self._selbar.setStyleSheet("font-weight:700;color:#4aa3ff;")
             self._selbar.clicked.connect(self._sel_menu)
@@ -4252,6 +4262,8 @@ class LogMixin:
         if kind == "Order":
             self._legend(v)
         self._ltiles[kind] = (host, gl, sc, [])
+        if kind == "Order":
+            host.installEventFilter(self._band_filter(host))
         sc.viewport().installEventFilter(self._tile_filter(kind))
         return pg
 
@@ -4437,6 +4449,7 @@ class LogMixin:
             elif last:
                 lines.append("last: %s" % last)
             btn = QPushButton()
+            btn._house = name
             btn.setFixedSize(self._sc(220), self._sc(100))
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setStyleSheet(qss + ("QPushButton{border:2px solid #d8132b;}" if urg else "") + ("QPushButton{background:%s;}" % ("#ffe3e6" if lt else "#3a1b20") if urg else "")
@@ -4445,8 +4458,15 @@ class LogMixin:
                 lines.append("<b style='color:#d8932f'>\u26a0 sent again (%d\u00d7)</b>" % (rep_n + 1))
             if fwd_ and not isdone:
                 lines.append("<b style='color:#d8932f'>\u21aa forwarded</b>")
+            if kind == "Order":
+                ip_ = getattr(self.host, "invoicing_page", None)
+                if ip_ is not None and ip_.allowed():
+                    st_, no_ = ip_.state_of(self._larea.get("Order"), name)
+                    if st_:
+                        lines.append("<b style='color:%s'>%s</b>" % (("#2ea44f" if st_ == "paid" else "#d8932f" if st_ == "to invoice" else "#4aa3ff"),
+                                                                      {"to invoice": "R  waiting to be invoiced", "invoiced": "R  invoiced %s" % no_, "paid": "R  paid %s" % no_}[st_]))
             if insel:
-                lines.append("<b style='color:#4aa3ff'>\u2713 in the client report</b>")
+                lines.append("<b style='color:#4aa3ff'>\u2713 picked</b>")
                 btn.setStyleSheet(btn.styleSheet() + "QPushButton{border:2px dashed #4aa3ff;}")
             lab = QLabel("<br>".join(lines), btn)
             lab.setStyleSheet("background:transparent;border:none;color:%s;" % txt)
@@ -4792,9 +4812,12 @@ class LogMixin:
         insel = (self._larea.get("Order"), name) in getattr(self, "_sel_houses", set())
         a5 = m.addAction("Remove from the client report" if insel else "Select for the client report") if kind == "Order" else None
         a6 = m.addAction("Reply to the client..." if not (insel and len(self._sel_names()) > 1) else "Reply to the client for the %d picked houses..." % len(self._sel_names())) if kind == "Order" else None
+        a7 = m.addAction("Send to invoicing..." if not (insel and len(self._sel_names()) > 1) else "Send the %d picked houses to invoicing..." % len(self._sel_names())) if kind == "Order" else None
         a2 = m.addAction("Delete all the %s of %s..." % ("orders" if kind == "Order" else "changes", name))
         pick = m.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
-        if a6 is not None and pick is a6:
+        if a7 is not None and pick is a7:
+            self.send_to_invoicing(self._sel_names() if (insel and len(self._sel_names()) > 1) else [name])
+        elif a6 is not None and pick is a6:
             self.reply_houses(self._sel_names() if (insel and len(self._sel_names()) > 1) else [name])
         elif a5 is not None and pick is a5:
             self._toggle_sel(name)
@@ -5258,6 +5281,125 @@ class LogMixin:
         except Exception:
             pass
 
+    def _band_filter(self, host):
+        """Drag a box with the left mouse button over the houses to pick them (hold Ctrl to add to the ones already picked)."""
+        from PySide6.QtCore import QObject, QEvent, QRect
+        from PySide6.QtWidgets import QRubberBand
+        page = self
+
+        class B(QObject):
+            o = None
+            rb = None
+
+            def eventFilter(s, obj, ev):
+                if obj is not host:
+                    return False
+                t = ev.type()
+                if t == QEvent.Type.MouseButtonPress and ev.button() == Qt.MouseButton.LeftButton:
+                    s.o = ev.position().toPoint()
+                    if s.rb is None:
+                        s.rb = QRubberBand(QRubberBand.Shape.Rectangle, host)
+                    s.rb.setGeometry(QRect(s.o, s.o))
+                    s.rb.show()
+                    return True
+                if t == QEvent.Type.MouseMove and s.o is not None:
+                    s.rb.setGeometry(QRect(s.o, ev.position().toPoint()).normalized())
+                    return True
+                if t == QEvent.Type.MouseButtonRelease and s.o is not None:
+                    r = s.rb.geometry()
+                    s.rb.hide()
+                    s.o = None
+                    page._band_select(r, bool(ev.modifiers() & Qt.KeyboardModifier.ControlModifier))
+                    return True
+                return False
+        b = B(self)
+        self._tile_filters = getattr(self, "_tile_filters", []) + [b]
+        return b
+
+    def _band_select(self, rect, add):
+        area = self._larea.get("Order")
+        tiles = self._ltiles["Order"][3]
+        hit = [w._house for w in tiles if getattr(w, "_house", None) and w.geometry().intersects(rect)]
+        s_ = getattr(self, "_sel_houses", None)
+        if s_ is None:
+            s_ = self._sel_houses = set()
+        if rect.width() < 6 and rect.height() < 6:
+            if not add:
+                self._sel_houses = {k for k in s_ if k[0] != area}                    # a click on empty space clears the picks
+        else:
+            if not add:
+                s_ = self._sel_houses = {k for k in s_ if k[0] != area}
+            s_.update((area, n) for n in hit)
+        self._rebuild_tiles("Order")
+        self._update_selbar()
+
+    def _select_completed(self):
+        area = self._larea.get("Order")
+        done = self._done_houses("Order")
+        names = [n for n in self._tile_names("Order") if n in done]
+        s_ = getattr(self, "_sel_houses", None)
+        if s_ is None:
+            s_ = self._sel_houses = set()
+        if not names:
+            QMessageBox.information(self, "Orders", "No house in this area is marked completed yet.")
+            return
+        keys = {(area, n) for n in names}
+        if keys <= s_:
+            s_.difference_update(keys)                                                 # all of them were picked: a second click lets them go
+        else:
+            s_.update(keys)
+        self._rebuild_tiles("Order")
+        self._update_selbar()
+
+    def send_to_invoicing(self, names=None):
+        """Send houses (the one that is open, or the picked ones) to the invoicing tool, where they wait to be invoiced."""
+        names = list(names or [])
+        if not names:
+            g = self._lgroup.get("Order")
+            names = [g] if g else []
+        if not names:
+            return
+        ip = getattr(self.host, "invoicing_page", None)
+        if ip is None:
+            QMessageBox.information(self, "Orders", "The invoicing tool is not available in this copy of the program.")
+            return
+        if not ip.allowed():
+            QMessageBox.information(self, "Orders", "Only people the owner has allowed can send orders to invoicing. Open the Invoicing tool and unlock it with your PIN or access code first.")
+            return
+        area = self._larea.get("Order")
+        done = self._done_houses("Order")
+        notdone = [n for n in names if n not in done]
+        if notdone and QMessageBox.question(self, "Orders", "%d of these houses %s not marked completed yet (%s). Send them to invoicing anyway?"
+                                            % (len(notdone), "is" if len(notdone) == 1 else "are", ", ".join(notdone[:4]) + ("..." if len(notdone) > 4 else ""))) != QMessageBox.StandardButton.Yes:
+            return
+        S = self._M().SETTINGS
+        pr = S.setdefault("inv_price_area", {})
+        t, ok = QInputDialog.getText(self, "Send to invoicing", "Price per house, excluding VAT (%d house%s). Leave empty to fill it in on the invoice:" % (len(names), "" if len(names) == 1 else "s"), text=str(pr.get(area or "_", "")))
+        if not ok:
+            return
+        price = None
+        if t.strip():
+            try:
+                price = float(t.replace(" ", "").replace(",", ".").replace("R", ""))
+                pr[area or "_"] = t.strip()
+                self._M().save_settings()
+            except ValueError:
+                QMessageBox.information(self, "Orders", "That price is not a number.")
+                return
+        a = next((x for x in self.areas if x["name"] == area), None) if area else None
+        comp = (a or {}).get("company") or ""
+        c = next((x for x in self.companies if x["name"] == comp), None)
+        email = (str(c.get("emails", "")).split("\n")[0].strip() if c else "")
+        items = []
+        for n in names:
+            nch = len(self._changes_of(n, area))
+            items.append({"area": area or "", "group": n, "company": comp, "email": email, "price": price,
+                          "desc": "%s, %s: plan drawings%s" % (n, area or "", (" and %d change%s" % (nch, "" if nch == 1 else "s")) if nch else "")})
+        added = ip.queue_houses(items)
+        self._rebuild_tiles("Order")
+        QMessageBox.information(self, "Orders", "%d house%s sent to invoicing%s. Open the Invoicing tool, Waiting to be invoiced, to make the invoice."
+                                % (added, "" if added == 1 else "s", ("" if added == len(names) else " (%d already there)" % (len(names) - added))))
+
     def _toggle_sel(self, name):
         s_ = getattr(self, "_sel_houses", None)
         if s_ is None:
@@ -5277,7 +5419,7 @@ class LogMixin:
             return
         n = len(self._sel_names())
         b.setVisible(n > 0)
-        b.setText("Client report for the %d picked house%s  \u25be" % (n, "" if n == 1 else "s"))
+        b.setText("%d picked house%s: report, reply or invoice  \u25be" % (n, "" if n == 1 else "s"))
 
     def _sel_menu(self):
         from PySide6.QtWidgets import QMenu
@@ -5290,6 +5432,7 @@ class LogMixin:
         ac = m.addAction("Save as PDF...")
         ae = m.addAction("Email it to the client...")
         ar = m.addAction("Reply to the client about these houses (with drawings)...")
+        ai = m.addAction("Send these houses to invoicing...")
         m.addSeparator()
         am = m.addAction("Mark these houses as completed")
         ax = m.addAction("Clear the picks")
@@ -5302,6 +5445,8 @@ class LogMixin:
             self.area_progress_email(area, None, False, names)
         elif pick is ar:
             self.reply_houses(names)
+        elif pick is ai:
+            self.send_to_invoicing(names)
         elif pick is am:
             for g in names:
                 self.set_house_done("Order", g, True)
