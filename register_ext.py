@@ -1123,11 +1123,33 @@ class LogMixin:
 
     # ----- watching the Gmail inbox for orders -----
     def _inbox_setup(self):
+        if getattr(self, "_inbox_timer", None) is not None:
+            return                                   # set up once: a second set-up would make every email arrive twice
         self._inbox_busy = False
         self._inbox_timer = QTimer(self)
         self._inbox_timer.timeout.connect(self.inbox_check)
-        self.inbox_done.connect(self._inbox_result)
+        self.inbox_done.connect(self._inbox_result, Qt.ConnectionType.UniqueConnection)
         QTimer.singleShot(4000, self._inbox_apply)
+
+    @staticmethod
+    def _order_key(e):
+        """Two lines with the same key are the same order: same house, same wording, same email."""
+        return (e.get("type", ""), re.sub(r"\s+", " ", str(e.get("group", ""))).strip().lower(), re.sub(r"\s+", " ", str(e.get("text", ""))).strip().lower(),
+                re.sub(r"\s+", " ", str(e.get("req_subject", ""))).strip().lower(), str(e.get("req_from", "")).strip().lower())
+
+    def inbox_dedupe(self):
+        """Removes copies of an order that came in more than once from the inbox (unsent lines only). Returns how many were removed."""
+        seen, drop = set(), []
+        for e in self.log:
+            if e.get("type") != "Order" or e.get("sent_date") or not e.get("req_subject"):
+                continue
+            k = self._order_key(e)
+            if k in seen:
+                drop.append(e)
+            seen.add(k)
+        for e in drop:
+            self.log.remove(e)
+        return len(drop)
 
     def inbox_dialog(self):
         InboxDialog(self, self).exec()
@@ -1135,6 +1157,8 @@ class LogMixin:
     def _inbox_apply(self, now=False):
         S = self._M().SETTINGS
         self._inbox_timer.stop()
+        if self.inbox_dedupe():
+            self.refresh_log()
         if S.get("inbox_on"):
             self._inbox_timer.start(InboxDialog._secs(S) * 1000)
             if now or True:
@@ -1188,7 +1212,11 @@ class LogMixin:
         seen = list(S.get("inbox_seen", []))
         houses = [g["name"] for g in self.groups]
         made = 0
+        have = {self._order_key(e) for e in self.log if e.get("req_subject")}
+        have_ids = {e.get("msg_id") for e in self.log if e.get("msg_id")}
         for it in reversed(items):
+            if it["id"] in seen or it["id"] in have_ids:
+                continue
             seen.append(it["id"])
             if base:
                 continue
@@ -1201,12 +1229,17 @@ class LogMixin:
                 e = {k: "" for k in LOGK}
                 e.update({"group": o["group"] or "Not sure which house", "type": "Order", "date": datetime.date.today().isoformat(), "order": o["order"], "text": o["text"],
                           "status": "New", "kinds": o.get("kinds", ""), "req_subject": it["subject"], "req_date": rd, "req_from": it["from"], "req_path": it["path"], "sent_path": "", "drawings": "",
-                          "by_name": nm, "by_email": addr})
+                          "by_name": nm, "by_email": addr, "msg_id": it["id"]})
+                k = self._order_key(e)
+                if k in have:
+                    continue                      # this very order is already in the list
+                have.add(k)
                 self.log.append(e)
                 made += 1
         S["inbox_seen"] = seen[-500:]
         M.save_settings()
-        if made:
+        removed = self.inbox_dedupe()
+        if made or removed:
             self.refresh_log()
             try:
                 from PySide6.QtWidgets import QApplication
