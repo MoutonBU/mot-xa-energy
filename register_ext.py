@@ -974,7 +974,7 @@ class InboxDialog(QDialog):
         self.allow.clicked.connect(self._allow)
         v.addWidget(self.allow)
         f = QFormLayout()
-        self.words = QLineEdit(self.S.get("inbox_words", "order"))
+        self.words = QLineEdit(self.S.get("inbox_words", "order, orders"))
         self.words.setPlaceholderText("order, new order, bestelling")
         f.addRow("Subject words (any of them)", self.words)
         self.secs = QSpinBox()
@@ -1036,7 +1036,7 @@ class InboxDialog(QDialog):
             return
         if self.on.isChecked() and not S.get("inbox_on") and not self.old.isChecked():
             S["inbox_baseline"] = True            # the first look only notes what is already there
-        S["inbox_words"], S["inbox_secs"], S["inbox_on"] = self.words.text().strip() or "order", self.secs.value(), self.on.isChecked()
+        S["inbox_words"], S["inbox_secs"], S["inbox_on"] = self.words.text().strip() or "order, orders", self.secs.value(), self.on.isChecked()
         if self.old.isChecked():
             S["inbox_seen"] = []
             S.pop("inbox_baseline", None)
@@ -1152,7 +1152,7 @@ class LogMixin:
         if not ok or self._inbox_busy:
             return
         self._inbox_busy = True
-        words, seen, folder = S.get("inbox_words", "order"), set(S.get("inbox_seen", [])), os.path.join(M._user_data_dir(), "inbox")
+        words, seen, folder = S.get("inbox_words", "order, orders"), set(S.get("inbox_seen", [])), os.path.join(M._user_data_dir(), "inbox")
 
         def work():
             try:
@@ -1185,7 +1185,7 @@ class LogMixin:
                 rd = short_date(parsedate_to_datetime(it["date"]).date().isoformat())
             except Exception:
                 rd = it["date"][:16]
-            for o in mail_inbox.parse_orders(it["subject"], it["body"], houses):
+            for o in mail_inbox.parse_orders(it["subject"], it["body"], houses, it.get("html", "")):
                 e = {k: "" for k in LOGK}
                 e.update({"group": o["group"] or "Not sure which house", "type": "Order", "date": datetime.date.today().isoformat(), "order": o["order"], "text": o["text"],
                           "status": "New", "req_subject": it["subject"], "req_date": rd, "req_from": it["from"], "req_path": it["path"], "sent_path": "", "drawings": "",
