@@ -2089,6 +2089,10 @@ class LogMixin:
         or top of the email; an estate written like 'Albertsdal Ext 46' (a missing area is made for it); the area this house already sits in."""
         if from_table.strip():
             return self._ensure_area(from_table.strip())
+        import mail_inbox
+        pa = mail_inbox.pipe_area(subject)
+        if pa:
+            return self._ensure_area(pa)            # "Urbika Erf 670 | PTN 38": what is before the | is the area
         bycode = self._area_by_code(subject)
         if bycode:
             return bycode

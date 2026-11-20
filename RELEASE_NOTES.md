@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.54**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.55**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **Subjects like 'Urbika Erf 670 | PTN 38'.** What stands before the | is the area (Urbika Erf 670 is made if it is new) and what follows is the stand (PTN 38, or Stand 2037 and so on). Replies ('Re: ...') become changes on the same stand. Works for every company's emails.
 
 - **Order progress PDF per area.** Right-click an area square > Print order progress (PDF for the client)... It lists every house in the area, split into Completed and Still to be done, with each order line, order number, extras and the changes made inside it, ready to send to the client as the scope of work.
 

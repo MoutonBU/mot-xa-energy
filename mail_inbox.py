@@ -80,7 +80,7 @@ def orders_from_tables(html, houses=()):
     return out
 
 
-PORTION = re.compile(r"(?<![\w])(?:(?P<farm>[A-Za-z]{2,5}\s?\d{1,5})\s*[-_/ ]\s*)?(?P<p>PTN|PT|PORTION|PORT)\s*\.?\s*(?P<n>\d{1,4})(?![\w])", re.I)
+PORTION = re.compile(r"(?<![\w])(?:(?P<farm>[A-Za-z]{2,5}\s?\d{1,5})[\s\-_/|,:\u2013\u2014]+)?(?P<p>PTN|PT|PORTION|PORT)\s*\.?\s*(?P<n>\d{1,4})(?![\w])", re.I)
 
 
 def portion_code(text):
@@ -96,6 +96,21 @@ def portion_code(text):
 
 _AREA_LEAD = {"new", "order", "orders", "urgent", "re", "fwd", "fw", "aw", "for", "stand", "please", "hi", "dear", "the", "from", "at", "in", "of", "to",
               "house", "houses", "change", "changes", "dringend", "bestelling", "final", "finals", "plan", "plans", "extras"}
+
+
+def pipe_area(subject):
+    """'Urbika Erf 670 | PTN 38' (also 'Blue Hills Ext 120 | Stand 2037'): what stands before the | is the area. '' when the subject has no | or nothing usable before it."""
+    t = re.sub(r"^\s*((re|fwd?|aw)\s*:\s*)+", "", str(subject), flags=re.I)
+    if "|" not in t:
+        return ""
+    left = t.split("|", 1)[0]
+    words = [w for w in re.split(r"\s+", left.strip()) if w]
+    while words and words[0].lower().strip(".,:-") in _AREA_LEAD:
+        words.pop(0)
+    a = " ".join(words).strip(" -,:")
+    if not a or len(a) < 3:
+        return ""
+    return re.sub(r"\b(?:ARF|ERF)\s*(\d)", r"Erf \1", a, flags=re.I)
 
 
 def portion_area(text):
