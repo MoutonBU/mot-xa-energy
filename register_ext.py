@@ -1732,7 +1732,8 @@ class LogMixin:
         if not g:
             return
         chs = self._changes_of(g)
-        ords_ = [e for e in self.log if self.log_kind(e) == "Order" and e.get("group") == g and e.get("req_img") and os.path.exists(e.get("req_img"))]
+        ords_ = [e for e in self.log if self.log_kind(e) == "Order" and e.get("group") == g and (self._larea.get("Order") is None or self._area_of(e) == self._larea.get("Order"))
+                 and ((e.get("req_img") and os.path.exists(e.get("req_img"))) or e.get("repeat") or e.get("fwd"))]
         if ords_:
             oc = QFrame()
             oc.setObjectName("och")
@@ -1741,7 +1742,18 @@ class LogMixin:
             ov.setContentsMargins(8, 6, 8, 6)
             ol = QLabel("<b>The order email</b>")
             ov.addWidget(ol)
-            self._email_thumb(ov, ords_[0])
+            o0 = ords_[0]
+            if o0.get("repeat"):
+                w_ = QLabel("\u26a0 <b>Possible duplicate:</b> this same order came in again %d time%s: %s" % (int(o0["repeat"]), "" if int(o0["repeat"]) == 1 else "s", "; ".join(o0.get("repeat_info", [])[-5:])))
+                w_.setWordWrap(True)
+                w_.setStyleSheet("color:#d8932f;")
+                ov.addWidget(w_)
+            if o0.get("fwd"):
+                f_ = QLabel("\u21aa <b>Forwarded:</b> this order reached you as a forwarded email, so check who it is really for.")
+                f_.setWordWrap(True)
+                f_.setStyleSheet("color:#d8932f;")
+                ov.addWidget(f_)
+            self._email_thumb(ov, o0)
             lay.addWidget(oc)
         self._ch_title.setText("Changes the client asked for on %s (%d)%s" % (g, len(chs), ", newest first. Click a change to open it." if chs else ": none yet. Follow-up emails about this house appear here."))
         if not hasattr(self, "_ch_open"):
@@ -2166,7 +2178,7 @@ class LogMixin:
         took = False
         for o in mail_inbox.parse_email_orders(it, houses):
             grp = o["group"] or "Not sure which house"
-            area = force_area if force_area is not None else self._area_for(it["subject"], it["body"], o["group"], o.get("area", ""), allow_same=False)
+            area = force_area if force_area is not None else self._area_for(it["subject"], it["body"], o["group"], o.get("area", ""), allow_same=False, addr=addr)
             same_g = [x for x in self.log if x.get("type") == "Order" and o["group"] and _gnorm(x.get("group")) == _gnorm(grp)]
             if area:
                 existing = [x for x in same_g if self._area_of(x) == area]        # the same stand number in another area is another house
@@ -2174,12 +2186,17 @@ class LogMixin:
                 existing = same_g                                                # the email names no area: it is about the house that is already there
                 if existing and existing[0].get("area"):
                     area = existing[0]["area"]
+                elif not existing:
+                    sc_ = self._company_of_sender(addr)
+                    if sc_ is not None and str(sc_.get("default_area", "")).strip():
+                        area = self._ensure_area(sc_["default_area"].strip())      # the company's usual area
             comp = self._comp_of(existing[0]) if existing else self._company_for(it["subject"], it["body"], addr, area, grp)
             ad_ = next((x for x in self.areas if x["name"] == area), None) if area else None
             if ad_ is not None and not ad_.get("company") and comp:
                 ad_["company"] = comp                                  # an area made by an email takes the company of the sender
+            is_fwd = bool(re.match(r"\s*(fwd?|fw)\s*:", it["subject"], re.I))
             e = {k: "" for k in LOGK}
-            e.update({"group": existing[0]["group"] if existing else grp, "company": comp, "type": "Order", "date": datetime.date.today().isoformat(), "order": o["order"], "text": o["text"],
+            e.update({"group": existing[0]["group"] if existing else grp, "company": comp, "type": "Order", "fwd": is_fwd, "date": datetime.date.today().isoformat(), "order": o["order"], "text": o["text"],
                       "extras": o.get("extras", ""), "status": "New", "kinds": o.get("kinds", ""), "req_subject": it["subject"], "req_date": rd, "req_from": it["from"],
                       "req_path": "", "sent_path": "", "drawings": "", "by_name": nm, "by_email": addr, "msg_id": it["id"], "area": area})
             k = self._order_key(e)
@@ -2209,7 +2226,7 @@ class LogMixin:
                 ce.update({"group": e["group"], "type": "Change", "rev": str(nrev), "date": e["date"], "text": ctext or "(extras)", "extras": e["extras"], "status": "New",
                            "req_subject": it["subject"], "req_date": rd, "req_from": it["from"], "req_path": "", "sent_path": "", "drawings": "", "by_name": nm, "by_email": addr,
                            "msg_id": it["id"], "area": e["area"], "company": e["company"], "priority": "Urgent" if urgent else "", "of_order": True,
-                           "kinds": self._guess_kind(ctext), "kinds_auto": True})
+                           "kinds": self._guess_kind(ctext), "kinds_auto": True, "fwd": is_fwd})
                 self.log.append(ce)
                 mem.append(ch)
                 if urgent:
@@ -2229,6 +2246,12 @@ class LogMixin:
                 wanted = ""
             if k in have or (kh in mem and not st.get("force")):
                 st["dups"] = st.get("dups", 0) + 1
+                orig = next((x for x in self.log if x.get("type") == "Order" and self._order_key(x) == k), None)
+                if orig is not None and it["id"] != orig.get("msg_id"):
+                    orig["repeat"] = int(orig.get("repeat", 0) or 0) + 1                 # the same order came in again, from this email
+                    orig.setdefault("repeat_info", []).append("%s from %s%s" % (rd, nm or addr, " (forwarded)" if is_fwd else ""))
+                    if orig.get("status") == "Seen":
+                        orig["status"] = "New"
                 continue                                              # the same order came in before: only added once (Check now brings back one you deleted)
             if urgent:
                 e["priority"] = "Urgent"
@@ -2409,9 +2432,27 @@ class LogMixin:
                     return a["name"]
         return ""
 
-    def _area_for(self, subject, body, group, from_table="", allow_same=True):
+    def _company_of_sender(self, addr):
+        return next((c for c in self.companies if addr and self._addr_in(addr, self._company_emails(c))), None)
+
+    def _rule_area(self, addr, subject, body):
+        """The area that the sender's company rules ('BH = Blue Hills Ext 120') name for this email, or ''."""
+        c = self._company_of_sender(addr)
+        if c is None:
+            return ""
+        hay = _gnorm(str(subject) + " " + str(body)[:1500])
+        for ln in str(c.get("rules", "")).split("\n"):
+            m = re.match(r"\s*(.+?)\s*(?:=>|->|=|:)\s*(.+?)\s*$", ln)
+            if m and len(_gnorm(m.group(1))) >= 2 and _gnorm(m.group(1)) in hay:
+                return m.group(2).strip()
+        return ""
+
+    def _area_for(self, subject, body, group, from_table="", allow_same=True, addr=""):
         """The area (name, or "" for Not sorted) for an incoming order. In order: the Township column; an existing area whose name or email words appear in the subject
         or top of the email; an estate written like 'Albertsdal Ext 46' (a missing area is made for it); the area this house already sits in."""
+        ra = self._rule_area(addr, subject, body)
+        if ra:
+            return self._ensure_area(ra)                  # the company's own rule comes first
         if from_table.strip():
             return self._ensure_area(from_table.strip())
         import mail_inbox
@@ -2751,7 +2792,7 @@ class LogMixin:
         elif pick is a3:
             self.delete_company(name)
 
-    def _company_dialog(self, name="", emails="", keys=""):
+    def _company_dialog(self, name="", emails="", keys="", rules="", default_area=""):
         d = QDialog(self)
         d.setWindowTitle("Company")
         d.setMinimumWidth(500)
@@ -2767,6 +2808,13 @@ class LogMixin:
         f.addRow("Company name", nm)
         f.addRow("Email addresses (one per line, or @domain)", em)
         f.addRow("Words in the subject (optional)", kw)
+        rl = QPlainTextEdit(rules)
+        rl.setFixedHeight(80)
+        rl.setPlaceholderText("BH = Blue Hills Ext 120\nARF670 = Urbika Erf 670")
+        f.addRow("This company's own rules (word = area, one per line)", rl)
+        da = QLineEdit(default_area)
+        da.setPlaceholderText("leave empty to use Not sorted")
+        f.addRow("Area when the email names none (optional)", da)
         v.addLayout(f)
         t = QLabel("Mail from these addresses is looked at even when the subject has no order word, and its orders are filed in this company. "
                    "A company's areas are chosen inside it (right-click an area > Edit).")
@@ -2784,7 +2832,8 @@ class LogMixin:
         v.addLayout(row)
         if d.exec() != QDialog.DialogCode.Accepted or not nm.text().strip():
             return None
-        return nm.text().strip(), "\n".join(x.strip() for x in re.split(r"[\n,;]+", em.toPlainText()) if x.strip()), kw.text().strip()
+        return (nm.text().strip(), "\n".join(x.strip() for x in re.split(r"[\n,;]+", em.toPlainText()) if x.strip()), kw.text().strip(),
+                "\n".join(x.strip() for x in rl.toPlainText().split("\n") if x.strip()), da.text().strip())
 
     def new_company(self):
         r = self._company_dialog()
@@ -2793,7 +2842,7 @@ class LogMixin:
         if any(_gnorm(c["name"]) == _gnorm(r[0]) for c in self.companies) or r[0] == NO_COMPANY:
             QMessageBox.information(self, "Orders", "There is already a company called %s." % r[0])
             return
-        self.companies.append({"name": r[0], "emails": r[1], "keys": r[2]})
+        self.companies.append({"name": r[0], "emails": r[1], "keys": r[2], "rules": r[3], "default_area": r[4]})
         self.refresh_log()
         if QMessageBox.question(self, "Orders", "Add the logo of %s now?" % r[0]) == QMessageBox.StandardButton.Yes:
             self.set_company_logo(r[0])
@@ -2829,7 +2878,7 @@ class LogMixin:
         if any(_gnorm(c["name"]) == _gnorm(r[0]) for c in self.companies) or r[0] == NO_COMPANY:
             QMessageBox.information(self, "Orders", "There is already a company called %s." % r[0])
             return
-        self.companies.append({"name": r[0], "emails": r[1], "keys": r[2]})
+        self.companies.append({"name": r[0], "emails": r[1], "keys": r[2], "rules": r[3], "default_area": r[4]})
         for a in self.areas:
             if not a.get("company"):
                 a["company"] = r[0]
@@ -2842,7 +2891,7 @@ class LogMixin:
         c = next((x for x in self.companies if x["name"] == name), None)
         if c is None:
             return
-        r = self._company_dialog(c["name"], c.get("emails", ""), c.get("keys", ""))
+        r = self._company_dialog(c["name"], c.get("emails", ""), c.get("keys", ""), c.get("rules", ""), c.get("default_area", ""))
         if r is None:
             return
         for a in self.areas:
@@ -2851,7 +2900,7 @@ class LogMixin:
         for e in self.log:
             if e.get("company") == name:
                 e["company"] = r[0]
-        c["name"], c["emails"], c["keys"] = r
+        c["name"], c["emails"], c["keys"], c["rules"], c["default_area"] = r
         self.refresh_log()
 
     def delete_company(self, name):
@@ -3085,9 +3134,14 @@ class LogMixin:
                 t = e_(e.get("text")).replace("\n", "<br>")
                 ex = ("<br><i>Extras: %s</i>" % e_(e.get("extras"))) if e.get("extras") else ""
                 pr = (" <b style='color:#b00;'>%s</b>" % e_(e.get("priority"))) if e.get("priority") else ""
+                if e.get("by_name") or e.get("by_email"):
+                    ex += '<br><span style="font-size:8pt;color:#666;"><i>Ordered by %s%s on %s</i></span>' % (e_(e.get("by_name")), (" &lt;%s&gt;" % e_(e.get("by_email"))) if e.get("by_email") else "", e_(dt_(e.get("req_date") or e.get("date"))))
                 r.append('<tr><td width="14%%">%s</td><td width="16%%">Order %s%s</td><td>%s%s</td></tr>' % (e_(dt_(e.get("date"))), e_(e.get("order") or "-"), pr, t, ex))
             for c in sorted(chs, key=lambda c: str(c.get("date"))):
                 t = e_(c.get("text")).replace("\n", "<br>")
+                who = " ".join(x for x in (str(c.get("by_name") or "").strip(), ("&lt;%s&gt;" % e_(c.get("by_email"))) if c.get("by_email") else "") if x)
+                if who or c.get("req_date"):
+                    t += '<br><span style="font-size:8pt;color:#666;"><i>Requested by %s on %s</i></span>' % (who.replace("&amp;", "&") if False else (e_(c.get("by_name")) + (" &lt;%s&gt;" % e_(c.get("by_email")) if c.get("by_email") else "")).strip() or "-", e_(dt_(c.get("req_date") or c.get("date"))))
                 r.append('<tr><td>%s</td><td>Change %s%s</td><td>%s</td></tr>' % (e_(dt_(c.get("date"))), e_(c.get("rev") or ""), (" <b>(%s)</b>" % ("major" if "Major" in str(c.get("kinds", "")) else "minor")) if re.search("Major|Minor", str(c.get("kinds", ""))) else "", t))
             return "".join(r)
         sections = (("Completed", done, True),) if only_done else (("Completed", done, True), ("Still to be done", todo, False))
@@ -3605,6 +3659,8 @@ class LogMixin:
                     lines[1] += ", %d change%s" % (len(chs), "" if len(chs) == 1 else "s")
                     new += sum(1 for c in chs if c.get("status") == "New")
             isdone = name in done_set
+            rep_n = sum(int(e.get("repeat", 0) or 0) for e in ents) if kind == "Order" else 0
+            fwd_ = kind == "Order" and any(e.get("fwd") for e in ents)
             insel = kind == "Order" and (self._larea.get("Order"), name) in getattr(self, "_sel_houses", set())
             urg = sum(1 for e in ents if self._is_urgent(e))
             asked = sum(1 for e in ents if e.get("priority") == "Asked again" and not e.get("sent_date"))
@@ -3628,6 +3684,10 @@ class LogMixin:
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setStyleSheet(qss + ("QPushButton{border:2px solid #d8132b;}" if urg else "") + ("QPushButton{background:%s;}" % ("#ffe3e6" if lt else "#3a1b20") if urg else "")
                               + ("QPushButton{border:2px solid #2ea44f;background:%s;}" % ("#dff5e5" if lt else "#17361f") if isdone else ""))
+            if rep_n and not isdone:
+                lines.append("<b style='color:#d8932f'>\u26a0 sent again (%d\u00d7)</b>" % (rep_n + 1))
+            if fwd_ and not isdone:
+                lines.append("<b style='color:#d8932f'>\u21aa forwarded</b>")
             if insel:
                 lines.append("<b style='color:#4aa3ff'>\u2713 in the client report</b>")
                 btn.setStyleSheet(btn.styleSheet() + "QPushButton{border:2px dashed #4aa3ff;}")
