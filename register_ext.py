@@ -1202,9 +1202,18 @@ class LogMixin:
 
     @staticmethod
     def _order_key(e):
-        """Two lines with the same key are the same order: same house, same wording, same email."""
-        return (e.get("type", ""), re.sub(r"\s+", " ", str(e.get("group", ""))).strip().lower(), re.sub(r"\s+", " ", str(e.get("text", ""))).strip().lower(),
-                re.sub(r"\s+", " ", str(e.get("req_subject", ""))).strip().lower(), str(e.get("req_from", "")).strip().lower())
+        """Two lines with the same key are the same order, whichever email it came in: same house, same wording after the first line, same extras."""
+        def n(x):
+            return re.sub(r"\s+", " ", re.sub(r"^\s*(\d{1,2}[.)]|[-*])\s*", "", str(x or ""))).strip().lower()
+        lines = [n(x) for x in str(e.get("text", "")).split("\n") if x.strip()]
+        body = lines[1:] if len(lines) > 1 else lines
+        ex = sorted({n(x) for x in LogMixin.extras_of(e)})
+        return (e.get("type", ""), n(e.get("group", "")), tuple(body), tuple(ex))
+
+    @classmethod
+    def _key_hash(cls, e):
+        import hashlib
+        return hashlib.sha1(repr(cls._order_key(e)).encode("utf-8")).hexdigest()[:16]
 
     def inbox_dedupe(self):
         """Removes copies of an order that came in more than once from the inbox (unsent lines only). Returns how many were removed."""
@@ -1281,7 +1290,8 @@ class LogMixin:
         seen = list(S.get("inbox_seen", []))
         houses = [g["name"] for g in self.groups]
         made = 0
-        have = {self._order_key(e) for e in self.log if e.get("req_subject")}
+        have = {self._order_key(e) for e in self.log if e.get("type") == "Order"}
+        mem = list(S.get("inbox_keys", []))
         have_ids = {e.get("msg_id") for e in self.log if e.get("msg_id")}
         for it in reversed(items):
             if it["id"] in seen or it["id"] in have_ids:
@@ -1300,12 +1310,15 @@ class LogMixin:
                           "status": "New", "kinds": o.get("kinds", ""), "req_subject": it["subject"], "req_date": rd, "req_from": it["from"], "req_path": it["path"], "sent_path": "", "drawings": "",
                           "by_name": nm, "by_email": addr, "msg_id": it["id"]})
                 k = self._order_key(e)
-                if k in have:
-                    continue                      # this very order is already in the list
+                kh = self._key_hash(e)
+                if k in have or kh in mem:
+                    continue                      # this order came in before (in this email or another): it is only added once
                 have.add(k)
+                mem.append(kh)
                 self.log.append(e)
                 made += 1
         S["inbox_seen"] = seen[-500:]
+        S["inbox_keys"] = mem[-3000:]
         M.save_settings()
         removed = self.inbox_dedupe()
         if made or removed:
@@ -1348,6 +1361,9 @@ class LogMixin:
             b.setStyleSheet("font-weight:700;")
             b.clicked.connect(self.changes_from_drawings)
             bar.addWidget(b)
+        da = QPushButton("Delete all...")
+        da.clicked.connect(lambda: self.delete_all_log(kind))
+        bar.addWidget(da)
         bar.addStretch(1)
         v.addLayout(bar)
         sc = QScrollArea()
@@ -1426,8 +1442,44 @@ class LogMixin:
             lab.setGeometry(12, 8, 196, 84)
             lab.setWordWrap(True)
             btn.clicked.connect(lambda _c=False, k=kind, n_=name: self._open_group(k, n_))
+            btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            btn.customContextMenuRequested.connect(lambda _p, k=kind, n_=name, b_=btn: self._tile_menu(k, n_, b_))
             tiles.append(btn)
         self._reflow(kind)
+
+    def _tile_menu(self, kind, name, btn):
+        from PySide6.QtWidgets import QMenu
+        m = QMenu(btn)
+        a1 = m.addAction("Open")
+        a2 = m.addAction("Delete all the %s of %s..." % ("orders" if kind == "Order" else "changes", name))
+        pick = m.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
+        if pick is a1:
+            self._open_group(kind, name)
+        elif pick is a2:
+            self.delete_all_log(kind, name)
+
+    def delete_all_log(self, kind, group=None):
+        """Removes every order (or change) line, or only those of one house. Deleting all orders also makes the inbox watcher forget what it has read,
+        so Check now brings the emails in again from the start."""
+        what = "orders" if kind == "Order" else "changes"
+        ents = [e for e in self.log if self.log_kind(e) == kind and (group is None or e.get("group") == group)]
+        if not ents:
+            QMessageBox.information(self, "Drawing register", "There are no %s to delete." % what)
+            return
+        sent = sum(1 for e in ents if e.get("sent_date"))
+        txt = "Delete %d %s%s?%s\n\nThis cannot be undone." % (len(ents), what, (" of " + group) if group else "",
+                                                                  ("\n%d of them were already sent to the client." % sent) if sent else "")
+        if QMessageBox.question(self, "Drawing register", txt) != QMessageBox.StandardButton.Yes:
+            return
+        gone = {id(e) for e in ents}
+        self.log[:] = [e for e in self.log if id(e) not in gone]
+        if kind == "Order" and group is None:
+            S = self._M().SETTINGS
+            S["inbox_seen"], S["inbox_keys"] = [], []
+            self._M().save_settings()
+        self._lgroup[kind] = None
+        self._lstack[kind].setCurrentIndex(0)
+        self.refresh_log()
 
     def _open_group(self, kind, name):
         self._lgroup[kind] = name

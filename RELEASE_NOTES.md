@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.27**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.28**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Delete all, and each order only once, 1.86.28**: the Orders and Client changes squares have a Delete all button (and right-click a square to delete just that house's lines). Deleting all orders also clears what the inbox watcher has read, so Check now brings the emails in again from the start. An order is now remembered by its house, wording and extras, not by the email it came in: the same order arriving in several emails (a forward, a resend, a longer list that repeats earlier stands) is added once, and copies already in the list are removed. A different order for the same house (other size or extras) is still added.
 - **Extras on every order, 1.86.27**: each order now has its own Extras the client wants column next to What was ordered or changed, with a drop-down heading (click it to fold the list away or open it again). The extras read from the client's email (built in braai, enclose patio, additional patio, IBR flat roof and so on) are listed one per line, you can edit or add lines, and they are printed with the order in the email and the register PDF. Orders that already had an Extras line inside their text are moved into the new column.
 - **No duplicate orders from the inbox, 1.86.26**: an email is now only ever turned into orders once (by its Gmail message number), an order that is already in the list with the same house, wording and email is not added again, the inbox watcher can no longer be started twice, and copies that are already in your list are removed (unsent lines only) the next time the program looks at the inbox.
 - **Allow Gmail reading only once, 1.86.25**: signing in with Google again for sending (or after a restart) no longer drops the permission to read your inbox: the read permission is asked for again automatically in every later sign-in, and the program now checks what Google really allowed each time it refreshes its access instead of relying on a saved note. You only press Allow Gmail reading once. (While the Google project is in testing mode, Google itself ends every sign-in after 7 days; that needs the project to be published in Google Cloud Console to stop.)
