@@ -19484,6 +19484,78 @@ def app_icon():
     return QIcon(pm)
 
 
+class _HeaderMarks(QWidget):
+    """Drawn on top of a table's heading row: a thin divider where a column can be dragged wider or narrower, with a small triangle
+    pointing each way. It lets the mouse through, so the heading works as before."""
+
+    def __init__(self, header):
+        super().__init__(header.viewport())
+        self.h = header
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setGeometry(header.viewport().rect())
+        header.viewport().installEventFilter(self)
+        for sig in (header.sectionResized, header.sectionMoved, header.geometriesChanged, header.sectionCountChanged):
+            try:
+                sig.connect(lambda *_a: self.update())
+            except Exception:
+                pass
+        self.show()
+        self.raise_()
+
+    def eventFilter(self, obj, ev):
+        if ev.type() in (QEvent.Type.Resize, QEvent.Type.Show):
+            self.setGeometry(self.h.viewport().rect())
+            self.raise_()
+        return False
+
+    def paintEvent(self, _ev):
+        h = self.h
+        if h.orientation() != Qt.Orientation.Horizontal or h.count() == 0:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        lt = light()
+        line = QColor(0, 0, 0, 70) if lt else QColor(255, 255, 255, 80)
+        tri = QColor("#d8132b")
+        hh = self.height()
+        for vi in range(h.count()):
+            li = h.logicalIndex(vi)
+            if h.isSectionHidden(li) or h.sectionResizeMode(li) != QHeaderView.ResizeMode.Interactive:
+                continue
+            x = h.sectionViewportPosition(li) + h.sectionSize(li) - 1
+            if x < 4 or x > self.width() - 1:
+                continue
+            p.setPen(QPen(line, 1))
+            p.drawLine(x, 5, x, hh - 5)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(tri)
+            cy = hh / 2.0
+            p.drawPolygon(QPolygonF([QPointF(x - 6, cy), QPointF(x - 2, cy - 3.5), QPointF(x - 2, cy + 3.5)]))
+            p.drawPolygon(QPolygonF([QPointF(x + 6, cy), QPointF(x + 2, cy - 3.5), QPointF(x + 2, cy + 3.5)]))
+        p.end()
+
+
+class _HeaderMarker(QObject):
+    """Application-wide: gives every table heading its resize markers the first time it is shown."""
+
+    def eventFilter(self, obj, ev):
+        if ev.type() == QEvent.Type.Show and isinstance(obj, QHeaderView) and obj.orientation() == Qt.Orientation.Horizontal \
+                and not obj.property("mot_marks"):
+            obj.setProperty("mot_marks", True)
+            try:
+                obj._mot_marks = _HeaderMarks(obj)
+            except Exception:
+                pass
+        return False
+
+
+def _install_header_marks(app):
+    mk = _HeaderMarker(app)
+    app._mot_header_marker = mk
+    app.installEventFilter(mk)
+
+
 GLASS_QSS = """
 * { font-family: 'Segoe UI Variable Display', 'Segoe UI Variable Text', 'Segoe UI', 'SF Pro Display',
     'Helvetica Neue', Arial; font-size: 13px; color: #f7f8fc; outline: 0; }
@@ -19536,8 +19608,6 @@ QHeaderView::section { background: rgba(255,255,255,30); color: rgba(255,255,255
     border-bottom: 1px solid rgba(255,255,255,70); padding: 11px 8px; font-weight: 700; font-size: 12px; }
 QHeaderView::section:vertical { border-bottom: 1px solid rgba(255,255,255,20); padding: 6px;
     font-weight: 500; color: rgba(255,255,255,150); }
-QHeaderView::section:horizontal { border-right: 2px solid #f2c200; }
-QHeaderView::section:horizontal:last { border-right: 2px solid #f2c200; }
 QTableCornerButton::section { background: rgba(255,255,255,30); border: none; }
 
 QLineEdit, QPlainTextEdit, QTextEdit, QDoubleSpinBox, QSpinBox { background: rgba(0,0,0,70);
@@ -19628,8 +19698,6 @@ QHeaderView { background: transparent; }
 QHeaderView::section { background: #1f2125; color: #9aa0a8; border: none; border-bottom: 1px solid #34383e;
     padding: 11px 8px; font-weight: 600; font-size: 12px; }
 QHeaderView::section:vertical { border-bottom: 1px solid #2a2e34; padding: 6px; font-weight: 500; color: #6b7179; }
-QHeaderView::section:horizontal { border-right: 2px solid #f2c200; }
-QHeaderView::section:horizontal:last { border-right: 2px solid #f2c200; }
 QTableCornerButton::section { background: #1f2125; border: none; }
 
 QLineEdit, QPlainTextEdit, QTextEdit, QDoubleSpinBox, QSpinBox { background: #121316; border: 1px solid #34383e;
@@ -19769,6 +19837,7 @@ class GlassCard(QFrame):
 def apply_glass_theme(app, win):
     app.setStyle("Fusion")
     app.setStyleSheet((light_qss(STUDIO_QSS) if light() else STUDIO_QSS if studio() else GLASS_QSS).replace("@TICK@", _tick_png()))
+    _install_header_marks(app)
     app.setWindowIcon(app_icon())
     win.setWindowIcon(app_icon())
     try:

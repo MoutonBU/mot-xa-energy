@@ -717,6 +717,9 @@ class SendDialog(QDialog):
         except Exception:
             pass
         f.addRow("To", self.to)
+        self.cc.setPlaceholderText("several people: separate the addresses with a comma or semicolon")
+        self.cc.setToolTip("Add as many addresses as you like, separated by a comma or a semicolon: name@a.com, other@b.com")
+        self.to.setPlaceholderText("several people: separate the addresses with a comma or semicolon")
         f.addRow("Cc", self.cc)
         f.addRow("Subject", self.sub)
         v.addLayout(f)
@@ -731,6 +734,25 @@ class SendDialog(QDialog):
         dr.addWidget(seeb)
         dr.addStretch(1)
         v.addLayout(dr)
+        lk = QHBoxLayout()
+        lk.addWidget(QLabel("Download link:"))
+        self.link = QLineEdit()
+        self.link.setPlaceholderText("Swiss Transfer, WeTransfer or other link, when the drawings are too big to email")
+        self.link.setToolTip("Paste the link where the drawings can be downloaded. It is put in the email under the first paragraph.")
+        lk.addWidget(self.link, 1)
+        self.link_note = QLineEdit()
+        self.link_note.setPlaceholderText("Expires / password (optional)")
+        self.link_note.setMaximumWidth(210)
+        lk.addWidget(self.link_note)
+        self.link_only = QCheckBox("Do not attach the drawings")
+        self.link_only.setToolTip("Unticks every drawing below; the register, sheet index and reports still go with the email.")
+        self.link_only.toggled.connect(self._link_only)
+        lk.addWidget(self.link_only)
+        v.addLayout(lk)
+        self._link_block = ""
+        self._drawing_paths = set(drawings)
+        self.link.editingFinished.connect(self._put_link)
+        self.link_note.editingFinished.connect(self._put_link)
         v.addWidget(QLabel("Attachments (tick what goes):"))
         self.att = QListWidget()
         self.items = []
@@ -881,6 +903,28 @@ class SendDialog(QDialog):
         self.shrink_b.setEnabled(self.level < len(LEVELS))
         self._size()
         self.size.setText("%.1f MB before, %.1f MB now.  %s" % (before / 1e6, after / 1e6, self.size.text()))
+
+    def _put_link(self):
+        """Put the download link in the email text, under the opening paragraph (replacing an earlier one)."""
+        url = self.link.text().strip()
+        txt = self.body.toPlainText()
+        if self._link_block and self._link_block in txt:
+            txt = txt.replace(self._link_block, "", 1)
+        self._link_block = ""
+        if url:
+            note = self.link_note.text().strip()
+            blk = "The drawings are too large to email. Download them here:\n%s%s\n\n" % (url, ("\n(%s)" % note) if note else "")
+            k = txt.find("\n\n")
+            k = txt.find("\n\n", k + 2) if k >= 0 else -1
+            at = k + 2 if k >= 0 else len(txt)
+            txt = txt[:at] + blk + txt[at:]
+            self._link_block = blk
+        self.body.setPlainText(txt)
+
+    def _link_only(self, on):
+        for it, p in self.items:
+            if p in self._drawing_paths:
+                it.setCheckState(Qt.CheckState.Unchecked if on else Qt.CheckState.Checked)
 
     def _size(self, *_a):
         fs = self.files()

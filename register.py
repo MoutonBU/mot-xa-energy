@@ -654,7 +654,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         g2 = QGridLayout(self.more_w)
         g2.setContentsMargins(0, 0, 0, 0)
         for i, (key, label, ph) in enumerate((("issued_by", "Issued by", "from your signature"), ("issue_no", "Revision", "0"),
-                                              ("date", "Date", "empty = today"), ("cc", "Copy to (Cc)", ""))):
+                                              ("date", "Date", "empty = today"), ("cc", "Copy to (Cc)", "several addresses: separate with a comma or semicolon"))):
             e = QLineEdit()
             e.setPlaceholderText(ph)
             e.textEdited.connect(self._info_edited)
