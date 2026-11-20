@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.16**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.17**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Bigger column dividers that slide the columns after them, 1.86.17**: the column divider is now much easier to grab (about 9 pixels either side, with a larger arrow marker), and dragging it moves every column after it along with its own width, instead of making the next column smaller. This replaces the neighbour-gives-width behaviour of 1.86.16.
 - **Centred table text and divider that moves its neighbour, 1.86.16**: in every table the text under the headings is now centred in its column, and dragging a column divider now moves the divider itself: the column next to it gives up or takes the width, so the columns further along stay where they are (dragging left no longer leaves the table the same width with only one column changed).
 - **Send any file type from the drawing register, 1.86.15**: the register now takes DWG, DXF, DWF, zip, Excel, Word, images and any other file as well as PDFs: "Add drawings or files..." (and the ribbon's Add files) show every file type, Add folder takes every file in the folder, and you can drag files into the program. Non-PDF files get their number and title from the file name, are marked with their type (for example AutoCAD drawing (DWG)), and are attached to the email with the right file type. Files too big for one email are still split into parts or can be left out in favour of the download link.
 - **Column dividers with arrows on every table, 1.86.14**: instead of a yellow bar, every table heading now has a thin divider in the program's colours with a small red triangle pointing each way where a column can be dragged wider or narrower (columns that stretch by themselves are left plain). Light and dark looks both follow.

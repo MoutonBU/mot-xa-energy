@@ -19498,9 +19498,7 @@ class _HeaderMarks(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.setGeometry(header.viewport().rect())
         header.viewport().installEventFilter(self)
-        self._drag = False
-        self._busy = False
-        header.sectionResized.connect(self._neighbour)
+        self._grab = None
         for sig in (header.sectionResized, header.sectionMoved, header.geometriesChanged, header.sectionCountChanged):
             try:
                 sig.connect(lambda *_a: self.update())
@@ -19509,38 +19507,42 @@ class _HeaderMarks(QWidget):
         self.show()
         self.raise_()
 
+    GRAB = 9   # pixels either side of a divider that pick it up
+
+    def _edge_at(self, x):
+        """Logical index of the column whose right-hand divider is within reach of x, or -1."""
+        h = self.h
+        best, bd = -1, self.GRAB + 1
+        for vi in range(h.count()):
+            li = h.logicalIndex(vi)
+            if h.isSectionHidden(li) or h.sectionResizeMode(li) != QHeaderView.ResizeMode.Interactive:
+                continue
+            d = abs(x - (h.sectionViewportPosition(li) + h.sectionSize(li)))
+            if d < bd:
+                best, bd = li, d
+        return best
+
     def eventFilter(self, obj, ev):
         t = ev.type()
         if t in (QEvent.Type.Resize, QEvent.Type.Show):
             self.setGeometry(self.h.viewport().rect())
             self.raise_()
-        elif t == QEvent.Type.MouseButtonPress:
-            self._drag = True
-        elif t == QEvent.Type.MouseButtonRelease:
-            self._drag = False
+        elif t == QEvent.Type.MouseMove and self.h.orientation() == Qt.Orientation.Horizontal:
+            x = int(ev.position().x())
+            if getattr(self, "_grab", None) is not None:
+                li, x0, s0 = self._grab
+                self.h.resizeSection(li, max(30, s0 + x - x0))     # the columns after it keep their widths and slide along
+                return True
+            self.h.viewport().setCursor(Qt.CursorShape.SplitHCursor if self._edge_at(x) >= 0 else Qt.CursorShape.ArrowCursor)
+        elif t == QEvent.Type.MouseButtonPress and ev.button() == Qt.MouseButton.LeftButton and self.h.orientation() == Qt.Orientation.Horizontal:
+            li = self._edge_at(int(ev.position().x()))
+            if li >= 0:
+                self._grab = (li, int(ev.position().x()), self.h.sectionSize(li))
+                return True
+        elif t == QEvent.Type.MouseButtonRelease and getattr(self, "_grab", None) is not None:
+            self._grab = None
+            return True
         return False
-
-    def _neighbour(self, li, old, new):
-        """Dragging a divider moves it: the column next to it gives up (or takes) the width, so the columns beyond it stay where they are."""
-        h = self.h
-        if not self._drag or self._busy or h.orientation() != Qt.Orientation.Horizontal:
-            return
-        vi = h.visualIndex(li)
-        nxt = -1
-        for k in range(vi + 1, h.count()):
-            c = h.logicalIndex(k)
-            if not h.isSectionHidden(c):
-                nxt = c
-                break
-        if nxt < 0 or h.sectionResizeMode(nxt) != QHeaderView.ResizeMode.Interactive:
-            return
-        if h.stretchLastSection() and h.visualIndex(nxt) == h.count() - 1:
-            return
-        self._busy = True
-        try:
-            h.resizeSection(nxt, max(h.minimumSectionSize(), 30, h.sectionSize(nxt) - (new - old)))
-        finally:
-            self._busy = False
 
     def paintEvent(self, _ev):
         h = self.h
@@ -19559,13 +19561,13 @@ class _HeaderMarks(QWidget):
             x = h.sectionViewportPosition(li) + h.sectionSize(li) - 1
             if x < 4 or x > self.width() - 1:
                 continue
-            p.setPen(QPen(line, 1))
-            p.drawLine(x, 5, x, hh - 5)
+            p.setPen(QPen(line, 2))
+            p.drawLine(x, 4, x, hh - 4)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(tri)
             cy = hh / 2.0
-            p.drawPolygon(QPolygonF([QPointF(x - 6, cy), QPointF(x - 2, cy - 3.5), QPointF(x - 2, cy + 3.5)]))
-            p.drawPolygon(QPolygonF([QPointF(x + 6, cy), QPointF(x + 2, cy - 3.5), QPointF(x + 2, cy + 3.5)]))
+            p.drawPolygon(QPolygonF([QPointF(x - 9, cy), QPointF(x - 3, cy - 5.5), QPointF(x - 3, cy + 5.5)]))
+            p.drawPolygon(QPolygonF([QPointF(x + 9, cy), QPointF(x + 3, cy - 5.5), QPointF(x + 3, cy + 5.5)]))
         p.end()
 
 
