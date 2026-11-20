@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.61**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.62**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **A picture of the client's email inside the order.** Every email taken in is drawn as a picture (subject, sender, date and the text, laid out like Gmail) and saved next to the .eml. It shows under each change ('The client's email, as it came in') and as 'The order email' at the top of the house page. Click the picture to open it full size.
 
 - **Orders tool simplified.** The 'Kind of change' column is gone from the order lines (changes are tagged minor/major inside the order instead), and the Client changes page (side list and its toolbar buttons) is shelved for now. Nothing was deleted: the data and the page are still there and can be switched back on.
 

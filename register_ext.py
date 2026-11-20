@@ -38,6 +38,53 @@ def _iso(d):
         return ""
 
 
+def email_picture(it, path):
+    """Draws the email (subject, sender, date, text) as a picture next to the saved .eml and returns the picture's path ('' when it could not be made).
+    It is a proof of what the client wrote, shown inside the order."""
+    import html as _h
+    try:
+        from PySide6.QtCore import QSizeF
+        from PySide6.QtGui import QFont, QImage, QPainter, QTextDocument
+        e = lambda t: _h.escape(str(t or ""))
+        body = str(it.get("body") or "").replace("\r", "")
+        if not body.strip() and it.get("html"):
+            body = re.sub(r"(?s)<[^>]+>", " ", re.sub(r"(?is)<(script|style).*?</\1>", "", str(it["html"])))
+            body = _h.unescape(re.sub(r"[ \t]+", " ", body))
+        lines = [ln.rstrip() for ln in body.split("\n") if not ln.lstrip().startswith(">")]
+        body = "\n".join(lines).strip()[:3500]
+        who = str(it.get("from", ""))
+        m = re.match(r'\s*"?([^"<]*?)"?\s*<([^>]+)>', who)
+        name, addr = (m.group(1).strip(), m.group(2)) if m else (who, "")
+        initial = (name or addr or "?")[:1].upper()
+        h = ('<div style="font-family:Arial;color:#202124;">'
+             '<p style="font-size:19pt;margin:0 0 14px 0;">%s</p>'
+             '<table cellspacing="0" cellpadding="0" width="100%%"><tr><td width="52"><table cellpadding="0" cellspacing="0"><tr><td bgcolor="#c2185b" width="40" height="40" align="center" '
+             'style="color:#ffffff;font-size:17pt;">%s</td></tr></table></td>'
+             '<td><b style="font-size:11pt;">%s</b> <span style="color:#5f6368;font-size:9pt;">&lt;%s&gt;</span><br>'
+             '<span style="color:#5f6368;font-size:9pt;">%s</span></td></tr></table>'
+             '<p style="font-size:11pt;margin-top:16px;">%s</p></div>'
+             % (e(it.get("subject")), e(initial), e(name or addr), e(addr), e(it.get("date")), e(body).replace("\n", "<br>")))
+        d = QTextDocument()
+        d.setDefaultFont(QFont("Arial", 10))
+        d.setHtml(h)
+        W, sc = 760, 2.0
+        d.setPageSize(QSizeF(W, 1e7))
+        hh = int(d.size().height()) + 28
+        img = QImage(int(W * sc) + 40, int(hh * sc) + 24, QImage.Format.Format_RGB32)
+        img.fill(0xFFFFFF)
+        pa = QPainter(img)
+        pa.translate(20, 14)
+        pa.scale(sc, sc)
+        d.drawContents(pa)
+        pa.end()
+        out = re.sub(r"\.eml$", "", path, flags=re.I) + ".png" if path else ""
+        if not out:
+            return ""
+        return out if img.save(out, "PNG") else ""
+    except Exception:
+        return ""
+
+
 def read_reference(path):
     """Subject, sender, date received and a body preview from an .eml (or the file name for any other kind of file)."""
     out = {"subject": os.path.splitext(os.path.basename(path))[0], "from": "", "date": "", "body": ""}
@@ -1504,6 +1551,17 @@ class LogMixin:
         if not g:
             return
         chs = self._changes_of(g)
+        ords_ = [e for e in self.log if self.log_kind(e) == "Order" and e.get("group") == g and e.get("req_img") and os.path.exists(e.get("req_img"))]
+        if ords_:
+            oc = QFrame()
+            oc.setObjectName("och")
+            oc.setStyleSheet("QFrame#och{border:1px solid #3a3f46;border-radius:8px;}")
+            ov = QVBoxLayout(oc)
+            ov.setContentsMargins(8, 6, 8, 6)
+            ol = QLabel("<b>The order email</b>")
+            ov.addWidget(ol)
+            self._email_thumb(ov, ords_[0])
+            lay.addWidget(oc)
         self._ch_title.setText("Changes the client asked for on %s (%d)%s" % (g, len(chs), ", newest first. Click a change to open it." if chs else ": none yet. Follow-up emails about this house appear here."))
         if not hasattr(self, "_ch_open"):
             self._ch_open = set()
@@ -1535,6 +1593,7 @@ class LogMixin:
             bl.addWidget(te)
             if c.get("extras"):
                 bl.addWidget(QLabel("Extras: " + str(c["extras"])))
+            self._email_thumb(bl, c)
             row = QHBoxLayout()
             row.addWidget(QLabel("This change is:"))
             kb = QComboBox()
@@ -1573,6 +1632,31 @@ class LogMixin:
             head.toggled.connect(toggled)
             lay.addWidget(card)
         lay.addStretch(1)
+
+    def _email_thumb(self, lay, ent):
+        """The picture of the client's email under a change or order; click it to see it full size."""
+        pth = ent.get("req_img")
+        if not pth or not os.path.exists(pth):
+            return
+        from PySide6.QtGui import QPixmap
+        pm = QPixmap(pth)
+        if pm.isNull():
+            return
+        cap = QLabel("The client's email, as it came in (click to enlarge):")
+        cap.setStyleSheet("color:#8d939b;font-size:11px;")
+        lay.addWidget(cap)
+        b = QPushButton()
+        b.setFlat(True)
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        t = pm.scaledToWidth(min(520, pm.width()), Qt.TransformationMode.SmoothTransformation)
+        if t.height() > 300:
+            t = t.copy(0, 0, t.width(), 300)
+        b.setIcon(__import__("PySide6.QtGui", fromlist=["QIcon"]).QIcon(t))
+        b.setIconSize(t.size())
+        b.setFixedSize(t.width() + 8, t.height() + 8)
+        b.setStyleSheet("QPushButton{border:1px solid #3a3f46;border-radius:6px;background:#ffffff;}QPushButton:hover{border-color:#d8132b;}")
+        b.clicked.connect(lambda _c=False, p_=pth: QDesktopServices.openUrl(QUrl.fromLocalFile(p_)))
+        lay.addWidget(b, 0, Qt.AlignmentFlag.AlignLeft)
 
     def _delete_change(self, ent):
         if QMessageBox.question(self, "Orders", "Delete this change?\n\nThis cannot be undone.") != QMessageBox.StandardButton.Yes:
@@ -1972,9 +2056,13 @@ class LogMixin:
                     path = mail_inbox.save_eml(st["folder"], it)
                 except Exception:
                     path = ""
+            pic = email_picture(it, path) if path else ""
             for x in self.log:
-                if x.get("msg_id") == it["id"] and not x.get("req_path"):
-                    x["req_path"] = path
+                if x.get("msg_id") == it["id"]:
+                    if not x.get("req_path"):
+                        x["req_path"] = path
+                    if pic and not x.get("req_img"):
+                        x["req_img"] = pic          # the email as a picture, shown inside the order / change
         return took
 
     def _inbox_result(self, items, err):
