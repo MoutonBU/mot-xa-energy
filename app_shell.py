@@ -445,6 +445,7 @@ class Ribbon(QFrame):
             m.addAction("Open the client's email", lambda: c.open_ref())
             m.addAction("Remove the selected line", lambda: c.remove_log())
             m.addSeparator()
+            m.addAction("My email signature...", lambda: c.my_signature())
             m.addAction("Text size...", lambda: c.orders_text_size())
             m.addAction("Back up the orders...", lambda: c.orders_backup())
             m.addAction("Restore from a backup...", lambda: c.orders_restore())
