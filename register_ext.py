@@ -2046,7 +2046,20 @@ class LogMixin:
                 return a["name"]
         return None
 
+    def _match_area_exact(self, name):
+        return next((a for a in self.areas if _gnorm(a["name"]) == _gnorm(name)), None)
+
     def _ensure_area(self, name):
+        g_ = _gnorm(name)
+        for a in self.areas:                     # an earlier wrong name with filler in front ("Or fo Urbika Erf 670") becomes the clean one
+            ga = _gnorm(a["name"])
+            if g_ and ga != g_ and ga.endswith(g_) and len(ga) - len(g_) <= 6 and not self._match_area_exact(name):
+                old = a["name"]
+                a["name"] = name.strip()
+                for e in self.log:
+                    if e.get("area") == old:
+                        e["area"] = a["name"]
+                break
         got = self._match_area(name)
         if got:
             return got

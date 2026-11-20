@@ -98,6 +98,18 @@ _AREA_LEAD = {"new", "order", "orders", "urgent", "re", "fwd", "fw", "aw", "for"
               "house", "houses", "change", "changes", "dringend", "bestelling", "final", "finals", "plan", "plans", "extras"}
 
 
+_AREA_LEAD |= {"or", "fo", "fr", "orde", "ordr", "ordrs", "od", "ord", "bestellings", "nuwe", "a", "an", "and", "pls", "plz", "ptn"}
+
+
+def _trim_lead(words):
+    """Drops the filler in front of an area name: 'Or fo Urbika Erf 670' -> 'Urbika Erf 670' (order words, typos of them, short words)."""
+    words = list(words)
+    while len(words) > 1 and (words[0].lower().strip(".,:-") in _AREA_LEAD or (len(words[0]) <= 3 and words[0].isalpha() and words[0].lower() not in ("erf", "ext", "ptn"))
+                              and not re.search(r"\d", " ".join(words[1:2]))):
+        words.pop(0)
+    return words
+
+
 def pipe_area(subject):
     """'Urbika Erf 670 | PTN 38' (also 'Blue Hills Ext 120 | Stand 2037'): what stands before the | is the area. '' when the subject has no | or nothing usable before it."""
     t = re.sub(r"^\s*((re|fwd?|aw)\s*:\s*)+", "", str(subject), flags=re.I)
@@ -105,8 +117,7 @@ def pipe_area(subject):
         return ""
     left = t.split("|", 1)[0]
     words = [w for w in re.split(r"\s+", left.strip()) if w]
-    while words and words[0].lower().strip(".,:-") in _AREA_LEAD:
-        words.pop(0)
+    words = _trim_lead(words)
     a = " ".join(words).strip(" -,:")
     if not a or len(a) < 3:
         return ""
@@ -131,7 +142,7 @@ def portion_area(text):
         if w.lower() in _AREA_LEAD or len(name) >= 3:
             break
         name.insert(0, w)
-    return " ".join(name + ([fdisp] if fdisp else [])).strip()
+    return " ".join(_trim_lead(name) + ([fdisp] if fdisp else [])).strip()
 
 
 def _portion_house(code, houses):
