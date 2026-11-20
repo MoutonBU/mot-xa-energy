@@ -16,4 +16,5 @@ class OrdersPage(QWidget):
         order_pg, change_pg = register_page.order_pages
         self.sub.addTab(order_pg, "Orders")
         self.sub.addTab(change_pg, "Client changes")
+        self.sub.setTabVisible(1, False)          # shelved for now: the Client changes page is not listed in the Orders tool
         register_page.orders_page = self

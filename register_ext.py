@@ -3334,7 +3334,7 @@ class LogMixin:
         for kind, t in getattr(self, "ltabs", {}).items():
             full = self.lall[kind].isChecked()
             for i, k in enumerate(LOGK):
-                t.setColumnHidden(i, not (full or k in self.LOG_SIMPLE))
+                t.setColumnHidden(i, not (full or k in self.LOG_SIMPLE) or (k == "kinds" and kind == "Order"))      # orders have no "Kind of change" column
 
     # ----- fill the log from the drawings' revision rows -----
     MAJOR = re.compile(r"\b(add|added|new|remov|delet|mov|reloc|redesign|re-?design|enlarg|resiz|extend|extension|re-?lay|stair|structur|wall|roof|window|door|room|bedroom|kitchen|bathroom|garage|floor|level|coverage|building line)", re.I)

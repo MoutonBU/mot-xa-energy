@@ -209,7 +209,7 @@ class Rail(QFrame):
         for idx, btns in self.psubs.items():
             tw = self._inner_tabs(idx)
             for i, sb in enumerate(btns):
-                sb.setVisible(cur == idx)
+                sb.setVisible(cur == idx and (tw is None or tw.isTabVisible(i)))      # a shelved section stays out of the list
                 on = "true" if (cur == idx and tw is not None and tw.currentIndex() == i) else "false"
                 if sb.property("on") != on:
                     sb.setProperty("on", on)
@@ -436,8 +436,6 @@ class Ribbon(QFrame):
         self.pages[10] = self._page([
             ("Gmail", [T("Watch inbox", "clipboard", ordr("inbox_dialog"), hot=True), T("Check now", "refresh", ordr("inbox_check_now"))]),
             ("Orders", [T("New order", "add", ordr("new_order"), hot=True), T("Delete all", "trash", ordr("delete_all_log", "Order"))]),
-            ("Client changes", [T("From drawings", "edit", ordr("changes_from_drawings")), T("New change", "add", ordr("add_log", "Change")),
-                                T("Delete all", "trash", ordr("delete_all_log", "Change"))]),
             ("Client's email", [T("Attach", "import", ordr("attach_ref")), T("Open", "eye", ordr("open_ref")), T("Remove line", "trash", ordr("remove_log"))])])
         def tool(attr, name, *a):
             def f():

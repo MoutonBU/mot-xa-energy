@@ -9490,6 +9490,8 @@ class MainWindow(QMainWindow):
             op_ = getattr(self, "orders_page", None)
             if op_ is not None:
                 for i in range(op_.sub.count()):
+                    if not op_.sub.isTabVisible(i):
+                        continue
                     out.append(("Orders  \u203A  " + op_.sub.tabText(i), lambda i=i: (self.goto_main_tab("Orders"), op_.sub.setCurrentIndex(i)), ""))
             for label, meth in (("Add drawing PDFs", "add_pdfs"), ("Add a whole folder of drawings", "add_folder"), ("Send the register to the client", "send_mail"),
                                 ("Preview the register PDF", "preview_pdf"), ("Preview and edit the email", "preview_email"), ("Email account", "email_account"),

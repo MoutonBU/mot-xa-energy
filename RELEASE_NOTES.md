@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.60**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.61**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **Orders tool simplified.** The 'Kind of change' column is gone from the order lines (changes are tagged minor/major inside the order instead), and the Client changes page (side list and its toolbar buttons) is shelved for now. Nothing was deleted: the data and the page are still there and can be switched back on.
 
 - **Tag each change as minor or major.** Every change inside an order (Change 1, Change 2...) has a 'This change is' box: Not tagged, Minor change or Major change. The tag shows in the change's header line (MINOR / MAJOR) and in the client's order progress report.
 
