@@ -701,7 +701,7 @@ def split_parts(files, limit_mb=LIMIT_MB):
 
 
 class SendDialog(QDialog):
-    def __init__(self, page, subject, body, pdf_path, drawings):
+    def __init__(self, page, subject, body, pdf_path, drawings, index_path=None):
         super().__init__(page)
         self.setWindowTitle("Send the drawing register")
         self.resize(760, 640)
@@ -734,7 +734,7 @@ class SendDialog(QDialog):
         v.addWidget(QLabel("Attachments (tick what goes):"))
         self.att = QListWidget()
         self.items = []
-        for label, p in [("Drawing register (PDF)", pdf_path)] + [(os.path.basename(x), x) for x in drawings]:
+        for label, p in [("Drawing register (PDF)", pdf_path)] + ([("Sheet index (PDF)", index_path)] if index_path else []) + [(os.path.basename(x), x) for x in drawings]:
             it = QListWidgetItem("%s   (%.1f MB)" % (label, os.path.getsize(p) / 1e6))
             it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             it.setCheckState(Qt.CheckState.Checked)
@@ -1707,6 +1707,11 @@ class MailMixin:
         tmp = tempfile.mkdtemp()
         pdf = os.path.join(tmp, re.sub(r'[\\/:*?"<>|]+', "-", "Drawing register - %s - revision %s.pdf" % (self.project_name(), self.info["issue_no"] or "0")))
         self.write_pdf(pdf)
+        idx_pdf = os.path.join(tmp, re.sub(r'[\\/:*?"<>|]+', "-", "Sheet index - %s - revision %s.pdf" % (self.project_name(), self.info["issue_no"] or "0")))
+        try:
+            self.write_index_pdf(idx_pdf)
+        except Exception:
+            idx_pdf = None
         seen, drawings = set(), []
         for _n, rows in gi:
             for r in rows:
@@ -1714,7 +1719,7 @@ class MailMixin:
                 if p and os.path.exists(p) and p not in seen:
                     seen.add(p)
                     drawings.append(p)
-        dlg = SendDialog(self, subj, body, pdf, drawings)
+        dlg = SendDialog(self, subj, body, pdf, drawings, idx_pdf)
         if not dlg.exec():
             return
         frm = S.get("mail_address") or S.get("smtp_from") or S.get("smtp_user")

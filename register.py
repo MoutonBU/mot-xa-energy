@@ -890,7 +890,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         self.send_btn.setStyleSheet("font-weight:700; padding: 0 22px;")
         self.send_btn.clicked.connect(self.send_mail)
         bar.addWidget(self.send_btn)
-        for text, fn in (("Preview and edit the email", self.preview_email), ("Preview the PDF", self.preview_pdf), ("Save the PDF", self.export_pdf)):
+        for text, fn in (("Preview and edit the email", self.preview_email), ("Preview the PDF", self.preview_pdf), ("Save the PDF", self.export_pdf), ("Save the sheet index PDF", self.export_index_pdf)):
             b = QPushButton(text)
             b.setMinimumHeight(38)
             b.clicked.connect(fn)
@@ -2399,7 +2399,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         intro = {"revised": "Please find the revised drawings", "new": "Please find attached a new set of drawings", "these": "Please find attached the following drawings"}[kind]
         lines = ["Subject: %s - revision %s (%s)" % (self.project_name(), self.info["issue_no"] or "0", self.issue_date()), "",
                  "Hi %s," % (to.split()[0] if to else "there"), "",
-                 "%s for %s issued today, %s. The drawing register is attached." % (intro, self.project_name(), self.issue_date()), ""]
+                 "%s for %s issued today, %s. The drawing register and the sheet index are attached." % (intro, self.project_name(), self.issue_date()), ""]
         if kind != "revised":
             last = None             # a new set (or just these drawings): no comparison with an earlier issue
         if last and (rev or new):
@@ -2550,17 +2550,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             out.append('<table width="100%%" border="0.6" cellspacing="0" style="font-size:8pt;"><tr>%s</tr>%s</table>' %
                        ("".join((th("No.", 6), th("Drawing", 15), th("What it shows", 22), th("Size", 4), th("Scale", 5), th("Rev", 3), th("Rev date", 8),
                                  th("PDF'd", 8), th("What changed", 19), th("Status", 10))), body))
-        idx = self.sheet_index()
-        if idx:
-            out.append('<h3 style="color:%s;margin-bottom:3px;">Sheet index: issued today and still to come</h3>' % RED)
-            for name, rows, nt in idx:
-                body = ""
-                for i, (r, st, note) in enumerate(rows):
-                    bg, lab = {"today": ("#DDF3E4", "Issued today"), "earlier": ("#F6F6F6", "Issued earlier" + ((" (%s)" % note.title()) if note else "")), "not": ("#FFF1CC", "Not yet issued")}[st]
-                    body += "<tr>%s%s%s%s</tr>" % (td(e(r.get("no", "")), bg=bg), td("<b>%s</b>" % e(r.get("title", "")), bg=bg), td(e(r.get("rev", "") or "-"), "center", bg), td(lab, bg=bg))
-                out.append('<p style="font-size:9pt;"><b>%s</b>: %d drawings, %d issued today.</p>' % (e(name), len(rows), nt))
-                out.append('<table width="100%%" border="0.6" cellspacing="0" style="font-size:8.5pt;"><tr>%s</tr>%s</table>' %
-                           ("".join((th("No.", 12), th("Drawing", 50), th("Rev", 8), th("Status", 30))), body))
+        out += self.index_parts()
         reps = self.reports_ticked()
         if reps:
             out.append('<h3 style="color:%s;margin-bottom:3px;">Reports issued with this register</h3>' % RED)
@@ -2574,10 +2564,45 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
                    'Shaded rows are new or revised since the last issue. Use the latest revision of every drawing; earlier revisions are superseded.</p>')
         return [x for x in out if x]
 
+    def index_parts(self, always=False):
+        """The sheet index as html parts: every drawing of every block, issued today / earlier / not yet issued. With always=True a plain list of the
+        drawings in this issue is made when there is nothing more to show (used for the separate sheet index PDF)."""
+        e = lambda x: _html.escape(str(x))
+        RED, DARK = "#C8102E", "#DCDCDC"
+        th = lambda t, w: '<th bgcolor="%s" align="left" width="%s%%" style="padding:3px;">%s</th>' % (DARK, w, t)
+        td = lambda t, a="left", bg="": '<td%s style="padding:3px;text-align:%s;">%s</td>' % (' bgcolor="%s"' % bg if bg else "", a, t)
+        out = []
+        idx = self.sheet_index()
+        if idx:
+            out.append('<h3 style="color:%s;margin-bottom:3px;">Sheet index: issued today and still to come</h3>' % RED)
+            for name, rows, nt in idx:
+                body = ""
+                for i, (r, st, note) in enumerate(rows):
+                    bg, lab = {"today": ("#DDF3E4", "Issued today"), "earlier": ("#F6F6F6", "Issued earlier" + ((" (%s)" % note.title()) if note else "")), "not": ("#FFF1CC", "Not yet issued")}[st]
+                    body += "<tr>%s%s%s%s</tr>" % (td(e(r.get("no", "")), bg=bg), td("<b>%s</b>" % e(r.get("title", "")), bg=bg), td(e(r.get("rev", "") or "-"), "center", bg), td(lab, bg=bg))
+                out.append('<p style="font-size:9pt;"><b>%s</b>: %d drawings, %d issued today.</p>' % (e(name), len(rows), nt))
+                out.append('<table width="100%%" border="0.6" cellspacing="0" style="font-size:8.5pt;"><tr>%s</tr>%s</table>' %
+                           ("".join((th("No.", 12), th("Drawing", 50), th("Rev", 8), th("Status", 30))), body))
+        if not idx and always:
+            for name, rows in self.groups_in_issue():
+                body = ""
+                for r in rows:
+                    sz = "%s%s" % (r.get("size", ""), (", " + r["scale"]) if r.get("scale") else "")
+                    body += "<tr>%s%s%s%s%s</tr>" % (td(e(r.get("no", "")), bg="#DDF3E4"), td("<b>%s</b>" % e(r.get("title", "")), bg="#DDF3E4"),
+                                                     td(e(r.get("rev", "") or "-"), "center", "#DDF3E4"), td(e(sz or "-"), bg="#DDF3E4"), td("Issued today", bg="#DDF3E4"))
+                out.append('<h3 style="color:%s;margin-bottom:3px;">%s</h3>' % (RED, e(name)))
+                out.append('<p style="font-size:9pt;"><b>%s</b>: %d drawings, all issued today.</p>' % (e(name), len(rows)))
+                out.append('<table width="100%%" border="0.6" cellspacing="0" style="font-size:8.5pt;"><tr>%s</tr>%s</table>' %
+                           ("".join((th("No.", 12), th("Drawing", 46), th("Rev", 8), th("Size, scale", 14), th("Status", 20))), body))
+        if out:
+            out.append('<p style="font-size:7.5pt;color:#666;">Green rows are issued today, grey rows were issued earlier and yellow rows are not yet issued. '
+                       'Use the latest revision of every drawing; earlier revisions are superseded.</p>')
+        return out
+
     def report_html(self):
         return "".join(self.report_parts())
 
-    def cover_html(self):
+    def cover_html(self, title="DRAWING REGISTER"):
         e = lambda x: _html.escape(str(x))
         rd = getattr(self.host, "rd", {}) or {}
         RED, DARK = "#C8102E", "#DCDCDC"
@@ -2586,10 +2611,10 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         h = ('<p style="font-size:40pt;">&nbsp;</p><p align="center"><img src="logo" height="90"></p>'
              '<p align="center" style="font-size:11pt; color:#444444;">%s</p><p style="font-size:30pt;">&nbsp;</p>'
              '<table width="100%%" cellspacing="0" cellpadding="14" border="0"><tr><td bgcolor="%s" style="color:#222222;">'
-             '<span style="font-size:24pt; font-weight:bold;">DRAWING REGISTER</span><br>'
+             '<span style="font-size:24pt; font-weight:bold;">%s</span><br>'
              '<span style="font-size:9pt; color:#555555;">Revision %s &nbsp;|&nbsp; %s</span></td></tr></table>'
              '<table width="100%%" cellspacing="0" cellpadding="0" border="0"><tr><td bgcolor="%s" height="4"></td></tr></table>' %
-             (e(company), DARK, e(self.info["issue_no"] or "0"), e(self.issue_date()), RED))
+             (e(company), DARK, e(title), e(self.info["issue_no"] or "0"), e(self.issue_date()), RED))
         h += ('<p style="font-size:12pt;">&nbsp;</p><p style="font-size:9pt; color:#666666;">PROJECT</p>'
               '<p style="font-size:16pt; font-weight:bold; color:#222222; margin-top:0px;">%s</p>'
               '<p style="font-size:9pt; color:#666666;">SITE</p>'
@@ -2604,13 +2629,18 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
                sum(len(r) for _g, r in self.groups_in_issue())))
         if client_logo:
             h += '<p style="font-size:10pt;">&nbsp;</p><p align="right">%s</p>' % client_logo
-        h += ('<p style="font-size:20pt;">&nbsp;</p><p style="font-size:9pt; color:#666666;">THIS REGISTER WAS COMPILED BY</p>'
-              '<p style="font-size:12pt; font-weight:bold; color:#222222; margin-top:0px;">%s</p>' % e(self.issuer() or rd.get("prepared_by") or company))
+        h += ('<p style="font-size:20pt;">&nbsp;</p><p style="font-size:9pt; color:#666666;">THIS %s WAS COMPILED BY</p>'
+              '<p style="font-size:12pt; font-weight:bold; color:#222222; margin-top:0px;">%s</p>' % (
+                  "SHEET INDEX" if title.startswith("SHEET") else "REGISTER", e(self.issuer() or rd.get("prepared_by") or company)))
         if rd.get("contact"):
             h += '<p style="font-size:8pt; color:#777777;">%s</p>' % e(rd["contact"])
         return h
 
-    def write_pdf(self, path):
+    def write_index_pdf(self, path):
+        """The sheet index by itself, in the same style as the register and the reports (cover, rounded panels, footer)."""
+        return self.write_pdf(path, index=True)
+
+    def write_pdf(self, path, index=False):
         """Cover page like the other reports (logo, grey title band with the red bar), then the register on landscape pages with a footer."""
         from PySide6.QtCore import QMarginsF, QRectF, QSizeF
         from PySide6.QtGui import QFont, QPageLayout, QPageSize, QPainter, QPdfWriter, QTextDocument
@@ -2624,7 +2654,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         mk = lambda o: QPageLayout(QPageSize(QPageSize.PageSizeId.A4), o, QMarginsF(10, 10, 10, 10), QPageLayout.Unit.Millimeter)
         w.setPageLayout(mk(QPageLayout.Orientation.Portrait))
         w.setResolution(96)
-        w.setTitle("Drawing register")
+        w.setTitle("Sheet index" if index else "Drawing register")
         pwp, php = float(w.width()), float(w.height())
 
         def mkdoc(html_, pw):
@@ -2638,12 +2668,12 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         # the client logo is stored under the name used in the html
         painter = QPainter(w)
         painter.save()
-        M._draw_doc_rounded(painter, mkdoc(self.cover_html(), pwp))
+        M._draw_doc_rounded(painter, mkdoc(self.cover_html("SHEET INDEX" if index else "DRAWING REGISTER"), pwp))
         painter.restore()
         w.setPageLayout(mk(QPageLayout.Orientation.Landscape))
         w.newPage()
         pw, ph = float(w.width()), float(w.height())
-        body = self.report_parts()
+        body = self.index_parts(always=True) if index else self.report_parts()
         pages = M._pack_pages(lambda h: mkdoc(h, pw), body, ph - 30.0)
         company = (getattr(self.host, "rd", {}) or {}).get("company") or "MCP Architecture & Interiors"
         for i, (html_, y0, y1) in enumerate(pages):
@@ -2660,7 +2690,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             painter.setFont(QFont("Arial", 7))
             painter.drawLine(0, int(ph - 24), int(pw), int(ph - 24))
             painter.drawText(QRectF(0, ph - 22, pw * 0.8, 16), int(Qt.AlignmentFlag.AlignLeft),
-                             "%s  |  Drawing Register  |  %s  |  Revision %s" % (company, self.project_name(), self.info["issue_no"] or "0"))
+                             "%s  |  %s  |  %s  |  Revision %s" % (company, "Sheet Index" if index else "Drawing Register", self.project_name(), self.info["issue_no"] or "0"))
             painter.drawText(QRectF(0, ph - 22, pw, 16), int(Qt.AlignmentFlag.AlignRight), "Page %d of %d" % (i + 2, len(pages) + 1))
             painter.restore()
         painter.end()
@@ -2688,6 +2718,14 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
                 path += ".pdf"
             self.write_pdf(path)
             QMessageBox.information(self, "Drawing register", "PDF saved:\n" + path)
+
+    def export_index_pdf(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Export sheet index", "Sheet index.pdf", "PDF (*.pdf)")
+        if path:
+            if not path.lower().endswith(".pdf"):
+                path += ".pdf"
+            self.write_index_pdf(path)
+            QMessageBox.information(self, "Sheet index", "PDF saved:\n" + path)
 
     def export_csv(self):
         import csv
