@@ -450,10 +450,17 @@ def read_pdf(path):
     return out
 
 
+FILE_KINDS = {"dwg": "AutoCAD drawing (DWG)", "dxf": "CAD exchange file (DXF)", "dwf": "Design web format (DWF)", "ifc": "IFC model",
+              "pln": "Archicad project (PLN)", "pla": "Archicad archive (PLA)", "rvt": "Revit model", "skp": "SketchUp model", "3dm": "Rhino model",
+              "xlsx": "Excel spreadsheet", "xls": "Excel spreadsheet", "docx": "Word document", "doc": "Word document", "zip": "Zip archive",
+              "jpg": "Image (JPG)", "jpeg": "Image (JPG)", "png": "Image (PNG)", "csv": "Data file (CSV)", "txt": "Text file"}
+
+
 def guess_row(path):
     """One register row from a drawing PDF: the title block wins, the file name fills what the title block does not give."""
     base = os.path.splitext(os.path.basename(path))[0]
-    info = read_pdf(path)
+    is_pdf = path.lower().endswith(".pdf")
+    info = read_pdf(path) if is_pdf else {"pages": 1, "size": "", "scale": "", "rev": "", "rdate": "", "rdesc": "", "no": "", "title": "", "revs": [], "pdfdate": "", "text": ""}
     no, title = "", base.replace("_", " ").strip()
     m = re.match(r"^\s*([A-Za-z]{0,3}[-_ ]?\d{1,4}[A-Za-z]?)\s*[-_ .]+\s*(.+)$", base)
     if m:
@@ -487,6 +494,10 @@ def guess_row(path):
         by = "Council request"
     elif re.search(r"engineer|ingenieur", desc, re.I):
         by = "Engineer"
+    if not is_pdf:
+        ext = os.path.splitext(path)[1].lstrip(".").upper()
+        kind = FILE_KINDS.get(ext.lower(), "%s file" % ext if ext else "File")
+        about = ("%s - %s" % (about.rstrip("."), kind)) if about else kind
     return {"on": True, "no": no, "title": title, "about": about, "size": info["size"], "pages": info["pages"], "scale": info["scale"],
             "rev": rev, "rdate": info["rdate"] or "", "pdfdate": info["pdfdate"] or fdate, "by": by, "comment": desc, "auto": desc,
             "revs": info["revs"], "status": "For information", "file": os.path.basename(path), "path": path}
@@ -680,7 +691,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         # 2  the drawings
         v = newpage()
         v.addWidget(step("The drawings"))
-        v.addWidget(self._hint("Add the PDFs you want to send: press Add drawing PDFs, or drag them into the list. "
+        v.addWidget(self._hint("Add the drawings you want to send: press Add drawings or files (PDF, DWG, DXF or any other format), or drag them into the list. "
                                "Block A, Block B or a sheet index to show what is still to come? Open More options."))
         self.more2_w = QWidget()
         m2 = QVBoxLayout(self.more2_w)
@@ -706,7 +717,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         # b) what goes today
         gl = QHBoxLayout()
         gl2 = QHBoxLayout()
-        self.add_btn = QPushButton("Add drawing PDFs...")
+        self.add_btn = QPushButton("Add drawings or files...")
         self.add_btn.setStyleSheet("font-weight:700;")
         self.add_btn.setToolTip("Pick the PDFs you are sending. Each one is matched to the sheet index by its drawing number and ticked to send. Anything else stays as still to come.")
         self.add_btn.clicked.connect(self.add_pdfs)
@@ -1268,13 +1279,15 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             self.refresh()
 
     def add_pdfs(self):
-        paths, _ = QFileDialog.getOpenFileNames(self, "Drawings (PDF)", "", "PDF (*.pdf)")
+        paths, _ = QFileDialog.getOpenFileNames(self, "Drawings and files (PDF, DWG, DXF, any format)", "",
+                                                "Drawings and files (*.pdf *.dwg *.dxf *.dwf *.ifc *.pln *.pla *.rvt *.skp *.zip *.xlsx *.docx *.jpg *.png);;All files (*)")
         self.add_paths(paths)
 
     def add_folder(self):
         d = QFileDialog.getExistingDirectory(self, "Folder with the drawing PDFs")
         if d:
-            self.add_paths([os.path.join(d, f) for f in sorted(os.listdir(d)) if f.lower().endswith(".pdf")])
+            self.add_paths([os.path.join(d, f) for f in sorted(os.listdir(d))
+                            if os.path.isfile(os.path.join(d, f)) and not f.startswith((".", "~", "$")) and not re.search(r"drawing register|sheet index", f, re.I)])
 
     @staticmethod
     def key(r):
@@ -1314,7 +1327,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         place from the new PDF, so a revised drawing replaces its older revision; comments you typed are kept."""
         added = updated = 0
         for p in sorted(paths, key=lambda x: os.path.basename(x).lower()):
-            if not p.lower().endswith(".pdf"):
+            if not os.path.isfile(p) or os.path.basename(p).startswith((".", "~", "$")):
                 continue
             new = guess_row(p)
             old = self.find_row(self.key(new))
@@ -1357,7 +1370,7 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
                 if r.get("path") and os.path.exists(r["path"]):
                     self._merge(r, guess_row(r["path"]))
         self.refresh()
-        self.count.setText("%d PDFs read again" % len(paths))
+        self.count.setText("%d files read again" % len(paths))
 
     # ----- carrying on after a crash, or with a project that was never recorded here -----
     @staticmethod

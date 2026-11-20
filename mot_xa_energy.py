@@ -9386,7 +9386,7 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+K"), self, activated=self.open_command_search)
         self._ui_tables(ux)
         # drop files on the window
-        self._drop = ux.DropFilter(self, (".mcplv", ".json", ".ifc", ".ifczip", ".pdf"), self._dropped)
+        self._drop = ux.DropFilter(self, (".mcplv", ".json", ".ifc", ".ifczip", ".pdf", ".dwg", ".dxf", ".dwf", ".pln", ".pla", ".rvt", ".skp", ".3dm", ".zip", ".xlsx", ".docx", ".jpg", ".png"), self._dropped)
         # empty states
         rp = getattr(self, "register_page", None)
         if rp is not None:
@@ -9692,6 +9692,9 @@ class MainWindow(QMainWindow):
         proj = [p for p in paths if p.lower().endswith((".mcplv", ".json"))]
         ifc = [p for p in paths if p.lower().endswith((".ifc", ".ifczip"))]
         pdf = [p for p in paths if p.lower().endswith(".pdf")]
+        other = [p for p in paths if p not in proj and p not in ifc and p not in pdf]
+        if other and not proj and not ifc and getattr(self, "register_page", None) is not None:
+            pdf = pdf + other                 # DWG, DXF and other files go to the drawing register too
         if proj:
             if self._has_work() and self._data_hash() != getattr(self, "_clean_hash", None):
                 if QMessageBox.question(self, APP_NAME, "Open %s?\n\nChanges you have not saved in the current project will be lost." % os.path.basename(proj[0])) != QMessageBox.StandardButton.Yes:
@@ -9702,7 +9705,7 @@ class MainWindow(QMainWindow):
         elif pdf and getattr(self, "register_page", None) is not None:
             self.goto_main_tab("Drawing register")
             n = self.register_page.add_paths(pdf)
-            self.toast("%d drawing%s added to the register" % (n, "" if n == 1 else "s"))
+            self.toast("%d file%s added to the register" % (n, "" if n == 1 else "s"))
 
     def maybe_whats_new(self):
         """After an update: a short window with what is new since the version used before."""

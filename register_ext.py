@@ -1794,8 +1794,11 @@ class MailMixin:
                 except Exception:
                     pass
             for p in files:
+                import mimetypes
+                _mt = (mimetypes.guess_type(p)[0] or "application/octet-stream") if not p.lower().endswith(".pdf") else "application/pdf"
+                _main, _sub = (_mt.split("/", 1) + ["octet-stream"])[:2]
                 with open(p, "rb") as f:
-                    m.add_attachment(f.read(), maintype="application", subtype="pdf" if p.lower().endswith(".pdf") else "octet-stream",
+                    m.add_attachment(f.read(), maintype=_main, subtype=_sub,
                                      filename=re.sub(r"^\d+_\d+_", "", os.path.basename(p)))
             msgs.append(m)
         bcc_me = bool(S.get("smtp_bcc_me", True))
