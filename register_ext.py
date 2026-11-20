@@ -964,8 +964,8 @@ class InboxDialog(QDialog):
         self.setWindowTitle("Watch my Gmail inbox for orders")
         self.setMinimumWidth(560)
         v = QVBoxLayout(self)
-        t = QLabel("The program looks at the <b>subjects</b> of your Gmail inbox (never the whole email) for order words and for the name and short codes of each of your areas "
-                   "(for example Blue Hills, BH, BHE), and always looks at mail from the addresses you list below, whatever the subject says. Each email found is split into one order per house and added to the area's square marked <b>New</b>; a later email about a "
+        t = QLabel("The program only looks at unread mail from the <b>email addresses of your companies</b> (right-click a company > Edit) and from the addresses you list below, "
+                   "whatever the subject says; mail from anyone else is ignored (unless you tick the subject option below). Each email found is split into one order per house and added to the area's square marked <b>New</b>; a later email about a "
                    "house that already has its order is added to that order as a <b>change</b>. An estate that is not there yet gets its own square. "
                    "The program only reads; it never deletes or changes your mail.")
         t.setWordWrap(True)
@@ -994,6 +994,10 @@ class InboxDialog(QDialog):
         self.on = QCheckBox("Watch my inbox while the program is open")
         self.on.setChecked(bool(self.S.get("inbox_on")))
         v.addWidget(self.on)
+        self.subj = QCheckBox("Also look at mail from anyone whose SUBJECT has these words, area names or short codes (off: only the addresses of your companies and the list above)")
+        self.subj.setChecked(bool(self.S.get("inbox_subject_search", False)))
+        self.subj.setStyleSheet("")
+        v.addWidget(self.subj)
         self.old = QCheckBox("Also bring in the matching emails of the last 14 days (otherwise only emails that arrive from now on)")
         self.old.setChecked(False)
         v.addWidget(self.old)
@@ -1049,6 +1053,7 @@ class InboxDialog(QDialog):
             return
         if self.on.isChecked() and not S.get("inbox_on") and not self.old.isChecked():
             S["inbox_baseline"] = True            # the first look only notes what is already there
+        S["inbox_subject_search"] = self.subj.isChecked()
         S["inbox_from"] = [x.strip() for x in re.split(r"[\n,;]+", self.froms.toPlainText()) if x.strip() and ("@" in x)]
         S["inbox_words"], S["inbox_secs"], S["inbox_on"] = self.words.text().strip() or "order, orders, bestelling, bestellings", self.secs.value(), self.on.isChecked()
         if self.old.isChecked():
@@ -1805,12 +1810,18 @@ class LogMixin:
         if S.get("inbox_seen_v", 0) < 3:
             S["inbox_seen"], S["inbox_seen_v"] = [], 3            # emails set aside by earlier versions (Maybe orders...) are looked at again
         # Check now looks at every unread match again (an email already in the list is recognised by its id and its content, so nothing is added twice)
+        senders = list(S.get("inbox_from", [])) + [x for c in self.companies for x in self._company_emails(c)]
+        by_subject = bool(S.get("inbox_subject_search", False))
+        if not senders and not by_subject:
+            self._inbox_busy = False
+            self._inbox_label("no email addresses yet: right-click a company > Edit and list the addresses to look at")
+            return
         words, seen, folder = self._search_words(), (set() if manual else set(S.get("inbox_seen", []))), os.path.join(M._user_data_dir(), "inbox")
 
         def work():
             try:
                 import mail_inbox
-                self.inbox_done.emit(mail_inbox.fetch_new(S, words, seen, folder, stubs=bool(S.get("inbox_baseline")), senders=list(S.get("inbox_from", [])) + [x for c in self.companies for x in self._company_emails(c)]), "")
+                self.inbox_done.emit(mail_inbox.fetch_new(S, words, seen, folder, stubs=bool(S.get("inbox_baseline")), senders=senders, by_subject=by_subject), "")
             except Exception as ex:
                 self.inbox_done.emit([], str(ex))
         threading.Thread(target=work, daemon=True).start()
@@ -1993,6 +2004,9 @@ class LogMixin:
                 continue
             if mail_inbox.ROBOT.search(mail_inbox.sender_addr(it["from"])):
                 continue
+            if not S.get("inbox_subject_search", False) and not self._addr_in(mail_inbox.sender_addr(it["from"]),
+                                                                              list(S.get("inbox_from", [])) + [x for c in self.companies for x in self._company_emails(c)]):
+                continue                                           # not from an address you listed
             self._process_email(it, st)
         made, changes_made = st["made"], st["changes"]
         S["inbox_seen"] = seen[-3000:]
