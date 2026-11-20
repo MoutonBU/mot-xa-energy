@@ -978,9 +978,9 @@ class InboxDialog(QDialog):
         self.words.setPlaceholderText("order, new order, bestelling")
         f.addRow("Subject words (any of them)", self.words)
         self.secs = QSpinBox()
-        self.secs.setRange(30, 600)
+        self.secs.setRange(10, 600)
         self.secs.setSuffix(" seconds")
-        self.secs.setValue(int(self.S.get("inbox_secs", 60)))
+        self.secs.setValue(self._secs(self.S))
         f.addRow("Look every", self.secs)
         v.addLayout(f)
         self.on = QCheckBox("Watch my inbox while the program is open")
@@ -1001,6 +1001,11 @@ class InboxDialog(QDialog):
         v.addLayout(row)
         self.signed.connect(self._signed)
         self._refresh()
+
+    @staticmethod
+    def _secs(S):
+        v = int(S.get("inbox_secs", 10) or 10)
+        return 10 if v in (30, 60) else max(10, v)          # the earlier defaults (60 and 30 seconds) become 10
 
     def _refresh(self):
         mo, S = self.mo, self.S
@@ -1131,26 +1136,33 @@ class LogMixin:
         S = self._M().SETTINGS
         self._inbox_timer.stop()
         if S.get("inbox_on"):
-            self._inbox_timer.start(max(30, int(S.get("inbox_secs", 60))) * 1000)
+            self._inbox_timer.start(InboxDialog._secs(S) * 1000)
             if now or True:
                 self.inbox_check()
         self._inbox_label()
 
     def _inbox_label(self, extra=""):
         S = self._M().SETTINGS
-        txt = ("Watching Gmail (every %d s)" % int(S.get("inbox_secs", 60))) if S.get("inbox_on") else "Not watching Gmail"
+        txt = ("Watching Gmail (every %d s)" % InboxDialog._secs(S)) if S.get("inbox_on") else "Not watching Gmail"
         self.inbox_lbl.setText(txt + (" - " + extra if extra else ""))
 
-    def inbox_check(self):
+    def inbox_check(self, manual=False):
         M = self._M()
         S = M.SETTINGS
         try:
             import mail_oauth as mo
-            ok = S.get("inbox_on") and mo.signed_in(S, "gmail") and S.get("gmail_read")
+            allowed = bool(mo.signed_in(S, "gmail") and S.get("gmail_read"))
         except Exception:
-            ok = False
-        if not ok or self._inbox_busy:
+            allowed = False
+        if manual and not allowed:
+            self._inbox_label("press Watch my Gmail inbox for orders... and allow Gmail reading first")
             return
+        if not (allowed and (S.get("inbox_on") or manual)) or self._inbox_busy:
+            if manual and self._inbox_busy:
+                self._inbox_label("still checking...")
+            return
+        if manual:
+            self._inbox_label("checking...")
         self._inbox_busy = True
         words, seen, folder = S.get("inbox_words", "order, orders"), set(S.get("inbox_seen", [])), os.path.join(M._user_data_dir(), "inbox")
 
@@ -1201,7 +1213,7 @@ class LogMixin:
                 QApplication.alert(self.window(), 0)
             except Exception:
                 pass
-        self._inbox_label("checked %s%s" % (now, (", %d new order%s from %d email%s" % (made, "" if made == 1 else "s", len(items), "" if len(items) == 1 else "s")) if made else ""))
+        self._inbox_label("checked %s%s" % (now, (", %d new order%s from %d email%s" % (made, "" if made == 1 else "s", len(items), "" if len(items) == 1 else "s")) if made else ", nothing new"))
 
     # ----- the house and block squares -----
     TILE_QSS = ("QPushButton{text-align:left;padding:10px 12px;border-radius:10px;border:1px solid palette(mid);background:palette(base);}"
@@ -1222,6 +1234,10 @@ class LogMixin:
             b.clicked.connect(self.inbox_dialog)
             self.inbox_btn = b
             bar.addWidget(b)
+            cb_ = QPushButton("Check now")
+            cb_.setStyleSheet("font-weight:700;")
+            cb_.clicked.connect(lambda: self.inbox_check(manual=True))
+            bar.addWidget(cb_)
             self.inbox_lbl = QLabel("")
             bar.addWidget(self.inbox_lbl)
             self._inbox_setup()
