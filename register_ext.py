@@ -1432,10 +1432,15 @@ class LogMixin:
         return re.sub(r"[\s,\-]*(ext(ension)?\.?|phase|stage|fase)?\s*\d+\s*$", "", str(name or ""), flags=re.I).strip()
 
     def _match_area(self, name):
-        """The existing area this name belongs to (same name, or the same name apart from Ext 120), else None."""
+        """The existing area this name belongs to (same name, same name apart from Ext 120, or a near spelling such as Blue Heels), else None."""
+        import difflib
         g, b = _gnorm(name), _gnorm(self._area_base(name))
         for a in self.areas:
             if _gnorm(a["name"]) == g or (b and _gnorm(self._area_base(a["name"])) == b):
+                return a["name"]
+        for a in self.areas:
+            ab = _gnorm(self._area_base(a["name"]))
+            if b and len(b) >= 5 and difflib.SequenceMatcher(None, b, ab).ratio() >= 0.75:
                 return a["name"]
         return None
 
@@ -1446,19 +1451,36 @@ class LogMixin:
         self.areas.append({"name": name.strip(), "keys": ""})
         return name.strip()
 
+    _EXT_RX = re.compile(r"([A-Z][\w'\u2019-]+(?:\s+[A-Z][\w'\u2019-]+){0,3})\s*,?\s*(?i:ext(?:ension)?\.?|uitbreiding|uitb\.?|phase|fase)\s*\.?\s*\d+")
+    _LEAD = {"new", "order", "orders", "urgent", "re", "fwd", "fw", "for", "stand", "erf", "please", "hi", "dear", "dringend", "bestelling", "bestellings",
+             "the", "from", "at", "in", "of", "to", "house", "houses", "list", "sheet"}
+
+    def _area_from_text(self, text):
+        """An estate name written as 'Albertsdal Ext 46' / 'Blue Hills Extension 120' in the text, without the number; "" when none."""
+        for m in self._EXT_RX.finditer(str(text)):
+            words = m.group(1).split()
+            while words and words[0].lower().strip(".,:-") in self._LEAD:
+                words.pop(0)
+            if words:
+                return " ".join(words)
+        return ""
+
     def _area_for(self, subject, body, group, from_table=""):
-        """The area (name, or "" for Not sorted) for an incoming order: the Township column of the email, the area this house already sits in, then the area's name
-        or its email words in the subject or the top of the email."""
+        """The area (name, or "" for Not sorted) for an incoming order. In order: the Township column; an existing area whose name or email words appear in the subject
+        or top of the email; an estate written like 'Albertsdal Ext 46' (a missing area is made for it); the area this house already sits in."""
         if from_table.strip():
             return self._ensure_area(from_table.strip())
-        same = Counter(self._area_of(x) for x in self.log if x.get("type") == "Order" and _gnorm(x.get("group")) == _gnorm(group) and x.get("area"))
-        if same:
-            return same.most_common(1)[0][0]
         hay = _gnorm(str(subject) + " " + str(body)[:3000])
         for a in self.areas:
             keys = [a["name"], self._area_base(a["name"])] + [k for k in re.split(r"[,;\n]", a.get("keys", "")) if k.strip()]
             if any(len(_gnorm(k)) >= 4 and _gnorm(k) in hay for k in keys):
                 return a["name"]
+        found = self._area_from_text(subject) or self._area_from_text(str(body)[:3000])
+        if found:
+            return self._ensure_area(self._area_base(found) or found)
+        same = Counter(self._area_of(x) for x in self.log if x.get("type") == "Order" and _gnorm(x.get("group")) == _gnorm(group) and x.get("area"))
+        if same:
+            return same.most_common(1)[0][0]
         return ""
 
     def _area_page(self):
