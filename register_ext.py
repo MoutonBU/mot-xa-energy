@@ -1188,7 +1188,7 @@ class LogMixin:
             for o in mail_inbox.parse_orders(it["subject"], it["body"], houses, it.get("html", "")):
                 e = {k: "" for k in LOGK}
                 e.update({"group": o["group"] or "Not sure which house", "type": "Order", "date": datetime.date.today().isoformat(), "order": o["order"], "text": o["text"],
-                          "status": "New", "req_subject": it["subject"], "req_date": rd, "req_from": it["from"], "req_path": it["path"], "sent_path": "", "drawings": "",
+                          "status": "New", "kinds": o.get("kinds", ""), "req_subject": it["subject"], "req_date": rd, "req_from": it["from"], "req_path": it["path"], "sent_path": "", "drawings": "",
                           "by_name": nm, "by_email": addr})
                 self.log.append(e)
                 made += 1

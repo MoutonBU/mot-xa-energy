@@ -115,6 +115,24 @@ def parse_orders(subject, body, houses=(), html=""):
         m = HOUSE.search(text)
         return re.sub(r"\s+", " ", m.group("head")).strip().capitalize() if m else ""
 
+    num_lines = [i for i, ln in enumerate(lines) if re.fullmatch(r"\s*(?:(?:stand|erf|house|unit|plot|lot)\s*(?:no\.?|#)?\s*)?(\d{2,6}[A-Za-z]?)\s*[:\-]?\s*", ln, re.I)]
+    if num_lines and not any(HOUSE.search(ln) and not re.fullmatch(r"\s*(?:stand|erf|house|unit|plot|lot)\s*(?:no\.?|#)?\s*\d+\s*", ln, re.I) for ln in lines):
+        # the format "3339 / 91m2 (4+2) Extras: ...": a line with only the stand number, then what is wanted on it
+        intro = " ".join(ln.strip() for ln in lines[:num_lines[0]] if re.search(r"\b(please|following|finals?|orders?|plans?)\b", ln, re.I)).strip(" :")
+        low = (intro + " " + str(subject)).lower()
+        kinds = ", ".join(k for k, pat in (("Final plans", r"\bfinals?\b"), ("Masters", r"\bmasters?\b"), ("SDP", r"\bsdp\b")) if re.search(pat, low))
+        out = []
+        for j, i in enumerate(num_lines):
+            end = num_lines[j + 1] if j + 1 < len(num_lines) else len(lines)
+            num = re.search(r"\d{2,6}[A-Za-z]?", lines[i]).group(0)
+            word = (re.match(r"\s*(stand|erf|house|unit|plot|lot)", lines[i], re.I) or re.match(r"(stand)", "stand")).group(1).capitalize()
+            group = next((h for h in houses if _norm(h).endswith(_norm(num))), "%s %s" % (word, num))
+            det = [x.strip() for x in lines[i + 1:end] if x.strip()]
+            out.append({"group": group, "order": "", "kinds": kinds, "text": ("%s %s%s\n%s" % (word, num, (" - " + intro) if intro else "", "\n".join(det))).strip()})
+        allno = ORDER_NO.search(str(subject) + "\n" + intro)
+        for o in out:
+            o["order"] = allno.group("n").strip(" .,;") if allno else ""
+        return out
     out, cur = [], None
     for ln in lines:
         g = group_of(ln)
