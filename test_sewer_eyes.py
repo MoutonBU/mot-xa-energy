@@ -26,11 +26,14 @@ def test_rules():
         assert abs(math.hypot(b[0] - a[0], b[1] - a[1]) - tail) < 0.01
         assert any(n["kind"] == "IE" and math.hypot(n["pt"][0] - a[0], n["pt"][1] - a[1]) < 0.05 for n in nodes)
         assert any(n["kind"] == "RE" and math.hypot(n["pt"][0] - b[0], n["pt"][1] - b[1]) < 0.05 for n in nodes)
-    # 3. where the run crosses the stand boundary: an inspection eye just inside and a rodding eye on the boundary
-    cut = [n for n in nodes if n["kind"] == "RE" and abs(n["pt"][1]) < 0.1]
-    assert cut, "a rodding eye on the boundary"
-    assert any(n["kind"] == "IE" and 0.2 < n["pt"][1] < 0.5 for n in nodes)
-
+    # 3. where the run crosses the stand boundary: the rodding eye comes first, just inside, then an inspection eye against the stand
+    cut = [n for n in nodes if n["kind"] == "IE" and abs(n["pt"][1]) < 0.1]
+    assert cut, "an inspection eye on the boundary"
+    assert any(n["kind"] == "RE" and 0.2 < n["pt"][1] < 0.5 for n in nodes)
+    # 4. eyes can be moved and deleted, and every eye has a key
+    k = [n for n in nodes if n["kind"] == "IE"][0]["key"]
+    st["eyes"] = {"del": [k], "pos": {}}
+    assert all(n.get("key") != k for n in nodes_for(st)["nodes"])
 
 if __name__ == "__main__":
     test_rules()

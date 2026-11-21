@@ -421,7 +421,13 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
         a_, b_ = dm["a"], dm["b"]
         D.dim(a_, b_, dm.get("off", 1.0), mm(edge_len(a_, b_)), 0.45, side=1, dkey="DIM:u%d" % k)
     for k, nt in enumerate(st.get("notes") or []):             # texts you added
-        D.text(tuple(nt["pt"]), nt["t"], 0.5, sh.hdir(), key="NOTE:%d" % k)
+        pt = tuple(nt["pt"])
+        lk = nt.get("link")
+        if lk and lk.get("a"):                                         # linked: it moves with the thing it is linked to
+            an = link_anchor(st, res, lk)
+            if an:
+                pt = (pt[0] + an[0] - lk["a"][0], pt[1] + an[1] - lk["a"][1])
+        D.text(pt, nt["t"], 0.5, sh.hdir(), key="NOTE:%d" % k)
     # ---- your own points
     for c in st.get("custom") or []:
         q = c["pt"]
@@ -527,6 +533,24 @@ def _setting_out(D, stand, house, kinds, label):
             for t0, t1 in zip(chain[:-1], chain[1:]):
                 if t1 - t0 > 0.05:
                     D.dim((a[0] + ux * t0, a[1] + uy * t0), (a[0] + ux * t1, a[1] + uy * t1), off, mm(t1 - t0), 0.45, side=-1 if ccw else 1)
+
+
+def link_anchor(st, res, lk):
+    """where the thing a text is linked to is now"""
+    k = (lk or {}).get("k")
+    if k in ("house", "carport") and st.get(k):
+        return (st[k]["cx"], st[k]["cy"])
+    if not res:
+        return None
+    if k == "eye":
+        for nd in res["sewer"]["nodes"]:
+            if nd.get("key") == lk.get("key"):
+                return tuple(nd["pt"])
+        return None
+    if k == "sewer":
+        P = res["sewer"]["path"]
+        return ((P[0][0] + P[-1][0]) / 2, (P[0][1] + P[-1][1]) / 2) if P else None
+    return None
 
 
 def _off(sh, q, dh, dv):

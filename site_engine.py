@@ -513,7 +513,7 @@ def sewer(state, hp, cp, params, others=()):
         if man:                                                  # a run you have placed by hand: it stays where you put it, kept square, ending on the main line
             man[-1] = (man[-1][0], mains(state)["sewer"])
             via = []
-            rest = square_join([q1] + man)
+            rest = ([q1] + man) if state.get("sewer_free") else square_join([q1] + man)   # free bends: the points stay exactly where you put them
         for v_ in via:                                           # your own sewer points: the run goes through them in order, square
             rest = dedupe(rest[:-1] + ortho(route(rest[-1], v_, stand, obs)))
         if not man:
@@ -541,7 +541,7 @@ def sewer(state, hp, cp, params, others=()):
         if all(abs(acc - m[0]) > 0.3 for m in marks):
             marks.append((acc, "IE"))                            # and one at every bend
     if cut is not None and all(abs(cut - m[0]) > 0.6 for m in marks):
-        marks.append((max(cut - params["re_ext"], 0.3), "IE"))  # just inside the boundary, with the rodding eye on the boundary itself (below)
+        marks.append((max(cut - params["re_ext"], 0.3), "RE"))  # the rodding eye comes first, just inside the boundary, then the inspection eye against the stand (below)
     for v_ in (state.get("sewer_via") or []):                    # an inspection eye at every point you put in
         best = min(range(0, int(L * 20) + 1), key=lambda k: math.hypot(point_at(path, k / 20.0)[0] - v_[0], point_at(path, k / 20.0)[1] - v_[1]))
         c_ = best / 20.0
@@ -579,12 +579,31 @@ def sewer(state, hp, cp, params, others=()):
             continue
         end = (b_[0] - d2[0] / l2 * params["re_ext"], b_[1] - d2[1] / l2 * params["re_ext"])   # the next leg, carried back past the corner
         stubs.append([b_, end])
+        si = len(stubs) - 1
         if not any(abs(n["chainage"] - acc) < 0.3 and n["kind"] == "IE" for n in nodes):
             nodes.append({"kind": "IE", "pt": b_, "chainage": round(acc, 2), "depth": round(D0 + acc / fall, 3), "label": "IE"})
-        nodes.append({"kind": "RE", "pt": end, "chainage": round(acc, 2), "depth": round(D0 + acc / fall, 3), "label": "RE"})
+        nodes.append({"kind": "RE", "pt": end, "chainage": round(acc, 2), "depth": round(D0 + acc / fall, 3), "label": "RE", "stub": si})
     if cut is not None and 0 < cut < L:
-        nodes.append({"kind": "RE", "pt": point_at(path, cut), "chainage": round(cut, 2), "depth": round(D0 + cut / fall, 3), "label": "RE"})
+        nodes.append({"kind": "IE", "pt": point_at(path, cut), "chainage": round(cut, 2), "depth": round(D0 + cut / fall, 3), "label": "IE"})
     nodes.sort(key=lambda n: n["chainage"])
+    cnt = {}
+    for n_ in nodes:                                              # a key for every eye (kind + number along the run), so you can pick, move and delete them
+        cnt[n_["kind"]] = cnt.get(n_["kind"], -1) + 1
+        n_["key"] = "%s%d" % (n_["kind"], cnt[n_["kind"]])
+    ed = state.get("eyes") or {}
+    gone = set(ed.get("del") or [])
+    drop = set()
+    for n_ in nodes:
+        if n_["key"] in gone:
+            drop.add(n_["key"])
+            if "stub" in n_:
+                stubs[n_["stub"]] = None
+        elif n_["key"] in (ed.get("pos") or {}):
+            n_["pt"] = tuple(ed["pos"][n_["key"]])
+            if "stub" in n_ and stubs[n_["stub"]]:
+                stubs[n_["stub"]][1] = n_["pt"]
+    nodes = [n_ for n_ in nodes if n_["key"] not in drop]
+    stubs = [x for x in stubs if x]
     d_main = D0 + L / fall
     nodes.append({"kind": "MAIN", "pt": path[-1], "chainage": round(L, 2), "depth": round(d_main, 3), "label": "Connect to main sewer line"})
     return {"path": path, "nodes": nodes, "length": round(L, 2), "drop_mm": round(L * 1000.0 / fall), "port": port, "branch": r["branch"],

@@ -321,6 +321,8 @@ class ServicesView(QWidget):
             return (d[0],)
         if d[0] in ("sseg", "sv"):
             return ("sewer",)
+        if d[0] == "eye":
+            return ("eye", d[1])
         if d[0] == "rot":
             return (d[1],)
         if d[0] == "label":
@@ -380,6 +382,9 @@ class ServicesView(QWidget):
                 pt, _n = se.port_point(hp, wp)
                 if math.hypot(pt[0] - w[0], pt[1] - w[1]) * s < 10:
                     return ("wport", i)
+            for nd in pg.res["sewer"]["nodes"]:
+                if nd["kind"] in ("IE", "RE") and nd.get("key") and math.hypot(nd["pt"][0] - w[0], nd["pt"][1] - w[1]) * s < 9:
+                    return ("eye", nd["key"])
             lab = self.label_at(qp)
             if lab:
                 return ("label", lab, w, tuple((pg.st.get("labels") or {}).get(lab, (0.0, 0.0))))
@@ -402,6 +407,9 @@ class ServicesView(QWidget):
     def keyPressEvent(self, e):
         if e.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and self.sel and self.sel[0] == "label":
             self.page.delete_text(self.sel[1])
+            return
+        if e.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and self.sel and self.sel[0] == "eye":
+            self.page.delete_eye(self.sel[1])
             return
         if e.key() == Qt.Key.Key_Escape and self.mode == "select" and self.sel:
             self.set_sel(None)
@@ -498,7 +506,11 @@ class ServicesView(QWidget):
             self.update()
             return
         w = self.world(e.position())
-        if d[0] == "pt":
+        if d[0] in ("pt", "port", "wport", "via", "house", "carport", "rot", "main"):
+            pg.st.pop("eyes", None)                              # the run is going to change, so the eye edits no longer fit it
+        if d[0] == "eye":
+            pg.move_eye(d[1], w)
+        elif d[0] == "pt":
             pg.st["points"][d[1]] = [round(w[0], 2), se.mains(pg.st)[d[1]]]
             pg.st["pts_manual"] = True
         elif d[0] == "wport":
@@ -585,6 +597,13 @@ class ServicesView(QWidget):
             p.setPen(pink)
             p.setFont(QFont(self.font().family(), 9, QFont.Weight.Bold))
             p.drawText(QPointF(hs.x() + 12, hs.y() - 10), "%d\u00b0" % round(pg.st[sel[0]].get("rot", 0.0)))
+        elif sel[0] == "eye":
+            for nd in pg.res["sewer"]["nodes"]:
+                if nd.get("key") == sel[1]:
+                    q = S(nd["pt"])
+                    p.setPen(QPen(pink, 2, Qt.PenStyle.DashLine))
+                    p.setBrush(Qt.BrushStyle.NoBrush)
+                    p.drawEllipse(q, 11, 11)
         elif sel[0] == "sewer":
             P = pg.res["sewer"]["path"]
             p.setPen(QPen(pink, 2))
@@ -1419,9 +1438,17 @@ class SiteServicesPage(ToolBase):
             add("90\u00b0", lambda: self.rotate_by(r, 90), "Turn a quarter")
             add("Turn precisely...", lambda: self.rotate_dialog(r), "A slider with a live preview")
             lay.addWidget(QLabel("or drag the ring (Shift = 15\u00b0 steps)"))
+        elif sel[0] == "eye":
+            k = sel[1]
+            lay.addWidget(QLabel("Rodding eye" if k.startswith("RE") else "Inspection eye"))
+            lay.addWidget(QLabel("drag it to move it"))
+            add("Delete", lambda: self.delete_eye(k), "Take this eye off the plan (Delete key)")
+            add("Eyes back", self.reset_eyes, "Put all the eyes back where the program places them")
         elif sel[0] == "sewer":
             lay.addWidget(QLabel("Sewer line"))
-            lay.addWidget(QLabel("drag a leg to slide it, a corner to stretch it"))
+            lay.addWidget(QLabel("drag a leg to slide it; a corner stretches it (Shift = move only that corner)"))
+            add("Free bends: " + ("on" if self.st.get("sewer_free") else "off"), self.toggle_free, "On: a corner moves alone and the legs next to it go slanted, everything else stays put")
+            add("Eyes back", self.reset_eyes, "Put all the eyes back where the program places them")
             add("Back to automatic", self.sewer_auto, "Throw away your changes and let the program route it")
         elif sel[0] == "label":
             lay.addWidget(QLabel("Text"))
@@ -1432,6 +1459,13 @@ class SiteServicesPage(ToolBase):
             add("\u21ba 15\u00b0", lambda: self.text_style(k, "r", -15.0), "Turn anticlockwise")
             add("\u21bb 15\u00b0", lambda: self.text_style(k, "r", 15.0), "Turn clockwise")
             add("Reset", lambda: self.text_reset(k), "Put the words, size, turn and place back")
+            if k.startswith("NOTE:"):
+                try:
+                    lk = self.st["notes"][int(k[5:].split("#")[0])].get("link")
+                except Exception:
+                    lk = None
+                lay.addWidget(QLabel("linked to " + self.link_name(lk)) if lk else QLabel("not linked"))
+                add("Unlink" if lk else "Link to nearest", lambda: self.link_note(k, bool(lk)), "A linked text moves with the thing it is linked to")
             add("Delete", lambda: self.delete_text(k), "Take this text off the plan (Delete key). Texts back brings it again.")
         gz.adjustSize()
         gz.move(10, 8)
@@ -1442,7 +1476,12 @@ class SiteServicesPage(ToolBase):
         """move a leg or a corner of the sewer run by hand; everything stays square"""
         P = [list(p) for p in d[2]]
         n = len(P)
-        if d[0] == "sv":
+        free = bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier) or bool(self.st.get("sewer_free"))
+        if d[0] == "sv" and free:
+            k = d[1]
+            P[k] = [w[0], P[k][1] if k == n - 1 else w[1]]
+            self.st["sewer_free"] = True
+        elif d[0] == "sv":
             k = d[1]
             last = k == n - 1
             nx, ny = w[0], (P[k][1] if last else w[1])
@@ -1470,7 +1509,97 @@ class SiteServicesPage(ToolBase):
                         P[j][0] = d[2][j][0] + dx
         self.st["sewer_manual"] = [[round(p[0], 2), round(p[1], 2)] for p in P[1:]]
 
+    def toggle_free(self):
+        self.st["sewer_free"] = not self.st.get("sewer_free")
+        self.refresh_gizmo()
+        self.solve_now()
+
+    # ---- the eyes
+    def move_eye(self, key, w):
+        q = (w[0], w[1])
+        r = self.res["sewer"]
+        best = None
+        for pp in [r["path"]] + ([r["branch"]] if r.get("branch") else []) + list(r.get("stubs") or []):
+            for i in range(len(pp) - 1):
+                a, b = pp[i], pp[i + 1]
+                dx, dy = b[0] - a[0], b[1] - a[1]
+                l2 = dx * dx + dy * dy or 1e-9
+                t = max(0.0, min(1.0, ((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / l2))
+                c = (a[0] + t * dx, a[1] + t * dy)
+                dd = math.hypot(q[0] - c[0], q[1] - c[1])
+                if best is None or dd < best[0]:
+                    best = (dd, c)
+        if best and best[0] < 0.5:
+            q = best[1]                                           # on the pipe it sits on the pipe
+        self.st.setdefault("eyes", {"del": [], "pos": {}}).setdefault("pos", {})[key] = [round(q[0], 3), round(q[1], 3)]
+
+    def delete_eye(self, key):
+        ed = self.st.setdefault("eyes", {"del": [], "pos": {}})
+        ed.setdefault("del", [])
+        if key not in ed["del"]:
+            ed["del"].append(key)
+        ed.setdefault("pos", {}).pop(key, None)
+        self.view.set_sel(None)
+        self.solve_now(False)
+        self.commit(True)
+
+    def reset_eyes(self):
+        self.st.pop("eyes", None)
+        self.view.set_sel(None)
+        self.solve_now(False)
+        self.commit(True)
+
+    # ---- texts linked to things
+    def link_name(self, lk):
+        k = (lk or {}).get("k", "")
+        return {"house": "the house", "carport": "the carport", "sewer": "the sewer line"}.get(k, "an eye" if k else "nothing")
+
+    def link_anchor(self, lk):
+        return site_sheet.link_anchor(self.st, self.res, lk)
+
+    def nearest_link(self, w):
+        res = self.res
+        if not res:
+            return None
+        if res.get("carport") and se.inside(w, res["carport"]):
+            return {"k": "carport"}
+        if se.inside(w, res["house"]):
+            return {"k": "house"}
+        best = None
+        for nd in res["sewer"]["nodes"]:
+            if nd["kind"] in ("IE", "RE") and nd.get("key"):
+                dd = math.hypot(nd["pt"][0] - w[0], nd["pt"][1] - w[1])
+                if dd < 1.5 and (best is None or dd < best[0]):
+                    best = (dd, {"k": "eye", "key": nd["key"]})
+        if best:
+            return best[1]
+        P = res["sewer"]["path"]
+        if any(se.line_dist(w, P[i], P[i + 1]) < 1.0 for i in range(len(P) - 1)):
+            return {"k": "sewer"}
+        return None
+
+    def link_note(self, key, unlink):
+        try:
+            nt = self.st["notes"][int(key[5:].split("#")[0])]
+        except Exception:
+            return
+        if unlink:
+            lk = nt.pop("link", None)
+            a = self.link_anchor(lk)
+            if a and lk.get("a"):
+                nt["pt"] = [round(nt["pt"][0] + a[0] - lk["a"][0], 2), round(nt["pt"][1] + a[1] - lk["a"][1], 2)]
+        else:
+            lk = self.nearest_link(tuple(nt["pt"]))
+            if lk:
+                a = self.link_anchor(lk)
+                lk["a"] = [round(a[0], 3), round(a[1], 3)]
+                nt["link"] = lk
+        self.refresh_gizmo()
+        self.solve_now(False)
+        self.commit(True)
+
     def sewer_auto(self):
+        self.st["sewer_free"] = False
         self.st["sewer_manual"] = []
         self.st["sewer_via"] = []
         self.solve_now()
@@ -1531,7 +1660,14 @@ class SiteServicesPage(ToolBase):
     def add_note(self, w):
         t, ok = QInputDialog.getText(self, "Add a text", "Text:")
         if ok and t.strip():
-            self.st.setdefault("notes", []).append({"t": t.strip(), "pt": [round(w[0], 2), round(w[1], 2)]})
+            nt = {"t": t.strip(), "pt": [round(w[0], 2), round(w[1], 2)]}
+            lk = self.nearest_link(w)                             # a text put on the house, carport, a sewer eye or the sewer line is linked to it and moves with it
+            if lk:
+                a = self.link_anchor(lk)
+                if a:
+                    lk["a"] = [round(a[0], 3), round(a[1], 3)]
+                    nt["link"] = lk
+            self.st.setdefault("notes", []).append(nt)
             self.solve_now()
 
     def remove_note(self, k):
