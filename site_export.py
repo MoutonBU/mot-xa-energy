@@ -7,7 +7,6 @@ their proportions, colours go to layers (and are kept as true colours). Texts ar
 import math
 
 import ezdxf
-from ezdxf.lldxf import const as dxfconst
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QBrush, QColor, QFontMetricsF, QFontMetrics, QPainter, QPen, QPicture, QPolygonF
 
@@ -24,7 +23,7 @@ UNDER_COLOURS = {(207, 214, 228), (183, 220, 183), (198, 222, 250), (236, 208, 1
 EXTRA_LAYERS = [("SITE PLAN", 7), ("TEXT", 7), ("UNDERLAY", 9)]
 STYLES = {("Arial", False): ("ARIAL", "arial.ttf"), ("Arial", True): ("ARIAL_BOLD", "arialbd.ttf"),
           ("Arial Black", True): ("ARIAL_BLACK", "ariblk.ttf"), ("Arial Black", False): ("ARIAL_BLACK", "ariblk.ttf")}
-VALID_LW = sorted(w for w in dxfconst.VALID_DXF_LINEWEIGHTS if w >= 0)
+VALID_LW = [0, 5, 9, 13, 15, 18, 20, 25, 30, 35, 40, 50, 53, 60, 70, 80, 90, 100, 106, 120, 140, 158, 200, 211]   # the line weights DXF allows (1/100 mm)
 CAP = 0.716                                      # Arial capital height / em
 
 

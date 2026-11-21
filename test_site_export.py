@@ -4,7 +4,6 @@ import tempfile
 
 import ezdxf
 from PySide6.QtWidgets import QApplication
-from PySide6.QtTest import QTest
 
 import site_export
 import site_services as ss
@@ -18,11 +17,11 @@ def test_export():
     pg = ss.SiteServicesPage(W())
     pg.resize(1500, 900)
     pg.show()
-    QTest.qWait(100)
+    app.processEvents()
     pg.st["house"].update(cx=9.0, cy=12.0)
     pg.st["sheet"]["street"] = "BURGER ST"
     pg.solve_now(False)
-    QTest.qWait(200)
+    app.processEvents()
     path = os.path.join(tempfile.mkdtemp(), "plan.dxf")
     site_export.build_sheet(pg, path)
     doc = ezdxf.readfile(path)
