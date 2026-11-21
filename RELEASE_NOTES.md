@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.101**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.102**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **1.86.102** Sewer corners: the rodding eye stub now runs the other way, the leg that leaves the corner is carried back 350 mm past the corner (so at a corner where the pipe turns left, the stub points right).
 
 - **1.86.101** Importing a stand, house or carport is simpler. The two boxes for drawing units and the scale are replaced by one "Scale" box that stays on Automatic. After you click the corners, the size of what you clicked is checked, and if it is not the size of a stand, house or carport the window offers the scale that makes it one (for example 1 : 200) and asks Yes or No. The hints say what to click next: corners, double-click the last, then the street side.
 

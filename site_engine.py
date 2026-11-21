@@ -548,7 +548,7 @@ def sewer(state, hp, cp, params, others=()):
     for s_, kind in full:
         nodes.append({"kind": kind, "pt": point_at(path, s_), "chainage": round(s_, 2), "depth": round(D0 + s_ / fall, 3),
                       "label": kind + (" Min IL %d" % round(D0 * 1000) if kind == "RE" and s_ == 0 else "")})
-    stubs = []                                                    # where the run turns a corner, the leg before it carries on re_ext past the corner to a rodding eye
+    stubs = []                                                    # where the run turns a corner, the leg after it is carried back re_ext past the corner to a rodding eye
     acc = 0.0
     for i in range(1, len(path) - 1):
         a_, b_, c_ = path[i - 1], path[i], path[i + 1]
@@ -558,7 +558,7 @@ def sewer(state, hp, cp, params, others=()):
         l1, l2 = math.hypot(*d1), math.hypot(*d2)
         if l1 < 1e-6 or l2 < 1e-6 or abs(d1[0] * d2[1] - d1[1] * d2[0]) / (l1 * l2) < 0.5:
             continue
-        end = (b_[0] + d1[0] / l1 * params["re_ext"], b_[1] + d1[1] / l1 * params["re_ext"])
+        end = (b_[0] - d2[0] / l2 * params["re_ext"], b_[1] - d2[1] / l2 * params["re_ext"])   # the next leg, carried back past the corner
         stubs.append([b_, end])
         if not any(abs(n["chainage"] - acc) < 0.3 and n["kind"] == "IE" for n in nodes):
             nodes.append({"kind": "IE", "pt": b_, "chainage": round(acc, 2), "depth": round(D0 + acc / fall, 3), "label": "IE"})
