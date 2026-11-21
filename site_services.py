@@ -50,7 +50,7 @@ def blank_state():
             "house": {"cx": 9.0, "cy": 12.0, "w": 14.8, "d": 6.5, "rot": 90},
             "carport": {"cx": 3.5, "cy": 3.5, "w": 5.0, "d": 5.0, "rot": 0},
             "points": {"sewer": [12.0, 0.0], "water": [1.5, 0.0], "elec": [6.75, 0.0]},
-            "ports": {}, "params": {}, "mains": {}, "custom": [], "frame": None, "labels": {}, "underlay": [], "sewer_via": [], "water_ports": [], "dims": [], "sewer_manual": [], "notes": [], "text_edit": {},
+            "ports": {}, "params": {}, "mains": {}, "custom": [], "frame": None, "labels": {}, "underlay": [], "sewer_via": [], "water_ports": [], "dims": [], "sewer_manual": [], "notes": [], "text_edit": {}, "text_hidden": [], "pts_manual": False,
             "sheet": {"road": "left", "street": "", "road_w": "13m", "street_erf": "", "stand_no": "", "north": 0.0}}
 
 
@@ -325,6 +325,8 @@ class ServicesView(QWidget):
             return (d[1],)
         if d[0] == "label":
             return ("label", d[1])
+        if d[0] == "dimend":
+            return ("label", "DIM:u%d" % d[1])
         return None
 
     def rot_handle(self, role):
@@ -344,6 +346,15 @@ class ServicesView(QWidget):
             hnd = self.rot_handle(self.sel[0])
             if hnd and math.hypot(hnd[2][0] - w[0], hnd[2][1] - w[1]) * s < 12:
                 return ("rot", self.sel[0], hnd[0], pg.st[self.sel[0]].get("rot", 0.0), math.atan2(w[1] - hnd[0][1], w[0] - hnd[0][0]))
+        if self.sel and self.sel[0] == "label" and self.sel[1].startswith("DIM:u"):
+            try:
+                k = int(self.sel[1][5:].split("#")[0])
+                dm = pg.st["dims"][k]
+                for which in ("a", "b"):
+                    if math.hypot(dm[which][0] - w[0], dm[which][1] - w[1]) * s < 12:
+                        return ("dimend", k, which)
+            except Exception:
+                pass
         if self.sel and self.sel[0] == "sewer" and pg.res:
             P = pg.res["sewer"]["path"]
             for k in range(1, len(P)):
@@ -389,6 +400,12 @@ class ServicesView(QWidget):
         return None
 
     def keyPressEvent(self, e):
+        if e.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and self.sel and self.sel[0] == "label":
+            self.page.delete_text(self.sel[1])
+            return
+        if e.key() == Qt.Key.Key_Escape and self.mode == "select" and self.sel:
+            self.set_sel(None)
+            return
         if e.key() == Qt.Key.Key_Escape and self.mode != "select":
             self.mode = "select"
             self.page.set_hint("")
@@ -441,6 +458,7 @@ class ServicesView(QWidget):
                 k2_ = int(lab[5:].split("#")[0] or 0)
                 m.addAction("Delete this text", lambda: pg.remove_note(k2_))
             m.addAction("Edit the text...", lambda: pg.edit_text(lab))
+            m.addAction("Delete this text", lambda: pg.delete_text(lab))
             if lab.startswith("DIM:u"):
                 k_ = int(lab[5:].split("#")[0] or 0)
                 m.addAction("Remove this dimension", lambda: pg.remove_dim(k_))
@@ -482,6 +500,7 @@ class ServicesView(QWidget):
         w = self.world(e.position())
         if d[0] == "pt":
             pg.st["points"][d[1]] = [round(w[0], 2), se.mains(pg.st)[d[1]]]
+            pg.st["pts_manual"] = True
         elif d[0] == "wport":
             pg.st["water_ports"][d[1]] = se.nearest_port(pg.res["house"], w)
         elif d[0] == "via":
@@ -499,6 +518,8 @@ class ServicesView(QWidget):
             r = d[3] + math.degrees(ang - d[4])
             r = round(r / 15.0) * 15.0 if QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier else round(r)
             pg.st[d[1]]["rot"] = float(r % 360)
+        elif d[0] == "dimend":
+            pg.st["dims"][d[1]][d[2]] = list(pg.snap_point(w))
         elif d[0] in ("sv", "sseg"):
             pg.drag_sewer(d, w)
         elif d[0] == "main":
@@ -575,6 +596,16 @@ class ServicesView(QWidget):
             for k in range(len(P) - 1):
                 p.drawLine(S(P[k]), S(P[k + 1]))
         elif sel[0] == "label":
+            if sel[1].startswith("DIM:u"):
+                try:
+                    dm = pg.st["dims"][int(sel[1][5:].split("#")[0])]
+                    p.setPen(QPen(pink, 2))
+                    p.setBrush(QBrush(QColor("white")))
+                    for which in ("a", "b"):
+                        q = S(dm[which])
+                        p.drawEllipse(q, 7, 7)
+                except Exception:
+                    pass
             for key, px, py, ang, w_, ht, _q, cx in getattr(self.sh, "hits", []):
                 if key == sel[1]:
                     p.save()
@@ -970,6 +1001,7 @@ class SiteServicesPage(ToolBase):
         sh = dict(self.st.get("sheet") or {})
         sh["labels"] = self.st.get("labels") or {}
         sh["text_edit"] = self.st.get("text_edit") or {}
+        sh["hidden"] = self.st.get("text_hidden") or []
         try:
             no = int(sh.get("stand_no", ""))
             sh["neigh"] = [no - 1, no + 1]
@@ -1170,6 +1202,7 @@ class SiteServicesPage(ToolBase):
         self.view.update()
 
     def set_point(self, k, w):
+        self.st["pts_manual"] = True
         self.st["points"][k] = [round(w[0], 2), round(w[1], 2)]
         self.solve_now()
 
@@ -1203,6 +1236,7 @@ class SiteServicesPage(ToolBase):
         road, street, north = SHEET_DEFAULTS.get(k, ("left", "", 0.0))
         self.st["sheet"] = {"road": road, "street": street, "road_w": "13m", "street_erf": "2246", "stand_no": k, "north": north}
         self.st["frame"] = None
+        self.st["pts_manual"] = True                               # the connection points of the built-in stands come from the SG sheets
         self.set_stand(d["corners"], "Blue Hills Ext 120 - stand " + k, under=d["layers"], points=se.default_points(d))
 
     def nearest_reference(self):
@@ -1215,14 +1249,38 @@ class SiteServicesPage(ToolBase):
         return min(STANDS, key=lambda k: abs(STANDS[k]["frontage"] - fr) / 5.0 + abs(STANDS[k]["area"] - ar) / 100.0)
 
     def make_rect(self):
+        self.st["pts_manual"] = False
         w, d = self.q_w.value(), self.q_d.value()
         self.set_stand([[0, 0], [w, 0], [w, d], [0, d]], "Rectangle", points={"sewer": [round(w * 0.85, 2), 0.0], "water": [1.5, 0.0], "elec": [round(w / 2, 2), 0.0]})
+
+    def best_sewer_point(self):
+        """unless you placed the main sewer connection yourself, put it where the run from the house is shortest, so the pipe never goes round to the far side"""
+        st = self.st
+        if st.get("pts_manual"):
+            return
+        c = st["stand"]["corners"]
+        L = math.hypot(c[1][0] - c[0][0], c[1][1] - c[0][1])
+        if L < 3:
+            return
+        keep = list(st["points"]["sewer"])
+        best = None
+        for i in range(0, 13):
+            x = 0.6 + (L - 1.2) * i / 12.0
+            st["points"]["sewer"] = [round(x, 2), 0.0]
+            try:
+                r = se.solve(st)["sewer"]
+            except Exception:
+                continue
+            if best is None or r["length"] < best[0] - 0.05:
+                best = (r["length"], x)
+        st["points"]["sewer"] = [round(best[1], 2), 0.0] if best else keep
 
     def suggest(self):
         self._edited()
         out = se.suggest(self.st)
         self.st["house"].update(out["house"])
         self.st["carport"] = out.get("carport")
+        self.best_sewer_point()
         self._to_fields()
         self.solve_now()
         if out.get("relaxed"):
@@ -1329,6 +1387,7 @@ class SiteServicesPage(ToolBase):
             add("\u21ba 15\u00b0", lambda: self.text_style(k, "r", -15.0), "Turn anticlockwise")
             add("\u21bb 15\u00b0", lambda: self.text_style(k, "r", 15.0), "Turn clockwise")
             add("Reset", lambda: self.text_reset(k), "Put the words, size, turn and place back")
+            add("Delete", lambda: self.delete_text(k), "Take this text off the plan (Delete key). Texts back brings it again.")
         gz.adjustSize()
         gz.move(10, 8)
         gz.show()
@@ -1406,7 +1465,20 @@ class SiteServicesPage(ToolBase):
             ed["r"] = round(ed.get("r", 0.0) + f, 1)
         self.solve_now()
 
+    def delete_text(self, key):
+        if key.startswith("NOTE:"):
+            self.remove_note(int(key[5:].split("#")[0] or 0))
+        else:
+            h = self.st.setdefault("text_hidden", [])
+            if key not in h:
+                h.append(key)
+            self.solve_now()
+        self.view.set_sel(None)
+
     def text_reset(self, key):
+        h = self.st.get("text_hidden") or []
+        if key in h:
+            h.remove(key)
         (self.st.get("text_edit") or {}).pop(key, None)
         (self.st.get("labels") or {}).pop(key, None)
         self.solve_now()
@@ -1425,7 +1497,7 @@ class SiteServicesPage(ToolBase):
                 self.st["labels"].pop(key, None)
             self.solve_now()
 
-    def add_dim_point(self, w):
+    def snap_point(self, w):
         st = self.st
         cands = [tuple(p) for p in st["stand"]["corners"]]
         if self.res:
@@ -1433,7 +1505,11 @@ class SiteServicesPage(ToolBase):
             for k in ("sewer", "water", "elec"):
                 cands += [tuple(n["pt"]) for n in self.res[k]["nodes"]]
         near = min(cands, key=lambda q: math.hypot(q[0] - w[0], q[1] - w[1]))
-        p = near if math.hypot(near[0] - w[0], near[1] - w[1]) * self.view.sh.s < 14 else tuple(w)
+        return near if math.hypot(near[0] - w[0], near[1] - w[1]) * self.view.sh.s < 14 else (round(w[0], 3), round(w[1], 3))
+
+    def add_dim_point(self, w):
+        st = self.st
+        p = self.snap_point(w)
         a = getattr(self, "_dim_a", None)
         if a is None:
             self._dim_a = p
@@ -1515,6 +1591,7 @@ class SiteServicesPage(ToolBase):
 
     def reset_labels(self):
         self.st["labels"] = {}
+        self.st["text_hidden"] = []
         self.view.update()
         self.changed()
 
@@ -1630,6 +1707,7 @@ class SiteServicesPage(ToolBase):
 
     def set_stand_world(self, poly, name="Stand", src_shapes=None, street_edge=None):
         """a stand in drawing coordinates: put the street edge along x at the origin and remember the move so the house and carport from the same drawing land in place"""
+        self.st["pts_manual"] = False
         c0 = [tuple(p) for p in poly]
         if max(max(p[0] for p in c0) - min(p[0] for p in c0), max(p[1] for p in c0) - min(p[1] for p in c0)) > 2000:
             QMessageBox.warning(self, "Site services", "That stand is more than 2 km across, so the scale must be wrong. Import again and set the drawing units and scale.")

@@ -5,7 +5,7 @@ Everything is placed in metres and drawn at the scale of `s` pixels per metre, s
 import math
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPolygonF
+from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPicture, QPolygonF
 
 import site_engine as se
 
@@ -88,7 +88,7 @@ def font(px, bold=False, spacing=100, family="Arial"):
 class Drawer:
     def __init__(self, p, sh, minpx=7, lite=False):
         self.p, self.sh, self.s, self.minpx, self.lite = p, sh, sh.s, minpx, lite
-        self.offsets, self.hits, self.seen, self.dseen, self.edits = {}, [], {}, {}, {}
+        self.offsets, self.hits, self.seen, self.dseen, self.edits, self.hidden = {}, [], {}, {}, {}, set()
 
     # ---- helpers
     def lw(self, m):                                    # a line weight in metres of paper-at-1:200 -> pixels
@@ -102,6 +102,8 @@ class Drawer:
         n_ = self.seen.get(txt, 0)
         self.seen[txt] = n_ + 1
         key = key or "%s#%d" % (txt, n_)
+        if key in self.hidden:                                     # a text you deleted
+            return
         ed = self.edits.get(key)                                   # a text you edited: the words, the size, the turn
         extra_rot = 0.0
         if ed:
@@ -142,6 +144,15 @@ class Drawer:
         self.p.setPen(pen)
         self.p.drawLine(self.sh.pt(a), self.sh.pt(b))
 
+    def dot(self, q, r, color, filled=True):
+        """a small ring (inspection eye) or a filled dot (rodding eye) on the pipe, so the eye is visibly on it"""
+        if self.lite:
+            return
+        rp = max(r * self.s, 3.0)
+        self.p.setPen(QPen(color, self.lw(0.04)))
+        self.p.setBrush(QBrush(color if filled else QColor("white")))
+        self.p.drawEllipse(self.sh.pt(q), rp, rp)
+
     def poly(self, pts, color=BLACK, w=0.05, fill=None, dash=None, closed=True):
         pen = QPen(color, self.lw(w)) if color else Qt.PenStyle.NoPen
         if dash and color:
@@ -169,6 +180,8 @@ class Drawer:
             n_ = self.dseen.get(txt, 0)
             self.dseen[txt] = n_ + 1
             dkey = "DIM:%s#%d" % (txt, n_)
+        if dkey in self.hidden:                                    # a dimension you deleted goes whole: lines, ticks and figure
+            return
         mv = self.offsets.get(dkey)
         if mv:
             off = off + mv[0] * nx + mv[1] * ny
@@ -189,11 +202,13 @@ def edge_len(a, b):
     return math.hypot(b[0] - a[0], b[1] - a[1])
 
 
-def draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=False):
+def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=False):
     """the whole plan. st = engine state, res = engine result, opts = sheet details (names, north, scale text)"""
     D = Drawer(p, sh, minpx, lite)
-    D.offsets = opts.get("labels") or {}
+    D.offsets = dict(opts.get("auto_off") or {})                 # texts moved off each other by the program ...
+    D.offsets.update(opts.get("labels") or {})                   # ... and the ones you moved by hand, which win
     D.edits = opts.get("text_edit") or {}
+    D.hidden = set(opts.get("hidden") or [])
     sh.hits = D.hits                                         # so the page can tell which label you clicked
     stand = st["stand"]["corners"]
     n = len(stand)
@@ -325,7 +340,8 @@ def draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=False
         for nd in sw["nodes"]:
             q = nd["pt"]
             if nd["kind"] in ("IE", "RE"):
-                D.text(_off(sh, q, 0.9, 0.9 if nd["label"] == "RE" else -0.9), nd["kind"], 0.5, sh.hdir(), spacing=130)
+                D.dot(q, 0.17, BROWN, filled=nd["kind"] == "RE")
+                D.text(_off(sh, q, 0.7, 0.55 if nd["label"] == "RE" else -0.55), nd["kind"], 0.5, sh.hdir(), spacing=130)
             if nd["kind"] == "RE" and str(nd.get("label", "")).startswith("RE Min"):
                 D.text(_off(sh, q, 3.2, 0.0), "Min IL", 0.5, sh.hdir(), spacing=130)
                 D.text(_off(sh, q, 3.2, 0.9), "%d" % round(res["params"]["min_depth"] * 1000), 0.5, sh.hdir(), spacing=130)
@@ -412,6 +428,59 @@ def draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=False
         D.text((q[0] + 0.9, q[1] - 0.8), c.get("name", ""), 0.5, sh.hdir(), spacing=110)
     # ---- north arrow, title
     return D
+
+
+def _avoid(sh, hits, manual):
+    """nothing may overlap: texts that sit on another text are moved off it, the biggest texts stay put. Returns {key: world shift}."""
+    boxes = []
+    for key, px, py, ang, w, ht, q, cx in hits:
+        a = math.radians(ang)
+        ew = abs(w * math.cos(a)) + abs(ht * math.sin(a))
+        eh = abs(w * math.sin(a)) + abs(ht * math.cos(a))
+        boxes.append([key, px + cx * math.cos(a), py + cx * math.sin(a), ew + 6, eh + 6, ang, w, ht])
+    order = sorted(range(len(boxes)), key=lambda i: -(boxes[i][6] * boxes[i][7]))
+    placed, shifts = [], {}
+
+    def hit(b, x, y):
+        return any(abs(x - o[0]) < (b[3] + o[3]) / 2 and abs(y - o[1]) < (b[4] + o[4]) / 2 for o in placed)
+
+    for i in order:
+        b = boxes[i]
+        x, y = b[1], b[2]
+        movable = b[0] not in manual and not b[0].startswith("DIM:") and not b[0].startswith("NOTE:")
+        if movable and hit(b, x, y):
+            a = math.radians(b[5])
+            ax, ay = math.cos(a), math.sin(a)
+            step = b[7] * 1.05
+            best = None
+            for k in range(1, 7):
+                for dx, dy in ((ay, -ax), (-ay, ax), (ax, ay), (-ax, -ay)):    # up, down across the text, then along it
+                    d = step * k
+                    if not hit(b, x + dx * d, y + dy * d):
+                        best = (dx * d, dy * d)
+                        break
+                if best:
+                    break
+            if best:
+                x, y = x + best[0], y + best[1]
+                p0 = sh.inv(QPointF(b[1], b[2]))
+                p1 = sh.inv(QPointF(x, y))
+                shifts[b[0]] = (p1[0] - p0[0], p1[1] - p0[1])
+        placed.append([x, y, 0, b[3], b[4]])
+    return shifts
+
+
+def draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=False):
+    """the whole plan. A first pass finds where texts collide, the second draws with the colliding ones moved apart."""
+    if not lite and not opts.get("no_avoid"):
+        pic = QPicture()
+        pp = QPainter(pic)
+        D1 = _draw(pp, sh, st, res, opts, minpx, under, show_under, lite)
+        pp.end()
+        o2 = dict(opts)
+        o2["auto_off"] = _avoid(sh, D1.hits, set(opts.get("labels") or {}))
+        return _draw(p, sh, st, res, o2, minpx, under, show_under, lite)
+    return _draw(p, sh, st, res, opts, minpx, under, show_under, lite)
 
 
 def _setting_out(D, stand, house, kinds, label):

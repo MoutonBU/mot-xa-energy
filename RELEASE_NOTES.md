@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.105**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.106**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **1.86.106** Site services plan: (1) Texts that sit on top of each other are moved apart automatically (the biggest stay put; anything you moved by hand stays where you put it). (2) The inspection and rodding eyes are drawn as a ring and a dot on the pipe, with their IE/RE texts right beside them, so none floats on its own. (3) Unless you placed the main sewer connection yourself, a stand you import or make as a rectangle gets it where the sewer run from the house is shortest, so the pipe no longer goes round to the far side. (4) Delete a text: select it and press Delete, use the Delete button on its gizmo, or right-click > Delete this text. Texts back puts them again. Deleting a dimension's figure takes the whole dimension off. (5) Select a dimension you added and drag its two end dots to move its measuring points (they snap to corners).
 
 - **1.86.105** Site services, rotated house: the setting-out lines now carry on outwards. The nearest corner and the two corners at the ends are carried square past each boundary in light blue, and a dimension chain outside the boundary gives the distances from the stand's corners to those lines (as marked in blue on your plan). The street side is left out. The chain figures can be dragged up and down like the other dimensions.
 
