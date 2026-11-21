@@ -9,7 +9,7 @@ import math
 
 GRID = 0.25
 DEFAULTS = {"fall": 50.0, "conn_depth": 1.5, "max_ie": 25.0, "min_depth": 0.45, "sewer_pipe": "110", "water_pipe": "20",
-            "clear": 0.3, "re_ext": 1.5, "stub": 1.0, "sb_street": 1.0, "sb_side": 1.0, "sb_rear": 2.0}
+            "clear": 0.3, "re_ext": 1.5, "sep_water": 0.5, "sep_service": 0.1, "min_cover": 0.3, "stub": 1.0, "sb_street": 1.0, "sb_side": 1.0, "sb_rear": 2.0}
 
 
 # ------------------------------------------------------------------ geometry
@@ -202,6 +202,28 @@ def shortest(a, b, obstacles):
         k = prev[k]
     out.append(nodes[0])
     return out[::-1]
+
+
+def parallel_gap(p1, p2, min_run=0.5):
+    """the smallest distance between two paths where they run side by side (same or opposite direction within 6 degrees) for at least min_run"""
+    best = None
+    for i in range(len(p1) - 1):
+        a, b = p1[i], p1[i + 1]
+        la = math.hypot(b[0] - a[0], b[1] - a[1])
+        if la < 1e-6:
+            continue
+        ux, uy = (b[0] - a[0]) / la, (b[1] - a[1]) / la
+        for j in range(len(p2) - 1):
+            c, d = p2[j], p2[j + 1]
+            lc = math.hypot(d[0] - c[0], d[1] - c[1])
+            if lc < 1e-6 or abs(ux * (d[1] - c[1]) / lc - uy * (d[0] - c[0]) / lc) > 0.105:
+                continue
+            t0, t1 = sorted([(c[0] - a[0]) * ux + (c[1] - a[1]) * uy, (d[0] - a[0]) * ux + (d[1] - a[1]) * uy])
+            if min(t1, la) - max(t0, 0.0) < min_run:
+                continue
+            g = max(abs((c[0] - a[0]) * uy - (c[1] - a[1]) * ux), abs((d[0] - a[0]) * uy - (d[1] - a[1]) * ux))
+            best = g if best is None else min(best, g)
+    return best
 
 
 def overlap_len(p1, p2, tol=0.35):
@@ -590,6 +612,15 @@ def checks(state, hp, cp, params, res):
     if s["depth_main"] > params["conn_depth"] + 1e-6:
         w.append("Sewer: from the minimum depth of %.0f mm at the house, a %.1f m run at 1:%d is %.0f mm deep at the main, but the main is only %.0f mm deep there. "
                  "Lay it flatter, or the main must be deeper." % (params["min_depth"] * 1000, s["length"], params["fall"], s["depth_main"] * 1000, params["conn_depth"] * 1000))
+    gap = parallel_gap(res["sewer"]["path"], res["water"]["path"])
+    if gap is not None and gap < params["sep_water"] - 1e-6:
+        w.append("Water and sewer run side by side only %.0f mm apart; a drain and a potable water pipe laid side by side must be at least %.0f mm apart "
+                 "(SANS 10252-2, 6.7.6.1)." % (gap * 1000, params["sep_water"] * 1000))
+    gap = parallel_gap(res["sewer"]["path"], res["elec"]["path"])
+    if gap is not None and gap < params["sep_service"] - 1e-6:
+        w.append("The electrical line runs %.0f mm from the sewer; no service may be within %.0f mm of a drain (SANS 10252-2, 6.7.6.2)." % (gap * 1000, params["sep_service"] * 1000))
+    if params["min_depth"] < params["min_cover"] - 1e-6:
+        w.append("The minimum invert depth is less than the %.0f mm soil cover the standard asks for (SANS 10252-2, 6.7.6.8)." % (params["min_cover"] * 1000))
     lines = [("sewer", res["sewer"]["path"]), ("water", res["water"]["path"]), ("electrical", res["elec"]["path"])]
     for i in range(3):
         for j in range(i + 1, 3):

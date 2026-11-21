@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.90**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.91**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **Site services: standard checks.** The checks now include the clauses of SANS 10252-2 that I could confirm: water and sewer side by side at least 500 mm apart, no service within 100 mm of a drain, and the minimum soil cover. They show in the Checks list with the clause number.
 
 - **Faster updates.** Updates are now built as small code-only updates whenever possible, instead of a full installer.
 
