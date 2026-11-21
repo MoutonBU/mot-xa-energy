@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.113**
+Current version: **1.86.114**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Site services:** the end of the whole sewer line (the connection on the main sewer line) can now be selected: click its dot (or the last square when the sewer line is selected) and drag it along the main line, and the run goes to it, a hand-placed run included. The toolbar offers Shortest connection (automatic) or Click it in the plan.
 - **Site services:** extra sewer outlets on the house (up to 4 in all). Service points tab: "Add a sewer outlet on the house" (or the sewer toolbar), click on the wall; each runs square to the sewer run and butts onto it with a rodding eye at the wall and an inspection eye at the joint. Drag its brown square along the wall to move it; select it and press Delete (or right-click) to remove it. They also go into the DXF export, together with the main outlet pipe.
 - **Site services:** fail-safe on the sewer outlet: the pipe from the house can never run past the sewer run any more. If a hand-placed run sits nearer the wall than the outlet's stub, the outlet now ends exactly on the run; if the run would turn back into the outlet, that hand-placed run is dropped and routed automatically. Pinned by test_sewer_failsafe.py.
 - **Site services:** a house square to the stand now gets the full set of setting-out dimensions too: on all four boundaries (street side included) a chain outside the boundary gives the stand corner to the house corner, the house, and on to the other corner, with the light blue setting-out lines carried out from the house corners.

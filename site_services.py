@@ -333,6 +333,8 @@ class ServicesView(QWidget):
             return ("eye", d[1])
         if d[0] == "sport":
             return ("sport", d[1])
+        if d[0] == "pt":
+            return ("point", d[1])
         if d[0] == "rot":
             return (d[1],)
         if d[0] == "label":
@@ -374,7 +376,7 @@ class ServicesView(QWidget):
                     return ("sv", k, [tuple(p) for p in P])
         for k in ("sewer", "water", "elec"):
             q = se.conn_point(pg.st, k)
-            if math.hypot(q[0] - w[0], q[1] - w[1]) * s < 12:
+            if math.hypot(q[0] - w[0], q[1] - w[1]) * s < 14:
                 return ("pt", k)
         for i, c in enumerate(pg.st.get("custom") or []):
             if math.hypot(c["pt"][0] - w[0], c["pt"][1] - w[1]) * s < 12:
@@ -536,6 +538,11 @@ class ServicesView(QWidget):
         elif d[0] == "pt":
             pg.st["points"][d[1]] = [round(w[0], 2), se.mains(pg.st)[d[1]]]
             pg.st["pts_manual"] = True
+            if d[1] == "sewer" and pg.st.get("sewer_manual"):                # the run you placed follows its end to the new connection
+                m_ = pg.st["sewer_manual"]
+                m_[-1] = [round(w[0], 2), se.mains(pg.st)["sewer"]]
+                if len(m_) > 1 and abs(m_[-2][0] - m_[-1][0]) > 1e-6 and not pg.st.get("sewer_free"):
+                    m_[-2] = [round(w[0], 2), m_[-2][1]]
         elif d[0] == "wport":
             pg.st["water_ports"][d[1]] = se.nearest_port(pg.res["house"], w)
         elif d[0] == "sport":
@@ -622,6 +629,11 @@ class ServicesView(QWidget):
             p.setPen(pink)
             p.setFont(QFont(self.font().family(), 9, QFont.Weight.Bold))
             p.drawText(QPointF(hs.x() + 12, hs.y() - 10), "%d\u00b0" % round(pg.st[sel[0]].get("rot", 0.0)))
+        elif sel[0] == "point":
+            q = S(se.conn_point(pg.st, sel[1]))
+            p.setPen(QPen(pink, 2, Qt.PenStyle.DashLine))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawEllipse(q, 13, 13)
         elif sel[0] == "eye":
             for nd in pg.res["sewer"]["nodes"]:
                 if nd.get("key") == sel[1]:
@@ -1474,6 +1486,13 @@ class SiteServicesPage(ToolBase):
             add("90\u00b0", lambda: self.rotate_by(r, 90), "Turn a quarter")
             add("Turn precisely...", lambda: self.rotate_dialog(r), "A slider with a live preview")
             lay.addWidget(QLabel("or drag the ring (Shift = 15\u00b0 steps)"))
+        elif sel[0] == "point":
+            k = sel[1]
+            lay.addWidget(QLabel({"sewer": "Sewer connection (end of the line)", "water": "Water connection", "elec": "Electrical connection"}.get(k, "Connection")))
+            lay.addWidget(QLabel("drag it along the main line: the run goes to it"))
+            if k == "sewer":
+                add("Shortest connection", self.sewer_point_auto, "Let the program put it where the run from the house is shortest")
+                add("Click it in the plan", lambda: self.arm("pt_sewer"), "Click where the main sewer connection is")
         elif sel[0] == "sport":
             i_ = sel[1]
             lay.addWidget(QLabel("Extra sewer outlet"))
@@ -1488,7 +1507,7 @@ class SiteServicesPage(ToolBase):
             add("Eyes back", self.reset_eyes, "Put all the eyes back where the program places them")
         elif sel[0] == "sewer":
             lay.addWidget(QLabel("Sewer line"))
-            lay.addWidget(QLabel("drag a leg to slide it; a corner stretches it (Shift = move only that corner)"))
+            lay.addWidget(QLabel("drag a leg to slide it; a corner stretches it (Shift = move only that corner); the last square, on the main line, is the connection"))
             add("Add a sewer outlet", lambda: self.arm("sport_add"), "Another outlet from the house: click on the wall. It runs square to the sewer run and butts onto it.")
             add("Free bends: " + ("on" if self.st.get("sewer_free") else "off"), self.toggle_free, "On: a corner moves alone and the legs next to it go slanted, everything else stays put")
             add("Eyes back", self.reset_eyes, "Put all the eyes back where the program places them")
@@ -1551,6 +1570,13 @@ class SiteServicesPage(ToolBase):
                     if 0 < j:
                         P[j][0] = d[2][j][0] + dx
         self.st["sewer_manual"] = [[round(p[0], 2), round(p[1], 2)] for p in P[1:]]
+
+    def sewer_point_auto(self):
+        self.st["pts_manual"] = False
+        self.st["sewer_manual"] = []
+        self.best_sewer_point()
+        self.solve_now(False)
+        self.commit(True)
 
     def toggle_free(self):
         self.st["sewer_free"] = not self.st.get("sewer_free")
