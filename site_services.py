@@ -600,6 +600,9 @@ class ServicesView(QWidget):
         if not role:
             return
         m = QMenu(self)
+        if role == "carport":
+            m.addAction("Cars enter from the next side", pg.entry_next)
+            m.addSeparator()
         m.addAction("Rotate the %s..." % role, lambda: pg.rotate_dialog(role))
         m.addSeparator()
         for step in (90, 15, 5, 1):
@@ -1005,6 +1008,10 @@ class SiteServicesPage(ToolBase):
             row.addWidget(b_)
         row.addStretch(1)
         bv.addLayout(row)
+        ef_ = QPushButton("Cars enter from the next side")
+        ef_.setToolTip("The cars drive in on the side facing the street. Press to move the entry (and the arrows) a quarter turn round the carport.")
+        ef_.clicked.connect(self.entry_next)
+        bv.addWidget(ef_)
         sg = QPushButton("Place them for me (inside the building lines)")
         sg.setToolTip("Carport at the street on one side, house at the back. Where everything cannot fit, it places them and the checks show by how much.")
         sg.clicked.connect(self.suggest)
@@ -2199,6 +2206,15 @@ class SiteServicesPage(ToolBase):
         self.st["sewer_ports"] = []
         self._to_fields()
         self.suggest()
+
+    def entry_next(self):
+        c = self.st.get("carport")
+        if not c:
+            return
+        c["entry_face"] = (int(c.get("entry_face") or 0) + 1) % 4
+        c.pop("entry_x", None)
+        self.view.update()
+        self.commit(True)
 
     def set_look(self, key, on):
         if self._busy:

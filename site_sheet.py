@@ -348,6 +348,13 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
         wide = (st["carport"]["w"] if st.get("carport") else 5) >= 4.5 or (st["carport"]["d"] >= 4.5)
         D.text(_off(sh, (cxm, cym), -0.0, -0.8), "Double" if wide else "Single", 0.5, sh.hdir(), box=True, spacing=110)
         D.text(_off(sh, (cxm, cym), 0.0, 0.9), "Carport", 0.5, sh.hdir(), box=True, spacing=110)
+    if cp:
+        for a_, b_ in entry_shape(st, cp)["arrows"]:                                  # the way the cars drive in
+            ux, uy = b_[0] - a_[0], b_[1] - a_[1]
+            Lu = math.hypot(ux, uy) or 1.0
+            ux, uy = ux / Lu, uy / Lu
+            D.line(a_, b_, QColor(70, 70, 70), 0.05)
+            D.poly([b_, (b_[0] - ux * 0.9 - uy * 0.4, b_[1] - uy * 0.9 + ux * 0.4), (b_[0] - ux * 0.9 + uy * 0.4, b_[1] - uy * 0.9 - ux * 0.4)], QColor(70, 70, 70), 0.03, QColor(70, 70, 70))
     # ---- the house
     if house:
         D.poly(house, BLACK, 0.04, RED)
@@ -495,13 +502,18 @@ KERB = -3.4                                                    # the kerb line t
 
 
 def entry_shape(st, cp, kerb=KERB):
-    """the entry (drive) from the kerb to the carport: it leaves the kerb at your point (or square in front of the carport), is 5 m wide for a
-    double carport and 3 m for a single (the South African usual widths), and curves to the two corners of the carport side that faces the street,
-    so a turned carport still gets a proper drive. Returns {poly, k (kerb centre), width, face (the two corners)}."""
+    """the entry (drive) from the kerb to the carport and the arrows of the cars driving in. The cars come in on the side facing the street unless you
+    turned the entry to another side (carport "entry_face": 0 = the street side, then a quarter turn at a time). The drive is 5 m wide for a double
+    carport and 3 m for a single (the South African usual widths); it leaves the kerb at your point (or square in front of the carport) and runs
+    round the carport to the side the cars enter, with rounded corners. Returns {poly, k (kerb centre), width, face, mid, arrows}."""
     n = len(cp)
     cen = (sum(q[0] for q in cp) / n, sum(q[1] for q in cp) / n)
     c = st.get("carport") or {}
     ex = c.get("entry_x")
+    k_face = int(c.get("entry_face") or 0) % 4
+    target = (0.0, -1.0)
+    for _ in range(k_face):                                        # a quarter turn anticlockwise per step
+        target = (-target[1], target[0])
     best = None
     for i in range(n):
         a, b = cp[i], cp[(i + 1) % n]
@@ -512,29 +524,70 @@ def entry_shape(st, cp, kerb=KERB):
         mid = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
         if (mid[0] - cen[0]) * nr[0] + (mid[1] - cen[1]) * nr[1] < 0:
             nr = (-nr[0], -nr[1])
-        score = -nr[1]                                            # how squarely the side faces the street
+        score = nr[0] * target[0] + nr[1] * target[1]            # how squarely the side faces the way the cars come from
         key = (round(score, 3), -abs(mid[0] - (ex if ex is not None else cen[0])))
         if best is None or key > best[0]:
             best = (key, a, b, nr, L, mid)
     _k, a, b, nr, L, mid = best
     W = 5.0 if L >= 4.0 else 3.0
-    if ex is None:
-        ex = mid[0]
     f1, f2 = (a, b) if a[0] <= b[0] else (b, a)
-    k1, k2 = (ex - W / 2.0, kerb), (ex + W / 2.0, kerb)
+    if k_face == 0:
+        if ex is None:
+            ex = mid[0]
+        k1, k2 = (ex - W / 2.0, kerb), (ex + W / 2.0, kerb)
 
-    def curve(k, f):
-        d = 0.4 * math.hypot(f[0] - k[0], f[1] - k[1])
-        p0, p1, p2, p3 = k, (k[0], k[1] + d), (f[0] + nr[0] * d, f[1] + nr[1] * d), f
-        out = []
-        for i in range(15):
-            t = i / 14.0
-            u = 1 - t
-            out.append((u ** 3 * p0[0] + 3 * u * u * t * p1[0] + 3 * u * t * t * p2[0] + t ** 3 * p3[0],
-                        u ** 3 * p0[1] + 3 * u * u * t * p1[1] + 3 * u * t * t * p2[1] + t ** 3 * p3[1]))
-        return out
-    left, right = curve(k1, f1), curve(k2, f2)
-    return {"poly": left + right[::-1], "k": (ex, kerb), "width": W, "face": (f1, f2), "mid": ((left[7][0] + right[7][0]) / 2, (left[7][1] + right[7][1]) / 2)}
+        def curve(k, f):
+            d = 0.4 * math.hypot(f[0] - k[0], f[1] - k[1])
+            p0, p1, p2, p3 = k, (k[0], k[1] + d), (f[0] + nr[0] * d, f[1] + nr[1] * d), f
+            out = []
+            for i in range(15):
+                t = i / 14.0
+                u = 1 - t
+                out.append((u ** 3 * p0[0] + 3 * u * u * t * p1[0] + 3 * u * t * t * p2[0] + t ** 3 * p3[0],
+                            u ** 3 * p0[1] + 3 * u * u * t * p1[1] + 3 * u * t * t * p2[1] + t ** 3 * p3[1]))
+            return out
+        left, right = curve(k1, f1), curve(k2, f2)
+        poly = left + right[::-1]
+        dmid = ((left[7][0] + right[7][0]) / 2, (left[7][1] + right[7][1]) / 2)
+    else:
+        r = W / 2.0 + 0.8
+        s_ = r + 0.6
+        A = (mid[0] + nr[0] * s_, mid[1] + nr[1] * s_)
+        sx = [q[0] for q in (st.get("stand") or {}).get("corners", [(0, 0), (20, 0)])]
+        if ex is None:
+            if abs(nr[1]) > 0.7:                                    # a side facing along the stand: come in from beside the carport
+                xs_ = [q[0] for q in cp]
+                ex = min(xs_) - W / 2.0 - 1.0
+                if ex - W / 2.0 < min(sx):
+                    ex = max(xs_) + W / 2.0 + 1.0
+            else:
+                ex = A[0]
+        centre = [(ex, kerb), (ex, A[1]), A, mid]
+        cl = se.rounded(se.dedupe(centre), r=r, steps=10)
+        tl, tr = [], []
+        for i, p_ in enumerate(cl):
+            q0 = cl[max(i - 1, 0)]
+            q1 = cl[min(i + 1, len(cl) - 1)]
+            tx, ty = q1[0] - q0[0], q1[1] - q0[1]
+            Lt = math.hypot(tx, ty) or 1.0
+            lx, ly = -ty / Lt, tx / Lt
+            tl.append((p_[0] + lx * W / 2.0, p_[1] + ly * W / 2.0))
+            tr.append((p_[0] - lx * W / 2.0, p_[1] - ly * W / 2.0))
+        tx, ty = cl[-1][0] - cl[-2][0], cl[-1][1] - cl[-2][1]
+        lx, ly = -ty, tx
+        fl, fr = (f1, f2) if (f1[0] - mid[0]) * lx + (f1[1] - mid[1]) * ly > 0 else (f2, f1)
+        tl[-1], tr[-1] = fl, fr
+        poly = tl + tr[::-1]
+        dmid = cl[len(cl) // 2]
+    # the cars driving in: one arrow for a single carport, two for a double, from the entry side to the far side
+    tx, ty = (f2[0] - f1[0]) / (L or 1), (f2[1] - f1[1]) / (L or 1)
+    depth = max((cen[0] - q[0]) * 0 + (q[0] - mid[0]) * -nr[0] + (q[1] - mid[1]) * -nr[1] for q in cp)
+    arrows = []
+    for off in ((-L / 4.0, L / 4.0) if L >= 4.0 else (0.0,)):
+        st_ = (mid[0] + tx * off - nr[0] * 0.5, mid[1] + ty * off - nr[1] * 0.5)
+        en_ = (mid[0] + tx * off - nr[0] * (depth * 0.8), mid[1] + ty * off - nr[1] * (depth * 0.8))
+        arrows.append((st_, en_))
+    return {"poly": poly, "k": (ex, kerb), "width": W, "face": (f1, f2), "mid": dmid, "arrows": arrows}
 
 
 def storm_pose(st, res):
