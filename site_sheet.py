@@ -244,7 +244,9 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
         cys = [q[1] for q in cp]
         D.poly([(min(cxs), ROAD_K), (max(cxs), ROAD_K), (max(cxs), min(cys)), (min(cxs), min(cys))], GREY, 0.03, ENTRY)
         D.text(((min(cxs) + max(cxs)) / 2, (ROAD_K + min(cys)) / 2 - 0.9), "Entry", 0.5, (1, 0), rot=None)
-    # ---- the stand
+    # ---- the stand, and the neighbours' boundaries running on from its corners (read from the imported drawing)
+    for a_, b_ in opts.get("nb_lines") or []:
+        D.line(a_, b_, BLACK, 0.04)
     D.poly(stand, BLACK, 0.05)
     for i in range(n):                                 # side lines run on past the street boundary to the kerb, as on the plans
         if kinds[i] == "side":
@@ -284,7 +286,7 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
         out = (dyn, -dxn) if se.area(stand) > 0 else (-dyn, dxn)
         if kinds[i] == "street":
             D.text((mid[0] + out[0] * 0.55, mid[1] + out[1] * 0.55), "%.2f" % L, 0.5, (dxn, dyn), spacing=125)
-        elif kinds[i] == "side":
+        elif kinds[i] in ("side", "rear"):
             D.text((mid[0] + out[0] * 0.65, mid[1] + out[1] * 0.65), "%.2f" % L, 0.5, (dxn, dyn), spacing=125)
     # stand numbers (bold)
     num = opts.get("stand_no", "")

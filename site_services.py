@@ -1002,12 +1002,57 @@ class SiteServicesPage(ToolBase):
         sh["labels"] = self.st.get("labels") or {}
         sh["text_edit"] = self.st.get("text_edit") or {}
         sh["hidden"] = self.st.get("text_hidden") or []
+        sh["nb_lines"] = self.neighbour_lines()
         try:
             no = int(sh.get("stand_no", ""))
             sh["neigh"] = [no - 1, no + 1]
         except ValueError:
             sh["neigh"] = []
         return sh
+
+    @staticmethod
+    def _seg_dist(p, a, b):
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        l2 = dx * dx + dy * dy or 1e-12
+        t = max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2))
+        return math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy)
+
+    def neighbour_lines(self):
+        """the boundaries of the adjacent stands that start at a corner of this one, from the imported drawing (or the built-in sheet), kept short and clean"""
+        c = [tuple(p) for p in self.st["stand"]["corners"]]
+        src = self.st.get("underlay") or (self.under or {}).get("other") or []
+        key = (id(src), len(src), tuple(c))
+        if getattr(self, "_nb_key", None) == key:
+            return self._nb
+        out = []
+        n = len(c)
+        for ln in src:
+            a, b = (ln[0], ln[1]), (ln[2], ln[3])
+            L = math.hypot(b[0] - a[0], b[1] - a[1])
+            if L < 0.8:
+                continue
+            ux, uy = (b[0] - a[0]) / L, (b[1] - a[1]) / L
+            # only boundary-like lines: along or square to one of the stand's own sides (not the engineers' diagonals and the like)
+            if not any(abs((c[(i + 1) % n][0] - c[i][0]) * uy - (c[(i + 1) % n][1] - c[i][1]) * ux) < 0.1 * math.hypot(c[(i + 1) % n][0] - c[i][0], c[(i + 1) % n][1] - c[i][1])
+                       or abs((c[(i + 1) % n][0] - c[i][0]) * ux + (c[(i + 1) % n][1] - c[i][1]) * uy) < 0.1 * math.hypot(c[(i + 1) % n][0] - c[i][0], c[(i + 1) % n][1] - c[i][1]) for i in range(n)):
+                continue
+            for k in c:
+                if se.line_dist(k, a, b) >= 0.3:
+                    continue
+                t = (k[0] - a[0]) * ux + (k[1] - a[1]) * uy              # where the line passes the corner
+                for end, ln_ in ((a, t), (b, L - t)):
+                    if ln_ < 0.8:
+                        continue
+                    sgn = -1.0 if end is a else 1.0
+                    far = min(ln_, 12.0)
+                    q = (k[0] + ux * sgn * far, k[1] + uy * sgn * far)
+                    mid = ((k[0] + q[0]) / 2, (k[1] + q[1]) / 2)
+                    if se.inside(mid, c) or any(self._seg_dist(mid, c[i], c[(i + 1) % n]) < 0.15 for i in range(n)):
+                        continue                                          # that part is the stand's own boundary
+                    if not any(math.hypot(k[0] - o[0][0], k[1] - o[0][1]) < 0.05 and math.hypot(q[0] - o[1][0], q[1] - o[1][1]) < 0.3 for o in out):
+                        out.append((k, q))
+        self._nb_key, self._nb = key, out
+        return out
 
     def params(self):
         return dict(se.DEFAULTS, **(self.st.get("params") or {}))
