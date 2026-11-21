@@ -269,10 +269,9 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
     # ---- entry block (kerb to the carport front)
     cp = res.get("carport") if res else None
     if cp:
-        cxs = [q[0] for q in cp]
-        cys = [q[1] for q in cp]
-        D.poly([(min(cxs), ROAD_K), (max(cxs), ROAD_K), (max(cxs), min(cys)), (min(cxs), min(cys))], GREY, 0.03, ENTRY)
-        D.text(((min(cxs) + max(cxs)) / 2, (ROAD_K + min(cys)) / 2 - 0.9), "Entry", 0.5, (1, 0), rot=None)
+        en = entry_shape(st, cp)
+        D.poly(en["poly"], GREY, 0.03, ENTRY)
+        D.text(en["mid"], "Entry", 0.5, (1, 0), rot=None)
     if cp:
         D.poly(stand, BLACK, 0.05, None)                  # the street boundary line stays on top of the entry
     for i in range(n):                                 # side lines run on past the street boundary to the kerb, as on the plans
@@ -490,6 +489,52 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
         D.text((q[0] + 0.9, q[1] - 0.8), c.get("name", ""), 0.5, sh.hdir(), spacing=110)
     # ---- north arrow, title
     return D
+
+
+KERB = -3.4                                                    # the kerb line the entry starts from (street boundary is y = 0)
+
+
+def entry_shape(st, cp, kerb=KERB):
+    """the entry (drive) from the kerb to the carport: it leaves the kerb at your point (or square in front of the carport), is 5 m wide for a
+    double carport and 3 m for a single (the South African usual widths), and curves to the two corners of the carport side that faces the street,
+    so a turned carport still gets a proper drive. Returns {poly, k (kerb centre), width, face (the two corners)}."""
+    n = len(cp)
+    cen = (sum(q[0] for q in cp) / n, sum(q[1] for q in cp) / n)
+    c = st.get("carport") or {}
+    ex = c.get("entry_x")
+    best = None
+    for i in range(n):
+        a, b = cp[i], cp[(i + 1) % n]
+        L = math.hypot(b[0] - a[0], b[1] - a[1])
+        if L < 1e-6:
+            continue
+        nr = ((b[1] - a[1]) / L, -(b[0] - a[0]) / L)
+        mid = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+        if (mid[0] - cen[0]) * nr[0] + (mid[1] - cen[1]) * nr[1] < 0:
+            nr = (-nr[0], -nr[1])
+        score = -nr[1]                                            # how squarely the side faces the street
+        key = (round(score, 3), -abs(mid[0] - (ex if ex is not None else cen[0])))
+        if best is None or key > best[0]:
+            best = (key, a, b, nr, L, mid)
+    _k, a, b, nr, L, mid = best
+    W = 5.0 if L >= 4.0 else 3.0
+    if ex is None:
+        ex = mid[0]
+    f1, f2 = (a, b) if a[0] <= b[0] else (b, a)
+    k1, k2 = (ex - W / 2.0, kerb), (ex + W / 2.0, kerb)
+
+    def curve(k, f):
+        d = 0.4 * math.hypot(f[0] - k[0], f[1] - k[1])
+        p0, p1, p2, p3 = k, (k[0], k[1] + d), (f[0] + nr[0] * d, f[1] + nr[1] * d), f
+        out = []
+        for i in range(15):
+            t = i / 14.0
+            u = 1 - t
+            out.append((u ** 3 * p0[0] + 3 * u * u * t * p1[0] + 3 * u * t * t * p2[0] + t ** 3 * p3[0],
+                        u ** 3 * p0[1] + 3 * u * u * t * p1[1] + 3 * u * t * t * p2[1] + t ** 3 * p3[1]))
+        return out
+    left, right = curve(k1, f1), curve(k2, f2)
+    return {"poly": left + right[::-1], "k": (ex, kerb), "width": W, "face": (f1, f2), "mid": ((left[7][0] + right[7][0]) / 2, (left[7][1] + right[7][1]) / 2)}
 
 
 def storm_pose(st, res):

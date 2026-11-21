@@ -237,6 +237,11 @@ class ServicesView(QWidget):
                 p.setPen(QPen(QColor("black"), 1.2))
                 p.setBrush(QBrush(col))
                 p.drawEllipse(q, 6, 6)
+            if res.get("carport"):                                      # the point where the entry meets the kerb: drag it to move the entry
+                ek_ = S(site_sheet.entry_shape(st, res["carport"])["k"])
+                p.setPen(QPen(QColor("#d6209a"), 1.5))
+                p.setBrush(QBrush(QColor("white")))
+                p.drawEllipse(ek_, 6, 6)
             for mh_ in st.get("manholes") or []:                      # a ring round each manhole: drag it along the main
                 q = S(mh_["pt"])
                 p.setPen(QPen(QColor("#d6209a"), 1.2, Qt.PenStyle.DashLine))
@@ -428,6 +433,10 @@ class ServicesView(QWidget):
         for i, mh_ in enumerate(pg.st.get("manholes") or []):
             if math.hypot(mh_["pt"][0] - w[0], mh_["pt"][1] - w[1]) * s < 16:
                 return ("mh", i)
+        if pg.res and pg.res.get("carport"):                                 # where the entry meets the kerb: drag it along the kerb
+            ek_ = site_sheet.entry_shape(pg.st, pg.res["carport"])["k"]
+            if math.hypot(ek_[0] - w[0], ek_[1] - w[1]) * s < 14:
+                return ("entry",)
         if (pg.st.get("look") or {}).get("storm", True) and pg.res:
             sp_, sr_ = site_sheet.storm_pose(pg.st, pg.res)
             if sp_:
@@ -535,6 +544,13 @@ class ServicesView(QWidget):
                 m.addAction("Clear all my sewer points", pg.clear_via)
                 m.exec(gpos)
                 return
+        if pg.res and pg.res.get("carport"):
+            ek_ = site_sheet.entry_shape(pg.st, pg.res["carport"])["k"]
+            if math.hypot(ek_[0] - w[0], ek_[1] - w[1]) * s_ < 14:
+                m = QMenu(self)
+                m.addAction("Entry in front of the carport (automatic)", lambda: (pg.st["carport"].pop("entry_x", None), pg.solve_now(False), pg.commit(True)))
+                m.exec(gpos)
+                return
         for i, mh_ in enumerate(pg.st.get("manholes") or []):
             if math.hypot(mh_["pt"][0] - w[0], mh_["pt"][1] - w[1]) * s_ < 16:
                 m = QMenu(self)
@@ -636,6 +652,9 @@ class ServicesView(QWidget):
             pg.st["sewer_via"][d[1]] = [round(w[0], 2), round(w[1], 2)]
         elif d[0] == "cust":
             pg.st["custom"][d[1]]["pt"] = [round(w[0], 2), round(w[1], 2)]
+        elif d[0] == "entry":
+            if pg.st.get("carport"):
+                pg.st["carport"]["entry_x"] = round(w[0], 2)
         elif d[0] == "mh":
             sn_ = se.snap_main(pg.st, w)
             pg.st["manholes"][d[1]]["pt"] = list(sn_) if sn_ else [round(w[0], 2), se.mains(pg.st)["sewer"]]
@@ -670,6 +689,8 @@ class ServicesView(QWidget):
             pg.st["ports"][d[1]] = se.nearest_port(hp, w)
         elif d[0] in ("house", "carport"):
             o = pg.st[d[0]]
+            if d[0] == "carport":
+                o.pop("entry_x", None)                                 # the entry follows the carport again
             o["cx"] = round(d[2][0] + w[0] - d[1][0], 2)
             o["cy"] = round(d[2][1] + w[1] - d[1][1], 2)
         pg.schedule(True)

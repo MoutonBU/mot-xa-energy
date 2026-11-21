@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.129**
+Current version: **1.86.130**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **House placing:** the entry (drive) follows a turned carport. It leaves the kerb at your point (drag the pink dot on the kerb; right-click it for "automatic") and is 5 m wide for a double carport and 3 m for a single (the usual South African widths), then curves to the two corners of the carport side that faces the street. A square carport still gets the straight entry in front of it. The entry goes into the DXF the same way.
 - **House placing:** the entry (the road strip from the kerb to the carport) is now drawn on top of the green stand, so the green no longer covers it; the street boundary line stays on top. Same in the DXF.
 - **House placing:** much faster to move the house (and the carport, texts and points): while you drag, the pipes are worked out on a coarser grid (about 25 ms a move instead of 300 ms), and the exact lines are drawn the moment you let go. The routing itself also skips far-away cells.
 - **House placing:** no more two inspection eyes on top of each other. Where a boundary, a joint, a bend or the spacing rule would put a second IE within 0.45 m of another, it is one IE (the one on the bend or joint stays), with one IE text. Pinned by test_sewer_eyes.py over 300 random layouts.
