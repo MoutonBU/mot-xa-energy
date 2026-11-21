@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.126**
+Current version: **1.86.127**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **House placing:** no more two inspection eyes on top of each other. Where a boundary, a joint, a bend or the spacing rule would put a second IE within 0.45 m of another, it is one IE (the one on the bend or joint stays), with one IE text. Pinned by test_sewer_eyes.py over 300 random layouts.
 - **House placing:** the IE / RE texts can be deleted again (select one and press Delete, or right-click it; Texts back restores them). The eyes themselves stay on the pipe.
 - **House placing:** (1) Manholes can be dragged along the main (right-click: rename or delete). (2) The stormwater arrow can be dragged (its line) and turned (drag its pink head, Shift = 15 degree steps; right-click: turn 90, turn round, point at the street, put it back); its text now runs along the arrow as "Stormwater Flow". (3) Every text except NEW HOUSE has lost its white box (also in the DXF). (4) A "Boundary walls" tick box on the toolbar switches the 1.2 m pre-cast walls on and off. (5) The WP / VV box sits beside the label, not on NEW HOUSE.
 - **House placing, more finished plans:** the preliminary site development plans for Stands 6855, 6859, 6845, 7035, 7048, 6997 and 7069 (Street 7071) are now data too. New house types 81 m2 (12.0 x 6.75) and 91 m2 (13.43 x 6.75), and what those plans show: building lines 3 m to the street and the no-access road, 2 m to a neighbour, 1 m to a servitude; the double carport 5.0 x 5.0 sits 0.5 m off the street boundary and about 2.25 m from the house; the house runs along the side boundary, never across the stand against the road (your 7069 choice). "Compared with your finished plans" (Results) recognises them, and "Place them for me" now tries the carport-to-house distance of the plan type first (1.0 m on the Erf 670 plans, 2.25 m on the 81 / 91 plans), then smaller ones, and prefers the house the usual way round.

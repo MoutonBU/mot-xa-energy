@@ -682,7 +682,7 @@ def sewer(state, hp, cp, params, others=()):
         return k_ / 20.0
 
     def _need(kind, pt, ch=None, **kw):
-        if any(n["kind"] == kind and math.hypot(n["pt"][0] - pt[0], n["pt"][1] - pt[1]) < 0.06 for n in nodes):
+        if any(n["kind"] == kind and math.hypot(n["pt"][0] - pt[0], n["pt"][1] - pt[1]) < (0.45 if kind == "IE" else 0.06) for n in nodes):
             return
         c_ = _chain(pt) if ch is None else ch
         d = {"kind": kind, "pt": tuple(pt), "chainage": round(c_, 2), "depth": round(D0 + c_ / fall, 3), "label": kind}
@@ -700,6 +700,15 @@ def sewer(state, hp, cp, params, others=()):
     for ex_ in extra:
         _need("IE", ex_["path"][0])
         _need("RE", ex_["path"][-1], None, wall=extra.index(ex_), dist=L)
+    # never two inspection eyes on top of each other: within 0.45 m of one another they are one eye (the one on a bend or joint stays)
+    req_pts = [b_ for b_, _e in stubs] + ([r["branch"][1]] if branched else []) + [ex_["path"][0] for ex_ in extra]
+    ies = [n for n in nodes if n["kind"] == "IE"]
+    ies.sort(key=lambda n: (not any(math.hypot(n["pt"][0] - q[0], n["pt"][1] - q[1]) < 0.06 for q in req_pts), n["chainage"]))
+    keep_ie = []
+    for n in ies:
+        if all(math.hypot(n["pt"][0] - k["pt"][0], n["pt"][1] - k["pt"][1]) >= 0.45 for k in keep_ie):
+            keep_ie.append(n)
+    nodes = [n for n in nodes if n["kind"] != "IE" or any(n is k for k in keep_ie)]
     nodes.sort(key=lambda n: n["chainage"])
     cnt = {}
     for n_ in nodes:                                              # a key for every eye (kind + number along the run), so you can pick, move and delete them

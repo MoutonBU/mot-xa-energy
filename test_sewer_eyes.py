@@ -51,7 +51,11 @@ def test_every_eye_in():
         nodes = sw["nodes"]
 
         def has(kind, pt):
-            return any(n["kind"] == kind and math.hypot(n["pt"][0] - pt[0], n["pt"][1] - pt[1]) < 0.07 for n in nodes)
+            return any(n["kind"] == kind and math.hypot(n["pt"][0] - pt[0], n["pt"][1] - pt[1]) < (0.46 if kind == "IE" else 0.07) for n in nodes)
+        ies = [n["pt"] for n in nodes if n["kind"] == "IE"]
+        for i_ in range(len(ies)):
+            for j_ in range(i_ + 1, len(ies)):
+                assert math.hypot(ies[i_][0] - ies[j_][0], ies[i_][1] - ies[j_][1]) >= 0.44, "two inspection eyes on top of each other"
         path = sw["path"]
         need = [("RE", path[0])]
         for a_, b_ in sw["stubs"]:
