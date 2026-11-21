@@ -248,13 +248,6 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
         D.text(((xmin + xmax) / 2 + 3.0, -6.4), street, 1.05, (1, 0))
         sub = "%s  %s" % (opts.get("road_w", ""), opts.get("street_erf", ""))
         D.text(((xmin + xmax) / 2 + 3.0, -8.0), sub.strip(), 1.05, (1, 0))
-    # ---- entry block (kerb to the carport front)
-    cp = res.get("carport") if res else None
-    if cp:
-        cxs = [q[0] for q in cp]
-        cys = [q[1] for q in cp]
-        D.poly([(min(cxs), ROAD_K), (max(cxs), ROAD_K), (max(cxs), min(cys)), (min(cxs), min(cys))], GREY, 0.03, ENTRY)
-        D.text(((min(cxs) + max(cxs)) / 2, (ROAD_K + min(cys)) / 2 - 0.9), "Entry", 0.5, (1, 0), rot=None)
     # ---- the stand, and the neighbours' boundaries running on from its corners (read from the imported drawing)
     for a_, b_ in opts.get("nb_lines") or []:
         D.line(a_, b_, BLACK, 0.04)
@@ -273,6 +266,15 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
                 if L > 6:
                     m_ = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
                     D.text((m_[0] - nx * 0.75, m_[1] - ny * 0.75), "1.2m High Pre-Cast Concrete Wall", 0.4, (b[0] - a[0], b[1] - a[1]), spacing=105)
+    # ---- entry block (kerb to the carport front)
+    cp = res.get("carport") if res else None
+    if cp:
+        cxs = [q[0] for q in cp]
+        cys = [q[1] for q in cp]
+        D.poly([(min(cxs), ROAD_K), (max(cxs), ROAD_K), (max(cxs), min(cys)), (min(cxs), min(cys))], GREY, 0.03, ENTRY)
+        D.text(((min(cxs) + max(cxs)) / 2, (ROAD_K + min(cys)) / 2 - 0.9), "Entry", 0.5, (1, 0), rot=None)
+    if cp:
+        D.poly(stand, BLACK, 0.05, None)                  # the street boundary line stays on top of the entry
     for i in range(n):                                 # side lines run on past the street boundary to the kerb, as on the plans
         if kinds[i] == "side":
             a, b = stand[i], stand[(i + 1) % n]

@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.128**
+Current version: **1.86.129**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **House placing:** the entry (the road strip from the kerb to the carport) is now drawn on top of the green stand, so the green no longer covers it; the street boundary line stays on top. Same in the DXF.
 - **House placing:** much faster to move the house (and the carport, texts and points): while you drag, the pipes are worked out on a coarser grid (about 25 ms a move instead of 300 ms), and the exact lines are drawn the moment you let go. The routing itself also skips far-away cells.
 - **House placing:** no more two inspection eyes on top of each other. Where a boundary, a joint, a bend or the spacing rule would put a second IE within 0.45 m of another, it is one IE (the one on the bend or joint stays), with one IE text. Pinned by test_sewer_eyes.py over 300 random layouts.
 - **House placing:** the IE / RE texts can be deleted again (select one and press Delete, or right-click it; Texts back restores them). The eyes themselves stay on the pipe.
