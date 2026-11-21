@@ -166,10 +166,16 @@ class ImportDialog(QDialog):
         self.scale.setValue(1)
         self.scale.setPrefix("1 : ")
         self.scale.setToolTip("Leave at 1 : 1 if the drawing is drawn full size (most are). Use 1 : 200 only if the drawing units are paper millimetres of a 1:200 sheet.")
-        row.addWidget(QLabel("Drawing units"))
-        row.addWidget(self.unit)
-        row.addWidget(QLabel("Drawn at"))
-        row.addWidget(self.scale)
+        self.extra = 1.0
+        self.mode = QComboBox()
+        self.MODES = [("Automatic (recommended)", None), ("Full size, drawn in millimetres", (0, 1)), ("Full size, drawn in metres", (2, 1)),
+                      ("Full size, drawn in centimetres", (1, 1)), ("Paper drawing at 1:200", (0, 200)), ("Paper drawing at 1:100", (0, 100)),
+                      ("Paper drawing at 1:50", (0, 50)), ("Paper drawing at 1:500", (0, 500))]
+        for n, _v in self.MODES:
+            self.mode.addItem(n)
+        self.mode.setToolTip("Leave on Automatic. It reads the size of the drawing and checks that what you click is the size of a real stand. Only change it if the size shown is wrong.")
+        row.addWidget(QLabel("Scale"))
+        row.addWidget(self.mode)
         self.size_lbl = QLabel("")
         row.addWidget(self.size_lbl, 1)
         v.addLayout(row)
@@ -212,8 +218,7 @@ class ImportDialog(QDialog):
         self._auto_scale()
         if role == "stand":
             self.pk.setChecked(True)                        # you click the corners of the stand, 1, 2, 3 ... and then the street side
-        self.unit.currentIndexChanged.connect(self.rebuild)
-        self.scale.valueChanged.connect(self.rebuild)
+        self.mode.currentIndexChanged.connect(self._mode)
         self.resize(1000, 640)
         self.rebuild()
 
@@ -248,8 +253,21 @@ class ImportDialog(QDialog):
                 break
         self.rebuild()
 
+    def _mode(self, i):
+        v = self.MODES[i][1]
+        self.extra = 1.0
+        if v is None:
+            self.unit.setCurrentIndex(min(range(3), key=lambda k: abs(UNITS[k][1] - self.drawing["unit"])))
+            self.scale.setValue(1)
+            self._auto_scale()
+        else:
+            self.unit.setCurrentIndex(v[0])
+            self.scale.setValue(v[1])
+            self.auto_note = ""
+            self.rebuild()
+
     def factor(self):
-        return self.unit.currentData() * self.scale.value()
+        return self.unit.currentData() * self.scale.value() * self.extra
 
     def rebuild(self, *_a):
         f = self.factor()
@@ -291,7 +309,7 @@ class ImportDialog(QDialog):
     def note(self):
         n = len(self.prev.pts)
         if self.prev.pick:
-            self.hint.setText("%d corners. Click the next corner in order round the outline, then Use my corners (or double-click)." % n)
+            self.hint.setText("%d corner%s. Click each corner of the stand in order, then double-click the last one (or press Use my corners). Next you click the street side." % (n, "" if n == 1 else "s"))
 
     def use_selected(self):
         i = self.lw.currentRow()
@@ -305,16 +323,34 @@ class ImportDialog(QDialog):
             self._finish()
 
     def _size_ok(self):
-        """a stand that is kilometres across or a few square metres is the wrong scale: say so before the plan is built on it"""
+        """what you clicked must be the size of a real stand, house or carport. If it is not, a rescale that makes it one is offered (a drawing saved
+        'at 1:200' that is really full size, or the other way round)."""
         p = self.result
-        xs, ys = [q[0] for q in p], [q[1] for q in p]
-        a = abs(sum(p[i][0] * p[(i + 1) % len(p)][1] - p[(i + 1) % len(p)][0] * p[i][1] for i in range(len(p)))) / 2
         lo, hi = {"stand": (30, 60000), "house": (10, 1500), "carport": (4, 300)}.get(self.role, (1, 1e9))
-        if lo <= a <= hi and max(max(xs) - min(xs), max(ys) - min(ys)) <= 600:
+
+        def stats(m):
+            xs, ys = [q[0] * m for q in p], [q[1] * m for q in p]
+            a = abs(sum(p[i][0] * p[(i + 1) % len(p)][1] - p[(i + 1) % len(p)][0] * p[i][1] for i in range(len(p)))) / 2 * m * m
+            return max(xs) - min(xs), max(ys) - min(ys), a
+
+        w, h, a = stats(1.0)
+        if lo <= a <= hi:
             return True
-        r = QMessageBox.question(self, "Check the scale", "What you picked is %.1f x %.1f m (%.0f m2). That does not look like a %s.\n\nCheck \"Drawing units\" and \"Drawn at\" above. Use it anyway?" % (max(xs) - min(xs), max(ys) - min(ys), a, self.role),
-                                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
-        return r == QMessageBox.StandardButton.Yes
+        fixes = [m for m in (0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 2, 5, 10, 20, 50, 100, 200, 500, 1000) if lo <= stats(m)[2] <= hi]
+        if fixes:
+            typ = {"stand": 400.0, "house": 120.0, "carport": 25.0}.get(self.role, 100.0)
+            m = min(fixes, key=lambda m: abs(math.log(stats(m)[2] / typ)))
+            w2, h2, a2 = stats(m)
+            r = QMessageBox.question(self, "Scale", "What you clicked is %.1f x %.1f m, which is not the size of a %s.\n\nAt the scale %s it is %.1f x %.1f m (%.0f m2). Use that?" % (w, h, self.role, ("1 : %g" % (1 / m)) if m < 1 else ("x %g" % m), w2, h2, a2),
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.Yes)
+            if r == QMessageBox.StandardButton.Yes:
+                self.extra *= m
+                self.result = [(q[0] * m, q[1] * m) for q in p]
+                self.rebuild()
+                return True
+            return False
+        QMessageBox.information(self, "Scale", "What you clicked is %.1f x %.1f m, which is not the size of a %s, and no scale makes it one. Click the %s again." % (w, h, self.role, self.role))
+        return False
 
     def _finish(self):
         if not self._size_ok():
@@ -329,6 +365,7 @@ class ImportDialog(QDialog):
         self.prev.pick = False
         self.prev.street_poly = list(self.result)
         self.hint.setText("Now click the side of the stand that faces the street.")
+        self.size_lbl.setText("Stand: %.1f x %.1f m." % (max(q[0] for q in self.result) - min(q[0] for q in self.result), max(q[1] for q in self.result) - min(q[1] for q in self.result)))
         self.prev.update()
 
     def street_chosen(self, i):
