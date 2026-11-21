@@ -59,6 +59,18 @@ def shape_poly(h):
     return [(h["cx"] + (x - mx) * ca - (y - my) * sa, h["cy"] + (x - mx) * sa + (y - my) * ca) for x, y in pl]
 
 
+def mark_points(h):
+    """the marks of a library footprint (DB, SD, FD, G, KD) in stand coordinates, turned and placed with the house"""
+    pl = h.get("poly")
+    if not pl or not h.get("marks"):
+        return []
+    mx = (min(p[0] for p in pl) + max(p[0] for p in pl)) / 2
+    my = (min(p[1] for p in pl) + max(p[1] for p in pl)) / 2
+    a = math.radians(h.get("rot", 0.0))
+    ca, sa = math.cos(a), math.sin(a)
+    return [(m[0], (h["cx"] + (m[1] - mx) * ca - (m[2] - my) * sa, h["cy"] + (m[1] - mx) * sa + (m[2] - my) * ca)) for m in h["marks"]]
+
+
 def house_poly(h):
     return shape_poly(h)
 
@@ -440,9 +452,20 @@ def best_ortho(a, cands, stand, blocked, from_end=False):
     return best[1]
 
 
-def _port_for(state, hp, key, target, t0, others, build):
+def _mark_port(state, hp, kinds, target):
+    """a house port taken from the footprint's own marks (the mark nearest the target), or None"""
+    best = None
+    for kind, pt in mark_points(state["house"]):
+        if kind in kinds:
+            d = math.hypot(pt[0] - target[0], pt[1] - target[1])
+            if best is None or d < best[0]:
+                best = (d, pt)
+    return nearest_port(hp, best[1]) if best else None
+
+
+def _port_for(state, hp, key, target, t0, others, build, kinds=()):
     """house port: the user's, or the side that faces the target; the automatic one is nudged along the wall until the line does not run on top of another"""
-    user = (state.get("ports") or {}).get(key)
+    user = (state.get("ports") or {}).get(key) or (_mark_port(state, hp, kinds, target) if kinds else None)
     if user:
         return user, build(user)
     base = auto_port(hp, target, t0)
@@ -486,7 +509,7 @@ def sewer(state, hp, cp, params, others=()):
         t0 = (q1[0] - u[0] * tail, q1[1] - u[1] * tail)          # past the junction, away from the main
         path = dedupe([t0] + rest)
         return {"path": path, "port": port, "branch": [p0, q1], "q1": q1, "junction": tail, "tail": tail}
-    port, r = _port_for(state, hp, "sewer", cands[0], 0.25, others, build)
+    port, r = _port_for(state, hp, "sewer", cands[0], 0.25, others, build, ("SD",))
     path = r["path"]
     L = length(path)
     fall = params["fall"]
@@ -542,7 +565,7 @@ def water(state, hp, cp, params, others=()):
         start = (p0[0] + n0[0] * 0.5, p0[1] + n0[1] * 0.5)
         best = best_ortho(start, cands, stand, obs)[::-1]
         return {"path": dedupe(best + [p0]), "port": port}
-    port, r = _port_for(state, hp, "water", cands[0], 0.7, others, build)
+    port, r = _port_for(state, hp, "water", cands[0], 0.7, others, build, ("KD",))
     path = r["path"]
     L = length(path)
     cut = crossing(path, stand)
@@ -550,7 +573,29 @@ def water(state, hp, cp, params, others=()):
     if cut is not None:
         nodes.append({"kind": "WM", "pt": point_at(path, cut + 0.6), "chainage": round(cut + 0.6, 2), "label": "Water meter"})
     nodes.append({"kind": "SC", "pt": point_at(path, max(L - 0.6, 0)), "chainage": round(max(L - 0.6, 0), 2), "label": "Stop cock"})
-    return {"path": path, "nodes": nodes, "length": round(L, 2), "port": port, "note": "%smm Cold Water Line" % params["water_pipe"]}
+    # more water points on the house (up to 4 in all): each one branches off the nearest point of the water pipe already laid
+    branches = []
+    net = [path]
+    for wp in (state.get("water_ports") or [])[:3]:
+        p0, n0 = port_point(hp, wp)
+        start = (p0[0] + n0[0] * 0.5, p0[1] + n0[1] * 0.5)
+        samples = []
+        for pp in net:
+            for k in range(int(length(pp) / 0.5) + 1):
+                samples.append(point_at(pp, min(k * 0.5, length(pp))))
+        samples.sort(key=lambda q: abs(q[0] - start[0]) + abs(q[1] - start[1]))
+        best = None
+        for q in samples[:4]:
+            pr = ortho(route(q, start, stand, obs))
+            Lq = length(pr)
+            if best is None or Lq < best[0]:
+                best = (Lq, pr)
+        bp = dedupe(best[1] + [p0])
+        branches.append({"path": bp, "port": wp})
+        net.append(bp)
+        nodes.append({"kind": "SC", "pt": point_at(bp, max(length(bp) - 0.6, 0)), "chainage": 0.0, "label": "Stop cock"})
+        L += length(bp)
+    return {"path": path, "branches": branches, "nodes": nodes, "length": round(L, 2), "port": port, "note": "%smm Cold Water Line" % params["water_pipe"]}
 
 
 def electrical(state, hp, cp, params, others=()):
@@ -563,7 +608,7 @@ def electrical(state, hp, cp, params, others=()):
         start = (p0[0] + n0[0] * 0.3, p0[1] + n0[1] * 0.3)
         best = best_line(start, cands, obs)[::-1]
         return {"path": dedupe(best + [p0]), "port": port}
-    port, r = _port_for(state, hp, "db", cands[0], 0.8, others, build)
+    port, r = _port_for(state, hp, "db", cands[0], 0.8, others, build, ("DB",))
     path = r["path"]
     L = length(path)
     nodes = [{"kind": "EC", "pt": path[0], "chainage": 0.0, "label": "EC"}, {"kind": "DB", "pt": path[-1], "chainage": round(L, 2), "label": "DB"}]
@@ -661,6 +706,7 @@ def solve(state):
     el = electrical(state, hp, cp, params, [sw["path"], wt["path"]])
     res = {"sewer": sw, "water": wt, "elec": el}
     res["house"] = hp
+    res["marks"] = mark_points(state["house"])
     res["carport"] = cp
     res["warnings"] = checks(state, hp, cp, params, res)
     stand = state["stand"]["corners"]
@@ -809,7 +855,8 @@ def suggest(state, relax=False):
             out = suggest(state, relax=True)
             out["relaxed"] = True                              # the building lines could not all be met: the warnings will say where
             return out
-        return {"house": dict(h), "carport": dict(c) if c else None}
+        cx, cy = (min(xs) + max(xs)) / 2, min(ys) + (max(ys) - min(ys)) * 0.65
+        return {"house": dict(h, cx=round(cx, 2), cy=round(cy, 2)), "carport": dict(c, cx=round(cx, 2), cy=round(min(ys) + c["d"] / 2 + 1, 2)) if c else None}
     best[1].setdefault("carport", None)
     return best[1]
 

@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.93**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.94**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **1.86.94** Site services: a footprint library (your six 1:200 footprints: LR81/90/91 3+2-DC and LR100/101/91 4+2-DC) under "House from the library...". The marks on the footprints (DB, SD, FD, G, KD) now set where the DB and the sewer outlet go. Up to 4 water points on the house from the single water connection: "Add a water point on the house: click on it", drag them along the wall, right-click to remove. Each branches off the water pipe already laid, in square runs. A house too big for the stand is now centred instead of dropped at the corner.
 
 - **Site services: click where the road is, then north, and move the north arrow.** In *The sheet* box, *Road: click where it is in the plan* turns the plan so the street faces the side you click, then you click the direction north points and the arrow follows. Drag the north arrow anywhere on the sheet; its place is saved and shows in the PDF and image. *North arrow back to the top* resets it.
 

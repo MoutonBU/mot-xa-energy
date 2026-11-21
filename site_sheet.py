@@ -295,6 +295,8 @@ def draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=False
         hx = sum(q[0] for q in house) / len(house)
         hy = sum(q[1] for q in house) / len(house)
         D.text((hx, hy), "NEW HOUSE", 0.75, sh.hdir(), bold=True, box=True)
+        for nm, q in (res.get("marks") or []) if res else []:
+            D.text(q, nm, 0.4, sh.hdir(), spacing=110)
     # ---- services
     if res:
         sw = res["sewer"]
@@ -312,6 +314,8 @@ def draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=False
         D.text(_midrun(path, -0.9), sw["note"], 0.5, _rundir(path), spacing=105, bg=True)
         wt = res["water"]
         D.poly(wt["path"], BLUE, 0.05, None, closed=False)
+        for br in wt.get("branches") or []:
+            D.poly(br["path"], BLUE, 0.05, None, closed=False)
         for k, (a, b) in enumerate(zip(wt["path"][:-1], wt["path"][1:])):
             L = edge_len(a, b)
             if L > 9.0:

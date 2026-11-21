@@ -11,6 +11,10 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
 
 import site_dxf
 import site_dxf_dialog
+try:
+    from site_footprints_data import FOOTPRINTS
+except Exception:
+    FOOTPRINTS = []
 import site_engine as se
 from rotate_dialog import RotateDialog
 import site_sheet
@@ -45,13 +49,41 @@ def blank_state():
             "house": {"cx": 9.0, "cy": 12.0, "w": 14.8, "d": 6.5, "rot": 90},
             "carport": {"cx": 3.5, "cy": 3.5, "w": 5.0, "d": 5.0, "rot": 0},
             "points": {"sewer": [12.0, 0.0], "water": [1.5, 0.0], "elec": [6.75, 0.0]},
-            "ports": {}, "params": {}, "mains": {}, "custom": [], "frame": None, "labels": {}, "underlay": [], "sewer_via": [],
+            "ports": {}, "params": {}, "mains": {}, "custom": [], "frame": None, "labels": {}, "underlay": [], "sewer_via": [], "water_ports": [],
             "sheet": {"road": "left", "street": "", "road_w": "13m", "street_erf": "", "stand_no": "", "north": 0.0}}
 
 
 # what the finished plans say for the built-in stands: the side the road is on, the street, the north arrow
 SHEET_DEFAULTS = {"2068": ("right", "THIMBLE STREET", -8.7), "2091": ("right", "CATSTAIL STREET", -8.7), "2093": ("right", "CATSTAIL STREET", -6.5),
                   "2144": ("left", "CATSTAIL STREET", -8.7), "2155": ("left", "BLUESTEM STREET", -8.7)}
+
+
+class _FootprintPreview(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.f = None
+        self.setMinimumSize(300, 260)
+
+    def show_fp(self, f):
+        self.f = f
+        self.update()
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.fillRect(self.rect(), QColor("white"))
+        if not self.f:
+            return
+        pl = self.f["poly"]
+        w, h = max(self.f["w"], 1), max(self.f["d"], 1)
+        s = min((self.width() - 30) / w, (self.height() - 30) / h)
+        C = lambda q: QPointF(self.width() / 2 + q[0] * s, self.height() / 2 - q[1] * s)
+        p.setPen(QPen(QColor("black"), 1.5))
+        p.setBrush(QBrush(QColor(255, 0, 0, 120)))
+        p.drawPolygon(QPolygonF([C(q) for q in pl]))
+        p.setPen(QColor("#1a7f37"))
+        for m in self.f["marks"]:
+            p.drawText(C((m[1], m[2])), m[0])
 
 
 # ------------------------------------------------------------------ the plan
@@ -177,6 +209,11 @@ class ServicesView(QWidget):
                 p.setBrush(QBrush(col))
                 p.drawEllipse(q, 6, 6)
             hp = res["house"]
+            for wp in st.get("water_ports") or []:
+                q = S(se.port_point(hp, wp)[0])
+                p.setPen(QPen(QColor("black"), 1.0))
+                p.setBrush(QBrush(site_sheet.BLUE))
+                p.drawRect(QRectF(q.x() - 4, q.y() - 4, 8, 8))
             for pk, col in (("sewer", site_sheet.BROWN), ("water", site_sheet.BLUE), ("db", site_sheet.YELLOW)):
                 pt, _n = se.port_point(hp, self.page.port_of(pk))
                 q = S(pt)
@@ -214,6 +251,9 @@ class ServicesView(QWidget):
                 self.mode = "select"
                 pg.set_hint("")
                 self.update()
+                return
+            if self.mode == "wport_add":
+                pg.add_wport(w)
                 return
             if self.mode == "via_add":
                 pg.add_via(w)
@@ -273,6 +313,10 @@ class ServicesView(QWidget):
                 pt, _n = se.port_point(hp, pg.port_of(pk))
                 if math.hypot(pt[0] - w[0], pt[1] - w[1]) * s < 10:
                     return ("port", pk)
+            for i, wp in enumerate(pg.st.get("water_ports") or []):
+                pt, _n = se.port_point(hp, wp)
+                if math.hypot(pt[0] - w[0], pt[1] - w[1]) * s < 10:
+                    return ("wport", i)
             lab = self.label_at(qp)
             if lab:
                 return ("label", lab, w, tuple((pg.st.get("labels") or {}).get(lab, (0.0, 0.0))))
@@ -327,6 +371,13 @@ class ServicesView(QWidget):
                 m.addAction("Clear all my sewer points", pg.clear_via)
                 m.exec(gpos)
                 return
+        hp_ = pg.res["house"] if pg.res else None
+        for i, wp in enumerate(pg.st.get("water_ports") or []):
+            if hp_ and math.hypot(se.port_point(hp_, wp)[0][0] - w[0], se.port_point(hp_, wp)[0][1] - w[1]) * s_ < 10:
+                m = QMenu(self)
+                m.addAction("Remove this water point", lambda i_=i: (pg.st["water_ports"].pop(i_), pg.solve_now()))
+                m.exec(gpos)
+                return
         lab = self.label_at(qp) if qp is not None else None
         if lab:
             m = QMenu(self)
@@ -368,6 +419,8 @@ class ServicesView(QWidget):
         w = self.world(e.position())
         if d[0] == "pt":
             pg.st["points"][d[1]] = [round(w[0], 2), se.mains(pg.st)[d[1]]]
+        elif d[0] == "wport":
+            pg.st["water_ports"][d[1]] = se.nearest_port(pg.res["house"], w)
         elif d[0] == "via":
             pg.st["sewer_via"][d[1]] = [round(w[0], 2), round(w[1], 2)]
         elif d[0] == "cust":
@@ -518,7 +571,7 @@ class SiteServicesPage(ToolBase):
         row.addStretch(1)
         bv.addLayout(row)
         row = QHBoxLayout()
-        for text, fn in (("Rotate...", lambda: self.rotate_dialog("house")), ("Import the house from DXF...", lambda: self.import_building_dxf("house")),
+        for text, fn in (("House from the library...", self.pick_footprint), ("Rotate...", lambda: self.rotate_dialog("house")), ("Import the house from DXF...", lambda: self.import_building_dxf("house")),
                          ("Plain rectangle", lambda: self.plain_rect("house"))):
             b_ = QPushButton(text)
             b_.clicked.connect(lambda _=False, f=fn: f())
@@ -588,6 +641,17 @@ class SiteServicesPage(ToolBase):
             row.addWidget(rb)
             row.addStretch(1)
             bv.addLayout(row)
+            if key == "water":
+                row = QHBoxLayout()
+                wb_ = QPushButton("Add a water point on the house: click on it")
+                wb_.setToolTip("Up to 4 water points on the house. Each one branches off the water pipe already laid, in square runs.")
+                wb_.clicked.connect(lambda: self.arm("wport_add"))
+                wr_ = QPushButton("Remove the last water point")
+                wr_.clicked.connect(self.remove_last_wport)
+                row.addWidget(wb_)
+                row.addWidget(wr_)
+                row.addStretch(1)
+                bv.addLayout(row)
             if key == "sewer":
                 row = QHBoxLayout()
                 self.p_depth, self.p_fall, self.p_ie = spin(0.3, 6, 1.5, 2, " m"), spin(20, 200, 50, 0, "", 5), spin(5, 60, 25, 0, " m", 1)
@@ -896,7 +960,7 @@ class SiteServicesPage(ToolBase):
         self.set_hint({"pt_sewer": "Click in the plan where the main sewer connection is.", "pt_water": "Click in the plan where the water connection is.",
                        "pt_elec": "Click in the plan where the electrical supply is.", "port_sewer": "Click on the house outline where the sewer leaves the house.",
                        "port_water": "Click on the house outline where the water enters.", "port_db": "Click on the house outline where the DB is.",
-                       "road": "Click on the side of the stand where the road is.", "north_dir": "Click in the direction north points. You can also drag the arrow to move it.", "via_add": "Click in the plan where the sewer must pass. Click again for the next point, in order from the house to the main. Press Esc when done.", "street": "Click the boundary that faces the street.", "cust_add": "Click in the plan where your point goes."}.get(mode, ""))
+                       "wport_add": "Click on the house outline where another water point enters. Press Esc when done.", "road": "Click on the side of the stand where the road is.", "north_dir": "Click in the direction north points. You can also drag the arrow to move it.", "via_add": "Click in the plan where the sewer must pass. Click again for the next point, in order from the house to the main. Press Esc when done.", "street": "Click the boundary that faces the street.", "cust_add": "Click in the plan where your point goes."}.get(mode, ""))
         self.view.update()
 
     def set_point(self, k, w):
@@ -1009,6 +1073,55 @@ class SiteServicesPage(ToolBase):
         self.set_stand(pts, "From Building lines", keep_buildings=bool(got), points={"sewer": [round(L * 0.85, 2), 0.0], "water": [1.5, 0.0], "elec": [round(L / 2, 2), 0.0]})
         self._to_fields()
         self.solve_now()
+
+    def add_wport(self, w):
+        wp = self.st.setdefault("water_ports", [])
+        if len(wp) >= 3:
+            self.set_hint("The house already has 4 water points.")
+            return
+        wp.append(se.nearest_port(self.res["house"], w))
+        self.solve_now()
+
+    def remove_last_wport(self):
+        if self.st.get("water_ports"):
+            self.st["water_ports"].pop()
+            self.solve_now()
+
+    def pick_footprint(self):
+        """a house from the footprint library (your footprint drawings)"""
+        if not FOOTPRINTS:
+            QMessageBox.information(self, "Site services", "The footprint library is not available.")
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("House from the library")
+        v_ = QVBoxLayout(dlg)
+        v_.addWidget(QLabel("Footprints from your footprint drawings. The marks (DB, SD, FD, G, KD) come with them: the DB and the sewer outlet are taken from them."))
+        row = QHBoxLayout()
+        lw = QListWidget()
+        for f in FOOTPRINTS:
+            lw.addItem("%s   %.1f x %.1f m   %s" % (f["name"], f["w"], f["d"], f["desc"]))
+        lw.setCurrentRow(0)
+        pv = _FootprintPreview()
+        lw.currentRowChanged.connect(lambda i: pv.show_fp(FOOTPRINTS[i] if i >= 0 else None))
+        pv.show_fp(FOOTPRINTS[0])
+        row.addWidget(lw, 1)
+        row.addWidget(pv, 1)
+        v_.addLayout(row)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        v_.addWidget(bb)
+        lw.itemDoubleClicked.connect(lambda *_: dlg.accept())
+        dlg.resize(760, 380)
+        if dlg.exec() == QDialog.DialogCode.Accepted and lw.currentRow() >= 0:
+            self.use_footprint(FOOTPRINTS[lw.currentRow()])
+
+    def use_footprint(self, f):
+        self.st["house"] = {"poly": [list(p) for p in f["poly"]], "marks": [list(m) for m in f["marks"]], "w": f["w"], "d": f["d"], "rot": 0.0, "cx": 0.0, "cy": 0.0, "name": f["name"]}
+        self.st["ports"] = {}
+        self.st["water_ports"] = []
+        self._to_fields()
+        self.suggest()
 
     def add_via(self, w):
         self.st.setdefault("sewer_via", []).append([round(w[0], 2), round(w[1], 2)])
@@ -1212,6 +1325,7 @@ class SiteServicesPage(ToolBase):
         o = self.st.get(role)
         if o and o.get("poly"):
             o.pop("poly")
+            o.pop("marks", None)
             o["rot"] = 90 if role == "house" else 0
             self._to_fields()
             self.solve_now()
