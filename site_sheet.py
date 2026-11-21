@@ -102,7 +102,7 @@ class Drawer:
         n_ = self.seen.get(txt, 0)
         self.seen[txt] = n_ + 1
         key = key or "%s#%d" % (txt, n_)
-        if key in self.hidden and not key.startswith("EYE:"):      # a text you deleted (the IE / RE texts cannot be deleted)
+        if key in self.hidden:                                     # a text you deleted (the eyes themselves always stay; Texts back restores the words)
             return
         ed = self.edits.get(key)                                   # a text you edited: the words, the size, the turn
         extra_rot = 0.0
