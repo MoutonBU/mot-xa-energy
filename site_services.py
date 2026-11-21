@@ -355,6 +355,7 @@ class ServicesView(QWidget):
                 self.drag = ("north",)
                 return
             self.drag = self._hit(w, e.position())
+            self.sv_last = self.drag[1] if (self.drag and self.drag[0] == "sv") else None
             self.set_sel(self._sel_for(self.drag))
             if self.drag is not None and self.drag[0] != "label":
                 self._go_lite()
@@ -488,6 +489,10 @@ class ServicesView(QWidget):
         return None
 
     def keyPressEvent(self, e):
+        if e.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and self.sel and self.sel[0] == "sewer" and getattr(self, "sv_last", None):
+            self.page.delete_sewer_corner(self.sv_last)
+            self.sv_last = None
+            return
         if e.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and self.sel and self.sel[0] == "label":
             self.page.delete_text(self.sel[1])
             return
@@ -537,6 +542,15 @@ class ServicesView(QWidget):
             m.exec(gpos)
             return
         s_ = self.view[0] if self.view else 10
+        if pg.res and pg.res.get("sewer"):
+            P_ = pg.res["sewer"]["path"]
+            for k_ in range(1, len(P_) - 1):
+                if math.hypot(P_[k_][0] - w[0], P_[k_][1] - w[1]) * s_ < 12:
+                    m = QMenu(self)
+                    m.addAction("Delete this corner", lambda k2=k_: pg.delete_sewer_corner(k2))
+                    m.addAction("Back to automatic", pg.sewer_auto)
+                    m.exec(gpos)
+                    return
         for i, c in enumerate(pg.st.get("sewer_via") or []):
             if math.hypot(c[0] - w[0], c[1] - w[1]) * s_ < 12:
                 m = QMenu(self)
@@ -1873,6 +1887,17 @@ class SiteServicesPage(ToolBase):
         if any(m_ != "sq" for m_ in (self.st.get("sewer_modes") or [])):          # what was drawn skew stays skew: every point now stands exactly where it is
             self.st["sewer_free"] = True
             self.st["sewer_modes"] = []
+
+    def delete_sewer_corner(self, k):
+        """take one corner (bend) out of the sewer run; the legs either side join straight (slanted if need be)"""
+        P = [list(p) for p in self.res["sewer"]["path"]]
+        if not (0 < k < len(P) - 1):
+            return
+        del P[k]
+        self.st["sewer_manual"] = [[round(p[0], 2), round(p[1], 2)] for p in P[1:]]
+        self.st["sewer_free"] = True
+        self.solve_now(False)
+        self.commit(True)
 
     def sewer_point_auto(self):
         self.st["pts_manual"] = False
