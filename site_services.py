@@ -50,7 +50,7 @@ def blank_state():
             "house": {"cx": 9.0, "cy": 12.0, "w": 14.8, "d": 6.5, "rot": 90},
             "carport": {"cx": 3.5, "cy": 3.5, "w": 5.0, "d": 5.0, "rot": 0},
             "points": {"sewer": [12.0, 0.0], "water": [1.5, 0.0], "elec": [6.75, 0.0]},
-            "ports": {}, "params": {}, "mains": {}, "custom": [], "frame": None, "labels": {}, "underlay": [], "sewer_via": [], "water_ports": [],
+            "ports": {}, "params": {}, "mains": {}, "custom": [], "frame": None, "labels": {}, "underlay": [], "sewer_via": [], "water_ports": [], "dims": [],
             "sheet": {"road": "left", "street": "", "road_w": "13m", "street_erf": "", "stand_no": "", "north": 0.0}}
 
 
@@ -253,6 +253,9 @@ class ServicesView(QWidget):
                 pg.set_hint("")
                 self.update()
                 return
+            if self.mode == "dim_add":
+                pg.add_dim_point(w)
+                return
             if self.mode == "wport_add":
                 pg.add_wport(w)
                 return
@@ -382,6 +385,9 @@ class ServicesView(QWidget):
         lab = self.label_at(qp) if qp is not None else None
         if lab:
             m = QMenu(self)
+            if lab.startswith("DIM:u"):
+                k_ = int(lab[5:].split("#")[0] or 0)
+                m.addAction("Remove this dimension", lambda: pg.remove_dim(k_))
             m.addAction("Put this text back", lambda: (pg.st.get("labels", {}).pop(lab, None), pg.changed(), self.update()))
             m.addAction("Put all texts back", pg.reset_labels)
             m.exec(gpos)
@@ -766,6 +772,16 @@ class SiteServicesPage(ToolBase):
             b = QPushButton(text)
             b.clicked.connect(lambda _=False, f=fn: f())
             fl.addWidget(b)
+        db_ = QPushButton("Add a dimension")
+        db_.setToolTip("Click two points (corners snap). Drag the figure to slide the dimension up or down. Right-click the figure to remove it.")
+        db_.clicked.connect(lambda: (setattr(self, "_dim_a", None), self.arm("dim_add")))
+        fl.addWidget(db_)
+        so_ = QCheckBox("Setting-out lines")
+        so_.setChecked(True)
+        so_.setToolTip("Light blue dashed lines from the boundaries to the corners of the house. They follow the house when you rotate it.")
+        so_.toggled.connect(self.set_setting_out)
+        self.so_cb = so_
+        fl.addWidget(so_)
         nb_ = QPushButton("New placing")
         nb_.setToolTip("Start again: a blank stand, house and carport, nothing left from the last one. Undo brings the old one back.")
         nb_.clicked.connect(self.new_placing)
@@ -869,6 +885,8 @@ class SiteServicesPage(ToolBase):
         try:
             st = self.st
             sb = st["stand"].get("setbacks") or {}
+            if hasattr(self, "so_cb"):
+                self.so_cb.setChecked(bool((st.get("sheet") or {}).get("setting_out", True)))
             for w, k in ((self.sb_street, "street"), (self.sb_side, "side"), (self.sb_rear, "rear")):
                 w.setValue(sb.get(k, w.value()))
             h = st["house"]
@@ -1025,7 +1043,7 @@ class SiteServicesPage(ToolBase):
         self.set_hint({"pt_sewer": "Click in the plan where the main sewer connection is.", "pt_water": "Click in the plan where the water connection is.",
                        "pt_elec": "Click in the plan where the electrical supply is.", "port_sewer": "Click on the house outline where the sewer leaves the house.",
                        "port_water": "Click on the house outline where the water enters.", "port_db": "Click on the house outline where the DB is.",
-                       "wport_add": "Click on the house outline where another water point enters. Press Esc when done.", "road": "Click on the side of the stand where the road is.", "north_dir": "Click in the direction north points. You can also drag the arrow to move it.", "via_add": "Click in the plan where the sewer must pass. Click again for the next point, in order from the house to the main. Press Esc when done.", "street": "Click the boundary that faces the street.", "cust_add": "Click in the plan where your point goes."}.get(mode, ""))
+                       "wport_add": "Click on the house outline where another water point enters. Press Esc when done.", "dim_add": "Click the first point of the dimension (corners snap), then the second. Drag its figure to slide it. Press Esc when done.", "road": "Click on the side of the stand where the road is.", "north_dir": "Click in the direction north points. You can also drag the arrow to move it.", "via_add": "Click in the plan where the sewer must pass. Click again for the next point, in order from the house to the main. Press Esc when done.", "street": "Click the boundary that faces the street.", "cust_add": "Click in the plan where your point goes."}.get(mode, ""))
         self.view.update()
 
     def set_point(self, k, w):
@@ -1137,6 +1155,37 @@ class SiteServicesPage(ToolBase):
             self.st["carport"] = got[1] if len(got) > 1 else None
         self.set_stand(pts, "From Building lines", keep_buildings=bool(got), points={"sewer": [round(L * 0.85, 2), 0.0], "water": [1.5, 0.0], "elec": [round(L / 2, 2), 0.0]})
         self._to_fields()
+        self.solve_now()
+
+    def add_dim_point(self, w):
+        st = self.st
+        cands = [tuple(p) for p in st["stand"]["corners"]]
+        if self.res:
+            cands += [tuple(p) for p in self.res["house"]] + [tuple(p) for p in (self.res.get("carport") or [])]
+            for k in ("sewer", "water", "elec"):
+                cands += [tuple(n["pt"]) for n in self.res[k]["nodes"]]
+        near = min(cands, key=lambda q: math.hypot(q[0] - w[0], q[1] - w[1]))
+        p = near if math.hypot(near[0] - w[0], near[1] - w[1]) * self.view.sh.s < 14 else tuple(w)
+        a = getattr(self, "_dim_a", None)
+        if a is None:
+            self._dim_a = p
+            self.set_hint("Now the second point.")
+            return
+        self._dim_a = None
+        st.setdefault("dims", []).append({"a": [round(a[0], 3), round(a[1], 3)], "b": [round(p[0], 3), round(p[1], 3)], "off": 1.5})
+        self.set_hint("Dimension added. Drag its figure to slide it, or click the next first point.")
+        self.solve_now()
+
+    def remove_dim(self, k):
+        d = self.st.get("dims") or []
+        if 0 <= k < len(d):
+            d.pop(k)
+            for key in [x for x in (self.st.get("labels") or {}) if x.startswith("DIM:u")]:
+                self.st["labels"].pop(key, None)
+            self.solve_now()
+
+    def set_setting_out(self, on):
+        self.st["sheet"]["setting_out"] = bool(on)
         self.solve_now()
 
     def add_wport(self, w):

@@ -16,6 +16,7 @@ RED = QColor(255, 0, 0)
 CARPORT = QColor(255, 128, 128)
 ENTRY = QColor(255, 235, 214)
 GREY = QColor(120, 120, 120)
+SETOUT = QColor(110, 190, 245)
 BLACK = QColor(0, 0, 0)
 ROTS = {"top": 0, "right": 90, "bottom": 180, "left": 270}          # which side of the plan the road is on
 
@@ -87,13 +88,13 @@ def font(px, bold=False, spacing=100, family="Arial"):
 class Drawer:
     def __init__(self, p, sh, minpx=7, lite=False):
         self.p, self.sh, self.s, self.minpx, self.lite = p, sh, sh.s, minpx, lite
-        self.offsets, self.hits, self.seen = {}, [], {}
+        self.offsets, self.hits, self.seen, self.dseen = {}, [], {}, {}
 
     # ---- helpers
     def lw(self, m):                                    # a line weight in metres of paper-at-1:200 -> pixels
         return max(0.8, m * self.s)
 
-    def text(self, q, txt, h=0.5, d=(1, 0), bold=False, color=BLACK, spacing=100, box=None, align="c", family="Arial", rot=None, bg=False):
+    def text(self, q, txt, h=0.5, d=(1, 0), bold=False, color=BLACK, spacing=100, box=None, align="c", family="Arial", rot=None, bg=False, key=None, fixed=False):
         """text with its centre at world point q, running along world direction d. h = capital height in metres."""
         if self.lite:
             return
@@ -101,8 +102,8 @@ class Drawer:
         px = max(h * self.s * 1.4, self.minpx)
         n_ = self.seen.get(txt, 0)
         self.seen[txt] = n_ + 1
-        key = "%s#%d" % (txt, n_)
-        off = self.offsets.get(key)
+        key = key or "%s#%d" % (txt, n_)
+        off = None if fixed else self.offsets.get(key)
         if off:
             q = (q[0] + off[0], q[1] + off[1])                     # a label you moved by hand
         p.save()
@@ -147,8 +148,9 @@ class Drawer:
         else:
             self.p.drawPolyline(qp)
 
-    def dim(self, a, b, off, txt, h=0.45, side=1):
-        """dimension line between world points a and b, drawn `off` metres to one side, with oblique ticks and the figure"""
+    def dim(self, a, b, off, txt, h=0.45, side=1, dkey=None):
+        """dimension line between world points a and b, drawn `off` metres to one side, with oblique ticks and the figure.
+        Drag its figure and the whole dimension slides up or down across its line."""
         if self.lite:
             return
         dx, dy = b[0] - a[0], b[1] - a[1]
@@ -157,6 +159,13 @@ class Drawer:
             return
         ux, uy = dx / L, dy / L
         nx, ny = -uy * side, ux * side
+        if dkey is None:
+            n_ = self.dseen.get(txt, 0)
+            self.dseen[txt] = n_ + 1
+            dkey = "DIM:%s#%d" % (txt, n_)
+        mv = self.offsets.get(dkey)
+        if mv:
+            off = off + mv[0] * nx + mv[1] * ny
         a2 = (a[0] + nx * off, a[1] + ny * off)
         b2 = (b[0] + nx * off, b[1] + ny * off)
         ext = 0.3 * (1 if off >= 0 else -1)
@@ -167,7 +176,7 @@ class Drawer:
             t = 0.28
             self.line((q[0] - (ux + nx) * t * 0.7, q[1] - (uy + ny) * t * 0.7), (q[0] + (ux + nx) * t * 0.7, q[1] + (uy + ny) * t * 0.7), BLACK, 0.05)
         mid = ((a2[0] + b2[0]) / 2 + nx * 0.42, (a2[1] + b2[1]) / 2 + ny * 0.42)
-        self.text(mid, txt, h, (ux, uy))
+        self.text(mid, txt, h, (ux, uy), key=dkey, fixed=True)
 
 
 def edge_len(a, b):
@@ -313,7 +322,7 @@ def draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=False
             if nd["kind"] == "RE" and str(nd.get("label", "")).startswith("RE Min"):
                 D.text(_off(sh, q, 3.2, 0.0), "Min IL", 0.5, sh.hdir(), spacing=130)
                 D.text(_off(sh, q, 3.2, 0.9), "%d" % round(res["params"]["min_depth"] * 1000), 0.5, sh.hdir(), spacing=130)
-        D.text(_midrun(path, -0.9), sw["note"], 0.5, _rundir(path), spacing=105, bg=True)
+        D.text(_midrun(path, -0.9), sw["note"], 0.5, _rundir(path), spacing=105)
         wt = res["water"]
         D.poly(wt["path"], BLUE, 0.05, None, closed=False)
         for br in wt.get("branches") or []:
@@ -358,7 +367,13 @@ def draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=False
         else:
             D.dim((x1, 0.0), (xmax, 0.0), 0.7, mm(xmax - x1), 0.45, side=-1) if xmax - x1 > 0.05 else None
         D.dim((x0, 0.0), (x1, 0.0), 0.7, mm(x1 - x0), 0.45, side=-1)
+    square = True
     if house:
+        square = all(min(abs(house[(i + 1) % len(house)][0] - house[i][0]), abs(house[(i + 1) % len(house)][1] - house[i][1])) <= 0.02 * max(edge_len(house[i], house[(i + 1) % len(house)]), 1e-6)
+                     for i in range(len(house)))
+        if opts.get("setting_out", True):
+            _setting_out(D, stand, house, kinds, label=not square)
+    if house and square:
         hx0, hx1 = min(q[0] for q in house), max(q[0] for q in house)
         hy0, hy1 = min(q[1] for q in house), max(q[1] for q in house)
         rear = max(ys)
@@ -377,6 +392,9 @@ def draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=False
             D.dim((hx1, hy1 - 0.4), (xmax, hy1 - 0.4), 0.0, mm(gx2), 0.45, side=1)
         if rear - hy1 > 0.05:
             D.dim((hx0 + 0.6, hy1), (hx0 + 0.6, rear), 0.0, mm(rear - hy1), 0.45, side=1)
+    for k, dm in enumerate(st.get("dims") or []):              # dimensions you added: two points and how far off the line it sits
+        a_, b_ = dm["a"], dm["b"]
+        D.dim(a_, b_, dm.get("off", 1.0), mm(edge_len(a_, b_)), 0.45, side=1, dkey="DIM:u%d" % k)
     # ---- your own points
     for c in st.get("custom") or []:
         q = c["pt"]
@@ -385,6 +403,32 @@ def draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=False
         D.text((q[0] + 0.9, q[1] - 0.8), c.get("name", ""), 0.5, sh.hdir(), spacing=110)
     # ---- north arrow, title
     return D
+
+
+def _setting_out(D, stand, house, kinds, label):
+    """setting out: from each boundary to the nearest corner of the house, square to the boundary, in light blue dashes. Follows the house when it is rotated;
+    the figure is written on the line when the house is not square to the boundary (a square house has its dimensions in the plan's usual places)."""
+    n = len(stand)
+    for i in range(n):
+        a, b = stand[i], stand[(i + 1) % n]
+        L = edge_len(a, b)
+        if L < 1e-6:
+            continue
+        ux, uy = (b[0] - a[0]) / L, (b[1] - a[1]) / L
+        best = None
+        for v in house:
+            t = (v[0] - a[0]) * ux + (v[1] - a[1]) * uy
+            if not 0.0 <= t <= L:
+                continue
+            f = (a[0] + ux * t, a[1] + uy * t)
+            d = edge_len(v, f)
+            if 0.05 < d < 60 and (best is None or d < best[0]):
+                best = (d, v, f)
+        if best:
+            d, v, f = best
+            D.line(v, f, SETOUT, 0.045, dash=[7, 4])
+            if label:
+                D.text(((v[0] + f[0]) / 2, (v[1] + f[1]) / 2), mm(d), 0.4, (v[0] - f[0], v[1] - f[1]), spacing=110, color=BLACK)
 
 
 def _off(sh, q, dh, dv):

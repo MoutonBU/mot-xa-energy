@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.102**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.103**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **1.86.103** Site services plan: the sewer pipe text (110 SWP, fall) no longer has a white box, it is see-through. Dimensions can be slid up and down: drag a dimension's figure and the whole dimension moves across its line. "Add a dimension" (above the plan): click two points (corners and eyes snap), drag the figure to place it, right-click it to remove. Setting-out lines: light blue dashed lines from each boundary to the nearest corner of the house, square to the boundary, switched with the "Setting-out lines" tick. They follow the house when it is rotated, and then carry the distance in mm on the line (the house's usual gap dimensions are used while it is square to the boundary).
 
 - **1.86.102** Sewer corners: the rodding eye stub now runs the other way, the leg that leaves the corner is carried back 350 mm past the corner (so at a corner where the pipe turns left, the stub points right).
 
