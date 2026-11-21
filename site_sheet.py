@@ -179,12 +179,13 @@ def draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False):
     # ---- road: kerb lines, the mains, the street name
     D.line((xa, ROAD_K), (xb, ROAD_K), BLACK, 0.04)
     D.line((xa, ROAD_K2), (xb, ROAD_K2), BLACK, 0.04)
-    D.line((xa, -2.0), (xb, -2.0), BLUE, 0.04)
-    D.text((xmin - 6.0, -2.0), "Main Water Line", 0.5, (1, 0), spacing=110, align="r")
-    D.line((xa, -1.2), (xb, -1.2), BROWN, 0.08, dash=[9, 5])
-    D.text((xmax + 10.5, -1.2), "Main Sewer Line", 0.5, (1, 0), spacing=125, align="r")
-    D.line((xa, -0.5), (xmin - 7, -0.5), YELLOW, 0.05, dash=[5, 4])
-    D.text((xmin - 11.5, -0.5), "Main Electrical Line", 0.5, (1, 0), spacing=125)
+    mn = se.mains(st)
+    D.line((xa, mn["water"]), (xb, mn["water"]), BLUE, 0.04)
+    D.text((xmin - 6.0, mn["water"]), "Main Water Line", 0.5, (1, 0), spacing=110, align="r")
+    D.line((xa, mn["sewer"]), (xb, mn["sewer"]), BROWN, 0.08, dash=[9, 5])
+    D.text((xmax + 10.5, mn["sewer"]), "Main Sewer Line", 0.5, (1, 0), spacing=125, align="r")
+    D.line((xa, mn["elec"]), (xmin - 7, mn["elec"]), YELLOW, 0.05, dash=[5, 4])
+    D.text((xmin - 11.5, mn["elec"]), "Main Electrical Line", 0.5, (1, 0), spacing=125)
     street = opts.get("street", "")
     if street:
         D.text(((xmin + xmax) / 2 + 3.0, -6.4), street, 1.05, (1, 0))
@@ -268,16 +269,16 @@ def draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False):
         D.poly(cp, BLACK, 0.04, CARPORT)
         D.line(cp[0], cp[2], BLACK, 0.025, dash=[4, 3])
         D.line(cp[1], cp[3], BLACK, 0.025, dash=[4, 3])
-        cxm = sum(q[0] for q in cp) / 4
-        cym = sum(q[1] for q in cp) / 4
+        cxm = sum(q[0] for q in cp) / len(cp)
+        cym = sum(q[1] for q in cp) / len(cp)
         wide = (st["carport"]["w"] if st.get("carport") else 5) >= 4.5 or (st["carport"]["d"] >= 4.5)
         D.text(_off(sh, (cxm, cym), -0.0, -0.8), "Double" if wide else "Single", 0.5, sh.hdir(), box=True, spacing=110)
         D.text(_off(sh, (cxm, cym), 0.0, 0.9), "Carport", 0.5, sh.hdir(), box=True, spacing=110)
     # ---- the house
     if house:
         D.poly(house, BLACK, 0.04, RED)
-        hx = sum(q[0] for q in house) / 4
-        hy = sum(q[1] for q in house) / 4
+        hx = sum(q[0] for q in house) / len(house)
+        hy = sum(q[1] for q in house) / len(house)
         D.text((hx, hy), "NEW HOUSE", 0.75, sh.hdir(), bold=True, box=True)
     # ---- services
     if res:
@@ -353,6 +354,12 @@ def draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False):
             D.dim((hx1, hy1 - 0.4), (xmax, hy1 - 0.4), 0.0, mm(gx2), 0.45, side=1)
         if rear - hy1 > 0.05:
             D.dim((hx0 + 0.6, hy1), (hx0 + 0.6, rear), 0.0, mm(rear - hy1), 0.45, side=1)
+    # ---- your own points
+    for c in st.get("custom") or []:
+        q = c["pt"]
+        col = {"sewer": BROWN, "water": BLUE, "elec": YELLOW}.get(c["kind"], GREY)
+        D.poly([(q[0], q[1] - 0.4), (q[0] + 0.4, q[1]), (q[0], q[1] + 0.4), (q[0] - 0.4, q[1])], BLACK, 0.04, col)
+        D.text((q[0] + 0.9, q[1] - 0.8), c.get("name", ""), 0.5, sh.hdir(), spacing=110)
     # ---- north arrow, title
     return D
 

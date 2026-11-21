@@ -1172,11 +1172,25 @@ class SitePage(ToolBase):
         if allrows is None:
             return
         if deg is None:
-            deg, ok = QInputDialog.getDouble(self, "Rotate", "Turn the building by how many degrees?\n(positive turns it anticlockwise, negative clockwise)", 0, -360, 360, 1)
-            if not ok:
-                return
+            self.rotate_live(allrows)
+            return
         if deg:
             self.rotate_rows(allrows, deg)
+
+    def rotate_live(self, allrows):
+        """fine-tune turn with a slider and live preview; Cancel puts the building back"""
+        from rotate_dialog import RotateDialog
+        bl = self.buildings()
+        snap = {i: [tuple(q) for q in bpoly(bl[i])] for i in allrows}
+        pts = [q for i in allrows for q in snap[i]]
+        cx, cy = (min(q[0] for q in pts) + max(q[0] for q in pts)) / 2, (min(q[1] for q in pts) + max(q[1] for q in pts)) / 2
+
+        def apply(a):
+            for i in allrows:
+                self._set_poly(i, self._rot_pts(snap[i], math.radians(a), cx, cy))
+            self._after_edit(True)
+            self.plan.update()
+        RotateDialog(self, "Rotate the building", 0.0, apply, "Turn the building. Positive turns it anticlockwise, negative clockwise. Cancel puts it back.").exec()
 
     def _group_angle(self, allrows):
         bl = self.buildings()
@@ -1286,7 +1300,8 @@ class SitePage(ToolBase):
         menu.addAction("Hide the north arrow" if self.north_on else "Show the north arrow", lambda: self.show_north(not self.north_on))
 
     def building_menu(self, menu):
-        menu.addAction("Rotate the building").setEnabled(False)
+        menu.addAction("Rotate (fine tune with a slider)...", self.rotate_selected)
+        menu.addSeparator()
         self._steps_menu(menu, self.rotate_selected, self.rotate_selected)
         menu.addSeparator()
         sn = menu.addMenu("Snap its angle to")

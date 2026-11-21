@@ -6,10 +6,12 @@ import math
 
 from PySide6.QtCore import QPointF, QRectF, QTimer, Qt, QSizeF
 from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPolygonF, QPageSize, QPageLayout, QPdfWriter, QImage
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QInputDialog, QListWidget, QMenu, QDoubleSpinBox, QFileDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton,
                                QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget, QAbstractItemView)
 
+import site_dxf
 import site_engine as se
+from rotate_dialog import RotateDialog
 import site_sheet
 import tool_base as tb
 from flow_layout import FlowLayout
@@ -42,7 +44,7 @@ def blank_state():
             "house": {"cx": 9.0, "cy": 12.0, "w": 14.8, "d": 6.5, "rot": 90},
             "carport": {"cx": 3.5, "cy": 3.5, "w": 5.0, "d": 5.0, "rot": 0},
             "points": {"sewer": [12.0, 0.0], "water": [1.5, 0.0], "elec": [6.75, 0.0]},
-            "ports": {}, "params": {},
+            "ports": {}, "params": {}, "mains": {}, "custom": [], "frame": None,
             "sheet": {"road": "left", "street": "", "road_w": "13m", "street_erf": "", "stand_no": "", "north": 0.0}}
 
 
@@ -64,6 +66,7 @@ class ServicesView(QWidget):
         self.mode = "select"                   # select | pt_sewer | pt_water | pt_elec | port_sewer | port_water | port_db
         self.drag = None
         self.sh = None
+        self.rclick = None
 
     # ---- view
     def bounds(self):
@@ -134,8 +137,17 @@ class ServicesView(QWidget):
         site_sheet.north_arrow(p, QPointF(sh.W * 0.5, r_px * 2.2 + 8) if interactive else QPointF(sh.W * 0.5, r_px * 2.6), r_px, st["sheet"].get("north", 0))
         if interactive and res:
             S = sh.pt
+            for c in st.get("custom") or []:
+                q = S(c["pt"])
+                col = {"sewer": site_sheet.BROWN, "water": site_sheet.BLUE, "elec": site_sheet.YELLOW}.get(c["kind"], QColor("#888888"))
+                p.setPen(QPen(QColor("black"), 1.2))
+                p.setBrush(QBrush(col))
+                p.drawPolygon(QPolygonF([QPointF(q.x(), q.y() - 7), QPointF(q.x() + 7, q.y()), QPointF(q.x(), q.y() + 7), QPointF(q.x() - 7, q.y())]))
+                p.setPen(QColor("black"))
+                p.setFont(QFont(self.font().family(), 8))
+                p.drawText(QPointF(q.x() + 9, q.y() - 8), c.get("name", ""))
             for key, col in (("sewer", site_sheet.BROWN), ("water", site_sheet.BLUE), ("elec", site_sheet.YELLOW)):
-                q = S(st["points"][key])
+                q = S(se.conn_point(st, key))
                 p.setPen(QPen(QColor("black"), 1.2))
                 p.setBrush(QBrush(col))
                 p.drawEllipse(q, 6, 6)
@@ -160,6 +172,18 @@ class ServicesView(QWidget):
         w = self.world(e.position())
         pg = self.page
         if e.button() == Qt.MouseButton.LeftButton:
+            if self.mode == "street":
+                pg.set_street_edge(w)
+                self.mode = "select"
+                pg.set_hint("")
+                self.update()
+                return
+            if self.mode == "cust_add":
+                pg.add_custom(w)
+                self.mode = "select"
+                pg.set_hint("")
+                self.update()
+                return
             if self.mode.startswith("pt_"):
                 pg.set_point(self.mode[3:], w)
                 self.mode = "select"
@@ -177,6 +201,7 @@ class ServicesView(QWidget):
                 self.drag = ("pan", e.position(), self.view)
                 self.auto = False
         elif e.button() in (Qt.MouseButton.MiddleButton, Qt.MouseButton.RightButton):
+            self.rclick = (e.position(), w) if e.button() == Qt.MouseButton.RightButton else None
             self.drag = ("pan", e.position(), self.view)
             self.auto = False
 
@@ -184,9 +209,12 @@ class ServicesView(QWidget):
         pg = self.page
         s = self.view[0]
         for k in ("sewer", "water", "elec"):
-            q = pg.st["points"][k]
+            q = se.conn_point(pg.st, k)
             if math.hypot(q[0] - w[0], q[1] - w[1]) * s < 12:
                 return ("pt", k)
+        for i, c in enumerate(pg.st.get("custom") or []):
+            if math.hypot(c["pt"][0] - w[0], c["pt"][1] - w[1]) * s < 12:
+                return ("cust", i)
         if pg.res:
             hp = pg.res["house"]
             for pk in ("sewer", "water", "db"):
@@ -199,7 +227,34 @@ class ServicesView(QWidget):
             if se.inside(w, hp):
                 h = pg.st["house"]
                 return ("house", w, (h["cx"], h["cy"]))
+        mn = se.mains(pg.st)
+        for k in ("sewer", "water", "elec"):
+            if abs(w[1] - mn[k]) * s < 5 and not (pg.res and se.inside(w, pg.st["stand"]["corners"])):
+                return ("main", k)
         return None
+
+    def hit_building(self, w):
+        pg = self.page
+        if pg.res and pg.res["carport"] and se.inside(w, pg.res["carport"]):
+            return "carport"
+        if pg.res and se.inside(w, pg.res["house"]):
+            return "house"
+        return None
+
+    def context(self, gpos, w):
+        pg = self.page
+        role = self.hit_building(w)
+        if not role:
+            return
+        m = QMenu(self)
+        m.addAction("Rotate the %s..." % role, lambda: pg.rotate_dialog(role))
+        m.addSeparator()
+        for step in (90, 15, 5, 1):
+            m.addAction("Turn %d\u00b0 clockwise" % step, lambda s_=step: pg.rotate_by(role, -s_))
+            m.addAction("Turn %d\u00b0 anticlockwise" % step, lambda s_=step: pg.rotate_by(role, s_))
+        m.addSeparator()
+        m.addAction("Rotation back to 0", lambda: pg.rotate_by(role, -(pg.st[role].get("rot", 0) or 0)))
+        m.exec(gpos)
 
     def mouseMoveEvent(self, e):
         d = self.drag
@@ -217,7 +272,11 @@ class ServicesView(QWidget):
             return
         w = self.world(e.position())
         if d[0] == "pt":
-            pg.st["points"][d[1]] = [round(w[0], 2), round(w[1], 2)]
+            pg.st["points"][d[1]] = [round(w[0], 2), se.mains(pg.st)[d[1]]]
+        elif d[0] == "cust":
+            pg.st["custom"][d[1]]["pt"] = [round(w[0], 2), round(w[1], 2)]
+        elif d[0] == "main":
+            pg.st.setdefault("mains", {})[d[1]] = round(min(w[1], -0.1), 2)
         elif d[0] == "port":
             hp = pg.res["house"]
             pg.st["ports"][d[1]] = se.nearest_port(hp, w)
@@ -228,9 +287,17 @@ class ServicesView(QWidget):
         pg.schedule()
         self.update()
 
-    def mouseReleaseEvent(self, _e):
+    def mouseReleaseEvent(self, e):
         if self.drag and self.drag[0] != "pan":
             self.page.solve_now()
+        elif self.drag and self.drag[0] == "pan" and self.rclick is not None and e.button() == Qt.MouseButton.RightButton:
+            p0, w0 = self.rclick
+            if abs(e.position().x() - p0.x()) < 4 and abs(e.position().y() - p0.y()) < 4:
+                self.rclick = None
+                self.drag = None
+                self.context(e.globalPosition().toPoint(), w0)
+                return
+        self.rclick = None
         self.drag = None
 
     def wheelEvent(self, e):
@@ -262,15 +329,21 @@ class SiteServicesPage(ToolBase):
         p1 = QWidget()
         v1 = QVBoxLayout(p1)
         v1.setContentsMargins(0, 0, 8, 8)
-        bx, bv = self.box("The stand", "Stands read from the Blue Hills SG sheets are built in. Or take the stand from the Building lines tool, or type a rectangle.")
+        bx, bv = self.box("The stand", "Bring in your own stand from a DXF, take it from the Building lines tool, or type a rectangle. The Blue Hills stands and finished plans are built in as the reference the tool works from.")
         row = QHBoxLayout()
-        self.stand_cb = QComboBox()
-        self.stand_cb.addItem("Choose a stand...")
-        for k in sorted(STANDS):
-            self.stand_cb.addItem("Blue Hills Ext 120 - stand %s  (%.0f m2)" % (k, STANDS[k]["area"]), k)
-        self.stand_cb.currentIndexChanged.connect(self._stand_picked)
-        row.addWidget(self.stand_cb, 1)
+        ib = QPushButton("Import the stand from DXF...")
+        ib.clicked.connect(self.import_stand_dxf)
+        sb_ = QPushButton("Street edge: click it in the plan")
+        sb_.setToolTip("After an import, click the boundary that faces the street.")
+        sb_.clicked.connect(lambda: self.arm("street"))
+        row.addWidget(ib)
+        row.addWidget(sb_)
+        row.addStretch(1)
         bv.addLayout(row)
+        self.ref_lbl = QLabel("")
+        self.ref_lbl.setObjectName("xaSub")
+        self.ref_lbl.setWordWrap(True)
+        bv.addWidget(self.ref_lbl)
         row = QHBoxLayout()
         self.q_w, self.q_d = spin(2, 500, 13.5, 2, " m"), spin(2, 500, 22, 2, " m")
         mk = QPushButton("Make a rectangle")
@@ -326,6 +399,14 @@ class SiteServicesPage(ToolBase):
             row.addWidget(w)
         row.addStretch(1)
         bv.addLayout(row)
+        row = QHBoxLayout()
+        for text, fn in (("Rotate...", lambda: self.rotate_dialog("house")), ("Import the house from DXF...", lambda: self.import_building_dxf("house")),
+                         ("Plain rectangle", lambda: self.plain_rect("house"))):
+            b_ = QPushButton(text)
+            b_.clicked.connect(lambda _=False, f=fn: f())
+            row.addWidget(b_)
+        row.addStretch(1)
+        bv.addLayout(row)
         v1.addWidget(bx)
         bx, bv = self.box("The carport", "")
         row = QHBoxLayout()
@@ -339,6 +420,14 @@ class SiteServicesPage(ToolBase):
             row.addWidget(w)
         row.addStretch(1)
         bv.addLayout(row)
+        row = QHBoxLayout()
+        for text, fn in (("Rotate...", lambda: self.rotate_dialog("carport")), ("Import the carport from DXF...", lambda: self.import_building_dxf("carport")),
+                         ("Plain rectangle", lambda: self.plain_rect("carport"))):
+            b_ = QPushButton(text)
+            b_.clicked.connect(lambda _=False, f=fn: f())
+            row.addWidget(b_)
+        row.addStretch(1)
+        bv.addLayout(row)
         sg = QPushButton("Suggest placement inside the building lines")
         sg.setToolTip("Carport at the street on one side, house at the back. Where everything cannot fit, it places them and the checks show by how much.")
         sg.clicked.connect(self.suggest)
@@ -350,6 +439,7 @@ class SiteServicesPage(ToolBase):
         v2 = QVBoxLayout(p2)
         v2.setContentsMargins(0, 0, 8, 8)
         self.pt_spin = {}
+        self.main_spin = {}
         for key, title, sub in (("sewer", "Main sewer connection", "Where your house sewer joins the main, from the SG sewer sheet. The sewer depth there sets the invert levels along the pipe."),
                                 ("water", "Water connection (W.CON)", "Where the water line is brought to the stand."),
                                 ("elec", "Electrical supply (EC)", "Not on the SG sheets: place it where the supply box or connection is.")):
@@ -363,10 +453,17 @@ class SiteServicesPage(ToolBase):
             ab.clicked.connect(lambda _=False, k=key: self.arm("port_" + ("db" if k == "elec" else k)))
             rb = QPushButton("Automatic")
             rb.clicked.connect(lambda _=False, k=key: self.reset_port("db" if k == "elec" else k))
-            for lab, w in (("x", sx), ("y", sy)):
+            for lab, w in (("along the street x", sx),):
                 row.addWidget(QLabel(lab))
                 row.addWidget(w)
             row.addWidget(pb)
+            bv.addLayout(row)
+            row = QHBoxLayout()
+            ms = spin(0, 40, -se.DEFAULT_MAINS[key], 2, " m", 0.1)
+            self.main_spin[key] = ms
+            row.addWidget(QLabel("The main line is this far outside the street boundary"))
+            row.addWidget(ms)
+            row.addStretch(1)
             bv.addLayout(row)
             row = QHBoxLayout()
             row.addWidget(ab)
@@ -384,6 +481,24 @@ class SiteServicesPage(ToolBase):
                 row.addStretch(1)
                 bv.addLayout(row)
             v2.addWidget(bx)
+        bx, bv = self.box("Your own service points", "Add a connection point of your own. A sewer, water or electrical point is used when the line to it is shorter than to the main. Other points are just marked on the plan.")
+        row = QHBoxLayout()
+        self.cu_kind = QComboBox()
+        for k_, t_ in (("sewer", "Sewer"), ("water", "Water"), ("elec", "Electrical"), ("other", "Other marker")):
+            self.cu_kind.addItem(t_, k_)
+        self.cu_name = QLineEdit()
+        self.cu_name.setPlaceholderText("Name, e.g. manhole")
+        ab_ = QPushButton("Add: click in the plan")
+        ab_.clicked.connect(lambda: self.arm("cust_add"))
+        rb_ = QPushButton("Remove the selected")
+        rb_.clicked.connect(self.remove_custom)
+        for w_ in (self.cu_kind, self.cu_name, ab_, rb_):
+            row.addWidget(w_)
+        bv.addLayout(row)
+        self.cu_list = QListWidget()
+        self.cu_list.setMaximumHeight(90)
+        bv.addWidget(self.cu_list)
+        v2.addWidget(bx)
         v2.addStretch(1)
         # ---- step 3
         p3 = QWidget()
@@ -435,6 +550,8 @@ class SiteServicesPage(ToolBase):
         for sx, sy in self.pt_spin.values():
             sx.valueChanged.connect(self._edited)
             sy.valueChanged.connect(self._edited)
+        for ms in self.main_spin.values():
+            ms.valueChanged.connect(self._edited)
         self.solve_now()
         self.restore()
 
@@ -493,6 +610,7 @@ class SiteServicesPage(ToolBase):
             st["carport"] = None
         for k, (sx, sy) in self.pt_spin.items():
             st["points"][k] = [sx.value(), sy.value()]
+        st["mains"] = {k: -ms.value() for k, ms in self.main_spin.items()}
         st["sheet"] = {"road": self.sh_road.currentText(), "street": self.sh_street.text().strip(), "road_w": self.sh_rw.text().strip(), "street_erf": self.sh_se.text().strip(),
                        "stand_no": self.sh_no.text().strip(), "north": self.sh_north.value()}
         if self.view.auto is False and False:
@@ -519,6 +637,10 @@ class SiteServicesPage(ToolBase):
             for k, (sx, sy) in self.pt_spin.items():
                 sx.setValue(st["points"][k][0])
                 sy.setValue(st["points"][k][1])
+            mn = se.mains(st)
+            for k, ms in self.main_spin.items():
+                ms.setValue(-mn[k])
+            self._fill_custom()
             sh = st.get("sheet") or {}
             self.sh_no.setText(str(sh.get("stand_no", "")))
             self.sh_street.setText(str(sh.get("street", "")))
@@ -564,6 +686,8 @@ class SiteServicesPage(ToolBase):
         w = list(r["warnings"])
         self.warn_lbl.setText("<br>".join("&#9888; " + x for x in w) if w else "&#10003; Inside the building lines. Sewer depth is fine.")
         self.warn_lbl.setStyleSheet("color:#b3261e;" if w else "color:#1a7f37;")
+        nr = self.nearest_reference()
+        self.ref_lbl.setText("Closest stand in the reference library: Blue Hills Ext 120 stand %s (%.0f m2)." % (nr, STANDS[nr]["area"]) if nr else "")
         self.stand_lbl.setText("Stand %.0f m2.  Coverage (house + carport) %.1f%%." % (r["stand_area"], r["coverage_pct"]))
         rows = [("Sewer", "%.1f m" % r["sewer"]["length"], "%s, drop %d mm, %d eyes" % (r["sewer"]["note"], r["sewer"]["drop_mm"], sum(1 for n in r["sewer"]["nodes"] if n["kind"] in ("IE", "RE")))),
                 ("Water", "%.1f m" % r["water"]["length"], r["water"]["note"]), ("Electrical", "%.1f m" % r["elec"]["length"], r["elec"]["note"])]
@@ -597,7 +721,8 @@ class SiteServicesPage(ToolBase):
         self.view.mode = mode
         self.set_hint({"pt_sewer": "Click in the plan where the main sewer connection is.", "pt_water": "Click in the plan where the water connection is.",
                        "pt_elec": "Click in the plan where the electrical supply is.", "port_sewer": "Click on the house outline where the sewer leaves the house.",
-                       "port_water": "Click on the house outline where the water enters.", "port_db": "Click on the house outline where the DB is."}.get(mode, ""))
+                       "port_water": "Click on the house outline where the water enters.", "port_db": "Click on the house outline where the DB is.",
+                       "street": "Click the boundary that faces the street.", "cust_add": "Click in the plan where your point goes."}.get(mode, ""))
         self.view.update()
 
     def set_point(self, k, w):
@@ -627,14 +752,22 @@ class SiteServicesPage(ToolBase):
             self.solve_now()
         self.view.fit()
 
-    def _stand_picked(self, i):
-        k = self.stand_cb.itemData(i)
-        if not k:
-            return
+    def load_reference(self, k):
+        """a stand from the built-in reference library (used by the checks and tests; the plan itself works on whatever stand you give it)"""
         d = STANDS[k]
         road, street, north = SHEET_DEFAULTS.get(k, ("left", "", 0.0))
         self.st["sheet"] = {"road": road, "street": street, "road_w": "13m", "street_erf": "2246", "stand_no": k, "north": north}
+        self.st["frame"] = None
         self.set_stand(d["corners"], "Blue Hills Ext 120 - stand " + k, under=d["layers"], points=se.default_points(d))
+
+    def nearest_reference(self):
+        """the built-in stand most like this one (frontage and area) - shown so you can see what the tool is leaning on"""
+        if not STANDS or not self.res:
+            return None
+        c = self.st["stand"]["corners"]
+        fr = math.hypot(c[1][0] - c[0][0], c[1][1] - c[0][1])
+        ar = abs(se.area(c))
+        return min(STANDS, key=lambda k: abs(STANDS[k]["frontage"] - fr) / 5.0 + abs(STANDS[k]["area"] - ar) / 100.0)
 
     def make_rect(self):
         w, d = self.q_w.value(), self.q_d.value()
@@ -689,14 +822,189 @@ class SiteServicesPage(ToolBase):
             cx, cy = sum(q[0] for q in lp) / len(lp), sum(q[1] for q in lp) / len(lp)
             e0 = (lp[1][0] - lp[0][0], lp[1][1] - lp[0][1])
             e1 = (lp[2][0] - lp[1][0], lp[2][1] - lp[1][1])
-            got.append({"cx": round(cx, 2), "cy": round(cy, 2), "w": round(math.hypot(*e0), 2), "d": round(math.hypot(*e1), 2), "rot": round(math.degrees(math.atan2(e0[1], e0[0])), 1)})
-        self.stand_cb.setCurrentIndex(0)
+            g = {"cx": round(cx, 2), "cy": round(cy, 2), "w": round(math.hypot(*e0), 2), "d": round(math.hypot(*e1), 2), "rot": round(math.degrees(math.atan2(e0[1], e0[0])), 1)}
+            if len(lp) != 4:
+                g["poly"] = [[round(q[0], 3), round(q[1], 3)] for q in lp]
+                g["rot"] = 0.0
+            got.append(g)
+        self.st["frame"] = None
         if got:
             self.st["house"] = got[0]
             self.st["carport"] = got[1] if len(got) > 1 else None
         self.set_stand(pts, "From Building lines", keep_buildings=bool(got), points={"sewer": [round(L * 0.85, 2), 0.0], "water": [1.5, 0.0], "elec": [round(L / 2, 2), 0.0]})
         self._to_fields()
         self.solve_now()
+
+    # ---- your own points
+    def _fill_custom(self):
+        self.cu_list.clear()
+        for c in self.st.get("custom") or []:
+            self.cu_list.addItem("%s - %s  (%.2f, %.2f)" % (c.get("name") or "Point", KINDS.get(c["kind"], "Other"), c["pt"][0], c["pt"][1]))
+
+    def add_custom(self, w):
+        n = len(self.st.setdefault("custom", [])) + 1
+        kind = self.cu_kind.currentData()
+        self.st["custom"].append({"kind": kind, "name": self.cu_name.text().strip() or "%s %d" % (self.cu_kind.currentText(), n), "pt": [round(w[0], 2), round(w[1], 2)]})
+        self._fill_custom()
+        self.solve_now()
+
+    def remove_custom(self):
+        i = self.cu_list.currentRow()
+        if 0 <= i < len(self.st.get("custom") or []):
+            self.st["custom"].pop(i)
+            self._fill_custom()
+            self.solve_now()
+
+    # ---- DXF
+    def _choose_shape(self, shapes, title, prefer):
+        if not shapes:
+            QMessageBox.information(self, title, "No closed outlines were found in that drawing. Close the outline (a closed polyline, or lines that meet at their ends).")
+            return None
+        dlg = QDialog(self)
+        dlg.setWindowTitle(title)
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel("Pick the outline:"))
+        lw = QListWidget()
+        for s_ in shapes:
+            xs, ys = [p[0] for p in s_["poly"]], [p[1] for p in s_["poly"]]
+            lw.addItem("%.1f m2   %.1f x %.1f m   %d corners   layer %s" % (s_["area"], max(xs) - min(xs), max(ys) - min(ys), len(s_["poly"]), s_["layer"]))
+        lw.setCurrentRow(prefer(shapes))
+        lw.itemDoubleClicked.connect(lambda *_: dlg.accept())
+        v.addWidget(lw)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        v.addWidget(bb)
+        dlg.resize(520, 360)
+        if dlg.exec() != QDialog.DialogCode.Accepted or lw.currentRow() < 0:
+            return None
+        return shapes[lw.currentRow()]
+
+    def _read_dxf(self, path):
+        try:
+            return site_dxf.read_shapes(path)
+        except Exception as e:
+            QMessageBox.warning(self, "Site services", str(e))
+            return None
+
+    def import_stand_dxf(self, path=None, pick=None):
+        if not path:
+            path, _ = QFileDialog.getOpenFileName(self, "Import the stand", "", "Drawings (*.dxf *.dwg)")
+        if not path:
+            return
+        shapes = self._read_dxf(path)
+        if shapes is None:
+            return
+        sh = pick(shapes) if pick else self._choose_shape(shapes, "Stand outline", lambda L: 0)
+        if sh:
+            self.set_stand_world(sh["poly"], "Imported stand", src_shapes=shapes)
+
+    def set_stand_world(self, poly, name="Stand", src_shapes=None, street_edge=None):
+        """a stand in drawing coordinates: put the street edge along x at the origin and remember the move so the house and carport from the same drawing land in place"""
+        c = [tuple(p) for p in poly]
+        c = se.clean_corners(c)
+        n = len(c)
+        if street_edge is None:
+            street_edge = min(range(n), key=lambda i: (c[i][1] + c[(i + 1) % n][1]) / 2)
+        frame, new = se.normalise_stand(c, street_edge)
+        old = self.st.get("frame")
+        self.st["frame"] = se.compose_frames(old, frame) if (old and street_edge is not None and src_shapes is None) else frame
+        self.st["stand"]["setbacks"] = self.st["stand"].get("setbacks")
+        xs, ys = [p[0] for p in poly], [p[1] for p in poly]
+        self._src_bbox = (min(xs), min(ys), max(xs), max(ys))
+        self.set_stand(new, name, points=None, keep_buildings=False)
+        L = math.hypot(new[1][0] - new[0][0], new[1][1] - new[0][1])
+        self.st["points"] = {"sewer": [round(L * 0.85, 2), 0.0], "water": [round(min(1.5, L / 3), 2), 0.0], "elec": [round(L / 2, 2), 0.0]}
+        self.st["custom"] = []
+        self._to_fields()
+        self.suggest()
+
+    def set_street_edge(self, w):
+        """a click on a boundary: that boundary becomes the street"""
+        c = [tuple(p) for p in self.st["stand"]["corners"]]
+        n = len(c)
+        i = min(range(n), key=lambda i: se.line_dist(w, c[i], c[(i + 1) % n]))
+        if i == 0:
+            return
+        frame, new = se.normalise_stand(c, i)
+        self.st["frame"] = se.compose_frames(self.st.get("frame"), frame)
+        mv = lambda p: se.apply_frame(frame, p)
+        for k in ("house", "carport"):
+            o = self.st.get(k)
+            if o:
+                o["cx"], o["cy"] = [round(v, 2) for v in mv((o["cx"], o["cy"]))]
+                o["rot"] = round((o.get("rot", 0) + frame[6]) % 360, 2)
+        self.st["stand"]["corners"] = [[round(a, 2), round(b, 2)] for a, b in new]
+        L = math.hypot(new[1][0] - new[0][0], new[1][1] - new[0][1])
+        self.st["points"] = {"sewer": [round(L * 0.85, 2), 0.0], "water": [round(min(1.5, L / 3), 2), 0.0], "elec": [round(L / 2, 2), 0.0]}
+        self.st["ports"] = {}
+        self._to_fields()
+        self.solve_now()
+        self.view.fit()
+
+    def import_building_dxf(self, role, path=None, pick=None):
+        if not path:
+            path, _ = QFileDialog.getOpenFileName(self, "Import the %s" % role, "", "Drawings (*.dxf *.dwg)")
+        if not path:
+            return
+        shapes = self._read_dxf(path)
+        if shapes is None:
+            return
+        want = 25.0 if role == "carport" else 120.0
+
+        def prefer(L):
+            return min(range(len(L)), key=lambda i: abs(L[i]["area"] - want) if L[i]["area"] < 400 else 1e9)
+        sh = pick(shapes) if pick else self._choose_shape(shapes, "%s outline" % role.capitalize(), prefer)
+        if not sh:
+            return
+        poly = [tuple(p) for p in sh["poly"]]
+        fr = self.st.get("frame")
+        bb = getattr(self, "_src_bbox", None)
+        cxy = (sum(p[0] for p in poly) / len(poly), sum(p[1] for p in poly) / len(poly))
+        placed = bool(fr and bb and bb[0] <= cxy[0] <= bb[2] and bb[1] <= cxy[1] <= bb[3])
+        if placed:
+            poly = [se.apply_frame(fr, p) for p in poly]
+        xs, ys = [p[0] for p in poly], [p[1] for p in poly]
+        o = {"poly": [[round(a, 3), round(b, 3)] for a, b in poly], "w": round(max(xs) - min(xs), 2), "d": round(max(ys) - min(ys), 2), "rot": 0.0,
+             "cx": round((max(xs) + min(xs)) / 2, 2), "cy": round((max(ys) + min(ys)) / 2, 2)}
+        if not placed:
+            c = self.st["stand"]["corners"]
+            o["cx"], o["cy"] = round(sum(p[0] for p in c) / len(c), 2), round(sum(p[1] for p in c) / len(c), 2)
+        self.st["house" if role == "house" else "carport"] = o
+        self.st["ports"] = {}
+        self._to_fields()
+        if not placed:
+            self.suggest()
+        else:
+            self.solve_now()
+        self.view.fit()
+
+    def plain_rect(self, role):
+        o = self.st.get(role)
+        if o and o.get("poly"):
+            o.pop("poly")
+            o["rot"] = 90 if role == "house" else 0
+            self._to_fields()
+            self.solve_now()
+
+    # ---- turning
+    def rotate_dialog(self, role):
+        o = self.st.get(role)
+        if not o:
+            return
+
+        def apply(a, o=o):
+            o["rot"] = round(a, 2)
+            self._to_fields()
+            self.solve_now()
+        RotateDialog(self, "Rotate the %s" % role, o.get("rot", 0.0), apply).exec()
+
+    def rotate_by(self, role, deg):
+        o = self.st.get(role)
+        if o:
+            o["rot"] = round((o.get("rot", 0.0) + deg) % 360, 2)
+            self._to_fields()
+            self.solve_now()
 
     # ---- save and load
     def state(self):
