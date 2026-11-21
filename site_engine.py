@@ -682,6 +682,85 @@ def sewer(state, hp, cp, params, others=()):
             "stubs": stubs, "extra": extra, "depth_house": round(D0, 3), "depth_main": round(d_main, 3), "note": "%s\u00d8 SWP, FALL 1:%d" % (params["sewer_pipe"], round(fall))}
 
 
+def straight_out(p0, n0, net, hp, bounds_ok=None):
+    """a pipe from the house point p0 that leaves the house square to the plan (along x or y, never into the house) and runs straight onto the nearest
+    straight piece of the pipes already laid. Returns the path from the pipe to p0, or None when there is no such way."""
+    best = None
+    for d in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        if d[0] * n0[0] + d[1] * n0[1] < 0.2:
+            continue                                              # that way goes into the house or along its wall
+        for pp in net:
+            for a, b in zip(pp[:-1], pp[1:]):
+                if d[0] != 0:
+                    if abs(a[0] - b[0]) > 1e-3 or (a[0] - p0[0]) * d[0] < 0.15:
+                        continue
+                    lo, hi = sorted((a[1], b[1]))
+                    if not (lo - 1e-6 <= p0[1] <= hi + 1e-6):
+                        continue
+                    q = (a[0], p0[1])
+                else:
+                    if abs(a[1] - b[1]) > 1e-3 or (a[1] - p0[1]) * d[1] < 0.15:
+                        continue
+                    lo, hi = sorted((a[0], b[0]))
+                    if not (lo - 1e-6 <= p0[0] <= hi + 1e-6):
+                        continue
+                    q = (p0[0], a[1])
+                L = math.hypot(q[0] - p0[0], q[1] - p0[1])
+                ok = all(not inside((p0[0] + (q[0] - p0[0]) * k / 40.0, p0[1] + (q[1] - p0[1]) * k / 40.0), hp) for k in range(2, 41))
+                if ok and (bounds_ok is None or bounds_ok(q)) and (best is None or L < best[0]):
+                    best = (L, [q, p0])
+    if best:
+        return best[1]
+    # no straight way: out square to the plan, then one turn, then straight onto a piece of pipe that runs the same way as the first leg
+    def clear(a, b):
+        return all(not inside((a[0] + (b[0] - a[0]) * k / 30.0, a[1] + (b[1] - a[1]) * k / 30.0), hp) for k in range(1, 31))
+    for d in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        if d[0] * n0[0] + d[1] * n0[1] < 0.2:
+            continue
+        ax = 0 if d[0] != 0 else 1                                 # the axis the first leg runs along
+        for pp in net:
+            for a, b in zip(pp[:-1], pp[1:]):
+                if abs(a[1 - ax] - b[1 - ax]) > 1e-3:
+                    continue                                       # the piece must run along the same axis as the first leg
+                lo, hi = sorted((a[ax], b[ax]))
+                sgn = d[ax]
+                lim = p0[ax] + sgn * 0.5
+                tgt = min(max(lim, lo), hi) if sgn > 0 else min(max(lim, lo), hi)
+                if (tgt - p0[ax]) * sgn < 0.5:
+                    tgt = lim if lo - 1e-6 <= lim <= hi + 1e-6 else None
+                if tgt is None:
+                    continue
+                c = list(p0)
+                c[ax] = tgt
+                q = list(c)
+                q[1 - ax] = a[1 - ax]
+                c, q = tuple(c), tuple(q)
+                L = math.hypot(c[0] - p0[0], c[1] - p0[1]) + math.hypot(q[0] - c[0], q[1] - c[1])
+                if clear(p0, c) and clear(c, q) and (best is None or L < best[0]):
+                    best = (L, [q, c, p0])
+    return best[1] if best else None
+
+
+def rounded(path, r=0.45, steps=6):
+    """the same path with every corner rounded (a quarter-circle-like curve of radius about r)"""
+    if len(path) < 3:
+        return list(path)
+    out = [tuple(path[0])]
+    for i in range(1, len(path) - 1):
+        a, b, c = path[i - 1], path[i], path[i + 1]
+        l1, l2 = math.hypot(b[0] - a[0], b[1] - a[1]), math.hypot(c[0] - b[0], c[1] - b[1])
+        if l1 < 1e-6 or l2 < 1e-6:
+            continue
+        rr = min(r, l1 / 2.0, l2 / 2.0)
+        p1 = (b[0] + (a[0] - b[0]) / l1 * rr, b[1] + (a[1] - b[1]) / l1 * rr)
+        p2 = (b[0] + (c[0] - b[0]) / l2 * rr, b[1] + (c[1] - b[1]) / l2 * rr)
+        for k in range(steps + 1):
+            t = k / float(steps)
+            out.append(((1 - t) ** 2 * p1[0] + 2 * (1 - t) * t * b[0] + t * t * p2[0], (1 - t) ** 2 * p1[1] + 2 * (1 - t) * t * b[1] + t * t * p2[1]))
+    out.append(tuple(path[-1]))
+    return out
+
+
 def water(state, hp, cp, params, others=()):
     """square runs; a paved carport can be crossed"""
     stand = state["stand"]["corners"]
@@ -712,13 +791,15 @@ def water(state, hp, cp, params, others=()):
             for k in range(int(length(pp) / 0.5) + 1):
                 samples.append(point_at(pp, min(k * 0.5, length(pp))))
         samples.sort(key=lambda q: abs(q[0] - start[0]) + abs(q[1] - start[1]))
-        best = None
-        for q in samples[:4]:
-            pr = ortho(route(q, start, stand, obs))
-            Lq = length(pr)
-            if best is None or Lq < best[0]:
-                best = (Lq, pr)
-        bp = dedupe(best[1] + [p0])
+        bp = straight_out(p0, n0, net, hp)                       # straight out of the wall, square to the plan, onto the pipe already laid
+        if bp is None:
+            best = None
+            for q in samples[:4]:
+                pr = ortho(route(q, start, stand, obs))
+                Lq = length(pr)
+                if best is None or Lq < best[0]:
+                    best = (Lq, pr)
+            bp = dedupe(best[1] + [p0])
         branches.append({"path": bp, "port": wp})
         net.append(bp)
         nodes.append({"kind": "SC", "pt": point_at(bp, max(length(bp) - 0.6, 0)), "chainage": 0.0, "label": "Stop cock"})

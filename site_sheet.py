@@ -351,9 +351,9 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
                 D.text(_off(sh, q, 3.2, 0.9), "%d" % round(res["params"]["min_depth"] * 1000), 0.5, sh.hdir(), spacing=130)
         D.text(_midrun(path, -0.9), sw["note"], 0.5, _rundir(path), spacing=105)
         wt = res["water"]
-        D.poly(wt["path"], BLUE, 0.05, None, closed=False)
+        D.poly(se.rounded(wt["path"]), BLUE, 0.05, None, closed=False)
         for br in wt.get("branches") or []:
-            D.poly(br["path"], BLUE, 0.05, None, closed=False)
+            D.poly(se.rounded(br["path"]), BLUE, 0.05, None, closed=False)
         for k, (a, b) in enumerate(zip(wt["path"][:-1], wt["path"][1:])):
             L = edge_len(a, b)
             if L > 9.0:
