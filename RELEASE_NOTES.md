@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.107**
+Current version: **1.86.108**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Site services:** the sewer pipe from the house now butts flush onto the run to the left or right - no tail past the joint and no rodding eye there (an inspection eye at the joint only). The rodding eye with Min IL 450 sits at the wall end of the outlet pipe; the 0.35 m rodding eye past the joint stays only where the run meets the main.
 - **Site services:** the plan now shows the rear boundary length as well as the sides, and the neighbouring stands' boundaries carry on past the stand corners (read from the imported DXF, kept short and clean).
 
 - **1.86.106** Site services plan: (1) Texts that sit on top of each other are moved apart automatically (the biggest stay put; anything you moved by hand stays where you put it). (2) The inspection and rodding eyes are drawn as a ring and a dot on the pipe, with their IE/RE texts right beside them, so none floats on its own. (3) Unless you placed the main sewer connection yourself, a stand you import or make as a rectangle gets it where the sewer run from the house is shortest, so the pipe no longer goes round to the far side. (4) Delete a text: select it and press Delete, use the Delete button on its gizmo, or right-click > Delete this text. Texts back puts them again. Deleting a dimension's figure takes the whole dimension off. (5) Select a dimension you added and drag its two end dots to move its measuring points (they snap to corners).

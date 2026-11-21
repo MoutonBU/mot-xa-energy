@@ -525,19 +525,16 @@ def sewer(state, hp, cp, params, others=()):
         if along > 0.9:                                          # the run carries straight on from the outlet: the rodding eye is at the wall
             path = dedupe([p0] + rest)
             return {"path": path, "port": port, "branch": None, "q1": q1, "junction": 0.0, "tail": 0.0}
-        tail = params["re_ext"]
-        t0 = (q1[0] - u[0] * tail, q1[1] - u[1] * tail)          # past the junction, away from the main
-        path = dedupe([t0] + rest)
-        return {"path": path, "port": port, "branch": [p0, q1], "q1": q1, "junction": tail, "tail": tail}
+        path = dedupe(rest)                                      # the outlet pipe butts flush onto the run at q1: no tail past the joint, no rodding eye there
+        return {"path": path, "port": port, "branch": [p0, q1], "q1": q1, "junction": 0.0, "tail": 0.0}
     port, r = _port_for(state, hp, "sewer", cands[0], 0.25, others, build, ("SD",))
     path = r["path"]
     L = length(path)
     fall = params["fall"]
     cut = crossing(path, stand)
     jn = r["junction"]
-    marks = [(0.0, "RE")]
-    if jn > 0:
-        marks.append((jn, "IE"))                                 # where the house outlet joins
+    branched = bool(r.get("branch"))
+    marks = [(0.0, "IE" if branched else "RE")]                  # where the outlet pipe joins the run: an inspection eye only; the rodding eye is at the wall end of the outlet pipe
     acc = 0.0
     for i in range(1, len(path) - 1):
         acc += math.hypot(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1])
@@ -550,7 +547,7 @@ def sewer(state, hp, cp, params, others=()):
         c_ = best / 20.0
         if all(abs(c_ - m[0]) > 0.3 for m in marks) and 0.3 < c_ < L - 0.3:
             marks.append((c_, "IE"))
-    if jn == 0 and all(abs(m[0] - min(params["ie_first"], L)) > 0.3 for m in marks):
+    if jn == 0 and not branched and all(abs(m[0] - min(params["ie_first"], L)) > 0.3 for m in marks):
         marks.append((min(params["ie_first"], L), "IE"))
     marks.sort()
     full = []
@@ -568,6 +565,8 @@ def sewer(state, hp, cp, params, others=()):
     for s_, kind in full:
         nodes.append({"kind": kind, "pt": point_at(path, s_), "chainage": round(s_, 2), "depth": round(D0 + s_ / fall, 3),
                       "label": kind + (" Min IL %d" % round(D0 * 1000) if kind == "RE" and s_ == 0 else "")})
+    if branched:
+        nodes.insert(0, {"kind": "RE", "pt": r["branch"][0], "chainage": 0.0, "depth": round(D0, 3), "label": "RE Min IL %d" % round(D0 * 1000)})
     stubs = []                                                    # where the run turns a corner, the leg after it is carried back re_ext past the corner to a rodding eye
     acc = 0.0
     for i in range(1, len(path) - 1):
