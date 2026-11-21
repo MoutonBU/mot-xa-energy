@@ -397,8 +397,8 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
         square = all(min(abs(house[(i + 1) % len(house)][0] - house[i][0]), abs(house[(i + 1) % len(house)][1] - house[i][1])) <= 0.02 * max(edge_len(house[i], house[(i + 1) % len(house)]), 1e-6)
                      for i in range(len(house)))
         if opts.get("setting_out", True):
-            _setting_out(D, stand, house, kinds, label=not square)
-    if house and square:
+            _setting_out(D, stand, house, kinds, label=True)
+    if house and square and not opts.get("setting_out", True):   # (with setting-out on, the chains outside the boundaries give these distances)
         hx0, hx1 = min(q[0] for q in house), max(q[0] for q in house)
         hy0, hy1 = min(q[1] for q in house), max(q[1] for q in house)
         rear = max(ys)
@@ -519,7 +519,7 @@ def _setting_out(D, stand, house, kinds, label):
         D.line(v, f, SETOUT, 0.045, dash=[7, 4])
         if label:
             D.text(((v[0] + f[0]) / 2, (v[1] + f[1]) / 2), mm(d), 0.4, (v[0] - f[0], v[1] - f[1]), spacing=110, color=BLACK)
-        if label and kinds[i] != "street":
+        if label:
             pick = {id(c): c for c in (min(cands), min(cands, key=lambda c: c[1]), max(cands, key=lambda c: c[1]))}.values()
             off = 2.4
             ts = []
