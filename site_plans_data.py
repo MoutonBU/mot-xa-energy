@@ -11,6 +11,9 @@ HOUSE_TYPES = {
     "UR_100": {"gfa": 100.68, "footprint_carport": None, "house": (14.7, 6.6), "carport": (5.0, 5.0), "plans": ["3", "29"]},
     "UR_156": {"gfa": 156.06, "footprint_carport": 105.12, "house": (11.2, 7.1), "carport": (7.1, 7.1), "plans": ["34", "42"]},
     "UR_157": {"gfa": 156.59, "footprint_carport": 105.18, "house": None, "carport": None, "plans": ["18"]},
+    # the 81 and 91 m2 houses on the Street 7071 stands (preliminary site development plans): a 6.75 m wide box, a double carport of 5.0 x 5.0
+    "81": {"gfa": 81.0, "footprint_carport": None, "house": (12.0, 6.75), "carport": (5.0, 5.0), "plans": ["6855", "6859"], "dev": "street7071"},
+    "91": {"gfa": 91.0, "footprint_carport": None, "house": (13.43, 6.75), "carport": (5.0, 5.0), "plans": ["6845", "7035", "7048", "6997", "7069"], "dev": "street7071"},
 }
 
 # one line per finished plan (Erf 670, Ptn n): the house type, the FAR printed on the sheet, the stand area worked back from it (GFA / FAR),
@@ -27,12 +30,26 @@ PLANS = [
     {"ptn": "29", "type": "UR_100", "far": None, "stand_area": None, "rot_vs_street": 0, "house_street_gap": 1.2, "carport_at_street": True},
 ]
 
+# the preliminary site development plans on the Street 7071 stands (14.0 x 19.3 m and corner stands, 1 m servitudes, a no-access road): how each house was placed
+PLANS_7071 = [
+    {"stand": "6855", "type": "81", "stand_size": (14.01, 19.30), "carport_street_gap": 0.5, "carport_house_gap": 2.26, "note": "house along the side boundary, carport at the street corner; no access from Lebombo Road"},
+    {"stand": "6859", "type": "81", "stand_size": (14.01, 19.34), "carport_street_gap": 0.5, "carport_house_gap": 2.27, "note": "same layout; the stand is cut by a splay on the no-access road"},
+    {"stand": "6845", "type": "91", "stand_size": (13.82, 18.0), "carport_street_gap": 0.0, "carport_house_gap": None, "note": "1 m servitude on the long side; the house had a boundary wall problem at the back"},
+    {"stand": "7035", "type": "91", "stand_size": None, "carport_street_gap": 0.5, "carport_house_gap": 2.54, "note": "narrow skew stand: house square to the 1 m servitude side, carport at the street"},
+    {"stand": "7048", "type": "91", "stand_size": None, "carport_street_gap": 0.0, "carport_house_gap": 2.54, "note": "corner stand: house along the servitude, carport at the corner"},
+    {"stand": "6997", "type": "91", "stand_size": None, "carport_street_gap": None, "carport_house_gap": None, "note": "three tries, none fits: the stand is too small for a 91 m2 house with the carport"},
+    {"stand": "7069", "type": "91", "stand_size": None, "carport_street_gap": None, "carport_house_gap": None, "note": "two layouts compared: the house along the side boundary with the carport at the street (chosen) beat the house across the stand against the road, which ran into the service circles"},
+]
+
 # the sewer and site conventions that are the same on every plan
 CONVENTIONS = {
     "sewer_pipe": "110 mm uPVC", "fall": 50, "min_il": 450, "eyes": "IE at the joint and every bend, RE at the end of every run and at the wall",
     "wp_vv": "50 dia WP's and 110 dia GI VV at the wet wall", "marks": ("SD", "FD", "KD", "G", "DB"),
     "boundary_wall": "1.2 m high pre-cast concrete wall on the side and rear boundaries", "storm": "stormwater flows towards the street",
     "carport_gap": 1.0, "street_building_line": 1.0, "carport_size": 5.0,
+    # Street 7071 stands: B/L 3 m to the street and the no-access road, 2 m to a neighbour, 1 m to a 1 m servitude; the carport 0.5 m off the street boundary
+    "b7071": {"street": 3.0, "no_access": 3.0, "side": 2.0, "servitude": 1.0}, "carport_street_gap_7071": 0.5, "carport_house_gap_7071": 2.25,
+    "storm_arrow": "a blue Stormwater Flow arrow on every plan, pointing down the fall of the stand (usually towards the street)",
 }
 
 # the rules those plans give, in the order the tool uses them when it suggests a placement
@@ -42,6 +59,7 @@ RULES = [
     "The house long side runs parallel to the street, or square to the nearest boundary on a corner or skew stand.",
     "Sewer: 110 mm at fall 1:50, Min IL 450 at the gully, an IE at every joint and bend, an RE at the end of every run.",
     "Side and rear boundaries carry a 1.2 m pre-cast concrete wall; stormwater falls to the street.",
+    "Street 7071 stands: building lines 3 m to the street and to the no-access road, 2 m to a neighbour, 1 m to a servitude; the carport 5.0 x 5.0 sits 0.5 m off the street boundary and about 2.25 m from the house; the house runs along the side boundary (outlet at the far end, sewer in the servitude side), never across the stand against the road.",
     "On the finished plans the footprint with the carport covers 84 to 105 m2 on stands of 260 to 375 m2 (FAR 0.32 to 0.44).",
 ]
 
@@ -57,11 +75,23 @@ def house_type(w, d, tol=0.45):
     return None
 
 
+def preferred_gap(state):
+    """the clear distance wanted between the carport and the house: 1.0 m on the Erf 670 plans, about 2.25 m on the 81 / 91 m2 plans"""
+    h = state.get("house") or {}
+    ht = house_type(h.get("w", 0), h.get("d", 0)) if not h.get("poly") else None
+    return CONVENTIONS["carport_house_gap_7071"] if ht in ("81", "91") else CONVENTIONS["carport_gap"]
+
+
 def notes_for(state, stand_area):
     """short lines comparing this placement with the finished plans"""
     out = []
     h = state.get("house") or {}
     ht = house_type(h.get("w", 0), h.get("d", 0)) if not h.get("poly") else None
+    if ht in ("81", "91"):
+        t = HOUSE_TYPES[ht]
+        out.append("This house is the %s m2 type, as on the Street 7071 plans (Stands %s). They keep the carport 0.5 m off the street boundary and about 2.25 m from the house, with the house along the side boundary."
+                   % (ht, ", ".join(t["plans"])))
+        ht = None
     if ht:
         t = HOUSE_TYPES[ht]
         plans = ", ".join("Ptn " + p for p in t["plans"])
@@ -72,8 +102,9 @@ def notes_for(state, stand_area):
     c = state.get("carport")
     if c and h:
         g = _gap_house_carport(state)
-        if g is not None and g < CONVENTIONS["carport_gap"] - 0.05:
-            out.append("The carport is %.2f m from the house; your plans keep %.1f m." % (g, CONVENTIONS["carport_gap"]))
+        want = preferred_gap(state)
+        if g is not None and g < min(want, CONVENTIONS["carport_gap"]) - 0.05:
+            out.append("The carport is %.2f m from the house; your plans keep at least %.1f m." % (g, CONVENTIONS["carport_gap"]))
     return out
 
 

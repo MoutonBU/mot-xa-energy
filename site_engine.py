@@ -1065,7 +1065,29 @@ def fits(poly, stand, sb):
     return True
 
 
-def suggest(state, relax=False, gap=1.0):
+def suggest(state, relax=False, gap=None):
+    """house and carport placement: tries the clear distance between carport and house that your finished plans keep, then smaller ones, and takes the
+    first that also puts the house the usual way round (long side down the stand); otherwise the best of what fits"""
+    if gap is not None:
+        return _suggest(state, relax, gap)
+    try:
+        import site_plans_data
+        pref = site_plans_data.preferred_gap(state)
+    except Exception:
+        pref = 1.0
+    outs = []
+    for g in sorted({pref, 1.0, 0.25}, reverse=True):
+        o = _suggest(state, relax, g, strict=True)
+        if o:
+            outs.append(o)
+            if o["house"].get("poly") or o["house"].get("rot", 0) == 90:
+                return o
+    if outs:
+        return outs[0]
+    return _suggest(state, relax, 0.25)
+
+
+def _suggest(state, relax=False, gap=1.0, strict=False):
     """house and carport on the stand: the carport at the street on one side, the house at the back on the other side, everything inside the
     building lines. Searches positions on a 0.25 m grid and takes the first that fits. The house keeps `gap` clear of the carport (1.0 m, as on the
     finished plans; tighter only when it cannot fit)."""
@@ -1122,10 +1144,10 @@ def suggest(state, relax=False, gap=1.0):
             if best is None or score < best[0]:
                 best = (score, cand)
     if best is None:
-        if gap > 0.3:
-            return suggest(state, relax, 0.25)                 # not enough room for the usual 1.0 m: as tight as before
+        if strict:
+            return None
         if not relax:
-            out = suggest(state, relax=True)
+            out = _suggest(state, relax=True, gap=gap)
             out["relaxed"] = True                              # the building lines could not all be met: the warnings will say where
             return out
         cx, cy = (min(xs) + max(xs)) / 2, min(ys) + (max(ys) - min(ys)) * 0.65
