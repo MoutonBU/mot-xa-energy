@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.121**
+Current version: **1.86.122**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **House placing:** fail-safe on the eyes. Every rodding eye (filled brown dot) and inspection eye (hollow dot) the sewer rules ask for is always there: at the end of the run, at every bend (IE on the corner, RE on the stub), where the outlet joins, at the stand boundary and on every extra outlet at its wall and junction. If a distance check would have dropped one (a bend close to a joint, a short leg), it is put back. The IE / RE texts can no longer vanish either, and eyes can no longer be deleted (drag them along the pipe to move them; Eyes back resets). Pinned by test_sewer_eyes.py (300 random houses and outlets).
 - **House placing:** water pipes. Every extra water point on a turned house now leaves its wall square to the plan (straight, or with one turn) and runs straight onto the water pipe already laid, never through the house, instead of going out along the slanted wall. All water pipe corners are now drawn rounded (also in the DXF). Where there is no straight way, the pipe still goes round the house as before. Pinned by test_water_straight.py.
 - **House placing:** "Site services" is now called House placing (tab and sidebar), and its menus are friendlier for new users: numbered boxes (1. Your stand, 2. Plan labels, 3. Your house, 4. Carport), plain wording on the buttons ("Open a stand drawing (DXF)...", "Place them for me", "Where it leaves the house"...), and the technical settings (exact position, road side and north, pipe depth / fall / eyes, sewer points) folded under a "More options" line you can open when you need them. Steps are now Stand and house, Connections, Results.
 - **Site services:** the DXF export is now the plan exactly as it is drawn on the screen, so it opens in ArchiCAD or any CAD with nothing to redo: same orientation (road side), the road with kerbs, mains and street name, stand and neighbour lines, building lines, stand figures, bold stand numbers, setting-out lines and dimension chains, the eyes, texts (moved the same way), the entry, carport, house fill, DB / EC, the compass, the imported drawing faint underneath and the title block. True size in millimetres (plots at 1:200), real TEXT in Arial, filled shapes as hatches, dashes as linetypes, colours on layers (SEWER, WATER, ELECTRICAL, HOUSE, CARPORT, ENTRY, SETTING OUT, SITE PLAN, TEXT, UNDERLAY). Pinned by test_site_export.py.

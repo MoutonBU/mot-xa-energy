@@ -102,7 +102,7 @@ class Drawer:
         n_ = self.seen.get(txt, 0)
         self.seen[txt] = n_ + 1
         key = key or "%s#%d" % (txt, n_)
-        if key in self.hidden:                                     # a text you deleted
+        if key in self.hidden and not key.startswith("EYE:"):      # a text you deleted (the IE / RE texts cannot be deleted)
             return
         ed = self.edits.get(key)                                   # a text you edited: the words, the size, the turn
         extra_rot = 0.0
@@ -345,7 +345,7 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
             q = nd["pt"]
             if nd["kind"] in ("IE", "RE"):
                 D.dot(q, 0.17, BROWN, filled=nd["kind"] == "RE")
-                D.text(_off(sh, q, 0.7, 0.55 if nd["label"] == "RE" else -0.55), nd["kind"], 0.5, sh.hdir(), spacing=130)
+                D.text(_off(sh, q, 0.7, 0.55 if nd["label"] == "RE" else -0.55), nd["kind"], 0.5, sh.hdir(), spacing=130, key="EYE:" + str(nd.get("key", nd["kind"])))
             if nd["kind"] == "RE" and str(nd.get("label", "")).startswith("RE Min"):
                 D.text(_off(sh, q, 3.2, 0.0), "Min IL", 0.5, sh.hdir(), spacing=130)
                 D.text(_off(sh, q, 3.2, 0.9), "%d" % round(res["params"]["min_depth"] * 1000), 0.5, sh.hdir(), spacing=130)

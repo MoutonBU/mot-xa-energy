@@ -1755,6 +1755,9 @@ class SiteServicesPage(ToolBase):
         self.st.setdefault("eyes", {"del": [], "pos": {}}).setdefault("pos", {})[key] = [round(q[0], 3), round(q[1], 3)]
 
     def delete_eye(self, key):
+        self.set_hint("Every inspection and rodding eye stays: the sewer needs them. Drag one along the pipe to move it.")
+        QTimer.singleShot(6000, lambda: self.set_hint(""))
+        return
         ed = self.st.setdefault("eyes", {"del": [], "pos": {}})
         ed.setdefault("del", [])
         if key not in ed["del"]:

@@ -644,13 +644,37 @@ def sewer(state, hp, cp, params, others=()):
         nodes.append({"kind": "IE", "pt": bp[0], "chainage": round(best[2], 2), "depth": round(D0 + best[2] / fall, 3), "label": "IE", "dist": L - best[2]})
         nodes.append({"kind": "RE", "pt": p0, "chainage": round(best[2] + 0.001, 2), "depth": round(D0 + best[2] / fall, 3), "label": "RE", "wall": len(extra) - 1,
                       "dist": (L - best[2]) + length(bp)})
+    # fail-safe: every eye the rules ask for is there, whatever the spacing or distance checks above decided (a bend close to a joint, a short leg...)
+    def _chain(pt):
+        k_ = min(range(0, int(L * 20) + 1), key=lambda k: math.hypot(point_at(path, k / 20.0)[0] - pt[0], point_at(path, k / 20.0)[1] - pt[1]))
+        return k_ / 20.0
+
+    def _need(kind, pt, ch=None, **kw):
+        if any(n["kind"] == kind and math.hypot(n["pt"][0] - pt[0], n["pt"][1] - pt[1]) < 0.06 for n in nodes):
+            return
+        c_ = _chain(pt) if ch is None else ch
+        d = {"kind": kind, "pt": tuple(pt), "chainage": round(c_, 2), "depth": round(D0 + c_ / fall, 3), "label": kind}
+        d.update(kw)
+        nodes.append(d)
+    _need("RE", path[0], 0.0)
+    for b_, e_ in stubs:
+        _need("IE", b_)
+        _need("RE", e_, None, stub=stubs.index([b_, e_]) if [b_, e_] in stubs else 0)
+    if branched:
+        _need("IE", r["branch"][1])
+        _need("RE", r["branch"][0], 0.0, label="RE Min IL %d" % round(D0 * 1000))
+    if cut is not None and 0 < cut < L:
+        _need("IE", point_at(path, cut))
+    for ex_ in extra:
+        _need("IE", ex_["path"][0])
+        _need("RE", ex_["path"][-1], None, wall=extra.index(ex_), dist=L)
     nodes.sort(key=lambda n: n["chainage"])
     cnt = {}
     for n_ in nodes:                                              # a key for every eye (kind + number along the run), so you can pick, move and delete them
         cnt[n_["kind"]] = cnt.get(n_["kind"], -1) + 1
         n_["key"] = "%s%d" % (n_["kind"], cnt[n_["kind"]])
     ed = state.get("eyes") or {}
-    gone = set(ed.get("del") or [])
+    gone = set()                                                  # eyes cannot be left out: the rules need every one of them (Eyes back still resets any you moved)
     drop = set()
     for n_ in nodes:
         if n_["key"] in gone:

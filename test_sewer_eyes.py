@@ -31,11 +31,42 @@ def test_rules():
     cut = [n for n in nodes if n["kind"] == "IE" and abs(n["pt"][1]) < 0.1]
     assert cut, "an inspection eye on the boundary"
     assert any(n["kind"] == "RE" and 0.2 < n["pt"][1] < 0.5 for n in nodes)
-    # 4. eyes can be moved and deleted, and every eye has a key
+    # 4. eyes cannot be left out: a "deleted" eye is still there
     k = [n for n in nodes if n["kind"] == "IE"][0]["key"]
     st["eyes"] = {"del": [k], "pos": {}}
-    assert all(n.get("key") != k for n in nodes_for(st)["nodes"])
+    assert len([n for n in nodes_for(st)["nodes"] if n["kind"] in ("IE", "RE")]) == len([n for n in nodes if n["kind"] in ("IE", "RE")])
+
+
+def test_every_eye_in():
+    """fail-safe: over many houses, turns, runs and outlets every joint, bend, end and wall has its eye"""
+    import random
+    random.seed(7)
+    bad = 0
+    for i in range(300):
+        st = blank_state()
+        st["house"].update(cx=random.uniform(6, 12), cy=random.uniform(8, 16), rot=random.choice([0, 90, 180, 270, random.uniform(0, 360)]))
+        if random.random() < 0.6:
+            st["sewer_ports"] = [{"edge": random.randrange(4), "t": random.uniform(0.1, 0.9)} for _ in range(random.randrange(1, 4))]
+        sw = nodes_for(st)
+        nodes = sw["nodes"]
+
+        def has(kind, pt):
+            return any(n["kind"] == kind and math.hypot(n["pt"][0] - pt[0], n["pt"][1] - pt[1]) < 0.07 for n in nodes)
+        path = sw["path"]
+        need = [("RE", path[0])]
+        for a_, b_ in sw["stubs"]:
+            need += [("IE", a_), ("RE", b_)]
+        if sw["branch"]:
+            need += [("IE", sw["branch"][1]), ("RE", sw["branch"][0])]
+        for ex in sw["extra"]:
+            need += [("IE", ex["path"][0]), ("RE", ex["path"][-1])]
+        for kind, pt in need:
+            if not has(kind, pt):
+                bad += 1
+    assert bad == 0, bad
+
 
 if __name__ == "__main__":
     test_rules()
+    test_every_eye_in()
     print("sewer eye rules hold")
