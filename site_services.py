@@ -1314,6 +1314,9 @@ class SiteServicesPage(ToolBase):
     def set_stand_world(self, poly, name="Stand", src_shapes=None, street_edge=None):
         """a stand in drawing coordinates: put the street edge along x at the origin and remember the move so the house and carport from the same drawing land in place"""
         c0 = [tuple(p) for p in poly]
+        if max(max(p[0] for p in c0) - min(p[0] for p in c0), max(p[1] for p in c0) - min(p[1] for p in c0)) > 2000:
+            QMessageBox.warning(self, "Site services", "That stand is more than 2 km across, so the scale must be wrong. Import again and set the drawing units and scale.")
+            return
         c = se.clean_corners(c0)
         n = len(c)
         if street_edge is not None and street_edge < len(c0):     # the side you clicked, found again after the corners were tidied

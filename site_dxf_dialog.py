@@ -4,7 +4,7 @@ import math
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPolygonF
-from PySide6.QtWidgets import (QComboBox, QDialog, QDoubleSpinBox, QHBoxLayout, QLabel, QListWidget, QPushButton, QVBoxLayout, QWidget, QCheckBox)
+from PySide6.QtWidgets import (QComboBox, QDialog, QDoubleSpinBox, QHBoxLayout, QLabel, QListWidget, QPushButton, QVBoxLayout, QWidget, QCheckBox, QMessageBox)
 
 import site_dxf
 
@@ -304,7 +304,24 @@ class ImportDialog(QDialog):
             self.result = [tuple(p) for p in self.prev.pts]
             self._finish()
 
+    def _size_ok(self):
+        """a stand that is kilometres across or a few square metres is the wrong scale: say so before the plan is built on it"""
+        p = self.result
+        xs, ys = [q[0] for q in p], [q[1] for q in p]
+        a = abs(sum(p[i][0] * p[(i + 1) % len(p)][1] - p[(i + 1) % len(p)][0] * p[i][1] for i in range(len(p)))) / 2
+        lo, hi = {"stand": (30, 60000), "house": (10, 1500), "carport": (4, 300)}.get(self.role, (1, 1e9))
+        if lo <= a <= hi and max(max(xs) - min(xs), max(ys) - min(ys)) <= 600:
+            return True
+        r = QMessageBox.question(self, "Check the scale", "What you picked is %.1f x %.1f m (%.0f m2). That does not look like a %s.\n\nCheck \"Drawing units\" and \"Drawn at\" above. Use it anyway?" % (max(xs) - min(xs), max(ys) - min(ys), a, self.role),
+                                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        return r == QMessageBox.StandardButton.Yes
+
     def _finish(self):
+        if not self._size_ok():
+            self.result = None
+            self.prev.pts = []
+            self.prev.update()
+            return
         if self.role != "stand":
             self.accept()
             return
