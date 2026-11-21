@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.99**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.100**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **1.86.100** Site services, sewer: at every corner of the sewer run there is now an inspection eye on the corner and a rodding eye on a short stub (350 mm, the Rodding eye past the joint setting) carrying straight on past the corner. Where the sewer crosses the stand boundary there is an inspection eye just inside and a rodding eye on the boundary. The stubs are drawn on the plan and exported to the DXF.
 
 - **1.86.99** Fix: importing a stand could freeze the program when the scale was wrong (a stand thousands of metres across made the placement search run for ever). The placement search now scales with the stand, the import window asks "Check the scale" when what you picked does not look like a stand, house or carport (and shows its real size), and a stand over 2 km across is refused with a message.
 
