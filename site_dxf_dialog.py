@@ -24,6 +24,7 @@ class Preview(QWidget):
         self.sel = None
         self._pan = None
         self.snaps = []
+        self.street_poly = None
 
     def fit(self):
         L = self.dlg.lines_m
@@ -57,7 +58,20 @@ class Preview(QWidget):
             p.setPen(QPen(QColor("#d6209a"), 2.5))
             p.setBrush(QColor(214, 32, 154, 40))
             p.drawPolygon(QPolygonF([self.pt(*q) for q in poly]))
-        if self.pts:
+        if self.street_poly:
+            sp = self.street_poly
+            p.setPen(QPen(QColor("#d6209a"), 3))
+            p.setBrush(QColor(214, 32, 154, 40))
+            p.drawPolygon(QPolygonF([self.pt(*q) for q in sp]))
+            p.setPen(QColor("#d6209a"))
+            p.setFont(QFont("Arial", 11, QFont.Weight.Bold))
+            for i, q in enumerate(sp):
+                p.drawText(self.pt(*q) + QPointF(6, -6), str(i + 1))
+            if self.hover and self.dlg.street_mode:
+                i = self.edge_at(self.hover)
+                p.setPen(QPen(QColor("#e00000"), 6))
+                p.drawLine(self.pt(*sp[i]), self.pt(*sp[(i + 1) % len(sp)]))
+        elif self.pts:
             p.setPen(QPen(QColor("#d6209a"), 2))
             p.setBrush(Qt.BrushStyle.NoBrush)
             qs = [self.pt(*q) for q in self.pts]
@@ -69,6 +83,17 @@ class Preview(QWidget):
             p.setPen(QPen(QColor("#d6209a"), 1.5))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawEllipse(self.pt(*self.hover), 7, 7)
+
+    def edge_at(self, w):
+        sp = self.street_poly
+        n = len(sp)
+        def dist(i):
+            a, b = sp[i], sp[(i + 1) % n]
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            L2 = dx * dx + dy * dy or 1e-9
+            t = max(0.0, min(1.0, ((w[0] - a[0]) * dx + (w[1] - a[1]) * dy) / L2))
+            return math.hypot(a[0] + t * dx - w[0], a[1] + t * dy - w[1])
+        return min(range(n), key=dist)
 
     def _snap(self, w):
         best, bd = None, 12.0 / self.s
@@ -85,13 +110,18 @@ class Preview(QWidget):
             self.cx, self.cy = self._pan[1] - dx / self.s, self._pan[2] + dy / self.s
             self.update()
             return
-        if self.pick:
+        if self.dlg.street_mode:
+            self.hover = self.inv(e.position())
+            self.update()
+        elif self.pick:
             self.hover = self._snap(self.inv(e.position()))
             self.update()
 
     def mousePressEvent(self, e):
         if e.button() in (Qt.MouseButton.MiddleButton, Qt.MouseButton.RightButton):
             self._pan = (e.position(), self.cx, self.cy)
+        elif e.button() == Qt.MouseButton.LeftButton and self.dlg.street_mode:
+            self.dlg.street_chosen(self.edge_at(self.inv(e.position())))
         elif e.button() == Qt.MouseButton.LeftButton and self.pick:
             self.pts.append(self._snap(self.inv(e.position())))
             self.dlg.note()
@@ -120,6 +150,8 @@ class ImportDialog(QDialog):
         self.setWindowTitle("Import the %s from a drawing" % role)
         self.drawing, self.role = drawing, role
         self.result = None
+        self.street_mode = False
+        self.street_edge = None
         self.lines_m, self.texts_m, self.shapes = [], [], []
         v = QVBoxLayout(self)
         row = QHBoxLayout()
@@ -178,6 +210,8 @@ class ImportDialog(QDialog):
         row.addLayout(side, 1)
         v.addLayout(row, 1)
         self._auto_scale()
+        if role == "stand":
+            self.pk.setChecked(True)                        # you click the corners of the stand, 1, 2, 3 ... and then the street side
         self.unit.currentIndexChanged.connect(self.rebuild)
         self.scale.valueChanged.connect(self.rebuild)
         self.resize(1000, 640)
@@ -257,12 +291,27 @@ class ImportDialog(QDialog):
         i = self.lw.currentRow()
         if 0 <= i < len(self.shapes):
             self.result = [tuple(p) for p in self.shapes[i]["poly"]]
-            self.accept()
+            self._finish()
 
     def use_clicked(self):
         if len(self.prev.pts) >= 3:
             self.result = [tuple(p) for p in self.prev.pts]
+            self._finish()
+
+    def _finish(self):
+        if self.role != "stand":
             self.accept()
+            return
+        self.street_mode = True
+        self.prev.pick = False
+        self.prev.street_poly = list(self.result)
+        self.hint.setText("Now click the side of the stand that faces the street.")
+        self.prev.update()
+
+    def street_chosen(self, i):
+        self.street_edge = i
+        self.street_mode = False
+        self.accept()
 
     def underlay(self):
         """the drawing's lines in metres, when asked for"""

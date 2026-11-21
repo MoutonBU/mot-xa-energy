@@ -1249,8 +1249,8 @@ class SiteServicesPage(ToolBase):
             got = self._dialog(path, "stand")
             if not got:
                 return
-            poly, under = got
-            self.set_stand_world(poly, "Imported stand", src_shapes=[1])
+            poly, under, street = got
+            self.set_stand_world(poly, "Imported stand", src_shapes=[1], street_edge=street)
             xs_, ys_ = [p[0] for p in poly], [p[1] for p in poly]
             self.set_hint("Stand imported at true size: %.2f x %.2f m, %.0f m2." % (max(xs_) - min(xs_), max(ys_) - min(ys_), abs(se.area(poly))))
             QTimer.singleShot(8000, lambda: self.set_hint(""))
@@ -1272,7 +1272,7 @@ class SiteServicesPage(ToolBase):
         dlg = site_dxf_dialog.ImportDialog(self, drawing, role)
         if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.result:
             return None
-        return dlg.result, dlg.underlay()
+        return dlg.result, dlg.underlay(), dlg.street_edge
 
     def _set_underlay(self, lines):
         """the imported drawing's own lines, kept faint under the plan, moved into the stand frame"""
@@ -1296,9 +1296,13 @@ class SiteServicesPage(ToolBase):
 
     def set_stand_world(self, poly, name="Stand", src_shapes=None, street_edge=None):
         """a stand in drawing coordinates: put the street edge along x at the origin and remember the move so the house and carport from the same drawing land in place"""
-        c = [tuple(p) for p in poly]
-        c = se.clean_corners(c)
+        c0 = [tuple(p) for p in poly]
+        c = se.clean_corners(c0)
         n = len(c)
+        if street_edge is not None and street_edge < len(c0):     # the side you clicked, found again after the corners were tidied
+            a_, b_ = c0[street_edge], c0[(street_edge + 1) % len(c0)]
+            mid = ((a_[0] + b_[0]) / 2, (a_[1] + b_[1]) / 2)
+            street_edge = min(range(n), key=lambda i: se.line_dist(mid, c[i], c[(i + 1) % n]))
         if street_edge is None:
             street_edge = min(range(n), key=lambda i: (c[i][1] + c[(i + 1) % n][1]) / 2)
         frame, new = se.normalise_stand(c, street_edge)

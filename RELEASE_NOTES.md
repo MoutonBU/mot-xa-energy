@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.96**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.97**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **1.86.97** Site services, importing a stand: the corner-clicking is now on from the start. Click the stand's corners 1, 2, 3 ... in the drawing (they snap to line ends), then click the side that faces the street (it lights up as you move over it). The stand comes in at true size with that side along the street. The units and scale are worked out from the drawing, as before, and shown above the drawing.
 
 - **1.86.96** Site services: Undo and Redo (buttons above the plan, Ctrl+Z / Ctrl+Y) for every edit: moves, added points, imports, rotations. A whole drag is one step. The rodding eye now runs 350 mm past the joint by default (300 to 400 mm is usual; change it under "Rodding eye past the joint"), also when you add sewer points and the line turns back.
 
