@@ -226,23 +226,6 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
     D.line((xa, ROAD_K), (xb, ROAD_K), BLACK, 0.04)
     D.line((xa, ROAD_K2), (xb, ROAD_K2), BLACK, 0.04)
     mn = se.mains(st)
-    D.line((xa, mn["water"]), (xb, mn["water"]), BLUE, 0.04)
-    D.text((xmin - 6.0, mn["water"]), "Main Water Line", 0.5, (1, 0), spacing=110, align="r")
-    mline = se.main_line(st)
-    if mline:                                                    # the main runs through the stand, as drawn
-        D.poly(mline, BROWN, 0.08, None, dash=[9, 5], closed=False)
-        k_ = max(range(len(mline) - 1), key=lambda i: edge_len(mline[i], mline[i + 1]))
-        a_, b_ = mline[k_], mline[k_ + 1]
-        D.text(((a_[0] + b_[0]) / 2, (a_[1] + b_[1]) / 2), "Main Sewer Line", 0.5, (b_[0] - a_[0], b_[1] - a_[1]), spacing=125, bg=True)
-    else:
-        D.line((xa, mn["sewer"]), (xb, mn["sewer"]), BROWN, 0.08, dash=[9, 5])
-        D.text((xmax + 10.5, mn["sewer"]), "Main Sewer Line", 0.5, (1, 0), spacing=125, align="r")
-    for mh_ in st.get("manholes") or []:                         # manholes on the main, with their numbers
-        q_ = tuple(mh_["pt"])
-        D.dot(q_, 0.9, BROWN, filled=True)
-        D.text((q_[0] + 1.2, q_[1] - 1.2), mh_.get("name", ""), 0.5, (1, 0), color=BROWN, spacing=110)
-    D.line((xa, mn["elec"]), (xmin - 7, mn["elec"]), YELLOW, 0.05, dash=[5, 4])
-    D.text((xmin - 11.5, mn["elec"]), "Main Electrical Line", 0.5, (1, 0), spacing=125)
     street = opts.get("street", "")
     if street:
         D.text(((xmin + xmax) / 2 + 3.0, -6.4), street, 1.05, (1, 0))
@@ -274,6 +257,24 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
         D.text(en["mid"], "Entry", 0.5, (1, 0), rot=None)
     if cp:
         D.poly(stand, BLACK, 0.05, None)                  # the street boundary line stays on top of the entry
+    # the mains and manholes go over the entry and the green
+    D.line((xa, mn["water"]), (xb, mn["water"]), BLUE, 0.04)
+    D.text((xmin - 6.0, mn["water"]), "Main Water Line", 0.5, (1, 0), spacing=110, align="r")
+    mline = se.main_line(st)
+    if mline:                                                    # the main runs through the stand, as drawn
+        D.poly(mline, BROWN, 0.08, None, dash=[9, 5], closed=False)
+        k_ = max(range(len(mline) - 1), key=lambda i: edge_len(mline[i], mline[i + 1]))
+        a_, b_ = mline[k_], mline[k_ + 1]
+        D.text(((a_[0] + b_[0]) / 2, (a_[1] + b_[1]) / 2), "Main Sewer Line", 0.5, (b_[0] - a_[0], b_[1] - a_[1]), spacing=125, bg=True)
+    else:
+        D.line((xa, mn["sewer"]), (xb, mn["sewer"]), BROWN, 0.08, dash=[9, 5])
+        D.text((xmax + 10.5, mn["sewer"]), "Main Sewer Line", 0.5, (1, 0), spacing=125, align="r")
+    for mh_ in st.get("manholes") or []:                         # manholes on the main, with their numbers
+        q_ = tuple(mh_["pt"])
+        D.dot(q_, 0.9, BROWN, filled=True)
+        D.text((q_[0] + 1.2, q_[1] - 1.2), mh_.get("name", ""), 0.5, (1, 0), color=BROWN, spacing=110)
+    D.line((xa, mn["elec"]), (xmin - 7, mn["elec"]), YELLOW, 0.05, dash=[5, 4])
+    D.text((xmin - 11.5, mn["elec"]), "Main Electrical Line", 0.5, (1, 0), spacing=125)
     for i in range(n):                                 # side lines run on past the street boundary to the kerb, as on the plans
         if kinds[i] == "side":
             a, b = stand[i], stand[(i + 1) % n]

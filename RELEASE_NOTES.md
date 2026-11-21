@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.131**
+Current version: **1.86.132**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **House placing:** all services now draw on top of everything: the main sewer, water and electrical lines and the manholes go over the entry drive and the green (the sewer, water and electrical branches already went over the carport and house). Same in the DXF.
 - **House placing:** cars enter from the side you choose: the button "Cars enter from the next side" (carport box) or right-click the carport. The drive runs round the carport to that side with rounded corners, and arrows show the cars driving in, one per bay (two for a double carport). Same in the DXF.
 - **House placing:** the entry (drive) follows a turned carport. It leaves the kerb at your point (drag the pink dot on the kerb; right-click it for "automatic") and is 5 m wide for a double carport and 3 m for a single (the usual South African widths), then curves to the two corners of the carport side that faces the street. A square carport still gets the straight entry in front of it. The entry goes into the DXF the same way.
 - **House placing:** the entry (the road strip from the kerb to the carport) is now drawn on top of the green stand, so the green no longer covers it; the street boundary line stays on top. Same in the DXF.
