@@ -125,7 +125,7 @@ class Drawer:
         ht = fm.ascent()
         self.hits.append((key, pt.x(), pt.y(), ang, w, ht, q, 0.0 if align == "c" else (w / 2 if align == "l" else -w / 2)))
         x0 = -w / 2 if align == "c" else (0 if align == "l" else -w)
-        if box or bg:
+        if (box or bg) and txt == "NEW HOUSE":                     # only NEW HOUSE keeps its white box; every other text is see-through
             pad = px * 0.28
             r = QRectF(x0 - pad, -ht / 2 - pad * 0.9, w + 2 * pad, ht + pad * 1.8)
             p.setBrush(QBrush(QColor("white")))
@@ -362,7 +362,11 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
                 D.text((sp0[0] - sn0[0] * 0.9, sp0[1] - sn0[1] * 0.9), "SD", 0.4, sh.hdir(), spacing=110)
                 wp0, wn0 = se.port_point(res["house"], res["water"]["port"])
                 D.text((wp0[0] - wn0[0] * 0.9, wp0[1] - wn0[1] * 0.9), "KD", 0.4, sh.hdir(), spacing=110)
-            bc = (sp0[0] - sn0[0] * 2.8, sp0[1] - sn0[1] * 2.8)
+            hcx = sum(q[0] for q in house) / len(house)
+            hcy = sum(q[1] for q in house) / len(house)
+            tx, ty = -sn0[1], sn0[0]
+            sg = 1.0 if (sp0[0] - hcx) * tx + (sp0[1] - hcy) * ty >= 0 else -1.0
+            bc = (sp0[0] - sn0[0] * 1.5 + tx * sg * 3.0, sp0[1] - sn0[1] * 1.5 + ty * sg * 3.0)    # inside the wall, off to one side so it never sits on NEW HOUSE
             D.poly([_off(sh, bc, -2.3, -0.95), _off(sh, bc, 2.3, -0.95), _off(sh, bc, 2.3, 0.95), _off(sh, bc, -2.3, 0.95)], QColor(220, 20, 20), 0.03, None)
             D.text(_off(sh, bc, 0, -0.42), "50\u00d8 WP's", 0.45, sh.hdir(), spacing=105)
             D.text(_off(sh, bc, 0, 0.42), "110\u00d8 GI VV", 0.45, sh.hdir(), spacing=105)
@@ -414,27 +418,15 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
             if nd["kind"] == "DB":
                 D.text(_off(sh, q, 0.0, 0.9), "DB", 0.55, sh.hdir(), bold=True)
     if look.get("storm", True) and res:
-        sd = look.get("storm_pos")
-        if not sd:
-            hc = (sum(q[0] for q in house) / len(house), sum(q[1] for q in house) / len(house)) if house else (0, 0)
-            cands_ = []
-            hb = se.offset(se.hull(house), 2.0) if house else None
-            cb = se.offset(se.hull(cp), 1.5) if cp else None
-            gy = [q[1] for q in stand]
-            for gx_ in range(int(min(q[0] for q in stand)) + 2, int(max(q[0] for q in stand)) - 1):
-                for gy_ in range(int(min(gy) + 0.2 * (max(gy) - min(gy))), int(max(gy)) - 2):
-                    q = (float(gx_), float(gy_))
-                    if se.inside(q, stand) and se.inside((q[0], q[1] - 3.0), stand) and not (hb and se.inside(q, hb)) and not (cb and se.inside(q, cb)) \
-                            and not (hb and se.inside((q[0], q[1] - 3.0), hb)):
-                        cands_.append((math.hypot(q[0] - hc[0], q[1] - hc[1]), q))
-            sd = max(cands_)[1] if cands_ else None
+        sd, srot = storm_pose(st, res)
         if sd:
             SW = QColor(20, 90, 220)
-            t_ = (sd[0], sd[1] - 3.0)                                # the flow runs towards the street
+            t_ = storm_head(sd, srot)                                # the flow runs the way the arrow points (towards the street unless you turned it)
+            ux, uy = (t_[0] - sd[0]) / 3.0, (t_[1] - sd[1]) / 3.0
             D.line(sd, t_, SW, 0.05)
-            D.poly([t_, (t_[0] - 0.35, t_[1] + 0.8), (t_[0] + 0.35, t_[1] + 0.8)], SW, 0.03, SW)
-            D.text(_off(sh, (sd[0], sd[1] - 1.5), 2.6, -0.45), "Stormwater", 0.5, sh.hdir(), color=SW, spacing=110)
-            D.text(_off(sh, (sd[0], sd[1] - 1.5), 2.6, 0.45), "Flow", 0.5, sh.hdir(), color=SW, spacing=110)
+            D.poly([t_, (t_[0] - ux * 0.8 - uy * 0.35, t_[1] - uy * 0.8 + ux * 0.35), (t_[0] - ux * 0.8 + uy * 0.35, t_[1] - uy * 0.8 - ux * 0.35)], SW, 0.03, SW)
+            mid = ((sd[0] + t_[0]) / 2, (sd[1] + t_[1]) / 2)
+            D.text(mid, "Stormwater Flow", 0.5, (ux, uy), color=SW, spacing=110, key="STORM")
     # ---- dimensions, in mm, placed like the plans: along the side boundary outside the stand, and in the strip in front of the street boundary
     lowx = (xmin, -1)
     highx = (xmax, 1)
@@ -496,6 +488,37 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
         D.text((q[0] + 0.9, q[1] - 0.8), c.get("name", ""), 0.5, sh.hdir(), spacing=110)
     # ---- north arrow, title
     return D
+
+
+def storm_pose(st, res):
+    """where the stormwater arrow sits (its tail) and how it is turned (0 = pointing at the street, degrees anticlockwise); your own placement wins"""
+    look = st.get("look") or {}
+    stand = st["stand"]["corners"]
+    rot = float(look.get("storm_rot", 0.0))
+    pos = look.get("storm_pos")
+    if pos:
+        return (pos[0], pos[1]), rot
+    house = (res or {}).get("house")
+    cp = (res or {}).get("carport")
+    hc = (sum(q[0] for q in house) / len(house), sum(q[1] for q in house) / len(house)) if house else (0, 0)
+    hb = se.offset(se.hull(house), 2.0) if house else None
+    cb = se.offset(se.hull(cp), 1.5) if cp else None
+    gy = [q[1] for q in stand]
+    best = None
+    for gx_ in range(int(min(q[0] for q in stand)) + 2, int(max(q[0] for q in stand)) - 1):
+        for gy_ in range(int(min(gy) + 0.2 * (max(gy) - min(gy))), int(max(gy)) - 2):
+            q = (float(gx_), float(gy_))
+            if se.inside(q, stand) and se.inside((q[0], q[1] - 3.0), stand) and not (hb and se.inside(q, hb)) and not (cb and se.inside(q, cb)) \
+                    and not (hb and se.inside((q[0], q[1] - 3.0), hb)):
+                d_ = math.hypot(q[0] - hc[0], q[1] - hc[1])
+                if best is None or d_ > best[0]:
+                    best = (d_, q)
+    return (best[1] if best else None), rot
+
+
+def storm_head(pos, rot, L=3.0):
+    a = math.radians(-90.0 + rot)
+    return (pos[0] + L * math.cos(a), pos[1] + L * math.sin(a))
 
 
 def _avoid(sh, hits, manual):

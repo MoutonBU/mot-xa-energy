@@ -237,6 +237,18 @@ class ServicesView(QWidget):
                 p.setPen(QPen(QColor("black"), 1.2))
                 p.setBrush(QBrush(col))
                 p.drawEllipse(q, 6, 6)
+            for mh_ in st.get("manholes") or []:                      # a ring round each manhole: drag it along the main
+                q = S(mh_["pt"])
+                p.setPen(QPen(QColor("#d6209a"), 1.2, Qt.PenStyle.DashLine))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawEllipse(q, 11, 11)
+            if (st.get("look") or {}).get("storm", True):                # the stormwater arrow: drag its line to move it, its head to turn it
+                sp_, sr_ = site_sheet.storm_pose(st, res)
+                if sp_:
+                    hd_ = S(site_sheet.storm_head(sp_, sr_))
+                    p.setPen(QPen(QColor("#d6209a"), 1.5))
+                    p.setBrush(QBrush(QColor("white")))
+                    p.drawEllipse(hd_, 6, 6)
             hp = res["house"]
             for wp in st.get("sewer_ports") or []:
                 q = S(se.port_point(hp, wp)[0])
@@ -413,6 +425,17 @@ class ServicesView(QWidget):
             q = se.conn_point(pg.st, k)
             if math.hypot(q[0] - w[0], q[1] - w[1]) * s < 14:
                 return ("pt", k)
+        for i, mh_ in enumerate(pg.st.get("manholes") or []):
+            if math.hypot(mh_["pt"][0] - w[0], mh_["pt"][1] - w[1]) * s < 16:
+                return ("mh", i)
+        if (pg.st.get("look") or {}).get("storm", True) and pg.res:
+            sp_, sr_ = site_sheet.storm_pose(pg.st, pg.res)
+            if sp_:
+                hd_ = site_sheet.storm_head(sp_, sr_)
+                if math.hypot(hd_[0] - w[0], hd_[1] - w[1]) * s < 14:
+                    return ("storm_rot", sp_)
+                if se.line_dist(w, sp_, hd_) * s < 8:
+                    return ("storm_move", w, sp_)
         for i, c in enumerate(pg.st.get("custom") or []):
             if math.hypot(c["pt"][0] - w[0], c["pt"][1] - w[1]) * s < 12:
                 return ("cust", i)
@@ -512,6 +535,23 @@ class ServicesView(QWidget):
                 m.addAction("Clear all my sewer points", pg.clear_via)
                 m.exec(gpos)
                 return
+        for i, mh_ in enumerate(pg.st.get("manholes") or []):
+            if math.hypot(mh_["pt"][0] - w[0], mh_["pt"][1] - w[1]) * s_ < 16:
+                m = QMenu(self)
+                m.addAction("Rename this manhole...", lambda i_=i: pg.rename_manhole(i_))
+                m.addAction("Delete this manhole", lambda i_=i: pg.delete_manhole(i_))
+                m.exec(gpos)
+                return
+        if (pg.st.get("look") or {}).get("storm", True) and pg.res:
+            sp_, sr_ = site_sheet.storm_pose(pg.st, pg.res)
+            if sp_ and se.line_dist(w, sp_, site_sheet.storm_head(sp_, sr_)) * s_ < 8:
+                m = QMenu(self)
+                for lab_, delta in (("Turn 90\u00b0 clockwise", -90), ("Turn 90\u00b0 anticlockwise", 90), ("Turn it round (180\u00b0)", 180), ("Turn 15\u00b0", 15)):
+                    m.addAction(lab_, lambda d_=delta: pg.turn_storm(d_))
+                m.addAction("Point it at the street", lambda: pg.turn_storm(None))
+                m.addAction("Put it back where it was", pg.reset_storm)
+                m.exec(gpos)
+                return
         hp_ = pg.res["house"] if pg.res else None
         for i, wp in enumerate(pg.st.get("water_ports") or []):
             if hp_ and math.hypot(se.port_point(hp_, wp)[0][0] - w[0], se.port_point(hp_, wp)[0][1] - w[1]) * s_ < 10:
@@ -596,6 +636,18 @@ class ServicesView(QWidget):
             pg.st["sewer_via"][d[1]] = [round(w[0], 2), round(w[1], 2)]
         elif d[0] == "cust":
             pg.st["custom"][d[1]]["pt"] = [round(w[0], 2), round(w[1], 2)]
+        elif d[0] == "mh":
+            sn_ = se.snap_main(pg.st, w)
+            pg.st["manholes"][d[1]]["pt"] = list(sn_) if sn_ else [round(w[0], 2), se.mains(pg.st)["sewer"]]
+        elif d[0] == "storm_move":
+            pg.st.setdefault("look", {})["storm_pos"] = [round(d[2][0] + w[0] - d[1][0], 2), round(d[2][1] + w[1] - d[1][1], 2)]
+        elif d[0] == "storm_rot":
+            a_ = math.degrees(math.atan2(w[1] - d[1][1], w[0] - d[1][0])) + 90.0
+            if QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier:
+                a_ = round(a_ / 15.0) * 15.0
+            lk_ = pg.st.setdefault("look", {})
+            lk_["storm_rot"] = round(a_ % 360.0, 1)
+            lk_.setdefault("storm_pos", [round(d[1][0], 2), round(d[1][1], 2)])
         elif d[0] == "label":
             pg.st.setdefault("labels", {})[d[1]] = [round(d[3][0] + w[0] - d[2][0], 2), round(d[3][1] + w[1] - d[2][1], 2)]
             self.lite = False
@@ -1146,6 +1198,12 @@ class SiteServicesPage(ToolBase):
         so_.toggled.connect(self.set_setting_out)
         self.so_cb = so_
         fl.addWidget(so_)
+        wc_ = QCheckBox("Boundary walls")
+        wc_.setChecked(True)
+        wc_.setToolTip("The 1.2 m high pre-cast concrete walls on the side and rear boundaries (red strips with their text).")
+        wc_.toggled.connect(lambda on: self.set_look("walls", on))
+        self.tb_walls = wc_
+        fl.addWidget(wc_)
         nb_ = QPushButton("New placing")
         nb_.setToolTip("Start again: a blank stand, house and carport, nothing left from the last one. Undo brings the old one back.")
         nb_.clicked.connect(self.new_placing)
@@ -1298,6 +1356,8 @@ class SiteServicesPage(ToolBase):
             sb = st["stand"].get("setbacks") or {}
             for k_, cb_ in getattr(self, "look_cb", {}).items():
                 cb_.setChecked(bool((st.get("look") or {}).get(k_, True)))
+            if hasattr(self, "tb_walls"):
+                self.tb_walls.setChecked(bool((st.get("look") or {}).get("walls", True)))
             if hasattr(self, "so_cb"):
                 self.so_cb.setChecked(bool((st.get("sheet") or {}).get("setting_out", True)))
             for w, k in ((self.sb_street, "street"), (self.sb_side, "side"), (self.sb_rear, "rear")):
@@ -2119,6 +2179,11 @@ class SiteServicesPage(ToolBase):
         if self._busy:
             return
         self.st.setdefault("look", {})[key] = bool(on)
+        for cb_ in (self.look_cb.get(key), getattr(self, "tb_walls", None) if key == "walls" else None):
+            if cb_ is not None and cb_.isChecked() != bool(on):
+                cb_.blockSignals(True)
+                cb_.setChecked(bool(on))
+                cb_.blockSignals(False)
         self.view.update()
         self.changed()
 
@@ -2150,6 +2215,39 @@ class SiteServicesPage(ToolBase):
             mh.append({"pt": q, "name": name.strip()})
             self.solve_now(False)
             self.commit(True)
+
+    def rename_manhole(self, i):
+        from PySide6.QtWidgets import QInputDialog
+        mh = self.st.get("manholes") or []
+        if 0 <= i < len(mh):
+            name, ok = QInputDialog.getText(self, "Manhole", "Manhole number or name:", text=mh[i].get("name", ""))
+            if ok and name.strip():
+                mh[i]["name"] = name.strip()
+                self.solve_now(False)
+                self.commit(True)
+
+    def delete_manhole(self, i):
+        mh = self.st.get("manholes") or []
+        if 0 <= i < len(mh):
+            mh.pop(i)
+            self.solve_now(False)
+            self.commit(True)
+
+    def turn_storm(self, delta):
+        lk = self.st.setdefault("look", {})
+        sp, sr = site_sheet.storm_pose(self.st, self.res)
+        if sp:
+            lk.setdefault("storm_pos", [round(sp[0], 2), round(sp[1], 2)])
+        lk["storm_rot"] = 0.0 if delta is None else round((sr + delta) % 360.0, 1)
+        self.view.update()
+        self.commit(True)
+
+    def reset_storm(self):
+        lk = self.st.setdefault("look", {})
+        lk.pop("storm_pos", None)
+        lk.pop("storm_rot", None)
+        self.view.update()
+        self.commit(True)
 
     def remove_manhole(self):
         if self.st.get("manholes"):
