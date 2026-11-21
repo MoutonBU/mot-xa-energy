@@ -9292,6 +9292,14 @@ class MainWindow(QMainWindow):
         except Exception as e_:
             print("tool not started: invoicing_tool", e_)
             self.invoicing_page = None
+        self.services_page = None
+        try:
+            import site_services
+            self.services_page = site_services.SiteServicesPage(self)
+            self.main_tabs.addTab(self.services_page, "Site services")
+        except Exception as e_:
+            print("tool not started: site_services", e_)
+            self.services_page = None
         self._build_home()
 
         self.assign_table = QTableWidget(0, 8)
@@ -13446,7 +13454,7 @@ class MainWindow(QMainWindow):
                 ("Detail Notes", "Add construction detail notes to an Archicad detail.", "ruler", "Detail Notes"),
                 ("Costing", "Fixtures, materials and the budget for a job.", "calc", "Costing"),
                 ("SANS", "Light and ventilation, energy and coverage checks for the building regulations.", "sun", "SANS"),
-                ("Site and areas", "Building lines on the stand, and the area schedule with unit mix and floor area ratio.", "land", "Site and"),
+                ("Site and areas", "Building lines on the stand, the sewer, water and electrical lines to the house, and the area schedule with unit mix and floor area ratio.", "land", "Site and"),
                 ("Guidelines review", "Check the plans against the estate's architectural guidelines and the council's or state's checklist.", "clipboard", "Guidelines review"))):
             g.addWidget(tile(title, sub, ico, tgt), i // 3, i % 3)
         for k in (0, 1, 2):
