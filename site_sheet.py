@@ -87,6 +87,7 @@ def font(px, bold=False, spacing=100, family="Arial"):
 class Drawer:
     def __init__(self, p, sh, minpx=7, lite=False):
         self.p, self.sh, self.s, self.minpx, self.lite = p, sh, sh.s, minpx, lite
+        self.offsets, self.hits, self.seen = {}, [], {}
 
     # ---- helpers
     def lw(self, m):                                    # a line weight in metres of paper-at-1:200 -> pixels
@@ -98,14 +99,22 @@ class Drawer:
             return
         p = self.p
         px = max(h * self.s * 1.4, self.minpx)
+        n_ = self.seen.get(txt, 0)
+        self.seen[txt] = n_ + 1
+        key = "%s#%d" % (txt, n_)
+        off = self.offsets.get(key)
+        if off:
+            q = (q[0] + off[0], q[1] + off[1])                     # a label you moved by hand
         p.save()
         p.setFont(font(px, bold, spacing, family))
         pt = self.sh.pt(q)
         p.translate(pt)
-        p.rotate(self.sh.angle(d) if rot is None else rot)
+        ang = self.sh.angle(d) if rot is None else rot
+        p.rotate(ang)
         fm = p.fontMetrics()
         w = fm.horizontalAdvance(txt)
         ht = fm.ascent()
+        self.hits.append((key, pt.x(), pt.y(), ang, w, ht, q, 0.0 if align == "c" else (w / 2 if align == "l" else -w / 2)))
         x0 = -w / 2 if align == "c" else (0 if align == "l" else -w)
         if box or bg:
             pad = px * 0.28
@@ -168,6 +177,8 @@ def edge_len(a, b):
 def draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=False):
     """the whole plan. st = engine state, res = engine result, opts = sheet details (names, north, scale text)"""
     D = Drawer(p, sh, minpx, lite)
+    D.offsets = opts.get("labels") or {}
+    sh.hits = D.hits                                         # so the page can tell which label you clicked
     stand = st["stand"]["corners"]
     n = len(stand)
     F = edge_len(stand[0], stand[1])
@@ -289,6 +300,8 @@ def draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=False
         sw = res["sewer"]
         path = sw["path"]
         D.poly(path, BROWN, 0.09, None, dash=[8, 4], closed=False)
+        if sw.get("branch"):
+            D.poly(sw["branch"], BROWN, 0.09, None, dash=[8, 4], closed=False)
         for nd in sw["nodes"]:
             q = nd["pt"]
             if nd["kind"] in ("IE", "RE"):

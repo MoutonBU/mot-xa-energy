@@ -1,11 +1,14 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.87**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.88**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **Site services: sewer in square runs with the rodding eye at the end, water square, electrical shortest.** The sewer now runs only at 90 degrees. The house outlet leaves the wall and joins the run at an inspection eye, and the run carries on a little past that eye to the rodding eye, which is the end of the line and holds the minimum invert (450); from there it falls to the main. The water line also runs at 90 degrees. The electrical line takes the shortest route straight to the DB. A paved carport can be crossed by the water and electrical lines (the sewer still goes round it).
+- **Move any text on the plan.** Click and drag any text (stand numbers, IE/RE, notes, dimensions, B/L labels) to move it clear of whatever it is touching. Right-click a text to put it back, or press *Texts back*. Moved texts are saved with the plan and show in the PDF and image.
 
 - **Bigger, faster Site services plan.** There is now a divider between the steps and the plan: drag it left to enlarge the plan, or press *Wide plan* to hide the steps completely. The same divider is in every tool that shows a plan beside its steps. Dragging, panning and zooming the plan is much quicker: while you move, the plan is drawn simply (no text, no engineer lines) and the tables stay put, then it redraws in full a moment after you stop.
 

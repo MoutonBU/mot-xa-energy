@@ -9,7 +9,7 @@ import math
 
 GRID = 0.25
 DEFAULTS = {"fall": 50.0, "conn_depth": 1.5, "max_ie": 25.0, "min_depth": 0.45, "sewer_pipe": "110", "water_pipe": "20",
-            "clear": 0.3, "re_ext": 1.5, "sb_street": 1.0, "sb_side": 1.0, "sb_rear": 2.0}
+            "clear": 0.3, "re_ext": 1.5, "stub": 1.0, "sb_street": 1.0, "sb_side": 1.0, "sb_rear": 2.0}
 
 
 # ------------------------------------------------------------------ geometry
@@ -393,8 +393,29 @@ def crossing(path, stand):
 
 
 # ------------------------------------------------------------------ the three services
-def _obstacles(hp, cp, params):
-    return [offset(hull(hp), params["clear"])] + ([offset(hull(cp), params["clear"])] if cp else [])
+def _obstacles(hp, cp, params, with_carport=True):
+    return [offset(hull(hp), params["clear"])] + ([offset(hull(cp), params["clear"])] if (cp and with_carport) else [])
+
+
+def ortho(path):
+    """make every leg run along x or y: where a leg is slanted, put an elbow in"""
+    out = [path[0]]
+    for q in path[1:]:
+        p = out[-1]
+        if abs(q[0] - p[0]) > 1e-3 and abs(q[1] - p[1]) > 1e-3:
+            out.append((q[0], p[1]))
+        out.append(q)
+    return dedupe(out)
+
+
+def best_ortho(a, cands, stand, blocked, from_end=False):
+    best = None
+    for c in cands:
+        p = ortho(route(a, c, stand, blocked))
+        L = length(p)
+        if best is None or L < best[0]:
+            best = (L, p)
+    return best[1]
 
 
 def _port_for(state, hp, key, target, t0, others, build):
@@ -416,31 +437,47 @@ def _port_for(state, hp, key, target, t0, others, build):
 
 
 def sewer(state, hp, cp, params, others=()):
+    """Square (90 degree) runs only. The house outlet leaves the wall, turns into the run at an inspection eye, and the run carries on a little
+    way past that eye to the rodding eye, which is the highest point of the line: that is where the minimum invert is. From there the pipe
+    falls all the way to the main sewer line."""
     stand = state["stand"]["corners"]
     obs = _obstacles(hp, cp, params)
     cands = candidates(state, "sewer")
 
     def build(port):
         p0, n0 = port_point(hp, port)
-        ext = params["re_ext"]
-        q1 = (p0[0] + n0[0] * ext, p0[1] + n0[1] * ext)
-        rest = best_line(q1, cands, obs)
-        path = dedupe([p0, q1] + rest[1:])
-        return {"path": path, "port": port, "q1": q1}
+        stub = params["stub"]
+        q1 = (p0[0] + n0[0] * stub, p0[1] + n0[1] * stub)
+        rest = best_ortho(q1, cands, stand, obs)
+        d1 = (rest[1][0] - rest[0][0], rest[1][1] - rest[0][1])
+        L1 = math.hypot(*d1) or 1.0
+        u = (d1[0] / L1, d1[1] / L1)
+        along = u[0] * n0[0] + u[1] * n0[1]
+        if along > 0.9:                                          # the run carries straight on from the outlet: the rodding eye is at the wall
+            path = dedupe([p0] + rest)
+            return {"path": path, "port": port, "branch": None, "q1": q1, "junction": 0.0, "tail": 0.0}
+        tail = params["re_ext"]
+        t0 = (q1[0] - u[0] * tail, q1[1] - u[1] * tail)          # past the junction, away from the main
+        path = dedupe([t0] + rest)
+        return {"path": path, "port": port, "branch": [p0, q1], "q1": q1, "junction": tail, "tail": tail}
     port, r = _port_for(state, hp, "sewer", cands[0], 0.25, others, build)
     path = r["path"]
     L = length(path)
     fall = params["fall"]
     cut = crossing(path, stand)
-    ext = min(params["re_ext"], L)
-    marks = [(0.0, "RE"), (ext, "IE")]                       # rodding eye at the wall, inspection eye a little way out
+    jn = r["junction"]
+    marks = [(0.0, "RE")]
+    if jn > 0:
+        marks.append((jn, "IE"))                                 # where the house outlet joins
     acc = 0.0
     for i in range(1, len(path) - 1):
         acc += math.hypot(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1])
         if all(abs(acc - m[0]) > 0.3 for m in marks):
-            marks.append((acc, "IE"))                        # and one at every bend
+            marks.append((acc, "IE"))                            # and one at every bend
     if cut is not None and all(abs(cut - m[0]) > 0.6 for m in marks):
-        marks.append((max(cut - 0.6, 0.3), "IE"))           # just inside the boundary, as on your plans
+        marks.append((max(cut - 0.6, 0.3), "IE"))               # just inside the boundary
+    if jn == 0 and all(abs(m[0] - min(params["re_ext"], L)) > 0.3 for m in marks):
+        marks.append((min(params["re_ext"], L), "IE"))
     marks.sort()
     full = []
     for k, (s_, kind) in enumerate(marks):
@@ -459,19 +496,20 @@ def sewer(state, hp, cp, params, others=()):
                       "label": kind + (" Min IL %d" % round(D0 * 1000) if kind == "RE" and s_ == 0 else "")})
     d_main = D0 + L / fall
     nodes.append({"kind": "MAIN", "pt": path[-1], "chainage": round(L, 2), "depth": round(d_main, 3), "label": "Connect to main sewer line"})
-    return {"path": path, "nodes": nodes, "length": round(L, 2), "drop_mm": round(L * 1000.0 / fall), "port": port,
+    return {"path": path, "nodes": nodes, "length": round(L, 2), "drop_mm": round(L * 1000.0 / fall), "port": port, "branch": r["branch"],
             "depth_house": round(D0, 3), "depth_main": round(d_main, 3), "note": "%s\u00d8 SWP, FALL 1:%d" % (params["sewer_pipe"], round(fall))}
 
 
 def water(state, hp, cp, params, others=()):
+    """square runs; a paved carport can be crossed"""
     stand = state["stand"]["corners"]
-    obs = _obstacles(hp, cp, params)
+    obs = _obstacles(hp, cp, params, with_carport=False)
     cands = candidates(state, "water")
 
     def build(port):
         p0, n0 = port_point(hp, port)
         start = (p0[0] + n0[0] * 0.5, p0[1] + n0[1] * 0.5)
-        best = best_line(start, cands, obs)[::-1]
+        best = best_ortho(start, cands, stand, obs)[::-1]
         return {"path": dedupe(best + [p0]), "port": port}
     port, r = _port_for(state, hp, "water", cands[0], 0.7, others, build)
     path = r["path"]
@@ -485,7 +523,8 @@ def water(state, hp, cp, params, others=()):
 
 
 def electrical(state, hp, cp, params, others=()):
-    obs = _obstacles(hp, cp, params)
+    """the shortest way to the DB, any angle; it can pass under a paved carport"""
+    obs = _obstacles(hp, cp, params, with_carport=False)
     cands = candidates(state, "elec")
 
     def build(port):

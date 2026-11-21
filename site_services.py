@@ -44,7 +44,7 @@ def blank_state():
             "house": {"cx": 9.0, "cy": 12.0, "w": 14.8, "d": 6.5, "rot": 90},
             "carport": {"cx": 3.5, "cy": 3.5, "w": 5.0, "d": 5.0, "rot": 0},
             "points": {"sewer": [12.0, 0.0], "water": [1.5, 0.0], "elec": [6.75, 0.0]},
-            "ports": {}, "params": {}, "mains": {}, "custom": [], "frame": None,
+            "ports": {}, "params": {}, "mains": {}, "custom": [], "frame": None, "labels": {},
             "sheet": {"road": "left", "street": "", "road_w": "13m", "street_erf": "", "stand_no": "", "north": 0.0}}
 
 
@@ -215,7 +215,7 @@ class ServicesView(QWidget):
                 self.update()
                 return
             self.drag = self._hit(w, e.position())
-            if self.drag is not None:
+            if self.drag is not None and self.drag[0] != "label":
                 self._go_lite()
             if self.drag is None:
                 self.drag = ("pan", e.position(), self.view)
@@ -243,6 +243,9 @@ class ServicesView(QWidget):
                 pt, _n = se.port_point(hp, pg.port_of(pk))
                 if math.hypot(pt[0] - w[0], pt[1] - w[1]) * s < 10:
                     return ("port", pk)
+            lab = self.label_at(qp)
+            if lab:
+                return ("label", lab, w, tuple((pg.st.get("labels") or {}).get(lab, (0.0, 0.0))))
             if pg.res["carport"] and se.inside(w, pg.res["carport"]):
                 c = pg.st["carport"]
                 return ("carport", w, (c["cx"], c["cy"]))
@@ -255,6 +258,19 @@ class ServicesView(QWidget):
                 return ("main", k)
         return None
 
+    def label_at(self, qp):
+        """the text under the pointer, if any (texts are drawn in the last full redraw)"""
+        sh = self.sh
+        if not sh or not getattr(sh, "hits", None):
+            return None
+        for key, px, py, ang, w_, ht, _q, cx in reversed(sh.hits):
+            dx, dy = qp.x() - px, qp.y() - py
+            a = math.radians(ang)
+            lx, ly = dx * math.cos(a) + dy * math.sin(a) - cx, -dx * math.sin(a) + dy * math.cos(a)
+            if abs(lx) <= w_ / 2 + 4 and abs(ly) <= ht / 2 + 4:
+                return key
+        return None
+
     def hit_building(self, w):
         pg = self.page
         if pg.res and pg.res["carport"] and se.inside(w, pg.res["carport"]):
@@ -263,8 +279,15 @@ class ServicesView(QWidget):
             return "house"
         return None
 
-    def context(self, gpos, w):
+    def context(self, gpos, w, qp=None):
         pg = self.page
+        lab = self.label_at(qp) if qp is not None else None
+        if lab:
+            m = QMenu(self)
+            m.addAction("Put this text back", lambda: (pg.st.get("labels", {}).pop(lab, None), pg.changed(), self.update()))
+            m.addAction("Put all texts back", pg.reset_labels)
+            m.exec(gpos)
+            return
         role = self.hit_building(w)
         if not role:
             return
@@ -297,6 +320,12 @@ class ServicesView(QWidget):
             pg.st["points"][d[1]] = [round(w[0], 2), se.mains(pg.st)[d[1]]]
         elif d[0] == "cust":
             pg.st["custom"][d[1]]["pt"] = [round(w[0], 2), round(w[1], 2)]
+        elif d[0] == "label":
+            pg.st.setdefault("labels", {})[d[1]] = [round(d[3][0] + w[0] - d[2][0], 2), round(d[3][1] + w[1] - d[2][1], 2)]
+            self.lite = False
+            self._full.start()
+            self.update()
+            return
         elif d[0] == "main":
             pg.st.setdefault("mains", {})[d[1]] = round(min(w[1], -0.1), 2)
         elif d[0] == "port":
@@ -310,14 +339,16 @@ class ServicesView(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, e):
-        if self.drag and self.drag[0] != "pan":
+        if self.drag and self.drag[0] == "label":
+            self.page.changed()
+        elif self.drag and self.drag[0] != "pan":
             self.page.solve_now(False)
         elif self.drag and self.drag[0] == "pan" and self.rclick is not None and e.button() == Qt.MouseButton.RightButton:
             p0, w0 = self.rclick
             if abs(e.position().x() - p0.x()) < 4 and abs(e.position().y() - p0.y()) < 4:
                 self.rclick = None
                 self.drag = None
-                self.context(e.globalPosition().toPoint(), w0)
+                self.context(e.globalPosition().toPoint(), w0, p0)
                 return
         self.rclick = None
         self.drag = None
@@ -589,6 +620,10 @@ class SiteServicesPage(ToolBase):
             b = QPushButton(text)
             b.clicked.connect(lambda _=False, f=fn: f())
             fl.addWidget(b)
+        rl = QPushButton("Texts back")
+        rl.setToolTip("Drag any text on the plan to move it. This puts all the texts back where they were generated.")
+        rl.clicked.connect(self.reset_labels)
+        fl.addWidget(rl)
         wb = QPushButton("Wide plan")
         wb.setCheckable(True)
         wb.setToolTip("Hide the steps on the left so the plan fills the window. You can also drag the divider.")
@@ -615,6 +650,7 @@ class SiteServicesPage(ToolBase):
 
     def sheet_opts(self):
         sh = dict(self.st.get("sheet") or {})
+        sh["labels"] = self.st.get("labels") or {}
         try:
             no = int(sh.get("stand_no", ""))
             sh["neigh"] = [no - 1, no + 1]
@@ -869,6 +905,11 @@ class SiteServicesPage(ToolBase):
         self.set_stand(pts, "From Building lines", keep_buildings=bool(got), points={"sewer": [round(L * 0.85, 2), 0.0], "water": [1.5, 0.0], "elec": [round(L / 2, 2), 0.0]})
         self._to_fields()
         self.solve_now()
+
+    def reset_labels(self):
+        self.st["labels"] = {}
+        self.view.update()
+        self.changed()
 
     # ---- your own points
     def _fill_custom(self):
