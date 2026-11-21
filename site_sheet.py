@@ -88,7 +88,7 @@ def font(px, bold=False, spacing=100, family="Arial"):
 class Drawer:
     def __init__(self, p, sh, minpx=7, lite=False):
         self.p, self.sh, self.s, self.minpx, self.lite = p, sh, sh.s, minpx, lite
-        self.offsets, self.hits, self.seen, self.dseen = {}, [], {}, {}
+        self.offsets, self.hits, self.seen, self.dseen, self.edits = {}, [], {}, {}, {}
 
     # ---- helpers
     def lw(self, m):                                    # a line weight in metres of paper-at-1:200 -> pixels
@@ -99,10 +99,16 @@ class Drawer:
         if self.lite:
             return
         p = self.p
-        px = max(h * self.s * 1.4, self.minpx)
         n_ = self.seen.get(txt, 0)
         self.seen[txt] = n_ + 1
         key = key or "%s#%d" % (txt, n_)
+        ed = self.edits.get(key)                                   # a text you edited: the words, the size, the turn
+        extra_rot = 0.0
+        if ed:
+            txt = ed.get("t") or txt
+            h = h * ed.get("s", 1.0)
+            extra_rot = ed.get("r", 0.0)
+        px = max(h * self.s * 1.4, self.minpx)
         off = None if fixed else self.offsets.get(key)
         if off:
             q = (q[0] + off[0], q[1] + off[1])                     # a label you moved by hand
@@ -110,7 +116,7 @@ class Drawer:
         p.setFont(font(px, bold, spacing, family))
         pt = self.sh.pt(q)
         p.translate(pt)
-        ang = self.sh.angle(d) if rot is None else rot
+        ang = (self.sh.angle(d) if rot is None else rot) + extra_rot
         p.rotate(ang)
         fm = p.fontMetrics()
         w = fm.horizontalAdvance(txt)
@@ -187,6 +193,7 @@ def draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=False
     """the whole plan. st = engine state, res = engine result, opts = sheet details (names, north, scale text)"""
     D = Drawer(p, sh, minpx, lite)
     D.offsets = opts.get("labels") or {}
+    D.edits = opts.get("text_edit") or {}
     sh.hits = D.hits                                         # so the page can tell which label you clicked
     stand = st["stand"]["corners"]
     n = len(stand)
@@ -395,6 +402,8 @@ def draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=False
     for k, dm in enumerate(st.get("dims") or []):              # dimensions you added: two points and how far off the line it sits
         a_, b_ = dm["a"], dm["b"]
         D.dim(a_, b_, dm.get("off", 1.0), mm(edge_len(a_, b_)), 0.45, side=1, dkey="DIM:u%d" % k)
+    for k, nt in enumerate(st.get("notes") or []):             # texts you added
+        D.text(tuple(nt["pt"]), nt["t"], 0.5, sh.hdir(), key="NOTE:%d" % k)
     # ---- your own points
     for c in st.get("custom") or []:
         q = c["pt"]

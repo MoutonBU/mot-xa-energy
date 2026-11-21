@@ -7,7 +7,7 @@ import math
 
 from PySide6.QtCore import QPointF, QRectF, QTimer, Qt, QSizeF
 from PySide6.QtGui import QKeySequence, QShortcut, QBrush, QColor, QFont, QPainter, QPen, QPolygonF, QPageSize, QPageLayout, QPdfWriter, QImage
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QInputDialog, QListWidget, QMenu, QDoubleSpinBox, QFileDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton,
+from PySide6.QtWidgets import (QApplication, QFrame, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QInputDialog, QListWidget, QMenu, QDoubleSpinBox, QFileDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton,
                                QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget, QAbstractItemView)
 
 import site_dxf
@@ -50,7 +50,7 @@ def blank_state():
             "house": {"cx": 9.0, "cy": 12.0, "w": 14.8, "d": 6.5, "rot": 90},
             "carport": {"cx": 3.5, "cy": 3.5, "w": 5.0, "d": 5.0, "rot": 0},
             "points": {"sewer": [12.0, 0.0], "water": [1.5, 0.0], "elec": [6.75, 0.0]},
-            "ports": {}, "params": {}, "mains": {}, "custom": [], "frame": None, "labels": {}, "underlay": [], "sewer_via": [], "water_ports": [], "dims": [],
+            "ports": {}, "params": {}, "mains": {}, "custom": [], "frame": None, "labels": {}, "underlay": [], "sewer_via": [], "water_ports": [], "dims": [], "sewer_manual": [], "notes": [], "text_edit": {},
             "sheet": {"road": "left", "street": "", "road_w": "13m", "street_erf": "", "stand_no": "", "north": 0.0}}
 
 
@@ -100,6 +100,7 @@ class ServicesView(QWidget):
         self.auto = True
         self.mode = "select"                   # select | pt_sewer | pt_water | pt_elec | port_sewer | port_water | port_db
         self.drag = None
+        self.sel = None
         self.sh = None
         self.rclick = None
         self.lite = False
@@ -174,6 +175,8 @@ class ServicesView(QWidget):
         self.sh = self.sheet(self.width(), self.height())
         self.view = (self.sh.s, self.sh.cx, self.sh.cy)
         self.draw(p, self.sh, interactive=True)
+        if not self.lite:
+            self.draw_gizmo(p)
 
     def draw(self, p, sh, interactive=False):
         pg = self.page
@@ -253,6 +256,12 @@ class ServicesView(QWidget):
                 pg.set_hint("")
                 self.update()
                 return
+            if self.mode == "text_add":
+                pg.add_note(w)
+                self.mode = "select"
+                pg.set_hint("")
+                self.update()
+                return
             if self.mode == "dim_add":
                 pg.add_dim_point(w)
                 return
@@ -286,6 +295,7 @@ class ServicesView(QWidget):
                 self.drag = ("north",)
                 return
             self.drag = self._hit(w, e.position())
+            self.set_sel(self._sel_for(self.drag))
             if self.drag is not None and self.drag[0] != "label":
                 self._go_lite()
             if self.drag is None:
@@ -298,9 +308,47 @@ class ServicesView(QWidget):
             self.auto = False
             self._go_lite()
 
+    def set_sel(self, sel):
+        if sel != self.sel:
+            self.sel = sel
+            self.page.refresh_gizmo()
+            self.update()
+
+    def _sel_for(self, d):
+        if d is None:
+            return None
+        if d[0] in ("house", "carport"):
+            return (d[0],)
+        if d[0] in ("sseg", "sv"):
+            return ("sewer",)
+        if d[0] == "rot":
+            return (d[1],)
+        if d[0] == "label":
+            return ("label", d[1])
+        return None
+
+    def rot_handle(self, role):
+        o = self.page.st.get(role)
+        if not o or not self.page.res or not self.page.res.get(role):
+            return None
+        c = (o["cx"], o["cy"])
+        pl = self.page.res[role]
+        R = max(math.hypot(q[0] - c[0], q[1] - c[1]) for q in pl) + 1.6
+        a = math.radians(o.get("rot", 0.0))
+        return c, R, (c[0] + R * math.cos(a), c[1] + R * math.sin(a))
+
     def _hit(self, w, qp):
         pg = self.page
         s = self.view[0]
+        if self.sel and self.sel[0] in ("house", "carport"):
+            hnd = self.rot_handle(self.sel[0])
+            if hnd and math.hypot(hnd[2][0] - w[0], hnd[2][1] - w[1]) * s < 12:
+                return ("rot", self.sel[0], hnd[0], pg.st[self.sel[0]].get("rot", 0.0), math.atan2(w[1] - hnd[0][1], w[0] - hnd[0][0]))
+        if self.sel and self.sel[0] == "sewer" and pg.res:
+            P = pg.res["sewer"]["path"]
+            for k in range(1, len(P)):
+                if math.hypot(P[k][0] - w[0], P[k][1] - w[1]) * s < 12:
+                    return ("sv", k, [tuple(p) for p in P])
         for k in ("sewer", "water", "elec"):
             q = se.conn_point(pg.st, k)
             if math.hypot(q[0] - w[0], q[1] - w[1]) * s < 12:
@@ -324,6 +372,10 @@ class ServicesView(QWidget):
             lab = self.label_at(qp)
             if lab:
                 return ("label", lab, w, tuple((pg.st.get("labels") or {}).get(lab, (0.0, 0.0))))
+            P = pg.res["sewer"]["path"]
+            for k in range(len(P) - 1):
+                if se.line_dist(w, P[k], P[k + 1]) * s < 6:
+                    return ("sseg", k, [tuple(p) for p in P], w)
             if pg.res["carport"] and se.inside(w, pg.res["carport"]):
                 c = pg.st["carport"]
                 return ("carport", w, (c["cx"], c["cy"]))
@@ -385,6 +437,10 @@ class ServicesView(QWidget):
         lab = self.label_at(qp) if qp is not None else None
         if lab:
             m = QMenu(self)
+            if lab.startswith("NOTE:"):
+                k2_ = int(lab[5:].split("#")[0] or 0)
+                m.addAction("Delete this text", lambda: pg.remove_note(k2_))
+            m.addAction("Edit the text...", lambda: pg.edit_text(lab))
             if lab.startswith("DIM:u"):
                 k_ = int(lab[5:].split("#")[0] or 0)
                 m.addAction("Remove this dimension", lambda: pg.remove_dim(k_))
@@ -438,6 +494,13 @@ class ServicesView(QWidget):
             self._full.start()
             self.update()
             return
+        elif d[0] == "rot":
+            ang = math.atan2(w[1] - d[2][1], w[0] - d[2][0])
+            r = d[3] + math.degrees(ang - d[4])
+            r = round(r / 15.0) * 15.0 if QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier else round(r)
+            pg.st[d[1]]["rot"] = float(r % 360)
+        elif d[0] in ("sv", "sseg"):
+            pg.drag_sewer(d, w)
         elif d[0] == "main":
             pg.st.setdefault("mains", {})[d[1]] = round(min(w[1], -0.1), 2)
         elif d[0] == "port":
@@ -455,6 +518,8 @@ class ServicesView(QWidget):
             self.page.changed()
             self.page.commit(True)
         elif self.drag and self.drag[0] != "pan":
+            if self.drag[0] == "rot":
+                self.page._to_fields()
             self.page.solve_now(False)
             self.page.commit(True)
         elif self.drag and self.drag[0] == "pan" and self.rclick is not None and e.button() == Qt.MouseButton.RightButton:
@@ -467,6 +532,59 @@ class ServicesView(QWidget):
         self.rclick = None
         self.drag = None
         self._full.start()
+
+    def mouseDoubleClickEvent(self, e):
+        if self.sh and e.button() == Qt.MouseButton.LeftButton and self.mode == "select":
+            lab = self.label_at(e.position())
+            if lab:
+                self.page.edit_text(lab)
+
+    def draw_gizmo(self, p):
+        """what you can do with the selected thing: a ring to turn a building, corner handles on the sewer run, a frame round a text"""
+        pg, sel = self.page, self.sel
+        if not sel or not pg.res or not self.sh:
+            return
+        S = self.sh.pt
+        pink = QColor("#d6209a")
+        if sel[0] in ("house", "carport"):
+            hnd = self.rot_handle(sel[0])
+            if not hnd:
+                return
+            c, R, h = hnd
+            cs, hs = S(c), S(h)
+            rpx = self.sh.s * R
+            p.setPen(QPen(pink, 1.4, Qt.PenStyle.DashLine))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawEllipse(cs, rpx, rpx)
+            p.drawLine(cs, hs)
+            p.setPen(QPen(pink, 2))
+            p.setBrush(QBrush(QColor("white")))
+            p.drawEllipse(hs, 8, 8)
+            p.drawEllipse(cs, 4, 4)
+            p.setPen(pink)
+            p.setFont(QFont(self.font().family(), 9, QFont.Weight.Bold))
+            p.drawText(QPointF(hs.x() + 12, hs.y() - 10), "%d\u00b0" % round(pg.st[sel[0]].get("rot", 0.0)))
+        elif sel[0] == "sewer":
+            P = pg.res["sewer"]["path"]
+            p.setPen(QPen(pink, 2))
+            p.setBrush(QBrush(QColor("white")))
+            for k in range(1, len(P)):
+                q = S(P[k])
+                p.drawRect(QRectF(q.x() - 6, q.y() - 6, 12, 12))
+            p.setPen(QPen(pink, 1.4, Qt.PenStyle.DashLine))
+            for k in range(len(P) - 1):
+                p.drawLine(S(P[k]), S(P[k + 1]))
+        elif sel[0] == "label":
+            for key, px, py, ang, w_, ht, _q, cx in getattr(self.sh, "hits", []):
+                if key == sel[1]:
+                    p.save()
+                    p.translate(px, py)
+                    p.rotate(ang)
+                    p.setPen(QPen(pink, 1.6, Qt.PenStyle.DashLine))
+                    p.setBrush(Qt.BrushStyle.NoBrush)
+                    p.drawRect(QRectF(cx - w_ / 2 - 5, -ht / 2 - 5, w_ + 10, ht + 10))
+                    p.restore()
+                    break
 
     def wheelEvent(self, e):
         self.zoom(1.15 if e.angleDelta().y() > 0 else 1 / 1.15)
@@ -772,6 +890,10 @@ class SiteServicesPage(ToolBase):
             b = QPushButton(text)
             b.clicked.connect(lambda _=False, f=fn: f())
             fl.addWidget(b)
+        tb_ = QPushButton("Add text")
+        tb_.setToolTip("Click in the plan and type a text. Drag it, double-click it to edit it.")
+        tb_.clicked.connect(lambda: self.arm("text_add"))
+        fl.addWidget(tb_)
         db_ = QPushButton("Add a dimension")
         db_.setToolTip("Click two points (corners snap). Drag the figure to slide the dimension up or down. Right-click the figure to remove it.")
         db_.clicked.connect(lambda: (setattr(self, "_dim_a", None), self.arm("dim_add")))
@@ -847,6 +969,7 @@ class SiteServicesPage(ToolBase):
     def sheet_opts(self):
         sh = dict(self.st.get("sheet") or {})
         sh["labels"] = self.st.get("labels") or {}
+        sh["text_edit"] = self.st.get("text_edit") or {}
         try:
             no = int(sh.get("stand_no", ""))
             sh["neigh"] = [no - 1, no + 1]
@@ -1043,7 +1166,7 @@ class SiteServicesPage(ToolBase):
         self.set_hint({"pt_sewer": "Click in the plan where the main sewer connection is.", "pt_water": "Click in the plan where the water connection is.",
                        "pt_elec": "Click in the plan where the electrical supply is.", "port_sewer": "Click on the house outline where the sewer leaves the house.",
                        "port_water": "Click on the house outline where the water enters.", "port_db": "Click on the house outline where the DB is.",
-                       "wport_add": "Click on the house outline where another water point enters. Press Esc when done.", "dim_add": "Click the first point of the dimension (corners snap), then the second. Drag its figure to slide it. Press Esc when done.", "road": "Click on the side of the stand where the road is.", "north_dir": "Click in the direction north points. You can also drag the arrow to move it.", "via_add": "Click in the plan where the sewer must pass. Click again for the next point, in order from the house to the main. Press Esc when done.", "street": "Click the boundary that faces the street.", "cust_add": "Click in the plan where your point goes."}.get(mode, ""))
+                       "wport_add": "Click on the house outline where another water point enters. Press Esc when done.", "text_add": "Click in the plan where the text goes.", "dim_add": "Click the first point of the dimension (corners snap), then the second. Drag its figure to slide it. Press Esc when done.", "road": "Click on the side of the stand where the road is.", "north_dir": "Click in the direction north points. You can also drag the arrow to move it.", "via_add": "Click in the plan where the sewer must pass. Click again for the next point, in order from the house to the main. Press Esc when done.", "street": "Click the boundary that faces the street.", "cust_add": "Click in the plan where your point goes."}.get(mode, ""))
         self.view.update()
 
     def set_point(self, k, w):
@@ -1156,6 +1279,151 @@ class SiteServicesPage(ToolBase):
         self.set_stand(pts, "From Building lines", keep_buildings=bool(got), points={"sewer": [round(L * 0.85, 2), 0.0], "water": [1.5, 0.0], "elec": [round(L / 2, 2), 0.0]})
         self._to_fields()
         self.solve_now()
+
+    # ---- the gizmo: what the selected thing offers
+    def _gizmo_widget(self):
+        if getattr(self, "gz", None) is None:
+            self.gz = QFrame(self.view)
+            self.gz.setObjectName("xaGizmo")
+            self.gz.setStyleSheet("#xaGizmo{background:rgba(30,30,34,225);border:1px solid #d6209a;border-radius:8px;} #xaGizmo QLabel{color:#ffffff;font-weight:bold;padding:0 6px;}"
+                                  "#xaGizmo QPushButton{padding:3px 9px;min-width:0;}")
+            QHBoxLayout(self.gz).setContentsMargins(6, 4, 6, 4)
+        return self.gz
+
+    def refresh_gizmo(self):
+        gz = self._gizmo_widget()
+        lay = gz.layout()
+        while lay.count():
+            it = lay.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        sel = self.view.sel
+        if not sel:
+            gz.hide()
+            return
+
+        def add(text, fn, tip=""):
+            b = QPushButton(text)
+            b.setToolTip(tip)
+            b.clicked.connect(lambda _=False: fn())
+            lay.addWidget(b)
+
+        if sel[0] in ("house", "carport"):
+            r = sel[0]
+            lay.addWidget(QLabel(r.capitalize()))
+            add("\u21ba 5\u00b0", lambda: self.rotate_by(r, 5), "Turn 5 degrees anticlockwise")
+            add("\u21bb 5\u00b0", lambda: self.rotate_by(r, -5), "Turn 5 degrees clockwise")
+            add("90\u00b0", lambda: self.rotate_by(r, 90), "Turn a quarter")
+            add("Turn precisely...", lambda: self.rotate_dialog(r), "A slider with a live preview")
+            lay.addWidget(QLabel("or drag the ring (Shift = 15\u00b0 steps)"))
+        elif sel[0] == "sewer":
+            lay.addWidget(QLabel("Sewer line"))
+            lay.addWidget(QLabel("drag a leg to slide it, a corner to stretch it"))
+            add("Back to automatic", self.sewer_auto, "Throw away your changes and let the program route it")
+        elif sel[0] == "label":
+            lay.addWidget(QLabel("Text"))
+            k = sel[1]
+            add("Edit...", lambda: self.edit_text(k), "Change the words (or double-click the text)")
+            add("A+", lambda: self.text_style(k, "s", 1.15), "Bigger")
+            add("A\u2212", lambda: self.text_style(k, "s", 1 / 1.15), "Smaller")
+            add("\u21ba 15\u00b0", lambda: self.text_style(k, "r", -15.0), "Turn anticlockwise")
+            add("\u21bb 15\u00b0", lambda: self.text_style(k, "r", 15.0), "Turn clockwise")
+            add("Reset", lambda: self.text_reset(k), "Put the words, size, turn and place back")
+        gz.adjustSize()
+        gz.move(10, 8)
+        gz.show()
+        gz.raise_()
+
+    def drag_sewer(self, d, w):
+        """move a leg or a corner of the sewer run by hand; everything stays square"""
+        P = [list(p) for p in d[2]]
+        n = len(P)
+        if d[0] == "sv":
+            k = d[1]
+            last = k == n - 1
+            nx, ny = w[0], (P[k][1] if last else w[1])
+            P[k] = [nx, ny]
+            for j in (k - 1, k + 1):
+                if 0 < j < n:
+                    horizontal = abs(d[2][j][1] - d[2][k][1]) < 1e-3
+                    if horizontal:
+                        if j != n - 1:
+                            P[j][1] = ny
+                    else:
+                        P[j][0] = nx
+        else:
+            k, w0 = d[1], d[3]
+            a, b = d[2][k], d[2][k + 1]
+            if abs(a[1] - b[1]) < 1e-3:                           # a level leg slides up and down
+                dy = w[1] - w0[1]
+                for j in (k, k + 1):
+                    if 0 < j < n - 1:
+                        P[j][1] = d[2][j][1] + dy
+            else:                                                 # an upright leg slides sideways
+                dx = w[0] - w0[0]
+                for j in (k, k + 1):
+                    if 0 < j:
+                        P[j][0] = d[2][j][0] + dx
+        self.st["sewer_manual"] = [[round(p[0], 2), round(p[1], 2)] for p in P[1:]]
+
+    def sewer_auto(self):
+        self.st["sewer_manual"] = []
+        self.st["sewer_via"] = []
+        self.solve_now()
+
+    # ---- texts
+    def _text_of(self, key):
+        ed = (self.st.get("text_edit") or {}).get(key) or {}
+        if ed.get("t"):
+            return ed["t"]
+        if key.startswith("NOTE:"):
+            try:
+                return self.st["notes"][int(key[5:].split("#")[0])]["t"]
+            except Exception:
+                return ""
+        base = key[4:] if key.startswith("DIM:") else key
+        return base.rsplit("#", 1)[0]
+
+    def edit_text(self, key):
+        cur = self._text_of(key)
+        t, ok = QInputDialog.getText(self, "Edit the text", "Text:", QLineEdit.EchoMode.Normal, cur)
+        if not ok:
+            return
+        if key.startswith("NOTE:"):
+            try:
+                self.st["notes"][int(key[5:].split("#")[0])]["t"] = t
+            except Exception:
+                pass
+        else:
+            self.st.setdefault("text_edit", {}).setdefault(key, {})["t"] = t
+        self.solve_now()
+
+    def text_style(self, key, what, f):
+        ed = self.st.setdefault("text_edit", {}).setdefault(key, {})
+        if what == "s":
+            ed["s"] = round(min(max(ed.get("s", 1.0) * f, 0.3), 6.0), 3)
+        else:
+            ed["r"] = round(ed.get("r", 0.0) + f, 1)
+        self.solve_now()
+
+    def text_reset(self, key):
+        (self.st.get("text_edit") or {}).pop(key, None)
+        (self.st.get("labels") or {}).pop(key, None)
+        self.solve_now()
+
+    def add_note(self, w):
+        t, ok = QInputDialog.getText(self, "Add a text", "Text:")
+        if ok and t.strip():
+            self.st.setdefault("notes", []).append({"t": t.strip(), "pt": [round(w[0], 2), round(w[1], 2)]})
+            self.solve_now()
+
+    def remove_note(self, k):
+        n = self.st.get("notes") or []
+        if 0 <= k < len(n):
+            n.pop(k)
+            for key in [x for x in (self.st.get("labels") or {}) if x.startswith("NOTE:")]:
+                self.st["labels"].pop(key, None)
+            self.solve_now()
 
     def add_dim_point(self, w):
         st = self.st

@@ -431,6 +431,20 @@ def _obstacles(hp, cp, params, with_carport=True):
     return [offset(hull(hp), params["clear"])] + ([offset(hull(cp), params["clear"])] if (cp and with_carport) else [])
 
 
+def square_join(pts):
+    """a chain of points made square: where two points are not level, an elbow goes in, turning the same way the run was already going"""
+    out = [tuple(pts[0])]
+    for b in pts[1:]:
+        a, b = out[-1], tuple(b)
+        if abs(a[0] - b[0]) > 1e-3 and abs(a[1] - b[1]) > 1e-3:
+            if len(out) >= 2 and abs(out[-2][0] - a[0]) < 1e-3:
+                out.append((a[0], b[1]))
+            else:
+                out.append((b[0], a[1]))
+        out.append(b)
+    return dedupe(out)
+
+
 def ortho(path):
     """make every leg run along x or y: where a leg is slanted, put an elbow in"""
     out = [path[0]]
@@ -494,10 +508,16 @@ def sewer(state, hp, cp, params, others=()):
         stub = params["stub"]
         q1 = (p0[0] + n0[0] * stub, p0[1] + n0[1] * stub)
         via = [tuple(p) for p in (state.get("sewer_via") or [])]
+        man = [tuple(p) for p in (state.get("sewer_manual") or [])]
         rest = [q1]
+        if man:                                                  # a run you have placed by hand: it stays where you put it, kept square, ending on the main line
+            man[-1] = (man[-1][0], mains(state)["sewer"])
+            via = []
+            rest = square_join([q1] + man)
         for v_ in via:                                           # your own sewer points: the run goes through them in order, square
             rest = dedupe(rest[:-1] + ortho(route(rest[-1], v_, stand, obs)))
-        rest = dedupe(rest[:-1] + best_ortho(rest[-1], cands, stand, obs))
+        if not man:
+            rest = dedupe(rest[:-1] + best_ortho(rest[-1], cands, stand, obs))
         d1 = (rest[1][0] - rest[0][0], rest[1][1] - rest[0][1])
         L1 = math.hypot(*d1) or 1.0
         u = (d1[0] / L1, d1[1] / L1)

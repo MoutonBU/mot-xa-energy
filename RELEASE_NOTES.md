@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.103**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.104**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **1.86.104** Site services: click a thing and it gets a gizmo. House or carport: a ring with a handle to turn it by dragging (Shift = 15 degree steps), plus buttons for 5 degrees, 90 degrees and a precise slider. Sewer line: click it and drag a leg to slide it, or a corner to stretch it, all kept square; the eyes (IE, RE, boundary) follow; "Back to automatic" undoes your changes. Texts: click one for a frame and buttons to edit the words, make it bigger or smaller, turn it, or reset it (double-click a text to edit it too). New "Add text" button for your own notes on the plan. The sewer eye rules (RE at the start with Min IL, IE 350 mm past it, IE on every corner with a rodding eye stub, IE and RE at the boundary) are now pinned by a check in the code (test_sewer_eyes.py).
 
 - **1.86.103** Site services plan: the sewer pipe text (110 SWP, fall) no longer has a white box, it is see-through. Dimensions can be slid up and down: drag a dimension's figure and the whole dimension moves across its line. "Add a dimension" (above the plan): click two points (corners and eyes snap), drag the figure to place it, right-click it to remove. Setting-out lines: light blue dashed lines from each boundary to the nearest corner of the house, square to the boundary, switched with the "Setting-out lines" tick. They follow the house when it is rotated, and then carry the distance in mm on the line (the house's usual gap dimensions are used while it is square to the boundary).
 
