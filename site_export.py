@@ -47,7 +47,7 @@ def build(st, res, path, scale_text="1:200"):
         r = res.get(key)
         if not r:
             continue
-        paths = [r["path"]] + [b for b in (r.get("branches") or [])]
+        paths = [r["path"]] + [b for b in (r.get("branches") or [])] + [b for b in (r.get("stubs") or [])]
         for pth in paths:
             if len(pth) > 1:
                 poly(pth, layer, close=False, lineweight=25)

@@ -304,11 +304,13 @@ def draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=False
         D.poly(path, BROWN, 0.09, None, dash=[8, 4], closed=False)
         if sw.get("branch"):
             D.poly(sw["branch"], BROWN, 0.09, None, dash=[8, 4], closed=False)
+        for sb in sw.get("stubs") or []:
+            D.poly(sb, BROWN, 0.09, None, dash=[8, 4], closed=False)
         for nd in sw["nodes"]:
             q = nd["pt"]
             if nd["kind"] in ("IE", "RE"):
                 D.text(_off(sh, q, 0.9, -0.9), nd["kind"], 0.5, sh.hdir(), spacing=130)
-            if nd["kind"] == "RE":
+            if nd["kind"] == "RE" and str(nd.get("label", "")).startswith("RE Min"):
                 D.text(_off(sh, q, 3.2, 0.0), "Min IL", 0.5, sh.hdir(), spacing=130)
                 D.text(_off(sh, q, 3.2, 0.9), "%d" % round(res["params"]["min_depth"] * 1000), 0.5, sh.hdir(), spacing=130)
         D.text(_midrun(path, -0.9), sw["note"], 0.5, _rundir(path), spacing=105, bg=True)

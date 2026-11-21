@@ -524,7 +524,7 @@ def sewer(state, hp, cp, params, others=()):
         if all(abs(acc - m[0]) > 0.3 for m in marks):
             marks.append((acc, "IE"))                            # and one at every bend
     if cut is not None and all(abs(cut - m[0]) > 0.6 for m in marks):
-        marks.append((max(cut - 0.6, 0.3), "IE"))               # just inside the boundary
+        marks.append((max(cut - params["re_ext"], 0.3), "IE"))  # just inside the boundary, with the rodding eye on the boundary itself (below)
     for v_ in (state.get("sewer_via") or []):                    # an inspection eye at every point you put in
         best = min(range(0, int(L * 20) + 1), key=lambda k: math.hypot(point_at(path, k / 20.0)[0] - v_[0], point_at(path, k / 20.0)[1] - v_[1]))
         c_ = best / 20.0
@@ -548,10 +548,28 @@ def sewer(state, hp, cp, params, others=()):
     for s_, kind in full:
         nodes.append({"kind": kind, "pt": point_at(path, s_), "chainage": round(s_, 2), "depth": round(D0 + s_ / fall, 3),
                       "label": kind + (" Min IL %d" % round(D0 * 1000) if kind == "RE" and s_ == 0 else "")})
+    stubs = []                                                    # where the run turns a corner, the leg before it carries on re_ext past the corner to a rodding eye
+    acc = 0.0
+    for i in range(1, len(path) - 1):
+        a_, b_, c_ = path[i - 1], path[i], path[i + 1]
+        acc += math.hypot(b_[0] - a_[0], b_[1] - a_[1])
+        d1 = (b_[0] - a_[0], b_[1] - a_[1])
+        d2 = (c_[0] - b_[0], c_[1] - b_[1])
+        l1, l2 = math.hypot(*d1), math.hypot(*d2)
+        if l1 < 1e-6 or l2 < 1e-6 or abs(d1[0] * d2[1] - d1[1] * d2[0]) / (l1 * l2) < 0.5:
+            continue
+        end = (b_[0] + d1[0] / l1 * params["re_ext"], b_[1] + d1[1] / l1 * params["re_ext"])
+        stubs.append([b_, end])
+        if not any(abs(n["chainage"] - acc) < 0.3 and n["kind"] == "IE" for n in nodes):
+            nodes.append({"kind": "IE", "pt": b_, "chainage": round(acc, 2), "depth": round(D0 + acc / fall, 3), "label": "IE"})
+        nodes.append({"kind": "RE", "pt": end, "chainage": round(acc, 2), "depth": round(D0 + acc / fall, 3), "label": "RE"})
+    if cut is not None and 0 < cut < L:
+        nodes.append({"kind": "RE", "pt": point_at(path, cut), "chainage": round(cut, 2), "depth": round(D0 + cut / fall, 3), "label": "RE"})
+    nodes.sort(key=lambda n: n["chainage"])
     d_main = D0 + L / fall
     nodes.append({"kind": "MAIN", "pt": path[-1], "chainage": round(L, 2), "depth": round(d_main, 3), "label": "Connect to main sewer line"})
     return {"path": path, "nodes": nodes, "length": round(L, 2), "drop_mm": round(L * 1000.0 / fall), "port": port, "branch": r["branch"],
-            "depth_house": round(D0, 3), "depth_main": round(d_main, 3), "note": "%s\u00d8 SWP, FALL 1:%d" % (params["sewer_pipe"], round(fall))}
+            "stubs": stubs, "depth_house": round(D0, 3), "depth_main": round(d_main, 3), "note": "%s\u00d8 SWP, FALL 1:%d" % (params["sewer_pipe"], round(fall))}
 
 
 def water(state, hp, cp, params, others=()):
