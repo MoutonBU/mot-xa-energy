@@ -5,7 +5,7 @@ import os
 import html as _html
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QMessageBox, QScrollArea, QStackedWidget, QVBoxLayout, QWidget,
+from PySide6.QtWidgets import (QSplitter, QPushButton, QFrame, QHBoxLayout, QLabel, QMessageBox, QScrollArea, QStackedWidget, QVBoxLayout, QWidget,
                                QFileDialog)
 
 RED = "#C8102E"
@@ -120,16 +120,29 @@ class ToolBase(QWidget):
             sc.setWidget(p)
             self.stack.addWidget(sc)
         if side is not None:
-            mid = QHBoxLayout()
-            mid.setSpacing(10)
-            mid.addWidget(self.stack, 3)
-            mid.addWidget(side, 2)
-            outer.addLayout(mid, 1)
+            self.split = QSplitter(Qt.Orientation.Horizontal)      # drag the divider to give the plan more room, to the left
+            self.split.setHandleWidth(10)
+            self.split.setChildrenCollapsible(True)
+            self.split.addWidget(self.stack)
+            self.split.addWidget(side)
+            self.split.setStretchFactor(0, 3)
+            self.split.setStretchFactor(1, 2)
+            self.split.setSizes([600, 400])
+            self.stack.setMinimumWidth(0)
+            outer.addWidget(self.split, 1)
         else:
             outer.addWidget(self.stack, 1)
         outer.addWidget(self.steps.bottom)
         self.steps.changed.connect(self._step_changed)
         self.steps.go(0)
+
+    def wide_plan(self, on):
+        """hide the left-hand steps so the plan fills the window (or bring them back)"""
+        sp = getattr(self, "split", None)
+        if sp is None:
+            return
+        tot = max(sum(sp.sizes()), 1000)
+        sp.setSizes([0, tot] if on else [int(tot * 0.6), int(tot * 0.4)])
 
     def _step_changed(self, i):
         self.stack.setCurrentIndex(i)

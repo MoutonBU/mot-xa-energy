@@ -85,8 +85,8 @@ def font(px, bold=False, spacing=100, family="Arial"):
 
 
 class Drawer:
-    def __init__(self, p, sh, minpx=7):
-        self.p, self.sh, self.s, self.minpx = p, sh, sh.s, minpx
+    def __init__(self, p, sh, minpx=7, lite=False):
+        self.p, self.sh, self.s, self.minpx, self.lite = p, sh, sh.s, minpx, lite
 
     # ---- helpers
     def lw(self, m):                                    # a line weight in metres of paper-at-1:200 -> pixels
@@ -94,6 +94,8 @@ class Drawer:
 
     def text(self, q, txt, h=0.5, d=(1, 0), bold=False, color=BLACK, spacing=100, box=None, align="c", family="Arial", rot=None, bg=False):
         """text with its centre at world point q, running along world direction d. h = capital height in metres."""
+        if self.lite:
+            return
         p = self.p
         px = max(h * self.s * 1.4, self.minpx)
         p.save()
@@ -138,6 +140,8 @@ class Drawer:
 
     def dim(self, a, b, off, txt, h=0.45, side=1):
         """dimension line between world points a and b, drawn `off` metres to one side, with oblique ticks and the figure"""
+        if self.lite:
+            return
         dx, dy = b[0] - a[0], b[1] - a[1]
         L = math.hypot(dx, dy)
         if L < 1e-6:
@@ -161,9 +165,9 @@ def edge_len(a, b):
     return math.hypot(b[0] - a[0], b[1] - a[1])
 
 
-def draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False):
+def draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=False):
     """the whole plan. st = engine state, res = engine result, opts = sheet details (names, north, scale text)"""
-    D = Drawer(p, sh, minpx)
+    D = Drawer(p, sh, minpx, lite)
     stand = st["stand"]["corners"]
     n = len(stand)
     F = edge_len(stand[0], stand[1])

@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.86**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.87**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **Bigger, faster Site services plan.** There is now a divider between the steps and the plan: drag it left to enlarge the plan, or press *Wide plan* to hide the steps completely. The same divider is in every tool that shows a plan beside its steps. Dragging, panning and zooming the plan is much quicker: while you move, the plan is drawn simply (no text, no engineer lines) and the tables stay put, then it redraws in full a moment after you stop.
 
 - **Site services: reference library, your own DXF, shortest lines.** The Blue Hills stands and finished plans are now a built-in reference library, not a stand picker; you bring your own stand, house and carport with *Import from DXF* (outlines can be L-shaped; DWG must be saved as DXF first), and *Street edge: click it in the plan* sets which boundary faces the street. Electrical, water and sewer now take the shortest route (any angle, round the buildings) and never run on top of each other. The sewer starts with the rodding eye at the house, runs a little way out to an inspection eye, keeps the minimum invert (450) at the house and gets deeper toward the main, and always ends on the main sewer line. Drag a main line (or type its distance) to move it. Add your own sewer, water or electrical points, or marker points; the shortest one is used.
 - **Rotate, fine-tuned.** Right-click the house or carport (Site services) or a building (Building lines) and choose Rotate: a slider with 0.1 degree steps and a live preview; Cancel puts it back. Quick 90/15/5/1 degree turns are in the same menu.

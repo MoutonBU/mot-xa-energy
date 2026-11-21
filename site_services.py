@@ -67,6 +67,23 @@ class ServicesView(QWidget):
         self.drag = None
         self.sh = None
         self.rclick = None
+        self.lite = False
+        self._full = QTimer(self)
+        self._full.setSingleShot(True)
+        self._full.setInterval(160)
+        self._full.timeout.connect(self._go_full)
+
+    def _go_lite(self):
+        """while you drag, pan or zoom the plan is drawn simply (no text, no engineer lines); it is drawn in full a moment after you stop"""
+        self.lite = True
+        self._full.start()
+
+    def _go_full(self):
+        if self.drag is not None:
+            self._full.start()
+            return
+        self.lite = False
+        self.update()
 
     # ---- view
     def bounds(self):
@@ -107,6 +124,7 @@ class ServicesView(QWidget):
         self.auto = False
         s, cx, cy = self.view
         self.view = (min(max(s * f, 2), 400), cx, cy)
+        self._go_lite()
         self.update()
 
     def world(self, pt):
@@ -115,7 +133,7 @@ class ServicesView(QWidget):
     # ---- drawing
     def paintEvent(self, _e):
         p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, not self.lite)
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
         p.fillRect(self.rect(), QColor("white"))
         self.sh = self.sheet(self.width(), self.height())
@@ -125,13 +143,13 @@ class ServicesView(QWidget):
     def draw(self, p, sh, interactive=False):
         pg = self.page
         st, res = pg.st, pg.res
-        if interactive and pg.show_under and pg.under:
+        if interactive and pg.show_under and pg.under and not self.lite:
             S = sh.pt
             for key, col in (("storm", QColor("#b7dcb7")), ("water", QColor("#c6defa")), ("sewer", QColor("#ecd0b6"))):
                 for x1, y1, x2, y2, thick in pg.under.get(key, []):
                     p.setPen(QPen(col, 1.4 if thick else 0.7))
                     p.drawLine(S((x1, y1)), S((x2, y2)))
-        site_sheet.draw(p, sh, st, res, pg.sheet_opts(), minpx=7 if interactive else 5)
+        site_sheet.draw(p, sh, st, res, pg.sheet_opts(), minpx=7 if interactive else 5, lite=interactive and self.lite)
         # north arrow above the plan, turned to the chosen direction
         r_px = max(sh.s * 1.5, 18)
         site_sheet.north_arrow(p, QPointF(sh.W * 0.5, r_px * 2.2 + 8) if interactive else QPointF(sh.W * 0.5, r_px * 2.6), r_px, st["sheet"].get("north", 0))
@@ -197,13 +215,17 @@ class ServicesView(QWidget):
                 self.update()
                 return
             self.drag = self._hit(w, e.position())
+            if self.drag is not None:
+                self._go_lite()
             if self.drag is None:
                 self.drag = ("pan", e.position(), self.view)
                 self.auto = False
+                self._go_lite()
         elif e.button() in (Qt.MouseButton.MiddleButton, Qt.MouseButton.RightButton):
             self.rclick = (e.position(), w) if e.button() == Qt.MouseButton.RightButton else None
             self.drag = ("pan", e.position(), self.view)
             self.auto = False
+            self._go_lite()
 
     def _hit(self, w, qp):
         pg = self.page
@@ -284,12 +306,12 @@ class ServicesView(QWidget):
             o = pg.st[d[0]]
             o["cx"] = round(d[2][0] + w[0] - d[1][0], 2)
             o["cy"] = round(d[2][1] + w[1] - d[1][1], 2)
-        pg.schedule()
+        pg.schedule(True)
         self.update()
 
     def mouseReleaseEvent(self, e):
         if self.drag and self.drag[0] != "pan":
-            self.page.solve_now()
+            self.page.solve_now(False)
         elif self.drag and self.drag[0] == "pan" and self.rclick is not None and e.button() == Qt.MouseButton.RightButton:
             p0, w0 = self.rclick
             if abs(e.position().x() - p0.x()) < 4 and abs(e.position().y() - p0.y()) < 4:
@@ -299,6 +321,7 @@ class ServicesView(QWidget):
                 return
         self.rclick = None
         self.drag = None
+        self._full.start()
 
     def wheelEvent(self, e):
         self.zoom(1.15 if e.angleDelta().y() > 0 else 1 / 1.15)
@@ -566,6 +589,11 @@ class SiteServicesPage(ToolBase):
             b = QPushButton(text)
             b.clicked.connect(lambda _=False, f=fn: f())
             fl.addWidget(b)
+        wb = QPushButton("Wide plan")
+        wb.setCheckable(True)
+        wb.setToolTip("Hide the steps on the left so the plan fills the window. You can also drag the divider.")
+        wb.toggled.connect(self.wide_plan)
+        fl.addWidget(wb)
         self.under_cb = QCheckBox("Engineer's lines")
         self.under_cb.setChecked(True)
         self.under_cb.setToolTip("The sewer, water and stormwater lines from the SG sheets, faint, under the plan.")
@@ -657,20 +685,27 @@ class SiteServicesPage(ToolBase):
             self._busy = False
 
     # ---- solving
-    def schedule(self):
+    def schedule(self, light=False):
+        """light: the plan is being dragged, so work the lines out and redraw but leave the tables and fields until you let go"""
+        self._light = light
+        self._t.setInterval(40 if light else 140)
         self._t.start()
 
-    def solve_now(self):
+    def solve_now(self, light=None):
         self._t.stop()
+        if light is None:
+            light = getattr(self, "_light", False) and self.view.drag is not None
+        self._light = False
         try:
             self.res = se.solve(self.st)
         except Exception as e:                                  # a bad input must never take the tool down
             self.res = None
             self.warn_lbl.setText("Could not work out the lines: %s" % e)
             return
-        self.fill_results()
+        if not light:
+            self.fill_results()
+            self.changed()
         self.view.update()
-        self.changed()
 
     def port_of(self, pk):
         st = self.st
