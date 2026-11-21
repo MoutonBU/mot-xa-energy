@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.97**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.98**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **1.86.98** Site services: "New placing" (above the plan) starts again from a blank stand, house and carport; Undo brings the old one back. Importing a stand reads more kinds of drawing: 3D polylines (survey boundaries), splines, hatches, solids, blocks, and drawings kept on a sheet layout; a drawing that says metres but is thousands of units across is read as millimetres. A DWG is converted automatically when the free ODA File Converter (or LibreDWG) is on the computer; otherwise it says so and asks for a DXF. If a drawing has no lines the window says what it holds instead of nothing happening.
 
 - **1.86.97** Site services, importing a stand: the corner-clicking is now on from the start. Click the stand's corners 1, 2, 3 ... in the drawing (they snap to line ends), then click the side that faces the street (it lights up as you move over it). The stand comes in at true size with that side along the street. The units and scale are worked out from the drawing, as before, and shown above the drawing.
 

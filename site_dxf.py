@@ -59,10 +59,36 @@ def _join(segs, tol):
     return loops
 
 
+def dwg_to_dxf(path):
+    """a DWG is turned into a DXF with a converter on the computer (ODA File Converter or LibreDWG), when there is one; otherwise the way out is said plainly"""
+    if not str(path).lower().endswith(".dwg"):
+        return path
+    import glob
+    import os
+    import shutil
+    import subprocess
+    import tempfile
+    out = tempfile.mkdtemp(prefix="mot_dwg_")
+    exe = shutil.which("dwg2dxf")
+    if exe:
+        dst = os.path.join(out, "converted.dxf")
+        subprocess.run([exe, "-y", "-o", dst, path], capture_output=True, timeout=120)
+        if os.path.exists(dst):
+            return dst
+    cands = shutil.which("ODAFileConverter") or next(iter(sorted(glob.glob(r"C:\Program Files\ODA\ODAFileConverter*\ODAFileConverter.exe") + glob.glob(r"C:\Program Files (x86)\ODA\ODAFileConverter*\ODAFileConverter.exe"))), None)
+    if cands:
+        src = tempfile.mkdtemp(prefix="mot_dwg_in_")
+        shutil.copy(path, src)
+        subprocess.run([cands, src, out, "ACAD2013", "DXF", "0", "1"], capture_output=True, timeout=180)
+        got = glob.glob(os.path.join(out, "*.dxf"))
+        if got:
+            return got[0]
+    raise ValueError("This is a DWG, and this computer has no DWG converter. Either save it as DXF from your CAD program (Save As, DXF, 2013 or older), or install the free ODA File Converter and import the DWG again.")
+
+
 def read_shapes(path, min_area=0.5):
     """-> list of {"poly": [(x, y) in metres], "area": m2, "layer": name}, biggest first"""
-    if str(path).lower().endswith(".dwg"):
-        raise ValueError("This is a DWG. Save it as DXF from your CAD program first (Save As, DXF), then import that.")
+    path = dwg_to_dxf(path)
     import ezdxf
     try:
         doc = ezdxf.readfile(path)
@@ -129,8 +155,7 @@ def read_shapes(path, min_area=0.5):
 def read_drawing(path):
     """-> {"lines": [(x1, y1, x2, y2, colour)], "texts": [(text, x, y)], "raw_shapes": [(layer, pts)], "unit": guessed unit in metres per drawing unit,
     "span": (w, h) in drawing units}. Coordinates are left in drawing units; use scale_drawing() to turn them into metres."""
-    if str(path).lower().endswith(".dwg"):
-        raise ValueError("This is a DWG. Save it as DXF from your CAD program first (Save As, DXF), then import that.")
+    path = dwg_to_dxf(path)
     import ezdxf
     try:
         doc = ezdxf.readfile(path)
@@ -160,7 +185,7 @@ def read_drawing(path):
                         pts.append(pts[0])
                         closed.append((e.dxf.layer, pts[:-1]))
                     lines += [(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], col(e)) for i in range(len(pts) - 1)]
-                elif t == "POLYLINE" and not e.is_3d_polyline and not e.is_polygon_mesh:
+                elif t == "POLYLINE" and not e.is_polygon_mesh:
                     pts = [(v.dxf.location.x, v.dxf.location.y) for v in e.vertices]
                     if e.is_closed:
                         closed.append((e.dxf.layer, list(pts)))
@@ -174,6 +199,20 @@ def read_drawing(path):
                     n = max(6, int((a1 - a0) / (math.pi / 12)))
                     pts = [(c.x + r * math.cos(a0 + (a1 - a0) * k / n), c.y + r * math.sin(a0 + (a1 - a0) * k / n)) for k in range(n + 1)]
                     lines += [(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], col(e)) for i in range(n)]
+                elif t in ("SPLINE", "ELLIPSE"):
+                    pts = [(q[0], q[1]) for q in e.flattening(max(0.0001, (max(span_hint[0], 1.0)) / 5000.0))]
+                    lines += [(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], col(e)) for i in range(len(pts) - 1)]
+                elif t in ("SOLID", "TRACE", "3DFACE"):
+                    vs = [e.dxf.vtx0, e.dxf.vtx1, e.dxf.vtx3 if t != "3DFACE" else e.dxf.vtx2, e.dxf.vtx2 if t != "3DFACE" else e.dxf.vtx3]
+                    pts = [(q.x, q.y) for q in vs]
+                    lines += [(pts[i][0], pts[i][1], pts[(i + 1) % 4][0], pts[(i + 1) % 4][1], col(e)) for i in range(4)]
+                elif t == "HATCH":
+                    for path in e.paths:
+                        if hasattr(path, "vertices"):
+                            pts = [(q[0], q[1]) for q in path.vertices]
+                            if len(pts) > 2:
+                                closed.append((e.dxf.layer, pts))
+                                lines += [(pts[i][0], pts[i][1], pts[(i + 1) % len(pts)][0], pts[(i + 1) % len(pts)][1], col(e)) for i in range(len(pts))]
                 elif t in ("TEXT", "MTEXT"):
                     tx = e.dxf.text if t == "TEXT" else e.text
                     texts.append((str(tx).strip(), e.dxf.insert.x, e.dxf.insert.y))
@@ -181,11 +220,19 @@ def read_drawing(path):
                     walk(e.virtual_entities(), depth + 1)
             except Exception:
                 continue
+    span_hint = (100.0, 100.0)
     walk(doc.modelspace())
+    if not lines:                                               # drawings kept on a sheet (paper space) layout
+        for lay in doc.layouts:
+            if lay.name != "Model":
+                walk(lay)
+    if not lines:
+        kinds = sorted({e.dxftype() for e in doc.modelspace()})
+        raise ValueError("No lines were found in this drawing. It holds: %s. Explode blocks / xrefs, or save the stand as plain lines or polylines." % (", ".join(kinds) or "nothing"))
     xs = [v for l in lines for v in (l[0], l[2])]
     ys = [v for l in lines for v in (l[1], l[3])]
     span = (max(xs) - min(xs), max(ys) - min(ys)) if xs else (0, 0)
-    if unit is None:
+    if unit is None or (unit >= 1.0 and max(span) > 2000):     # a drawing saying metres but 2 km across is millimetres
         unit = 0.001 if max(span) > 2000 else 1.0
     return {"lines": lines, "texts": texts, "raw_shapes": closed, "unit": unit, "span": span}
 

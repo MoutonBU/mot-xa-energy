@@ -766,6 +766,10 @@ class SiteServicesPage(ToolBase):
             b = QPushButton(text)
             b.clicked.connect(lambda _=False, f=fn: f())
             fl.addWidget(b)
+        nb_ = QPushButton("New placing")
+        nb_.setToolTip("Start again: a blank stand, house and carport, nothing left from the last one. Undo brings the old one back.")
+        nb_.clicked.connect(self.new_placing)
+        fl.addWidget(nb_)
         for lab, fn in (("Undo", lambda: self.undo()), ("Redo", lambda: self.redo())):
             ub_ = QPushButton(lab)
             ub_.setToolTip("%s (Ctrl+%s)" % (lab, "Z" if lab == "Undo" else "Y"))
@@ -904,6 +908,15 @@ class SiteServicesPage(ToolBase):
         self._light = light
         self._t.setInterval(40 if light else 140)
         self._t.start()
+
+    def new_placing(self):
+        self.commit(True)
+        self.set_state(blank_state())
+        self.under = {}
+        self._src_bbox = None
+        self.view.fit()
+        self.set_hint("New placing: import a stand, or make a rectangle.")
+        QTimer.singleShot(6000, lambda: self.set_hint(""))
 
     def commit(self, force=False):
         """remember the state before an edit, for Undo. While something is being dragged only the end of the drag counts."""
@@ -1269,7 +1282,11 @@ class SiteServicesPage(ToolBase):
         except Exception as e:
             QMessageBox.warning(self, "Site services", str(e))
             return None
-        dlg = site_dxf_dialog.ImportDialog(self, drawing, role)
+        try:
+            dlg = site_dxf_dialog.ImportDialog(self, drawing, role)
+        except Exception as e:
+            QMessageBox.warning(self, "Site services", "The drawing could not be shown: %s" % e)
+            return None
         if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.result:
             return None
         return dlg.result, dlg.underlay(), dlg.street_edge

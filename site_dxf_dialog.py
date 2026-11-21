@@ -229,6 +229,12 @@ class ImportDialog(QDialog):
         base = UNITS[self.unit.currentIndex()][1]
         if 5 <= span * base <= 1500:
             self.auto_note = "Full size: %s, drawn at 1 : 1." % UNITS[self.unit.currentIndex()][0]
+        elif span * base > 1500:
+            for i in (0, 1):
+                if 5 <= span * UNITS[i][1] <= 1500:
+                    self.unit.setCurrentIndex(i)
+                    self.auto_note = "Worked out from the size: %s, drawn at 1 : 1." % UNITS[i][0]
+                    break
         else:
             for s in (200, 100, 50, 500, 20, 1000, 10, 2000):
                 for i in sorted(range(3), key=lambda i: abs(UNITS[i][1] - d["unit"])):
