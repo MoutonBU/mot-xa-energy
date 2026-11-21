@@ -45,7 +45,7 @@ def blank_state():
             "house": {"cx": 9.0, "cy": 12.0, "w": 14.8, "d": 6.5, "rot": 90},
             "carport": {"cx": 3.5, "cy": 3.5, "w": 5.0, "d": 5.0, "rot": 0},
             "points": {"sewer": [12.0, 0.0], "water": [1.5, 0.0], "elec": [6.75, 0.0]},
-            "ports": {}, "params": {}, "mains": {}, "custom": [], "frame": None, "labels": {}, "underlay": [],
+            "ports": {}, "params": {}, "mains": {}, "custom": [], "frame": None, "labels": {}, "underlay": [], "sewer_via": [],
             "sheet": {"road": "left", "street": "", "road_w": "13m", "street_erf": "", "stand_no": "", "north": 0.0}}
 
 
@@ -62,6 +62,7 @@ class ServicesView(QWidget):
         self.setMinimumSize(360, 360)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self.view = None                       # (px per m, world x at the centre, world y at the centre)
         self.auto = True
         self.mode = "select"                   # select | pt_sewer | pt_water | pt_elec | port_sewer | port_water | port_db
@@ -156,6 +157,11 @@ class ServicesView(QWidget):
         site_sheet.north_arrow(p, QPointF(sh.W * 0.5, r_px * 2.2 + 8) if interactive else QPointF(sh.W * 0.5, r_px * 2.6), r_px, st["sheet"].get("north", 0))
         if interactive and res:
             S = sh.pt
+            for c in st.get("sewer_via") or []:
+                q = S(c)
+                p.setPen(QPen(site_sheet.BROWN, 2))
+                p.setBrush(QBrush(QColor("white")))
+                p.drawRect(QRectF(q.x() - 6, q.y() - 6, 12, 12))
             for c in st.get("custom") or []:
                 q = S(c["pt"])
                 col = {"sewer": site_sheet.BROWN, "water": site_sheet.BLUE, "elec": site_sheet.YELLOW}.get(c["kind"], QColor("#888888"))
@@ -197,6 +203,9 @@ class ServicesView(QWidget):
                 pg.set_hint("")
                 self.update()
                 return
+            if self.mode == "via_add":
+                pg.add_via(w)
+                return                                          # stays armed so you can click several points; press Esc or pick another tool to stop
             if self.mode == "cust_add":
                 pg.add_custom(w)
                 self.mode = "select"
@@ -238,6 +247,9 @@ class ServicesView(QWidget):
         for i, c in enumerate(pg.st.get("custom") or []):
             if math.hypot(c["pt"][0] - w[0], c["pt"][1] - w[1]) * s < 12:
                 return ("cust", i)
+        for i, c in enumerate(pg.st.get("sewer_via") or []):
+            if math.hypot(c[0] - w[0], c[1] - w[1]) * s < 12:
+                return ("via", i)
         if pg.res:
             hp = pg.res["house"]
             for pk in ("sewer", "water", "db"):
@@ -258,6 +270,14 @@ class ServicesView(QWidget):
             if abs(w[1] - mn[k]) * s < 5 and not (pg.res and se.inside(w, pg.st["stand"]["corners"])):
                 return ("main", k)
         return None
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key.Key_Escape and self.mode != "select":
+            self.mode = "select"
+            self.page.set_hint("")
+            self.update()
+            return
+        super().keyPressEvent(e)
 
     def label_at(self, qp):
         """the text under the pointer, if any (texts are drawn in the last full redraw)"""
@@ -282,6 +302,14 @@ class ServicesView(QWidget):
 
     def context(self, gpos, w, qp=None):
         pg = self.page
+        s_ = self.view[0] if self.view else 10
+        for i, c in enumerate(pg.st.get("sewer_via") or []):
+            if math.hypot(c[0] - w[0], c[1] - w[1]) * s_ < 12:
+                m = QMenu(self)
+                m.addAction("Remove this sewer point", lambda i_=i: (pg.st["sewer_via"].pop(i_), pg.solve_now()))
+                m.addAction("Clear all my sewer points", pg.clear_via)
+                m.exec(gpos)
+                return
         lab = self.label_at(qp) if qp is not None else None
         if lab:
             m = QMenu(self)
@@ -319,6 +347,8 @@ class ServicesView(QWidget):
         w = self.world(e.position())
         if d[0] == "pt":
             pg.st["points"][d[1]] = [round(w[0], 2), se.mains(pg.st)[d[1]]]
+        elif d[0] == "via":
+            pg.st["sewer_via"][d[1]] = [round(w[0], 2), round(w[1], 2)]
         elif d[0] == "cust":
             pg.st["custom"][d[1]]["pt"] = [round(w[0], 2), round(w[1], 2)]
         elif d[0] == "label":
@@ -530,9 +560,21 @@ class SiteServicesPage(ToolBase):
                 self.p_depth, self.p_fall, self.p_ie = spin(0.3, 6, 1.5, 2, " m"), spin(20, 200, 50, 0, "", 5), spin(5, 60, 25, 0, " m", 1)
                 self.p_pipe = QComboBox()
                 self.p_pipe.addItems(["110", "160"])
-                for lab, w in (("Depth at the main", self.p_depth), ("Fall 1 :", self.p_fall), ("Eyes at most", self.p_ie), ("Pipe", self.p_pipe)):
+                self.p_tail = spin(0.1, 3, 0.6, 2, " m", 0.1)
+                self.p_tail.setToolTip("The rodding eye sits this far past the inspection eye where the house outlet joins the run (and past any other connection).")
+                for lab, w in (("Depth at the main", self.p_depth), ("Fall 1 :", self.p_fall), ("Eyes at most", self.p_ie), ("Rodding eye past the joint", self.p_tail), ("Pipe", self.p_pipe)):
                     row.addWidget(QLabel(lab))
                     row.addWidget(w)
+                row.addStretch(1)
+                bv.addLayout(row)
+                row = QHBoxLayout()
+                vb = QPushButton("Add a sewer point: click in the plan")
+                vb.setToolTip("The sewer is routed through the points you add, in order, in square runs. Drag a point to move it, right-click it to remove it.")
+                vb.clicked.connect(lambda: self.arm("via_add"))
+                cb_ = QPushButton("Clear my sewer points")
+                cb_.clicked.connect(self.clear_via)
+                row.addWidget(vb)
+                row.addWidget(cb_)
                 row.addStretch(1)
                 bv.addLayout(row)
             v2.addWidget(bx)
@@ -594,7 +636,7 @@ class SiteServicesPage(ToolBase):
         v3.addStretch(1)
         self.build_frame([p1, p2, p3], side=self._panel())
         for w in (self.sb_street, self.sb_side, self.sb_rear, self.h_w, self.h_d, self.h_rot, self.h_x, self.h_y, self.c_w, self.c_d, self.c_x, self.c_y,
-                  self.p_depth, self.p_fall, self.p_ie):
+                  self.p_depth, self.p_fall, self.p_ie, self.p_tail):
             w.valueChanged.connect(self._edited)
         self.c_on.toggled.connect(self._edited)
         for w_ in (self.sh_no, self.sh_street, self.sh_rw, self.sh_se):
@@ -680,7 +722,7 @@ class SiteServicesPage(ToolBase):
                        "stand_no": self.sh_no.text().strip(), "north": self.sh_north.value()}
         if self.view.auto is False and False:
             pass
-        st["params"] = {"conn_depth": self.p_depth.value(), "fall": self.p_fall.value(), "max_ie": self.p_ie.value(), "sewer_pipe": self.p_pipe.currentText(),
+        st["params"] = {"conn_depth": self.p_depth.value(), "fall": self.p_fall.value(), "max_ie": self.p_ie.value(), "re_ext": self.p_tail.value(), "sewer_pipe": self.p_pipe.currentText(),
                         "sb_street": self.sb_street.value(), "sb_side": self.sb_side.value(), "sb_rear": self.sb_rear.value()}
         self.schedule()
 
@@ -717,6 +759,7 @@ class SiteServicesPage(ToolBase):
             self.p_depth.setValue(pr.get("conn_depth", 1.5))
             self.p_fall.setValue(pr.get("fall", 50))
             self.p_ie.setValue(pr.get("max_ie", 25))
+            self.p_tail.setValue(pr.get("re_ext", 0.6))
             self.p_pipe.setCurrentText(str(pr.get("sewer_pipe", "110")))
         finally:
             self._busy = False
@@ -794,7 +837,7 @@ class SiteServicesPage(ToolBase):
         self.set_hint({"pt_sewer": "Click in the plan where the main sewer connection is.", "pt_water": "Click in the plan where the water connection is.",
                        "pt_elec": "Click in the plan where the electrical supply is.", "port_sewer": "Click on the house outline where the sewer leaves the house.",
                        "port_water": "Click on the house outline where the water enters.", "port_db": "Click on the house outline where the DB is.",
-                       "street": "Click the boundary that faces the street.", "cust_add": "Click in the plan where your point goes."}.get(mode, ""))
+                       "via_add": "Click in the plan where the sewer must pass. Click again for the next point, in order from the house to the main. Press Esc when done.", "street": "Click the boundary that faces the street.", "cust_add": "Click in the plan where your point goes."}.get(mode, ""))
         self.view.update()
 
     def set_point(self, k, w):
@@ -906,6 +949,14 @@ class SiteServicesPage(ToolBase):
             self.st["carport"] = got[1] if len(got) > 1 else None
         self.set_stand(pts, "From Building lines", keep_buildings=bool(got), points={"sewer": [round(L * 0.85, 2), 0.0], "water": [1.5, 0.0], "elec": [round(L / 2, 2), 0.0]})
         self._to_fields()
+        self.solve_now()
+
+    def add_via(self, w):
+        self.st.setdefault("sewer_via", []).append([round(w[0], 2), round(w[1], 2)])
+        self.solve_now()
+
+    def clear_via(self):
+        self.st["sewer_via"] = []
         self.solve_now()
 
     def reset_labels(self):

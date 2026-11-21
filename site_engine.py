@@ -9,7 +9,7 @@ import math
 
 GRID = 0.25
 DEFAULTS = {"fall": 50.0, "conn_depth": 1.5, "max_ie": 25.0, "min_depth": 0.45, "sewer_pipe": "110", "water_pipe": "20",
-            "clear": 0.3, "re_ext": 1.5, "sep_water": 0.5, "sep_service": 0.1, "min_cover": 0.3, "stub": 1.0, "sb_street": 1.0, "sb_side": 1.0, "sb_rear": 2.0}
+            "clear": 0.3, "re_ext": 0.6, "ie_first": 1.5, "sep_water": 0.5, "sep_service": 0.1, "min_cover": 0.3, "stub": 1.0, "sb_street": 1.0, "sb_side": 1.0, "sb_rear": 2.0}
 
 
 # ------------------------------------------------------------------ geometry
@@ -470,7 +470,11 @@ def sewer(state, hp, cp, params, others=()):
         p0, n0 = port_point(hp, port)
         stub = params["stub"]
         q1 = (p0[0] + n0[0] * stub, p0[1] + n0[1] * stub)
-        rest = best_ortho(q1, cands, stand, obs)
+        via = [tuple(p) for p in (state.get("sewer_via") or [])]
+        rest = [q1]
+        for v_ in via:                                           # your own sewer points: the run goes through them in order, square
+            rest = dedupe(rest[:-1] + ortho(route(rest[-1], v_, stand, obs)))
+        rest = dedupe(rest[:-1] + best_ortho(rest[-1], cands, stand, obs))
         d1 = (rest[1][0] - rest[0][0], rest[1][1] - rest[0][1])
         L1 = math.hypot(*d1) or 1.0
         u = (d1[0] / L1, d1[1] / L1)
@@ -498,8 +502,13 @@ def sewer(state, hp, cp, params, others=()):
             marks.append((acc, "IE"))                            # and one at every bend
     if cut is not None and all(abs(cut - m[0]) > 0.6 for m in marks):
         marks.append((max(cut - 0.6, 0.3), "IE"))               # just inside the boundary
-    if jn == 0 and all(abs(m[0] - min(params["re_ext"], L)) > 0.3 for m in marks):
-        marks.append((min(params["re_ext"], L), "IE"))
+    for v_ in (state.get("sewer_via") or []):                    # an inspection eye at every point you put in
+        best = min(range(0, int(L * 20) + 1), key=lambda k: math.hypot(point_at(path, k / 20.0)[0] - v_[0], point_at(path, k / 20.0)[1] - v_[1]))
+        c_ = best / 20.0
+        if all(abs(c_ - m[0]) > 0.3 for m in marks) and 0.3 < c_ < L - 0.3:
+            marks.append((c_, "IE"))
+    if jn == 0 and all(abs(m[0] - min(params["ie_first"], L)) > 0.3 for m in marks):
+        marks.append((min(params["ie_first"], L), "IE"))
     marks.sort()
     full = []
     for k, (s_, kind) in enumerate(marks):
