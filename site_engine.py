@@ -612,8 +612,9 @@ def sewer(state, hp, cp, params, others=()):
                 best = (Lq, pr, c_)
         bp = dedupe(best[1] + [p0])
         extra.append({"path": bp, "port": wp})
-        nodes.append({"kind": "IE", "pt": bp[0], "chainage": round(best[2], 2), "depth": round(D0 + best[2] / fall, 3), "label": "IE"})
-        nodes.append({"kind": "RE", "pt": p0, "chainage": round(best[2] + 0.001, 2), "depth": round(D0 + best[2] / fall, 3), "label": "RE"})
+        nodes.append({"kind": "IE", "pt": bp[0], "chainage": round(best[2], 2), "depth": round(D0 + best[2] / fall, 3), "label": "IE", "dist": L - best[2]})
+        nodes.append({"kind": "RE", "pt": p0, "chainage": round(best[2] + 0.001, 2), "depth": round(D0 + best[2] / fall, 3), "label": "RE", "wall": len(extra) - 1,
+                      "dist": (L - best[2]) + length(bp)})
     nodes.sort(key=lambda n: n["chainage"])
     cnt = {}
     for n_ in nodes:                                              # a key for every eye (kind + number along the run), so you can pick, move and delete them
@@ -633,9 +634,22 @@ def sewer(state, hp, cp, params, others=()):
                 stubs[n_["stub"]][1] = n_["pt"]
     nodes = [n_ for n_ in nodes if n_["key"] not in drop]
     stubs = [x for x in stubs if x]
-    d_main = D0 + L / fall
+    # the minimum invert (Min IL) is at the outlet furthest from the main, whichever that is: a toilet that sits further up the line moves it there,
+    # and every invert level is worked back from it
+    walls = [n_ for n_ in nodes if "wall" in n_ or str(n_.get("label", "")).startswith("RE Min")]
+    for n_ in walls:
+        if "wall" not in n_:
+            n_["dist"] = L
+    H = max([L] + [n_["dist"] for n_ in walls])
+    head = max(walls, key=lambda n_: n_["dist"]) if walls else None
+    for n_ in nodes:
+        dist = n_.get("dist", L - n_["chainage"])
+        n_["depth"] = round(D0 + (H - dist) / fall, 3)
+        if n_["kind"] == "RE" and "dist" in n_ and n_.get("label", "").startswith("RE"):
+            n_["label"] = ("RE Min IL %d" % round(D0 * 1000)) if n_ is head else "RE"
+    d_main = D0 + H / fall
     nodes.append({"kind": "MAIN", "pt": path[-1], "chainage": round(L, 2), "depth": round(d_main, 3), "label": "Connect to main sewer line"})
-    return {"path": path, "nodes": nodes, "length": round(L, 2), "drop_mm": round(L * 1000.0 / fall), "port": port, "branch": r["branch"],
+    return {"path": path, "nodes": nodes, "length": round(H, 2), "drop_mm": round(H * 1000.0 / fall), "port": port, "branch": r["branch"],
             "stubs": stubs, "extra": extra, "depth_house": round(D0, 3), "depth_main": round(d_main, 3), "note": "%s\u00d8 SWP, FALL 1:%d" % (params["sewer_pipe"], round(fall))}
 
 

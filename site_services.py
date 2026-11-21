@@ -122,6 +122,8 @@ class ServicesView(QWidget):
 
     def finish_mode(self):
         """leave whatever you were adding or picking (Done button, Esc, right-click > Done)"""
+        if self._mode == "sewer_draw":
+            self.page.sewer_draw_finish()
         if self._mode != "select":
             self._mode = "select"
             self.page._dim_a = None
@@ -295,6 +297,10 @@ class ServicesView(QWidget):
                 return
             if self.mode == "sport_add":
                 pg.add_sport(w)
+                return
+            if self.mode == "sewer_draw":
+                pg.sewer_draw_click(w)
+                self.update()
                 return
             if self.mode == "via_add":
                 pg.add_via(w)
@@ -539,6 +545,9 @@ class ServicesView(QWidget):
         m.exec(gpos)
 
     def mouseMoveEvent(self, e):
+        if self._mode == "sewer_draw" and self.sh:
+            self.hover = self.world(e.position())
+            self.update()
         d = self.drag
         if not d or not self.sh:
             return
@@ -633,6 +642,28 @@ class ServicesView(QWidget):
     def draw_gizmo(self, p):
         """what you can do with the selected thing: a ring to turn a building, corner handles on the sewer run, a frame round a text"""
         pg, sel = self.page, self.sel
+        if self._mode == "sewer_draw" and self.sh and pg.res and getattr(pg, "_sd_on", False):
+            pk = QColor("#d6209a")
+            S = self.sh.pt
+            try:
+                p0, n0 = se.port_point(pg.res["house"], pg.st["ports"]["sewer"])
+                st_ = pg.st["params"].get("stub", se.DEFAULTS["stub"]) if pg.st.get("params") else se.DEFAULTS["stub"]
+                pts = [p0, (p0[0] + n0[0] * st_, p0[1] + n0[1] * st_)] + [tuple(c) for c in pg._sd]
+                hv = getattr(self, "hover", None)
+                if hv:
+                    pts.append((hv[0], hv[1]))
+                pts = se.square_join(pts)
+                p.setPen(QPen(pk, 2.2, Qt.PenStyle.DashLine))
+                for a_, b_ in zip(pts[:-1], pts[1:]):
+                    p.drawLine(S(a_), S(b_))
+                p.setBrush(QBrush(QColor("white")))
+                p.setPen(QPen(pk, 2))
+                for c in pg._sd:
+                    p.drawEllipse(S(c), 6, 6)
+                p.drawEllipse(S(p0), 7, 7)
+            except Exception:
+                pass
+            return
         if not sel or not pg.res or not self.sh:
             return
         S = self.sh.pt
@@ -898,6 +929,10 @@ class SiteServicesPage(ToolBase):
                 bv.addLayout(row)
             if key == "sewer":
                 row = QHBoxLayout()
+                dr_ = QPushButton("Draw the sewer: start, corners, main")
+                dr_.setToolTip("Click where the sewer starts on the house (minimum invert), click each 90 degree corner, then click the main sewer line. The eyes go in by themselves.")
+                dr_.clicked.connect(self.sewer_draw_start)
+                row.addWidget(dr_)
                 sb_ = QPushButton("Add a sewer outlet on the house: click on it")
                 sb_.setToolTip("Up to 4 sewer outlets on the house. Each runs square to the sewer run and butts onto it. Drag its square on the wall to move it; select it and press Delete to remove it.")
                 sb_.clicked.connect(lambda: self.arm("sport_add"))
@@ -1337,7 +1372,7 @@ class SiteServicesPage(ToolBase):
         self.set_hint({"pt_sewer": "Click in the plan where the main sewer connection is.", "pt_water": "Click in the plan where the water connection is.",
                        "pt_elec": "Click in the plan where the electrical supply is.", "port_sewer": "Click on the house outline where the sewer leaves the house.",
                        "port_water": "Click on the house outline where the water enters.", "port_db": "Click on the house outline where the DB is.",
-                       "wport_add": "Click on the house outline where another water point enters. Press Esc when done.", "sport_add": "Click on the house wall where another sewer outlet leaves the house. Press Esc when done.", "text_add": "Click in the plan where the text goes.", "dim_add": "Click the first point of the dimension (corners snap), then the second. Drag its figure to slide it. Press Esc when done.", "road": "Click on the side of the stand where the road is.", "north_dir": "Click in the direction north points. You can also drag the arrow to move it.", "via_add": "Click in the plan where the sewer must pass. Click again for the next point, in order from the house to the main. Press Esc when done.", "street": "Click the boundary that faces the street.", "cust_add": "Click in the plan where your point goes."}.get(mode, ""))
+                       "wport_add": "Click on the house outline where another water point enters. Press Esc when done.", "sport_add": "Click on the house wall where another sewer outlet leaves the house. Press Esc when done.", "sewer_draw": "Click where the sewer starts.", "text_add": "Click in the plan where the text goes.", "dim_add": "Click the first point of the dimension (corners snap), then the second. Drag its figure to slide it. Press Esc when done.", "road": "Click on the side of the stand where the road is.", "north_dir": "Click in the direction north points. You can also drag the arrow to move it.", "via_add": "Click in the plan where the sewer must pass. Click again for the next point, in order from the house to the main. Press Esc when done.", "street": "Click the boundary that faces the street.", "cust_add": "Click in the plan where your point goes."}.get(mode, ""))
         self.view.update()
 
     def set_point(self, k, w):
@@ -1553,6 +1588,7 @@ class SiteServicesPage(ToolBase):
         elif sel[0] == "sewer":
             lay.addWidget(QLabel("Sewer line"))
             lay.addWidget(QLabel("drag a leg to slide it; a corner stretches it (Shift = move only that corner); the last square, on the main line, is the connection"))
+            add("Draw the sewer", self.sewer_draw_start, "Click the start on the house, each corner, then the main sewer line")
             add("Add a sewer outlet", lambda: self.arm("sport_add"), "Another outlet from the house: click on the wall. It runs square to the sewer run and butts onto it.")
             add("Free bends: " + ("on" if self.st.get("sewer_free") else "off"), self.toggle_free, "On: a corner moves alone and the legs next to it go slanted, everything else stays put")
             add("Eyes back", self.reset_eyes, "Put all the eyes back where the program places them")
@@ -1834,6 +1870,42 @@ class SiteServicesPage(ToolBase):
             return
         wp.append(se.nearest_port(self.res["house"], w))
         self.solve_now()
+
+    def sewer_draw_start(self):
+        self._sd_on, self._sd = False, []
+        self.arm("sewer_draw")
+        self.set_hint("Draw the sewer: 1) click on the house wall where the sewer starts (the minimum invert is there), 2) click each corner, 3) click on the main sewer line (or press Done) to finish.")
+
+    def sewer_draw_click(self, w):
+        if not getattr(self, "_sd_on", False):
+            self.st.setdefault("ports", {})["sewer"] = se.nearest_port(self.res["house"], w)
+            self.st["sewer_manual"], self.st["sewer_via"], self.st["sewer_free"] = [], [], False
+            self._sd_on, self._sd = True, []
+            self.solve_now(False)
+            self.set_hint("Now click each corner of the run. Click on the main sewer line to finish (or press Done).")
+            return
+        mainy = se.mains(self.st)["sewer"]
+        if w[1] <= 0.3:                                           # at or past the street boundary: that is the main
+            self.sewer_draw_finish(w[0])
+            self.view.finish_mode()
+            return
+        self._sd.append([round(w[0], 2), round(w[1], 2)])
+
+    def sewer_draw_finish(self, x=None):
+        if not getattr(self, "_sd_on", False):
+            return
+        self._sd_on = False
+        mainy = se.mains(self.st)["sewer"]
+        pts = [list(c) for c in self._sd]
+        if x is None:
+            x = pts[-1][0] if pts else self.st["points"]["sewer"][0]
+        pts.append([round(x, 2), mainy])
+        self.st["sewer_manual"] = pts
+        self.st["points"]["sewer"] = [round(x, 2), mainy]
+        self.st["pts_manual"] = True
+        self._sd = []
+        self.solve_now(False)
+        self.commit(True)
 
     def add_sport(self, w):
         sp = self.st.setdefault("sewer_ports", [])

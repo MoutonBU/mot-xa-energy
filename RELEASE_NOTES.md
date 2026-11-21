@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.115**
+Current version: **1.86.116**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Site services:** Draw the sewer by clicking (Service points tab, or the sewer toolbar): click where the sewer starts on the house wall (the minimum invert is there), click each 90 degree corner (a dashed preview follows the pointer), then click the main sewer line or press Done. The pipe is made square and all the inspection and rodding eyes go in by themselves. An extra sewer outlet added afterwards joins the run automatically; if it is further up the line than the first outlet, the minimum invert (Min IL) moves to it and every invert level is worked back from it.
 - **Site services:** leaving an add mode (add point, text, dimension, water or sewer outlet...) is now easy: a pink Done button shows over the plan, right-click offers Done, and Esc works wherever the focus is.
 - **Site services:** the end of the whole sewer line (the connection on the main sewer line) can now be selected: click its dot (or the last square when the sewer line is selected) and drag it along the main line, and the run goes to it, a hand-placed run included. The toolbar offers Shortest connection (automatic) or Click it in the plan.
 - **Site services:** extra sewer outlets on the house (up to 4 in all). Service points tab: "Add a sewer outlet on the house" (or the sewer toolbar), click on the wall; each runs square to the sewer run and butts onto it with a rodding eye at the wall and an inspection eye at the joint. Drag its brown square along the wall to move it; select it and press Delete (or right-click) to remove it. They also go into the DXF export, together with the main outlet pipe.
