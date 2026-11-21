@@ -1456,7 +1456,11 @@ class SiteServicesPage(ToolBase):
             light = getattr(self, "_light", False) and self.view.drag is not None
         self._light = False
         try:
-            self.res = se.solve(self.st)
+            se.FAST = bool(light)                                # dragging: coarse routing; letting go: the exact lines
+            try:
+                self.res = se.solve(self.st)
+            finally:
+                se.FAST = False
         except Exception as e:                                  # a bad input must never take the tool down
             self.res = None
             self.warn_lbl.setText("Could not work out the lines: %s" % e)

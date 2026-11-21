@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.127**
+Current version: **1.86.128**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **House placing:** much faster to move the house (and the carport, texts and points): while you drag, the pipes are worked out on a coarser grid (about 25 ms a move instead of 300 ms), and the exact lines are drawn the moment you let go. The routing itself also skips far-away cells.
 - **House placing:** no more two inspection eyes on top of each other. Where a boundary, a joint, a bend or the spacing rule would put a second IE within 0.45 m of another, it is one IE (the one on the bend or joint stays), with one IE text. Pinned by test_sewer_eyes.py over 300 random layouts.
 - **House placing:** the IE / RE texts can be deleted again (select one and press Delete, or right-click it; Texts back restores them). The eyes themselves stay on the pipe.
 - **House placing:** (1) Manholes can be dragged along the main (right-click: rename or delete). (2) The stormwater arrow can be dragged (its line) and turned (drag its pink head, Shift = 15 degree steps; right-click: turn 90, turn round, point at the street, put it back); its text now runs along the arrow as "Stormwater Flow". (3) Every text except NEW HOUSE has lost its white box (also in the DXF). (4) A "Boundary walls" tick box on the toolbar switches the 1.2 m pre-cast walls on and off. (5) The WP / VV box sits beside the label, not on NEW HOUSE.

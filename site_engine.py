@@ -8,6 +8,7 @@ import heapq
 import math
 
 GRID = 0.25
+FAST = False                 # while the plan is being dragged: a coarser routing grid, so the lines follow at once; the exact ones come when you let go
 DEFAULTS = {"fall": 50.0, "conn_depth": 1.5, "max_ie": 25.0, "min_depth": 0.45, "sewer_pipe": "110", "water_pipe": "20",
             "clear": 0.3, "re_ext": 0.35, "ie_first": 1.5, "sep_water": 0.5, "sep_service": 0.1, "min_cover": 0.3, "stub": 1.0, "sb_street": 1.0, "sb_side": 1.0, "sb_rear": 2.0}
 
@@ -330,31 +331,34 @@ def best_line(a, cands, obstacles, others=()):
 def route(a, b, stand, blocked, street_band=2.5, pad=2.0, bend=3.0):
     """Orthogonal route from a to b on a 0.25 m grid. Blocked polygons are avoided; open land of the neighbours costs a lot,
     the strip in front of the street boundary costs nothing extra (that is where mains are). Returns a list of corner points."""
+    G = 0.5 if FAST else GRID
     xs = [p[0] for p in stand] + [a[0], b[0]]
     ys = [p[1] for p in stand] + [a[1], b[1]]
     x0, y0 = min(xs) - pad, min(ys) - pad
-    nx = int((max(xs) + pad - x0) / GRID) + 1
-    ny = int((max(ys) + pad - y0) / GRID) + 1
+    nx = int((max(xs) + pad - x0) / G) + 1
+    ny = int((max(ys) + pad - y0) / G) + 1
     cell = {}
     street = (stand[0], stand[1])
+    bbs = [(min(q[0] for q in poly), min(q[1] for q in poly), max(q[0] for q in poly), max(q[1] for q in poly), poly) for poly in blocked]
+    sbb = (min(q[0] for q in stand), min(q[1] for q in stand), max(q[0] for q in stand), max(q[1] for q in stand))
 
     def cost(i, j):
         k = (i, j)
         if k in cell:
             return cell[k]
-        p = (x0 + i * GRID, y0 + j * GRID)
+        p = (x0 + i * G, y0 + j * G)
         c = 1.0
-        for poly in blocked:
-            if inside(p, poly):
+        for bx0, by0, bx1, by1, poly in bbs:
+            if bx0 <= p[0] <= bx1 and by0 <= p[1] <= by1 and inside(p, poly):
                 c = None
                 break
-        if c is not None and not inside(p, stand):
+        if c is not None and not (sbb[0] <= p[0] <= sbb[2] and sbb[1] <= p[1] <= sbb[3] and inside(p, stand)):
             c = 1.4 if seg_dist(p, *street) < street_band else 8.0
         cell[k] = c
         return c
 
-    s = (int(round((a[0] - x0) / GRID)), int(round((a[1] - y0) / GRID)))
-    g = (int(round((b[0] - x0) / GRID)), int(round((b[1] - y0) / GRID)))
+    s = (int(round((a[0] - x0) / G)), int(round((a[1] - y0) / G)))
+    g = (int(round((b[0] - x0) / G)), int(round((b[1] - y0) / G)))
     dirs = ((1, 0), (-1, 0), (0, 1), (0, -1))
     pq = [(0.0, 0.0, s, -1)]
     best = {(s, -1): 0.0}
@@ -374,11 +378,11 @@ def route(a, b, stand, blocked, street_band=2.5, pad=2.0, bend=3.0):
             c = cost(*nxt)
             if c is None and nxt != g:
                 continue
-            nd = d + (c or 1.0) * GRID + (bend if dr not in (-1, k) else 0.0)
+            nd = d + (c or 1.0) * G + (bend if dr not in (-1, k) else 0.0)
             if nd < best.get((nxt, k), 1e18) - 1e-9:
                 best[(nxt, k)] = nd
                 prev[(nxt, k)] = (cur, dr)
-                heapq.heappush(pq, (nd + (abs(nxt[0] - g[0]) + abs(nxt[1] - g[1])) * GRID, nd, nxt, k))
+                heapq.heappush(pq, (nd + (abs(nxt[0] - g[0]) + abs(nxt[1] - g[1])) * G, nd, nxt, k))
     if end is None:
         return [a, b]
     cells = []
@@ -389,7 +393,7 @@ def route(a, b, stand, blocked, street_band=2.5, pad=2.0, bend=3.0):
             break
         node = prev[node]
     cells.reverse()
-    pts = [(x0 + i * GRID, y0 + j * GRID) for i, j in cells]
+    pts = [(x0 + i * G, y0 + j * G) for i, j in cells]
     out = [pts[0]]
     for i in range(1, len(pts) - 1):
         d1 = (pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1])
@@ -666,7 +670,7 @@ def sewer(state, hp, cp, params, others=()):
         samples = [(k * 0.5, point_at(path, min(k * 0.5, L))) for k in range(int(L / 0.5) + 1)]
         samples.sort(key=lambda q: abs(q[1][0] - start[0]) + abs(q[1][1] - start[1]))
         best = None
-        for c_, q in samples[:4]:
+        for c_, q in samples[:(1 if FAST else 4)]:
             pr = ortho(route(q, start, stand, obs))
             Lq = length(pr)
             if best is None or Lq < best[0]:
@@ -859,7 +863,7 @@ def water(state, hp, cp, params, others=()):
         bp = straight_out(p0, n0, net, hp)                       # straight out of the wall, square to the plan, onto the pipe already laid
         if bp is None:
             best = None
-            for q in samples[:4]:
+            for q in samples[:(1 if FAST else 4)]:
                 pr = ortho(route(q, start, stand, obs))
                 Lq = length(pr)
                 if best is None or Lq < best[0]:
