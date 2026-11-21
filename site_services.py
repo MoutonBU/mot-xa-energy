@@ -723,7 +723,7 @@ class SiteServicesPage(ToolBase):
         v3.addWidget(bx)
         bx, bv = self.box("Save", "")
         row = QHBoxLayout()
-        for text, fn in (("Save the plan as PDF...", self.save_pdf), ("Save as an image...", self.save_png), ("Save the setup...", self.save_json), ("Open a setup...", self.open_json)):
+        for text, fn in (("Save the plan as PDF...", self.save_pdf), ("Save as DXF (true size, mm)...", self.save_dxf), ("Save as an image...", self.save_png), ("Save the setup...", self.save_json), ("Open a setup...", self.open_json)):
             b = QPushButton(text)
             b.clicked.connect(lambda _=False, f=fn: f())
             row.addWidget(b)
@@ -1199,6 +1199,9 @@ class SiteServicesPage(ToolBase):
                 return
             poly, under = got
             self.set_stand_world(poly, "Imported stand", src_shapes=[1])
+            xs_, ys_ = [p[0] for p in poly], [p[1] for p in poly]
+            self.set_hint("Stand imported at true size: %.2f x %.2f m, %.0f m2." % (max(xs_) - min(xs_), max(ys_) - min(ys_), abs(se.area(poly))))
+            QTimer.singleShot(8000, lambda: self.set_hint(""))
             self._set_underlay(under)
             return
         shapes = self._read_dxf(path)
@@ -1313,6 +1316,8 @@ class SiteServicesPage(ToolBase):
             c = self.st["stand"]["corners"]
             o["cx"], o["cy"] = round(sum(p[0] for p in c) / len(c), 2), round(sum(p[1] for p in c) / len(c), 2)
         self.st["house" if role == "house" else "carport"] = o
+        self.set_hint("%s imported at true size: %.2f x %.2f m." % (role.capitalize(), o["w"], o["d"]))
+        QTimer.singleShot(8000, lambda: self.set_hint(""))
         self.st["ports"] = {}
         self._to_fields()
         if not placed:
@@ -1428,6 +1433,12 @@ class SiteServicesPage(ToolBase):
         p = QPainter(w)
         self._render(p, w.width(), w.height(), 300)
         p.end()
+
+    def save_dxf(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Save the plan as DXF", "site_services.dxf", "DXF (*.dxf)")
+        if path:
+            import site_export
+            site_export.build(self.st, self.res, path)
 
     def save_png(self):
         path, _ = QFileDialog.getSaveFileName(self, "Save the plan", "site_services.png", "Image (*.png)")

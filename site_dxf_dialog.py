@@ -177,9 +177,35 @@ class ImportDialog(QDialog):
         side.addWidget(cb)
         row.addLayout(side, 1)
         v.addLayout(row, 1)
+        self._auto_scale()
         self.unit.currentIndexChanged.connect(self.rebuild)
         self.scale.valueChanged.connect(self.rebuild)
         self.resize(1000, 640)
+        self.rebuild()
+
+    RANGES = {"stand": (60, 6000), "house": (30, 900), "carport": (8, 150)}
+
+    def _auto_scale(self):
+        """drawings are full size, or drawn in paper units at 1:N. Keep the units the file says (or the size suggests) when the whole drawing then comes out a
+        believable size on the ground (5 m to 1.5 km across). Otherwise try 1:200, 1:100, 1:50, 1:500 ... until it does, so a drawing saved 'at 1:200'
+        lands at true size. The size is always shown, and both boxes can be changed by hand."""
+        d = self.drawing
+        span = max(d["span"]) or 1.0
+        self.auto_note = ""
+        base = UNITS[self.unit.currentIndex()][1]
+        if 5 <= span * base <= 1500:
+            self.auto_note = "Full size: %s, drawn at 1 : 1." % UNITS[self.unit.currentIndex()][0]
+        else:
+            for s in (200, 100, 50, 500, 20, 1000, 10, 2000):
+                for i in sorted(range(3), key=lambda i: abs(UNITS[i][1] - d["unit"])):
+                    if 5 <= span * UNITS[i][1] * s <= 1500:
+                        self.unit.setCurrentIndex(i)
+                        self.scale.setValue(s)
+                        self.auto_note = "Worked out from the size: %s, drawn at 1 : %d." % (UNITS[i][0], s)
+                        break
+                else:
+                    continue
+                break
         self.rebuild()
 
     def factor(self):
@@ -198,10 +224,12 @@ class ImportDialog(QDialog):
             self.lw.addItem("%.1f m2   %.1f x %.1f m   %d corners" % (s["area"], max(xs) - min(xs), max(ys) - min(ys), len(s["poly"])))
         self.lw.blockSignals(False)
         w, h = d["span"][0] * f, d["span"][1] * f
-        self.size_lbl.setText("The drawing is %.1f x %.1f m at these settings." % (w, h))
+        lo, hi = self.RANGES.get(self.role, (8, 6000))
+        bad = False
+        self.size_lbl.setText("The drawing is %.1f x %.1f m at these settings.%s" % (w, h, "  CHECK THE SCALE: no outline is the size of a %s." % self.role if bad else ""))
         self.prev.pts = []
         self.prev.sel = None
-        self.hint.setText("" if self.shapes else "No closed outline in this drawing (the lines do not meet). Click the corners yourself: tick the button, click each corner (it snaps to line ends), then Use my corners.")
+        self.hint.setText(getattr(self, "auto_note", "") if self.shapes else "No closed outline in this drawing (the lines do not meet). Click the corners yourself: tick the button, click each corner (it snaps to line ends), then Use my corners.")
         self.prev.fit()
 
     def _sel(self, i):

@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.94**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.95**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **1.86.95** Site services works to true scale. The import window works out the units and the scale from the size of the drawing (full size, or drawn at 1:200, 1:100, 1:50, 1:500) and shows the real size in metres; after an import the stand, house or carport size is shown. New: "Save as DXF (true size, mm)..." writes the plan at 1:1 in millimetres, on layers coloured like the sheet (stand, house, carport, sewer brown, water blue, electrical yellow), ready for your CAD program.
 
 - **1.86.94** Site services: a footprint library (your six 1:200 footprints: LR81/90/91 3+2-DC and LR100/101/91 4+2-DC) under "House from the library...". The marks on the footprints (DB, SD, FD, G, KD) now set where the DB and the sewer outlet go. Up to 4 water points on the house from the single water connection: "Add a water point on the house: click on it", drag them along the wall, right-click to remove. Each branches off the water pipe already laid, in square runs. A house too big for the stand is now centred instead of dropped at the corner.
 
