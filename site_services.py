@@ -2349,7 +2349,7 @@ class SiteServicesPage(ToolBase):
         path, _ = QFileDialog.getSaveFileName(self, "Save the plan as DXF", "site_services.dxf", "DXF (*.dxf)")
         if path:
             import site_export
-            site_export.build(self.st, self.res, path)
+            site_export.build_sheet(self, path)
 
     def save_png(self):
         path, _ = QFileDialog.getSaveFileName(self, "Save the plan", "site_services.png", "Image (*.png)")

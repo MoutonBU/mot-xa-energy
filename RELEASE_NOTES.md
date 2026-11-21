@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.117**
+Current version: **1.86.118**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Site services:** the DXF export is now the plan exactly as it is drawn on the screen, so it opens in ArchiCAD or any CAD with nothing to redo: same orientation (road side), the road with kerbs, mains and street name, stand and neighbour lines, building lines, stand figures, bold stand numbers, setting-out lines and dimension chains, the eyes, texts (moved the same way), the entry, carport, house fill, DB / EC, the compass, the imported drawing faint underneath and the title block. True size in millimetres (plots at 1:200), real TEXT in Arial, filled shapes as hatches, dashes as linetypes, colours on layers (SEWER, WATER, ELECTRICAL, HOUSE, CARPORT, ENTRY, SETTING OUT, SITE PLAN, TEXT, UNDERLAY). Pinned by test_site_export.py.
 - **Site services:** the run always carries on re_ext (0.35 m) past the outlet joint and ends in a rodding eye there (the end piece), with the inspection eye at the joint. Drawing the sewer by clicks now has Square / Skew / Horizontal / Vertical buttons (hold Shift for skew) that say how the pipe gets to each click: a skew line between two points that do not align, or forced level or upright. Any number of corner clicks; a click on or near the main sewer line (or past the street boundary) ends it automatically and the last point is always on the main.
 - **Site services:** Draw the sewer by clicking (Service points tab, or the sewer toolbar): click where the sewer starts on the house wall (the minimum invert is there), click each 90 degree corner (a dashed preview follows the pointer), then click the main sewer line or press Done. The pipe is made square and all the inspection and rodding eyes go in by themselves. An extra sewer outlet added afterwards joins the run automatically; if it is further up the line than the first outlet, the minimum invert (Min IL) moves to it and every invert level is worked back from it.
 - **Site services:** leaving an add mode (add point, text, dimension, water or sewer outlet...) is now easy: a pink Done button shows over the plan, right-click offers Done, and Esc works wherever the focus is.
