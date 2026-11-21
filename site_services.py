@@ -1864,7 +1864,7 @@ class SiteServicesPage(ToolBase):
             return None
         if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.result:
             return None
-        return dlg.result, dlg.underlay(), dlg.street_edge
+        return dlg.result, dlg.underlay(), dlg.street_edge, getattr(dlg, "extras", {})
 
     def _set_underlay(self, lines):
         """the imported drawing's own lines, kept faint under the plan, moved into the stand frame"""
@@ -1947,7 +1947,9 @@ class SiteServicesPage(ToolBase):
             if not got:
                 return
             poly = [tuple(p) for p in got[0]]
+            marks_in = (got[3] or {}).get("marks") if len(got) > 3 else None
         else:
+            marks_in = None
             shapes = self._read_dxf(path)
             if shapes is None:
                 return
@@ -1961,14 +1963,19 @@ class SiteServicesPage(ToolBase):
         placed = bool(fr and bb and bb[0] <= cxy[0] <= bb[2] and bb[1] <= cxy[1] <= bb[3])
         if placed:
             poly = [se.apply_frame(fr, p) for p in poly]
+            if marks_in:
+                marks_in = [[m[0], *se.apply_frame(fr, (m[1], m[2]))] for m in marks_in]
         xs, ys = [p[0] for p in poly], [p[1] for p in poly]
         o = {"poly": [[round(a, 3), round(b, 3)] for a, b in poly], "w": round(max(xs) - min(xs), 2), "d": round(max(ys) - min(ys), 2), "rot": 0.0,
              "cx": round((max(xs) + min(xs)) / 2, 2), "cy": round((max(ys) + min(ys)) / 2, 2)}
         if not placed:
             c = self.st["stand"]["corners"]
             o["cx"], o["cy"] = round(sum(p[0] for p in c) / len(c), 2), round(sum(p[1] for p in c) / len(c), 2)
+        if role == "house" and marks_in:
+            o["marks"] = [[m[0], round(m[1], 3), round(m[2], 3)] for m in marks_in]
         self.st["house" if role == "house" else "carport"] = o
-        self.set_hint("%s imported at true size: %.2f x %.2f m." % (role.capitalize(), o["w"], o["d"]))
+        self.set_hint("%s imported at true size: %.2f x %.2f m.%s" % (role.capitalize(), o["w"], o["d"],
+                      (" Marks taken from the drawing: " + ", ".join(sorted({m[0] for m in marks_in})) + ".") if role == "house" and marks_in else ""))
         QTimer.singleShot(8000, lambda: self.set_hint(""))
         self.st["ports"] = {}
         self._to_fields()

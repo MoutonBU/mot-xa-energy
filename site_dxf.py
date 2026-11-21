@@ -259,3 +259,87 @@ def outlines(drawing, factor, min_area=0.5):
         add("lines", loop)
     out.sort(key=lambda s: -s["area"])
     return out
+
+
+MARK_NAMES = ("DB", "SD", "FD", "G", "KD")
+WATER_COLOURS = {4, 5} | set(range(130, 180))                   # cyan and blue in the colour index
+PATIO_WORDS = ("patio", "stoep", "veranda", "braai", "porch", "pergola")
+
+
+def _seg_dist(p, a, b):
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    l2 = dx * dx + dy * dy or 1e-12
+    t = max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2))
+    return math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy)
+
+
+def _poly_dist(p, poly):
+    return min(_seg_dist(p, poly[i], poly[(i + 1) % len(poly)]) for i in range(len(poly)))
+
+
+def _inside(p, poly):
+    x, y = p
+    c = False
+    for i in range(len(poly)):
+        x1, y1 = poly[i]
+        x2, y2 = poly[(i + 1) % len(poly)]
+        if (y1 > y) != (y2 > y) and x < (x2 - x1) * (y - y1) / (y2 - y1 + 1e-12) + x1:
+            c = not c
+    return c
+
+
+def building_extras(texts_m, lines_m, shapes, poly):
+    """what the footprint drawing says besides the outline, all in metres: the marks (DB, SD, FD, G, KD) lying on or round it, where the blue water
+    pipe meets the house (that is the kitchen connection, against the KD or, failing that, the gully G), and any covered patio / stoep / braai
+    outline that touches it."""
+    xs, ys = [p[0] for p in poly], [p[1] for p in poly]
+    m = 1.5
+    marks = []
+    for t, x, y in texts_m:
+        tt = t.strip().upper()
+        if tt in MARK_NAMES and min(xs) - m <= x <= max(xs) + m and min(ys) - m <= y <= max(ys) + m:
+            marks.append([tt, round(x, 3), round(y, 3)])
+    # the blue pipe ends on the house wall
+    stubs = []
+    for l in lines_m:
+        if len(l) > 4 and l[4] in WATER_COLOURS:
+            a, b = (l[0], l[1]), (l[2], l[3])
+            if math.hypot(b[0] - a[0], b[1] - a[1]) < 0.3:
+                continue
+            for e, o in ((a, b), (b, a)):
+                if _poly_dist(e, poly) < 0.35 and not _inside(o, poly) and _poly_dist(o, poly) > 0.25:
+                    stubs.append(e)
+    ref = [(mk[1], mk[2]) for mk in marks if mk[0] == "KD"] or [(mk[1], mk[2]) for mk in marks if mk[0] == "G"]
+    water = None
+    if stubs:
+        water = min(stubs, key=lambda q: min(math.hypot(q[0] - r[0], q[1] - r[1]) for r in ref)) if ref else None
+        if water is not None and ref and min(math.hypot(water[0] - r[0], water[1] - r[1]) for r in ref) > 4.0:
+            water = None                                         # a stub nowhere near the kitchen: not the water connection
+    if water is not None:
+        marks = [mk for mk in marks if mk[0] != "KD"]
+        marks.append(["KD", round(water[0], 3), round(water[1], 3)])
+    patios = []
+    lab = [(t.strip().lower(), x, y) for t, x, y in texts_m]
+    for s in shapes:
+        q = s["poly"]
+        if s["area"] > abs(_area(poly)) * 0.8 or s["area"] < 2.0:
+            continue
+        if not any(any(w in t for w in PATIO_WORDS) and _inside((x, y), q) for t, x, y in lab):
+            continue
+        if any(_poly_dist(p, poly) < 0.1 for p in q) or any(_poly_dist(p, q) < 0.1 for p in poly):
+            patios.append([tuple(p) for p in q])
+    return {"marks": marks, "patios": patios, "water": water}
+
+
+def union_polys(poly, others):
+    """the house outline and the patios joined into one outline (shapely); the house alone if that fails"""
+    try:
+        from shapely.geometry import Polygon
+        from shapely.ops import unary_union
+        u = unary_union([Polygon(poly).buffer(0.01, join_style=2)] + [Polygon(o).buffer(0.01, join_style=2) for o in others]).buffer(-0.01, join_style=2)
+        if u.geom_type != "Polygon":
+            u = max(u.geoms, key=lambda g: g.area)
+        pts = [(round(x, 4), round(y, 4)) for x, y in list(u.exterior.coords)[:-1]]
+        return _clean(pts, 0.005)
+    except Exception:
+        return list(poly)

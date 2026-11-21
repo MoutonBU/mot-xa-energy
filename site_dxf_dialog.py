@@ -210,6 +210,16 @@ class ImportDialog(QDialog):
         self.under_cb.setChecked(role == "stand")
         self.under_cb.setVisible(role == "stand")
         side.addWidget(self.under_cb)
+        self.marks_cb = QCheckBox("Take the service marks from the drawing (SD, FD, DB, G, KD) and the blue water pipe on the kitchen")
+        self.marks_cb.setChecked(True)
+        self.marks_cb.setVisible(role == "house")
+        self.marks_cb.setToolTip("Reads the drain and board marks, and where the blue water line meets the house (the kitchen, KD), so the sewer and water start there. You can still move them.")
+        side.addWidget(self.marks_cb)
+        self.patio_cb = QCheckBox("Include the covered patio / stoep / braai that touches the house")
+        self.patio_cb.setVisible(role == "house")
+        self.patio_cb.setToolTip("Adds the outlines marked C.PATIO, stoep, braai... that touch the house to its outline, so they count in the coverage and the pipes keep clear of them")
+        side.addWidget(self.patio_cb)
+        self.extras = {}
         cb = QPushButton("Cancel")
         cb.clicked.connect(self.reject)
         side.addWidget(cb)
@@ -359,6 +369,16 @@ class ImportDialog(QDialog):
             self.prev.update()
             return
         if self.role != "stand":
+            if self.role == "house":
+                try:
+                    ex = site_dxf.building_extras(self.texts_m, self.lines_m, self.shapes, self.result)
+                except Exception:
+                    ex = {"marks": [], "patios": [], "water": None}
+                if not self.marks_cb.isChecked():
+                    ex["marks"] = []
+                if self.patio_cb.isChecked() and ex["patios"]:
+                    self.result = site_dxf.union_polys(self.result, ex["patios"])
+                self.extras = ex
             self.accept()
             return
         self.street_mode = True
