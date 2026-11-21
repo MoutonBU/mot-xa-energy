@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.104**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.105**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **1.86.105** Site services, rotated house: the setting-out lines now carry on outwards. The nearest corner and the two corners at the ends are carried square past each boundary in light blue, and a dimension chain outside the boundary gives the distances from the stand's corners to those lines (as marked in blue on your plan). The street side is left out. The chain figures can be dragged up and down like the other dimensions.
 
 - **1.86.104** Site services: click a thing and it gets a gizmo. House or carport: a ring with a handle to turn it by dragging (Shift = 15 degree steps), plus buttons for 5 degrees, 90 degrees and a precise slider. Sewer line: click it and drag a leg to slide it, or a corner to stretch it, all kept square; the eyes (IE, RE, boundary) follow; "Back to automatic" undoes your changes. Texts: click one for a frame and buttons to edit the words, make it bigger or smaller, turn it, or reset it (double-click a text to edit it too). New "Add text" button for your own notes on the plan. The sewer eye rules (RE at the start with Min IL, IE 350 mm past it, IE on every corner with a rodding eye stub, IE and RE at the boundary) are now pinned by a check in the code (test_sewer_eyes.py).
 

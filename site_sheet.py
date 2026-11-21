@@ -415,29 +415,47 @@ def draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=False
 
 
 def _setting_out(D, stand, house, kinds, label):
-    """setting out: from each boundary to the nearest corner of the house, square to the boundary, in light blue dashes. Follows the house when it is rotated;
-    the figure is written on the line when the house is not square to the boundary (a square house has its dimensions in the plan's usual places)."""
+    """setting out: from each boundary to the nearest corner of the house, square to the boundary, in light blue dashes. Follows the house when it is rotated.
+    When the house is not square to the boundary, the corners it reaches out to (the nearest one and the two at the ends) are also carried out past the
+    boundary in light blue, and a dimension chain outside the boundary gives the distances between the stand's corners and those lines."""
     n = len(stand)
+    ccw = se.area(stand) > 0
     for i in range(n):
         a, b = stand[i], stand[(i + 1) % n]
         L = edge_len(a, b)
         if L < 1e-6:
             continue
         ux, uy = (b[0] - a[0]) / L, (b[1] - a[1]) / L
-        best = None
+        out = (uy, -ux) if ccw else (-uy, ux)
+        cands = []
         for v in house:
             t = (v[0] - a[0]) * ux + (v[1] - a[1]) * uy
             if not 0.0 <= t <= L:
                 continue
             f = (a[0] + ux * t, a[1] + uy * t)
             d = edge_len(v, f)
-            if 0.05 < d < 60 and (best is None or d < best[0]):
-                best = (d, v, f)
-        if best:
-            d, v, f = best
-            D.line(v, f, SETOUT, 0.045, dash=[7, 4])
-            if label:
-                D.text(((v[0] + f[0]) / 2, (v[1] + f[1]) / 2), mm(d), 0.4, (v[0] - f[0], v[1] - f[1]), spacing=110, color=BLACK)
+            if 0.05 < d < 60:
+                cands.append((d, t, v, f))
+        if not cands:
+            continue
+        d, t, v, f = min(cands)
+        D.line(v, f, SETOUT, 0.045, dash=[7, 4])
+        if label:
+            D.text(((v[0] + f[0]) / 2, (v[1] + f[1]) / 2), mm(d), 0.4, (v[0] - f[0], v[1] - f[1]), spacing=110, color=BLACK)
+        if label and kinds[i] != "street":
+            pick = {id(c): c for c in (min(cands), min(cands, key=lambda c: c[1]), max(cands, key=lambda c: c[1]))}.values()
+            off = 2.4
+            ts = []
+            for d2, t2, v2, f2 in pick:
+                if all(abs(t2 - q) > 0.05 for q in ts):
+                    ts.append(t2)
+                    D.line(f2, (f2[0] + out[0] * (off + 0.3), f2[1] + out[1] * (off + 0.3)), SETOUT, 0.045, dash=[7, 4])
+                    if d2 > 0.05 and (d2, t2, v2, f2) != (d, t, v, f):
+                        D.line(v2, f2, SETOUT, 0.045, dash=[7, 4])
+            chain = [0.0] + sorted(ts) + [L]
+            for t0, t1 in zip(chain[:-1], chain[1:]):
+                if t1 - t0 > 0.05:
+                    D.dim((a[0] + ux * t0, a[1] + uy * t0), (a[0] + ux * t1, a[1] + uy * t1), off, mm(t1 - t0), 0.45, side=-1 if ccw else 1)
 
 
 def _off(sh, q, dh, dv):
