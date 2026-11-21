@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.133**
+Current version: **1.86.134**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **House placing:** importing a stand drawing now finds the stand when its boundary lines only nearly meet (up to 0.4 m apart) or cross and run past the corners, which is how a lot of loose DXFs are drawn. Before, it only found closed shapes and showed small bits. Square boundaries (level and upright lines) are found even with overshoots; the biggest outline is listed first.
 - **House placing:** delete a corner of the sewer line: select the sewer, click the corner and press Delete, or right-click the corner and choose "Delete this corner". The two legs join straight (slanted); eyes are re-placed automatically. "Back to automatic" undoes it.
 - **House placing:** all services now draw on top of everything: the main sewer, water and electrical lines and the manholes go over the entry drive and the green (the sewer, water and electrical branches already went over the carport and house). Same in the DXF.
 - **House placing:** cars enter from the side you choose: the button "Cars enter from the next side" (carport box) or right-click the carport. The drive runs round the carport to that side with rounded corners, and arrows show the cars driving in, one per bay (two for a double carport). Same in the DXF.

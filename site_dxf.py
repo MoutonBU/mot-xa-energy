@@ -255,10 +255,62 @@ def outlines(drawing, factor, min_area=0.5):
     for lay, pts in drawing["raw_shapes"]:
         add(lay, pts)
     segs = [((l[0], l[1]), (l[2], l[3])) for l in drawing["lines"]]
-    for loop in _join(segs, 0.01 / factor if factor else 0.01):
-        add("lines", loop)
+    for tol_m in (0.01, 0.1, 0.4):                               # lines that nearly meet (a loose drawing) join up with a wider reach
+        for loop in _join(segs, tol_m / factor if factor else tol_m):
+            add("lines", loop)
+    for poly in _rectangles(segs, factor or 1.0):                 # square boundaries whose lines cross or overshoot at the corners
+        add("lines", poly)
     out.sort(key=lambda s: -s["area"])
     return out
+
+
+def _rectangles(segs, factor, min_len=3.0, tol=0.06, cover=0.85):
+    """level and upright lines (in the drawing's units) that make a closed box even where they cross or run past the corners"""
+    H, V = [], []
+    for (x1, y1), (x2, y2) in segs:
+        L = math.hypot(x2 - x1, y2 - y1) * factor
+        if L < min_len:
+            continue
+        if abs(y2 - y1) * factor < tol:
+            H.append(((y1 + y2) / 2 * factor, min(x1, x2) * factor, max(x1, x2) * factor))
+        elif abs(x2 - x1) * factor < tol:
+            V.append(((x1 + x2) / 2 * factor, min(y1, y2) * factor, max(y1, y2) * factor))
+
+    def merged(items):
+        """lines on the same level, grouped, with their spans joined"""
+        items.sort()
+        out = []
+        for c, lo, hi in items:
+            if out and abs(out[-1][0] - c) <= tol and lo <= out[-1][2] + tol:
+                out[-1][2] = max(out[-1][2], hi)
+                out[-1][1] = min(out[-1][1], lo)
+            else:
+                out.append([c, lo, hi])
+        return out
+    H, V = merged(H), merged(V)
+    if len(H) > 60 or len(V) > 60:
+        H = sorted(H, key=lambda t: -(t[2] - t[1]))[:60]
+        V = sorted(V, key=lambda t: -(t[2] - t[1]))[:60]
+    res = []
+
+    def span(c, lo, hi, line):
+        return min(hi, line[2]) - max(lo, line[1])
+    for i, h1 in enumerate(H):
+        for h2 in H[i + 1:]:
+            if abs(h1[0] - h2[0]) < min_len:
+                continue
+            ylo, yhi = sorted((h1[0], h2[0]))
+            for j, v1 in enumerate(V):
+                for v2 in V[j + 1:]:
+                    if abs(v1[0] - v2[0]) < min_len:
+                        continue
+                    xlo, xhi = sorted((v1[0], v2[0]))
+                    W, Hh = xhi - xlo, yhi - ylo
+                    ok = (span(0, xlo, xhi, h1) >= cover * W and span(0, xlo, xhi, h2) >= cover * W
+                          and span(0, ylo, yhi, v1) >= cover * Hh and span(0, ylo, yhi, v2) >= cover * Hh)
+                    if ok:
+                        res.append([(xlo, ylo), (xhi, ylo), (xhi, yhi), (xlo, yhi)])
+    return [[(x / factor, y / factor) for x, y in r] for r in res]
 
 
 MARK_NAMES = ("DB", "SD", "FD", "G", "KD")
