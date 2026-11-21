@@ -98,7 +98,7 @@ class ServicesView(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self.view = None                       # (px per m, world x at the centre, world y at the centre)
         self.auto = True
-        self.mode = "select"                   # select | pt_sewer | pt_water | pt_elec | port_sewer | port_water | port_db
+        self._mode = "select"                  # select | pt_sewer | pt_water | pt_elec | port_sewer | port_water | port_db
         self.drag = None
         self.sel = None
         self.sh = None
@@ -108,6 +108,26 @@ class ServicesView(QWidget):
         self._full.setSingleShot(True)
         self._full.setInterval(160)
         self._full.timeout.connect(self._go_full)
+
+    @property
+    def mode(self):
+        return self._mode
+
+    @mode.setter
+    def mode(self, v):
+        self._mode = v
+        sync = getattr(self.page, "sync_done", None)
+        if sync:
+            sync()
+
+    def finish_mode(self):
+        """leave whatever you were adding or picking (Done button, Esc, right-click > Done)"""
+        if self._mode != "select":
+            self._mode = "select"
+            self.page._dim_a = None
+            self.page.set_hint("")
+            self.page.sync_done()
+            self.update()
 
     def _go_lite(self):
         """while you drag, pan or zoom the plan is drawn simply (no text, no engineer lines); it is drawn in full a moment after you stop"""
@@ -463,6 +483,12 @@ class ServicesView(QWidget):
 
     def context(self, gpos, w, qp=None):
         pg = self.page
+        if self.mode != "select":                                 # adding points: right-click offers to stop
+            m = QMenu(self)
+            m.addAction("Done", self.finish_mode)
+            m.addAction("Cancel", self.finish_mode)
+            m.exec(gpos)
+            return
         s_ = self.view[0] if self.view else 10
         for i, c in enumerate(pg.st.get("sewer_via") or []):
             if math.hypot(c[0] - w[0], c[1] - w[1]) * s_ < 12:
@@ -694,6 +720,7 @@ class SiteServicesPage(ToolBase):
         self.show_under = True
         self._busy = False
         self._undo, self._redo, self._cst, self._ckey, self._undoing = [], [], None, None, False
+        QShortcut(QKeySequence("Escape"), self, activated=lambda: self.view.finish_mode() if self.view.mode != "select" else self.view.set_sel(None)).setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         for keys, fn in (("Ctrl+Z", lambda: self.undo()), ("Ctrl+Y", lambda: self.redo()), ("Ctrl+Shift+Z", lambda: self.redo())):
             QShortcut(QKeySequence(keys), self, activated=fn).setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self._t = QTimer(self)
@@ -1459,6 +1486,24 @@ class SiteServicesPage(ToolBase):
                                   "#xaGizmo QPushButton{padding:3px 9px;min-width:0;}")
             QHBoxLayout(self.gz).setContentsMargins(6, 4, 6, 4)
         return self.gz
+
+    def sync_done(self):
+        """a Done button over the plan while you are adding or picking something"""
+        v = getattr(self, "view", None)
+        if v is None:
+            return
+        b = getattr(self, "done_btn", None)
+        if b is None:
+            b = self.done_btn = QPushButton("Done (Esc or right-click)", v)
+            b.setStyleSheet("QPushButton{background:#d6209a;color:white;font-weight:bold;padding:5px 14px;border-radius:6px;}")
+            b.clicked.connect(lambda: v.finish_mode())
+        if v.mode == "select":
+            b.hide()
+        else:
+            b.adjustSize()
+            b.move(max(10, v.width() - b.width() - 10), 8)
+            b.show()
+            b.raise_()
 
     def refresh_gizmo(self):
         gz = self._gizmo_widget()
