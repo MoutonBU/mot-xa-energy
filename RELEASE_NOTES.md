@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.95**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.96**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **1.86.96** Site services: Undo and Redo (buttons above the plan, Ctrl+Z / Ctrl+Y) for every edit: moves, added points, imports, rotations. A whole drag is one step. The rodding eye now runs 350 mm past the joint by default (300 to 400 mm is usual; change it under "Rodding eye past the joint"), also when you add sewer points and the line turns back.
 
 - **1.86.95** Site services works to true scale. The import window works out the units and the scale from the size of the drawing (full size, or drawn at 1:200, 1:100, 1:50, 1:500) and shows the real size in metres; after an import the stand, house or carport size is shown. New: "Save as DXF (true size, mm)..." writes the plan at 1:1 in millimetres, on layers coloured like the sheet (stand, house, carport, sewer brown, water blue, electrical yellow), ready for your CAD program.
 

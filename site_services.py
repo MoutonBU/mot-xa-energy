@@ -1,11 +1,12 @@
 """Site services: give it the stand, the house footprint and the carport, say where the sewer connection, the water connection and the
 electrical supply are, and it draws the sewer, water and electrical lines to the house, with rodding eyes, inspection eyes, the meter,
 the DB, the fall and the invert depths. Move anything and everything redraws. Stands from the Blue Hills SG sheets are built in."""
+import copy
 import json
 import math
 
 from PySide6.QtCore import QPointF, QRectF, QTimer, Qt, QSizeF
-from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPolygonF, QPageSize, QPageLayout, QPdfWriter, QImage
+from PySide6.QtGui import QKeySequence, QShortcut, QBrush, QColor, QFont, QPainter, QPen, QPolygonF, QPageSize, QPageLayout, QPdfWriter, QImage
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QInputDialog, QListWidget, QMenu, QDoubleSpinBox, QFileDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton,
                                QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget, QAbstractItemView)
 
@@ -446,8 +447,10 @@ class ServicesView(QWidget):
     def mouseReleaseEvent(self, e):
         if self.drag and self.drag[0] in ("label", "north"):
             self.page.changed()
+            self.page.commit(True)
         elif self.drag and self.drag[0] != "pan":
             self.page.solve_now(False)
+            self.page.commit(True)
         elif self.drag and self.drag[0] == "pan" and self.rclick is not None and e.button() == Qt.MouseButton.RightButton:
             p0, w0 = self.rclick
             if abs(e.position().x() - p0.x()) < 4 and abs(e.position().y() - p0.y()) < 4:
@@ -479,6 +482,9 @@ class SiteServicesPage(ToolBase):
         self.res = None
         self.show_under = True
         self._busy = False
+        self._undo, self._redo, self._cst, self._ckey, self._undoing = [], [], None, None, False
+        for keys, fn in (("Ctrl+Z", lambda: self.undo()), ("Ctrl+Y", lambda: self.redo()), ("Ctrl+Shift+Z", lambda: self.redo())):
+            QShortcut(QKeySequence(keys), self, activated=fn).setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self._t = QTimer(self)
         self._t.setSingleShot(True)
         self._t.setInterval(140)
@@ -657,8 +663,8 @@ class SiteServicesPage(ToolBase):
                 self.p_depth, self.p_fall, self.p_ie = spin(0.3, 6, 1.5, 2, " m"), spin(20, 200, 50, 0, "", 5), spin(5, 60, 25, 0, " m", 1)
                 self.p_pipe = QComboBox()
                 self.p_pipe.addItems(["110", "160"])
-                self.p_tail = spin(0.1, 3, 0.6, 2, " m", 0.1)
-                self.p_tail.setToolTip("The rodding eye sits this far past the inspection eye where the house outlet joins the run (and past any other connection).")
+                self.p_tail = spin(0.1, 3, 0.35, 2, " m", 0.1)
+                self.p_tail.setToolTip("The rodding eye sits this far past the inspection eye where the house outlet joins the run (and past any other connection). 300 to 400 mm is usual.")
                 for lab, w in (("Depth at the main", self.p_depth), ("Fall 1 :", self.p_fall), ("Eyes at most", self.p_ie), ("Rodding eye past the joint", self.p_tail), ("Pipe", self.p_pipe)):
                     row.addWidget(QLabel(lab))
                     row.addWidget(w)
@@ -760,6 +766,11 @@ class SiteServicesPage(ToolBase):
             b = QPushButton(text)
             b.clicked.connect(lambda _=False, f=fn: f())
             fl.addWidget(b)
+        for lab, fn in (("Undo", lambda: self.undo()), ("Redo", lambda: self.redo())):
+            ub_ = QPushButton(lab)
+            ub_.setToolTip("%s (Ctrl+%s)" % (lab, "Z" if lab == "Undo" else "Y"))
+            ub_.clicked.connect(fn)
+            fl.addWidget(ub_)
         rl = QPushButton("Texts back")
         rl.setToolTip("Drag any text on the plan to move it. This puts all the texts back where they were generated.")
         rl.clicked.connect(self.reset_labels)
@@ -882,7 +893,7 @@ class SiteServicesPage(ToolBase):
             self.p_depth.setValue(pr.get("conn_depth", 1.5))
             self.p_fall.setValue(pr.get("fall", 50))
             self.p_ie.setValue(pr.get("max_ie", 25))
-            self.p_tail.setValue(pr.get("re_ext", 0.6))
+            self.p_tail.setValue(pr.get("re_ext", 0.35))
             self.p_pipe.setCurrentText(str(pr.get("sewer_pipe", "110")))
         finally:
             self._busy = False
@@ -894,7 +905,48 @@ class SiteServicesPage(ToolBase):
         self._t.setInterval(40 if light else 140)
         self._t.start()
 
+    def commit(self, force=False):
+        """remember the state before an edit, for Undo. While something is being dragged only the end of the drag counts."""
+        if self._undoing:
+            return
+        d = self.view.drag
+        if d is not None and d[0] != "pan" and not force:
+            return
+        try:
+            key = json.dumps(self.st, sort_keys=True, default=str)
+        except Exception:
+            return
+        if key == self._ckey:
+            return
+        if self._cst is not None:
+            self._undo.append(self._cst)
+            del self._undo[:-100]
+        self._redo = []
+        self._cst, self._ckey = copy.deepcopy(self.st), key
+
+    def _restore(self, stt):
+        self._undoing = True
+        try:
+            self._cst, self._ckey = copy.deepcopy(stt), json.dumps(stt, sort_keys=True, default=str)
+            self.set_state(copy.deepcopy(stt))
+        finally:
+            self._undoing = False
+
+    def undo(self):
+        if not self._undo:
+            self.set_hint("Nothing to undo.")
+            return
+        self._redo.append(self._cst)
+        self._restore(self._undo.pop())
+
+    def redo(self):
+        if not self._redo:
+            return
+        self._undo.append(self._cst)
+        self._restore(self._redo.pop())
+
     def solve_now(self, light=None):
+        self.commit()
         self._t.stop()
         if light is None:
             light = getattr(self, "_light", False) and self.view.drag is not None

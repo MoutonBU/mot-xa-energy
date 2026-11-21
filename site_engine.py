@@ -9,7 +9,7 @@ import math
 
 GRID = 0.25
 DEFAULTS = {"fall": 50.0, "conn_depth": 1.5, "max_ie": 25.0, "min_depth": 0.45, "sewer_pipe": "110", "water_pipe": "20",
-            "clear": 0.3, "re_ext": 0.6, "ie_first": 1.5, "sep_water": 0.5, "sep_service": 0.1, "min_cover": 0.3, "stub": 1.0, "sb_street": 1.0, "sb_side": 1.0, "sb_rear": 2.0}
+            "clear": 0.3, "re_ext": 0.35, "ie_first": 1.5, "sep_water": 0.5, "sep_service": 0.1, "min_cover": 0.3, "stub": 1.0, "sb_street": 1.0, "sb_side": 1.0, "sb_rear": 2.0}
 
 
 # ------------------------------------------------------------------ geometry
