@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
                                QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget, QAbstractItemView)
 
 import site_dxf
+import site_dxf_dialog
 import site_engine as se
 from rotate_dialog import RotateDialog
 import site_sheet
@@ -44,7 +45,7 @@ def blank_state():
             "house": {"cx": 9.0, "cy": 12.0, "w": 14.8, "d": 6.5, "rot": 90},
             "carport": {"cx": 3.5, "cy": 3.5, "w": 5.0, "d": 5.0, "rot": 0},
             "points": {"sewer": [12.0, 0.0], "water": [1.5, 0.0], "elec": [6.75, 0.0]},
-            "ports": {}, "params": {}, "mains": {}, "custom": [], "frame": None, "labels": {},
+            "ports": {}, "params": {}, "mains": {}, "custom": [], "frame": None, "labels": {}, "underlay": [],
             "sheet": {"road": "left", "street": "", "road_w": "13m", "street_erf": "", "stand_no": "", "north": 0.0}}
 
 
@@ -145,7 +146,7 @@ class ServicesView(QWidget):
         st, res = pg.st, pg.res
         if interactive and pg.show_under and pg.under and not self.lite:
             S = sh.pt
-            for key, col in (("storm", QColor("#b7dcb7")), ("water", QColor("#c6defa")), ("sewer", QColor("#ecd0b6"))):
+            for key, col in (("other", QColor("#cfd6e4")), ("storm", QColor("#b7dcb7")), ("water", QColor("#c6defa")), ("sewer", QColor("#ecd0b6"))):
                 for x1, y1, x2, y2, thick in pg.under.get(key, []):
                     p.setPen(QPen(col, 1.4 if thick else 0.7))
                     p.drawLine(S((x1, y1)), S((x2, y2)))
@@ -813,6 +814,7 @@ class SiteServicesPage(ToolBase):
         self.st["stand"]["corners"] = [[round(a, 2), round(b, 2)] for a, b in c]
         self.st["stand"]["name"] = name
         self.under = under or {}
+        self.st["underlay"] = []
         if points:
             self.st["points"] = points
         self.st["ports"] = {}
@@ -968,12 +970,51 @@ class SiteServicesPage(ToolBase):
             path, _ = QFileDialog.getOpenFileName(self, "Import the stand", "", "Drawings (*.dxf *.dwg)")
         if not path:
             return
+        if pick is None:
+            got = self._dialog(path, "stand")
+            if not got:
+                return
+            poly, under = got
+            self.set_stand_world(poly, "Imported stand", src_shapes=[1])
+            self._set_underlay(under)
+            return
         shapes = self._read_dxf(path)
         if shapes is None:
             return
-        sh = pick(shapes) if pick else self._choose_shape(shapes, "Stand outline", lambda L: 0)
+        sh = pick(shapes)
         if sh:
             self.set_stand_world(sh["poly"], "Imported stand", src_shapes=shapes)
+
+    def _dialog(self, path, role):
+        try:
+            drawing = site_dxf.read_drawing(path)
+        except Exception as e:
+            QMessageBox.warning(self, "Site services", str(e))
+            return None
+        dlg = site_dxf_dialog.ImportDialog(self, drawing, role)
+        if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.result:
+            return None
+        return dlg.result, dlg.underlay()
+
+    def _set_underlay(self, lines):
+        """the imported drawing's own lines, kept faint under the plan, moved into the stand frame"""
+        fr = self.st.get("frame")
+        if not lines or not fr:
+            self.st["underlay"] = []
+            self.under = {}
+            return
+        c = self.st["stand"]["corners"]
+        xs, ys = [p[0] for p in c], [p[1] for p in c]
+        x0, x1, y0, y1 = min(xs) - 40, max(xs) + 40, min(ys) - 40, max(ys) + 40
+        out = []
+        for a, b, c_, d_ in lines:
+            p, q = se.apply_frame(fr, (a, b)), se.apply_frame(fr, (c_, d_))
+            if max(p[0], q[0]) < x0 or min(p[0], q[0]) > x1 or max(p[1], q[1]) < y0 or min(p[1], q[1]) > y1:
+                continue
+            out.append([round(p[0], 2), round(p[1], 2), round(q[0], 2), round(q[1], 2), 0])
+        self.st["underlay"] = out
+        self.under = {"other": out}
+        self.view.update()
 
     def set_stand_world(self, poly, name="Stand", src_shapes=None, street_edge=None):
         """a stand in drawing coordinates: put the street edge along x at the origin and remember the move so the house and carport from the same drawing land in place"""
@@ -1023,17 +1064,19 @@ class SiteServicesPage(ToolBase):
             path, _ = QFileDialog.getOpenFileName(self, "Import the %s" % role, "", "Drawings (*.dxf *.dwg)")
         if not path:
             return
-        shapes = self._read_dxf(path)
-        if shapes is None:
-            return
-        want = 25.0 if role == "carport" else 120.0
-
-        def prefer(L):
-            return min(range(len(L)), key=lambda i: abs(L[i]["area"] - want) if L[i]["area"] < 400 else 1e9)
-        sh = pick(shapes) if pick else self._choose_shape(shapes, "%s outline" % role.capitalize(), prefer)
-        if not sh:
-            return
-        poly = [tuple(p) for p in sh["poly"]]
+        if pick is None:
+            got = self._dialog(path, role)
+            if not got:
+                return
+            poly = [tuple(p) for p in got[0]]
+        else:
+            shapes = self._read_dxf(path)
+            if shapes is None:
+                return
+            sh = pick(shapes)
+            if not sh:
+                return
+            poly = [tuple(p) for p in sh["poly"]]
         fr = self.st.get("frame")
         bb = getattr(self, "_src_bbox", None)
         cxy = (sum(p[0] for p in poly) / len(poly), sum(p[1] for p in poly) / len(poly))
@@ -1094,6 +1137,8 @@ class SiteServicesPage(ToolBase):
         self.st = base
         k = str(self.st["stand"].get("name", "")).split()[-1]
         self.under = STANDS[k]["layers"] if k in STANDS and "Blue Hills" in str(self.st["stand"].get("name")) else {}
+        if self.st.get("underlay"):
+            self.under = {"other": self.st["underlay"]}
         self._to_fields()
         self.solve_now()
 

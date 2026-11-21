@@ -123,3 +123,92 @@ def read_shapes(path, min_area=0.5):
             add(lay, loop)
     out.sort(key=lambda s: -s["area"])
     return out
+
+
+# ------------------------------------------------------------------ the whole drawing, for the import window
+def read_drawing(path):
+    """-> {"lines": [(x1, y1, x2, y2, colour)], "texts": [(text, x, y)], "raw_shapes": [(layer, pts)], "unit": guessed unit in metres per drawing unit,
+    "span": (w, h) in drawing units}. Coordinates are left in drawing units; use scale_drawing() to turn them into metres."""
+    if str(path).lower().endswith(".dwg"):
+        raise ValueError("This is a DWG. Save it as DXF from your CAD program first (Save As, DXF), then import that.")
+    import ezdxf
+    try:
+        doc = ezdxf.readfile(path)
+    except Exception:
+        from ezdxf import recover
+        doc, _aud = recover.readfile(path)
+    u = int(doc.header.get("$INSUNITS", 0) or 0)
+    unit = {1: 0.0254, 2: 0.3048, 4: 0.001, 5: 0.01, 6: 1.0, 7: 1000.0}.get(u)
+    lines, texts, closed = [], [], []
+
+    def col(e):
+        try:
+            return int(e.dxf.color)
+        except Exception:
+            return 7
+
+    def walk(ents, depth=0):
+        nonlocal lines
+        for e in ents:
+            t = e.dxftype()
+            try:
+                if t == "LINE":
+                    lines.append((e.dxf.start.x, e.dxf.start.y, e.dxf.end.x, e.dxf.end.y, col(e)))
+                elif t == "LWPOLYLINE":
+                    pts = [(p[0], p[1]) for p in e.get_points("xy")]
+                    if e.closed:
+                        pts.append(pts[0])
+                        closed.append((e.dxf.layer, pts[:-1]))
+                    lines += [(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], col(e)) for i in range(len(pts) - 1)]
+                elif t == "POLYLINE" and not e.is_3d_polyline and not e.is_polygon_mesh:
+                    pts = [(v.dxf.location.x, v.dxf.location.y) for v in e.vertices]
+                    if e.is_closed:
+                        closed.append((e.dxf.layer, list(pts)))
+                        pts.append(pts[0])
+                    lines += [(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], col(e)) for i in range(len(pts) - 1)]
+                elif t in ("ARC", "CIRCLE"):
+                    c, r = e.dxf.center, e.dxf.radius
+                    a0, a1 = (math.radians(e.dxf.start_angle), math.radians(e.dxf.end_angle)) if t == "ARC" else (0.0, 2 * math.pi)
+                    if a1 <= a0:
+                        a1 += 2 * math.pi
+                    n = max(6, int((a1 - a0) / (math.pi / 12)))
+                    pts = [(c.x + r * math.cos(a0 + (a1 - a0) * k / n), c.y + r * math.sin(a0 + (a1 - a0) * k / n)) for k in range(n + 1)]
+                    lines += [(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], col(e)) for i in range(n)]
+                elif t in ("TEXT", "MTEXT"):
+                    tx = e.dxf.text if t == "TEXT" else e.text
+                    texts.append((str(tx).strip(), e.dxf.insert.x, e.dxf.insert.y))
+                elif t == "INSERT" and depth < 3:
+                    walk(e.virtual_entities(), depth + 1)
+            except Exception:
+                continue
+    walk(doc.modelspace())
+    xs = [v for l in lines for v in (l[0], l[2])]
+    ys = [v for l in lines for v in (l[1], l[3])]
+    span = (max(xs) - min(xs), max(ys) - min(ys)) if xs else (0, 0)
+    if unit is None:
+        unit = 0.001 if max(span) > 2000 else 1.0
+    return {"lines": lines, "texts": texts, "raw_shapes": closed, "unit": unit, "span": span}
+
+
+def outlines(drawing, factor, min_area=0.5):
+    """closed outlines (in metres) from a drawing: closed polylines, plus loose lines that meet end to end"""
+    out, seen = [], set()
+
+    def add(lay, pts):
+        poly = _clean([(x * factor, y * factor) for x, y in pts])
+        if len(poly) < 3:
+            return
+        a = abs(_area(poly))
+        if a < min_area or (len(poly) >= 20 and a < 30):          # text frames are rounded boxes with many corners
+            return
+        key = (round(a, 2), round(poly[0][0], 1), round(poly[0][1], 1))
+        if key not in seen:
+            seen.add(key)
+            out.append({"poly": poly, "area": a, "layer": lay})
+    for lay, pts in drawing["raw_shapes"]:
+        add(lay, pts)
+    segs = [((l[0], l[1]), (l[2], l[3])) for l in drawing["lines"]]
+    for loop in _join(segs, 0.01 / factor if factor else 0.01):
+        add("lines", loop)
+    out.sort(key=lambda s: -s["area"])
+    return out
