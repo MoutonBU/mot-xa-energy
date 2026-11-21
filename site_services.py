@@ -154,7 +154,7 @@ class ServicesView(QWidget):
         site_sheet.draw(p, sh, st, res, pg.sheet_opts(), minpx=7 if interactive else 5, lite=interactive and self.lite)
         # north arrow above the plan, turned to the chosen direction
         r_px = max(sh.s * 1.5, 18)
-        site_sheet.north_arrow(p, QPointF(sh.W * 0.5, r_px * 2.2 + 8) if interactive else QPointF(sh.W * 0.5, r_px * 2.6), r_px, st["sheet"].get("north", 0))
+        site_sheet.north_arrow(p, pg.north_centre(sh.W, sh.H, r_px, interactive), r_px, st["sheet"].get("north", 0))
         if interactive and res:
             S = sh.pt
             for c in st.get("sewer_via") or []:
@@ -203,6 +203,18 @@ class ServicesView(QWidget):
                 pg.set_hint("")
                 self.update()
                 return
+            if self.mode == "road":
+                pg.set_road_from_click(e.position())
+                self.mode = "north_dir"
+                pg.set_hint("Now click the direction north points. You can also drag the arrow to move it.")
+                self.update()
+                return
+            if self.mode == "north_dir":
+                pg.set_north_from_click(e.position())
+                self.mode = "select"
+                pg.set_hint("")
+                self.update()
+                return
             if self.mode == "via_add":
                 pg.add_via(w)
                 return                                          # stays armed so you can click several points; press Esc or pick another tool to stop
@@ -223,6 +235,11 @@ class ServicesView(QWidget):
                 self.mode = "select"
                 pg.set_hint("")
                 self.update()
+                return
+            r_ = max(self.sh.s * 1.5, 18)
+            nc = pg.north_centre(self.width(), self.height(), r_)
+            if math.hypot(e.position().x() - nc.x(), e.position().y() - nc.y()) < r_ * 1.4:
+                self.drag = ("north",)
                 return
             self.drag = self._hit(w, e.position())
             if self.drag is not None and self.drag[0] != "label":
@@ -344,6 +361,10 @@ class ServicesView(QWidget):
             self.view = (s, cx + p1[0] - p0[0], cy + p1[1] - p0[1])
             self.update()
             return
+        if d[0] == "north":
+            pg.st["sheet"]["north_pos"] = [round(e.position().x() / self.width(), 4), round(e.position().y() / self.height(), 4)]
+            self.update()
+            return
         w = self.world(e.position())
         if d[0] == "pt":
             pg.st["points"][d[1]] = [round(w[0], 2), se.mains(pg.st)[d[1]]]
@@ -370,7 +391,7 @@ class ServicesView(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, e):
-        if self.drag and self.drag[0] == "label":
+        if self.drag and self.drag[0] in ("label", "north"):
             self.page.changed()
         elif self.drag and self.drag[0] != "pan":
             self.page.solve_now(False)
@@ -472,6 +493,18 @@ class SiteServicesPage(ToolBase):
         row.addWidget(self.sh_road)
         row.addWidget(QLabel("North arrow turned"))
         row.addWidget(self.sh_north)
+        row.addStretch(1)
+        bv.addLayout(row)
+        row = QHBoxLayout()
+        rb_ = QPushButton("Road: click where it is in the plan")
+        rb_.setToolTip("Click on the side of the stand where the road is. The plan turns so the street faces that way, then you click the direction of north.")
+        rb_.clicked.connect(lambda: self.arm("road"))
+        nb_ = QPushButton("North: click its direction")
+        nb_.clicked.connect(lambda: self.arm("north_dir"))
+        nm_ = QPushButton("North arrow back to the top")
+        nm_.clicked.connect(lambda: (self.st["sheet"].__setitem__("north_pos", None), self.view.update(), self.changed()))
+        for b_ in (rb_, nb_, nm_):
+            row.addWidget(b_)
         row.addStretch(1)
         bv.addLayout(row)
         v1.addWidget(bx)
@@ -691,6 +724,31 @@ class SiteServicesPage(ToolBase):
         self.hint_lbl.setText(t)
         self.hint_lbl.setVisible(bool(t))
 
+    def north_centre(self, W, H, r_px, interactive=True):
+        pos = (self.st.get("sheet") or {}).get("north_pos")
+        if pos:
+            return QPointF(pos[0] * W, pos[1] * H)
+        return QPointF(W * 0.5, r_px * 2.2 + 8) if interactive else QPointF(W * 0.5, r_px * 2.6)
+
+    def set_road_from_click(self, qp):
+        """the click is where the road is: the side of the stand (as drawn on the paper) it is nearest to"""
+        sh = self.view.sh
+        c = self.st["stand"]["corners"]
+        cen = sh.pt((sum(p[0] for p in c) / len(c), sum(p[1] for p in c) / len(c)))
+        dx, dy = qp.x() - cen.x(), qp.y() - cen.y()
+        # the road is on the paper side the click is on; the plan turns so the street faces it
+        side = ("right" if dx > 0 else "left") if abs(dx) >= abs(dy) else ("bottom" if dy > 0 else "top")
+        self.sh_road.setCurrentText(side)
+        self.solve_now()
+        self.view.fit()
+
+    def set_north_from_click(self, qp):
+        W, H = self.view.width(), self.view.height()
+        r = max(self.view.sh.s * 1.5, 18)
+        c = self.north_centre(W, H, r)
+        ang = math.degrees(math.atan2(qp.x() - c.x(), -(qp.y() - c.y())))
+        self.sh_north.setValue(round(ang, 1))
+
     def sheet_opts(self):
         sh = dict(self.st.get("sheet") or {})
         sh["labels"] = self.st.get("labels") or {}
@@ -719,7 +777,8 @@ class SiteServicesPage(ToolBase):
             st["points"][k] = [sx.value(), sy.value()]
         st["mains"] = {k: -ms.value() for k, ms in self.main_spin.items()}
         st["sheet"] = {"road": self.sh_road.currentText(), "street": self.sh_street.text().strip(), "road_w": self.sh_rw.text().strip(), "street_erf": self.sh_se.text().strip(),
-                       "stand_no": self.sh_no.text().strip(), "north": self.sh_north.value()}
+                       "stand_no": self.sh_no.text().strip(), "north": self.sh_north.value(),
+                       "north_pos": (st.get("sheet") or {}).get("north_pos")}
         if self.view.auto is False and False:
             pass
         st["params"] = {"conn_depth": self.p_depth.value(), "fall": self.p_fall.value(), "max_ie": self.p_ie.value(), "re_ext": self.p_tail.value(), "sewer_pipe": self.p_pipe.currentText(),
@@ -837,7 +896,7 @@ class SiteServicesPage(ToolBase):
         self.set_hint({"pt_sewer": "Click in the plan where the main sewer connection is.", "pt_water": "Click in the plan where the water connection is.",
                        "pt_elec": "Click in the plan where the electrical supply is.", "port_sewer": "Click on the house outline where the sewer leaves the house.",
                        "port_water": "Click on the house outline where the water enters.", "port_db": "Click on the house outline where the DB is.",
-                       "via_add": "Click in the plan where the sewer must pass. Click again for the next point, in order from the house to the main. Press Esc when done.", "street": "Click the boundary that faces the street.", "cust_add": "Click in the plan where your point goes."}.get(mode, ""))
+                       "road": "Click on the side of the stand where the road is.", "north_dir": "Click in the direction north points. You can also drag the arrow to move it.", "via_add": "Click in the plan where the sewer must pass. Click again for the next point, in order from the house to the main. Press Esc when done.", "street": "Click the boundary that faces the street.", "cust_add": "Click in the plan where your point goes."}.get(mode, ""))
         self.view.update()
 
     def set_point(self, k, w):
@@ -1221,7 +1280,7 @@ class SiteServicesPage(ToolBase):
         p.save()
         site_sheet.draw(p, sh, self.st, self.res, self.sheet_opts(), minpx=5)
         r_px = max(s * 1.5, 18)
-        site_sheet.north_arrow(p, QPointF(W * 0.5, r_px * 2.6), r_px, self.st["sheet"].get("north", 0))
+        site_sheet.north_arrow(p, self.north_centre(W, H, r_px, False), r_px, self.st["sheet"].get("north", 0))
         p.restore()
         name = self.st["sheet"].get("stand_no") or self.st["stand"].get("name", "Stand")
         base = H * 0.945
