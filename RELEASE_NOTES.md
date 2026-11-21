@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.89**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
+Current version: **1.86.90**. You can read these notes in the program: File > Release notes... The version number is shown in the installer, in the installer file name
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+
+- **Faster updates.** Updates are now built as small code-only updates whenever possible, instead of a full installer.
 
 - **Site services: a proper drawing import window.** *Import from DXF* now opens a window that shows the drawing. Set the units (mm, cm, m) and the scale it was drawn at (it tells you the size of the drawing, so you can see at once if it is right), then pick one of the closed outlines it found, or, for drawings whose lines do not close (SG sheets, service layouts), click the corners yourself: clicks snap to line ends. For a stand, the drawing's own lines can be kept faintly under the plan (as the engineer's lines), and they are saved with the plan.
 
