@@ -598,6 +598,22 @@ def sewer(state, hp, cp, params, others=()):
         nodes.append({"kind": "RE", "pt": end, "chainage": round(acc, 2), "depth": round(D0 + acc / fall, 3), "label": "RE", "stub": si})
     if cut is not None and 0 < cut < L:
         nodes.append({"kind": "IE", "pt": point_at(path, cut), "chainage": round(cut, 2), "depth": round(D0 + cut / fall, 3), "label": "IE"})
+    extra = []                                                    # more sewer outlets on the house (up to 4 in all): each runs square to the nearest point of the run and butts onto it
+    for wp in (state.get("sewer_ports") or [])[:3]:
+        p0, n0 = port_point(hp, wp)
+        start = (p0[0] + n0[0] * 0.5, p0[1] + n0[1] * 0.5)
+        samples = [(k * 0.5, point_at(path, min(k * 0.5, L))) for k in range(int(L / 0.5) + 1)]
+        samples.sort(key=lambda q: abs(q[1][0] - start[0]) + abs(q[1][1] - start[1]))
+        best = None
+        for c_, q in samples[:4]:
+            pr = ortho(route(q, start, stand, obs))
+            Lq = length(pr)
+            if best is None or Lq < best[0]:
+                best = (Lq, pr, c_)
+        bp = dedupe(best[1] + [p0])
+        extra.append({"path": bp, "port": wp})
+        nodes.append({"kind": "IE", "pt": bp[0], "chainage": round(best[2], 2), "depth": round(D0 + best[2] / fall, 3), "label": "IE"})
+        nodes.append({"kind": "RE", "pt": p0, "chainage": round(best[2] + 0.001, 2), "depth": round(D0 + best[2] / fall, 3), "label": "RE"})
     nodes.sort(key=lambda n: n["chainage"])
     cnt = {}
     for n_ in nodes:                                              # a key for every eye (kind + number along the run), so you can pick, move and delete them
@@ -620,7 +636,7 @@ def sewer(state, hp, cp, params, others=()):
     d_main = D0 + L / fall
     nodes.append({"kind": "MAIN", "pt": path[-1], "chainage": round(L, 2), "depth": round(d_main, 3), "label": "Connect to main sewer line"})
     return {"path": path, "nodes": nodes, "length": round(L, 2), "drop_mm": round(L * 1000.0 / fall), "port": port, "branch": r["branch"],
-            "stubs": stubs, "depth_house": round(D0, 3), "depth_main": round(d_main, 3), "note": "%s\u00d8 SWP, FALL 1:%d" % (params["sewer_pipe"], round(fall))}
+            "stubs": stubs, "extra": extra, "depth_house": round(D0, 3), "depth_main": round(d_main, 3), "note": "%s\u00d8 SWP, FALL 1:%d" % (params["sewer_pipe"], round(fall))}
 
 
 def water(state, hp, cp, params, others=()):

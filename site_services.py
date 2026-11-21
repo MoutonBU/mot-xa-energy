@@ -213,6 +213,11 @@ class ServicesView(QWidget):
                 p.setBrush(QBrush(col))
                 p.drawEllipse(q, 6, 6)
             hp = res["house"]
+            for wp in st.get("sewer_ports") or []:
+                q = S(se.port_point(hp, wp)[0])
+                p.setPen(QPen(QColor("black"), 1.0))
+                p.setBrush(QBrush(site_sheet.BROWN))
+                p.drawRect(QRectF(q.x() - 4, q.y() - 4, 8, 8))
             for wp in st.get("water_ports") or []:
                 q = S(se.port_point(hp, wp)[0])
                 p.setPen(QPen(QColor("black"), 1.0))
@@ -267,6 +272,9 @@ class ServicesView(QWidget):
                 return
             if self.mode == "wport_add":
                 pg.add_wport(w)
+                return
+            if self.mode == "sport_add":
+                pg.add_sport(w)
                 return
             if self.mode == "via_add":
                 pg.add_via(w)
@@ -323,6 +331,8 @@ class ServicesView(QWidget):
             return ("sewer",)
         if d[0] == "eye":
             return ("eye", d[1])
+        if d[0] == "sport":
+            return ("sport", d[1])
         if d[0] == "rot":
             return (d[1],)
         if d[0] == "label":
@@ -382,6 +392,10 @@ class ServicesView(QWidget):
                 pt, _n = se.port_point(hp, wp)
                 if math.hypot(pt[0] - w[0], pt[1] - w[1]) * s < 10:
                     return ("wport", i)
+            for i, wp in enumerate(pg.st.get("sewer_ports") or []):
+                pt, _n = se.port_point(hp, wp)
+                if math.hypot(pt[0] - w[0], pt[1] - w[1]) * s < 10:
+                    return ("sport", i)
             for nd in pg.res["sewer"]["nodes"]:
                 if nd["kind"] in ("IE", "RE") and nd.get("key") and math.hypot(nd["pt"][0] - w[0], nd["pt"][1] - w[1]) * s < 9:
                     return ("eye", nd["key"])
@@ -407,6 +421,9 @@ class ServicesView(QWidget):
     def keyPressEvent(self, e):
         if e.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and self.sel and self.sel[0] == "label":
             self.page.delete_text(self.sel[1])
+            return
+        if e.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and self.sel and self.sel[0] == "sport":
+            self.page.remove_sport(self.sel[1])
             return
         if e.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and self.sel and self.sel[0] == "eye":
             self.page.delete_eye(self.sel[1])
@@ -459,6 +476,12 @@ class ServicesView(QWidget):
                 m.addAction("Remove this water point", lambda i_=i: (pg.st["water_ports"].pop(i_), pg.solve_now()))
                 m.exec(gpos)
                 return
+        for i, wp in enumerate(pg.st.get("sewer_ports") or []):
+            if hp_ and math.hypot(se.port_point(hp_, wp)[0][0] - w[0], se.port_point(hp_, wp)[0][1] - w[1]) * s_ < 10:
+                m = QMenu(self)
+                m.addAction("Remove this sewer outlet", lambda i_=i: pg.remove_sport(i_))
+                m.exec(gpos)
+                return
         lab = self.label_at(qp) if qp is not None else None
         if lab:
             m = QMenu(self)
@@ -506,7 +529,7 @@ class ServicesView(QWidget):
             self.update()
             return
         w = self.world(e.position())
-        if d[0] in ("pt", "port", "wport", "via", "house", "carport", "rot", "main"):
+        if d[0] in ("pt", "port", "wport", "sport", "via", "house", "carport", "rot", "main"):
             pg.st.pop("eyes", None)                              # the run is going to change, so the eye edits no longer fit it
         if d[0] == "eye":
             pg.move_eye(d[1], w)
@@ -515,6 +538,8 @@ class ServicesView(QWidget):
             pg.st["pts_manual"] = True
         elif d[0] == "wport":
             pg.st["water_ports"][d[1]] = se.nearest_port(pg.res["house"], w)
+        elif d[0] == "sport":
+            pg.st["sewer_ports"][d[1]] = se.nearest_port(pg.res["house"], w)
         elif d[0] == "via":
             pg.st["sewer_via"][d[1]] = [round(w[0], 2), round(w[1], 2)]
         elif d[0] == "cust":
@@ -830,6 +855,17 @@ class SiteServicesPage(ToolBase):
                 wr_.clicked.connect(self.remove_last_wport)
                 row.addWidget(wb_)
                 row.addWidget(wr_)
+                row.addStretch(1)
+                bv.addLayout(row)
+            if key == "sewer":
+                row = QHBoxLayout()
+                sb_ = QPushButton("Add a sewer outlet on the house: click on it")
+                sb_.setToolTip("Up to 4 sewer outlets on the house. Each runs square to the sewer run and butts onto it. Drag its square on the wall to move it; select it and press Delete to remove it.")
+                sb_.clicked.connect(lambda: self.arm("sport_add"))
+                sr_ = QPushButton("Remove the last extra outlet")
+                sr_.clicked.connect(lambda: self.remove_sport(len(self.st.get("sewer_ports") or []) - 1))
+                row.addWidget(sb_)
+                row.addWidget(sr_)
                 row.addStretch(1)
                 bv.addLayout(row)
             if key == "sewer":
@@ -1262,7 +1298,7 @@ class SiteServicesPage(ToolBase):
         self.set_hint({"pt_sewer": "Click in the plan where the main sewer connection is.", "pt_water": "Click in the plan where the water connection is.",
                        "pt_elec": "Click in the plan where the electrical supply is.", "port_sewer": "Click on the house outline where the sewer leaves the house.",
                        "port_water": "Click on the house outline where the water enters.", "port_db": "Click on the house outline where the DB is.",
-                       "wport_add": "Click on the house outline where another water point enters. Press Esc when done.", "text_add": "Click in the plan where the text goes.", "dim_add": "Click the first point of the dimension (corners snap), then the second. Drag its figure to slide it. Press Esc when done.", "road": "Click on the side of the stand where the road is.", "north_dir": "Click in the direction north points. You can also drag the arrow to move it.", "via_add": "Click in the plan where the sewer must pass. Click again for the next point, in order from the house to the main. Press Esc when done.", "street": "Click the boundary that faces the street.", "cust_add": "Click in the plan where your point goes."}.get(mode, ""))
+                       "wport_add": "Click on the house outline where another water point enters. Press Esc when done.", "sport_add": "Click on the house wall where another sewer outlet leaves the house. Press Esc when done.", "text_add": "Click in the plan where the text goes.", "dim_add": "Click the first point of the dimension (corners snap), then the second. Drag its figure to slide it. Press Esc when done.", "road": "Click on the side of the stand where the road is.", "north_dir": "Click in the direction north points. You can also drag the arrow to move it.", "via_add": "Click in the plan where the sewer must pass. Click again for the next point, in order from the house to the main. Press Esc when done.", "street": "Click the boundary that faces the street.", "cust_add": "Click in the plan where your point goes."}.get(mode, ""))
         self.view.update()
 
     def set_point(self, k, w):
@@ -1438,6 +1474,12 @@ class SiteServicesPage(ToolBase):
             add("90\u00b0", lambda: self.rotate_by(r, 90), "Turn a quarter")
             add("Turn precisely...", lambda: self.rotate_dialog(r), "A slider with a live preview")
             lay.addWidget(QLabel("or drag the ring (Shift = 15\u00b0 steps)"))
+        elif sel[0] == "sport":
+            i_ = sel[1]
+            lay.addWidget(QLabel("Extra sewer outlet"))
+            lay.addWidget(QLabel("drag it along the wall to move it"))
+            add("Delete", lambda: self.remove_sport(i_), "Take this outlet off (Delete key)")
+            add("Add another", lambda: self.arm("sport_add"), "Click on the house wall where another sewer outlet leaves")
         elif sel[0] == "eye":
             k = sel[1]
             lay.addWidget(QLabel("Rodding eye" if k.startswith("RE") else "Inspection eye"))
@@ -1447,6 +1489,7 @@ class SiteServicesPage(ToolBase):
         elif sel[0] == "sewer":
             lay.addWidget(QLabel("Sewer line"))
             lay.addWidget(QLabel("drag a leg to slide it; a corner stretches it (Shift = move only that corner)"))
+            add("Add a sewer outlet", lambda: self.arm("sport_add"), "Another outlet from the house: click on the wall. It runs square to the sewer run and butts onto it.")
             add("Free bends: " + ("on" if self.st.get("sewer_free") else "off"), self.toggle_free, "On: a corner moves alone and the legs next to it go slanted, everything else stays put")
             add("Eyes back", self.reset_eyes, "Put all the eyes back where the program places them")
             add("Back to automatic", self.sewer_auto, "Throw away your changes and let the program route it")
@@ -1721,6 +1764,23 @@ class SiteServicesPage(ToolBase):
         wp.append(se.nearest_port(self.res["house"], w))
         self.solve_now()
 
+    def add_sport(self, w):
+        sp = self.st.setdefault("sewer_ports", [])
+        if len(sp) >= 3:
+            self.set_hint("The house already has 4 sewer outlets.")
+            return
+        sp.append(se.nearest_port(self.res["house"], w))
+        self.solve_now(False)
+        self.commit(True)
+
+    def remove_sport(self, i):
+        sp = self.st.get("sewer_ports") or []
+        if 0 <= i < len(sp):
+            sp.pop(i)
+            self.view.set_sel(None)
+            self.solve_now(False)
+            self.commit(True)
+
     def remove_last_wport(self):
         if self.st.get("water_ports"):
             self.st["water_ports"].pop()
@@ -1759,6 +1819,7 @@ class SiteServicesPage(ToolBase):
         self.st["house"] = {"poly": [list(p) for p in f["poly"]], "marks": [list(m) for m in f["marks"]], "w": f["w"], "d": f["d"], "rot": 0.0, "cx": 0.0, "cy": 0.0, "name": f["name"]}
         self.st["ports"] = {}
         self.st["water_ports"] = []
+        self.st["sewer_ports"] = []
         self._to_fields()
         self.suggest()
 

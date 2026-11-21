@@ -337,6 +337,8 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
         D.poly(path, BROWN, 0.09, None, dash=[8, 4], closed=False)
         if sw.get("branch"):
             D.poly(sw["branch"], BROWN, 0.09, None, dash=[8, 4], closed=False)
+        for ex in sw.get("extra") or []:
+            D.poly(ex["path"], BROWN, 0.09, None, dash=[8, 4], closed=False)
         for sb in sw.get("stubs") or []:
             D.poly(sb, BROWN, 0.09, None, dash=[8, 4], closed=False)
         for nd in sw["nodes"]:
