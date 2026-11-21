@@ -6,10 +6,11 @@ import math
 
 from PySide6.QtCore import QPointF, QRectF, QTimer, Qt, QSizeF
 from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPolygonF, QPageSize, QPageLayout, QPdfWriter, QImage
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QHeaderView, QLabel, QMessageBox, QPushButton,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton,
                                QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget, QAbstractItemView)
 
 import site_engine as se
+import site_sheet
 import tool_base as tb
 from flow_layout import FlowLayout
 from tool_base import ToolBase
@@ -41,7 +42,13 @@ def blank_state():
             "house": {"cx": 9.0, "cy": 12.0, "w": 14.8, "d": 6.5, "rot": 90},
             "carport": {"cx": 3.5, "cy": 3.5, "w": 5.0, "d": 5.0, "rot": 0},
             "points": {"sewer": [12.0, 0.0], "water": [1.5, 0.0], "elec": [6.75, 0.0]},
-            "ports": {}, "params": {}}
+            "ports": {}, "params": {},
+            "sheet": {"road": "left", "street": "", "road_w": "13m", "street_erf": "", "stand_no": "", "north": 0.0}}
+
+
+# what the finished plans say for the built-in stands: the side the road is on, the street, the north arrow
+SHEET_DEFAULTS = {"2068": ("right", "THIMBLE STREET", -8.7), "2091": ("right", "CATSTAIL STREET", -8.7), "2093": ("right", "CATSTAIL STREET", -6.5),
+                  "2144": ("left", "CATSTAIL STREET", -8.7), "2155": ("left", "BLUESTEM STREET", -8.7)}
 
 
 # ------------------------------------------------------------------ the plan
@@ -56,38 +63,40 @@ class ServicesView(QWidget):
         self.auto = True
         self.mode = "select"                   # select | pt_sewer | pt_water | pt_elec | port_sewer | port_water | port_db
         self.drag = None
-        self.show_under = True
-        self._v = None
+        self.sh = None
 
     # ---- view
     def bounds(self):
         r = self.page.res
-        pts = list(self.page.st["stand"]["corners"])
+        st = self.page.st
+        pts = list(st["stand"]["corners"])
         for k in ("sewer", "water", "elec"):
             pts += r[k]["path"] if r else []
-            pts.append(tuple(self.page.st["points"][k]))
+            pts.append(tuple(st["points"][k]))
         xs, ys = [p[0] for p in pts], [p[1] for p in pts]
-        return min(xs) - 2, min(ys) - 3, max(xs) + 2, max(ys) + 2
+        # the road, the street name and the dimension lines round the stand
+        return min(xs) - 15, min(ys) - 10, max(xs) + 15, max(ys) + 4
+
+    def sheet(self, W, H, s=None, centre=None, road=None):
+        if s is None:
+            s, cx, cy = self.current(W, H)
+        else:
+            cx, cy = centre
+        return site_sheet.Sheet(s, (cx, cy), (W, H), road or self.page.st["sheet"].get("road", "left"))
 
     def fit(self):
         self.auto = True
         self.update()
 
-    def current(self):
-        W, H = self.width(), self.height()
+    def current(self, W=None, H=None):
+        W, H = W or self.width(), H or self.height()
         if self.auto or self.view is None:
             x0, y0, x1, y1 = self.bounds()
-            s = min((W - 30) / max(x1 - x0, 1e-3), (H - 30) / max(y1 - y0, 1e-3))
+            rot = site_sheet.ROTS.get(self.page.st["sheet"].get("road", "left"), 270)
+            w, h = (x1 - x0, y1 - y0) if rot in (0, 180) else (y1 - y0, x1 - x0)
+            s = min((W - 30) / max(w, 1e-3), (H - 30) / max(h, 1e-3))
             self.view = (s, (x0 + x1) / 2, (y0 + y1) / 2)
         return self.view
-
-    def sc(self, p, v, W, H):
-        s, cx, cy = v
-        return QPointF(W / 2 + (p[0] - cx) * s, H / 2 + (p[1] - cy) * s)          # y down: the street is at the top
-
-    def world(self, pt):
-        s, cx, cy = self.view
-        return (cx + (pt.x() - self.width() / 2) / s, cy + (pt.y() - self.height() / 2) / s)
 
     def zoom(self, f):
         if self.view is None:
@@ -97,170 +106,56 @@ class ServicesView(QWidget):
         self.view = (min(max(s * f, 2), 400), cx, cy)
         self.update()
 
+    def world(self, pt):
+        return self.sh.inv(pt) if self.sh else (0, 0)
+
     # ---- drawing
     def paintEvent(self, _e):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
         p.fillRect(self.rect(), QColor("white"))
-        v = self.current()
-        self._v = v
-        self.draw(p, v, self.width(), self.height(), interactive=True)
+        self.sh = self.sheet(self.width(), self.height())
+        self.view = (self.sh.s, self.sh.cx, self.sh.cy)
+        self.draw(p, self.sh, interactive=True)
 
-    def draw(self, p, v, W, H, interactive=False, sheet=False):
+    def draw(self, p, sh, interactive=False):
         pg = self.page
         st, res = pg.st, pg.res
-        S = lambda q: self.sc(q, v, W, H)
-        s = v[0]
-        # underlay: the engineer's lines around the stand
-        if self.show_under and pg.under:
-            for key, col in (("storm", QColor("#7fbf7f")), ("water", QColor("#9cc8f5")), ("sewer", QColor("#d9a77a"))):
+        if interactive and pg.show_under and pg.under:
+            S = sh.pt
+            for key, col in (("storm", QColor("#b7dcb7")), ("water", QColor("#c6defa")), ("sewer", QColor("#ecd0b6"))):
                 for x1, y1, x2, y2, thick in pg.under.get(key, []):
-                    p.setPen(QPen(col, 1.6 if thick else 0.8))
+                    p.setPen(QPen(col, 1.4 if thick else 0.7))
                     p.drawLine(S((x1, y1)), S((x2, y2)))
-        # stand and building lines
-        stand = st["stand"]["corners"]
-        poly = QPolygonF([S(c) for c in stand])
-        p.setPen(QPen(QColor("black"), 2.0))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawPolygon(poly)
-        p.setPen(QPen(QColor("#555555"), 1.0, Qt.PenStyle.DashLine))
-        self._building_lines(p, S, stand)
-        f = QFont()
-        f.setPointSizeF(8)
-        p.setFont(f)
-        p.setPen(QColor("#555555"))
-        a, b = S(stand[0]), S(stand[1])
-        p.drawText(QPointF((a.x() + b.x()) / 2 - 40, min(a.y(), b.y()) - 22), "STREET  (%.2f m)" % math.hypot(stand[1][0] - stand[0][0], stand[1][1] - stand[0][1]))
-        # buildings
-        if res:
-            for key, label in (("house", "NEW HOUSE"), ("carport", "Carport")):
-                pl = res.get(key)
-                if not pl:
-                    continue
-                p.setPen(QPen(QColor("black"), 1.0))
-                p.setBrush(QBrush(RED if key == "house" else QColor("#ff4d4d")))
-                p.drawPolygon(QPolygonF([S(q) for q in pl]))
-                cx = sum(q[0] for q in pl) / len(pl)
-                cy = sum(q[1] for q in pl) / len(pl)
-                c = S((cx, cy))
-                ft = QFont()
-                ft.setPointSizeF(9 if key == "house" else 7.5)
-                ft.setBold(key == "house")
-                p.setFont(ft)
-                tw = p.fontMetrics().horizontalAdvance(label) + 12
-                box = QRectF(c.x() - tw / 2, c.y() - 11, tw, 22)
-                p.setBrush(QBrush(QColor("white")))
-                p.setPen(QPen(QColor("black"), 1.0))
-                p.drawRoundedRect(box, 6, 6)
-                p.drawText(box, Qt.AlignmentFlag.AlignCenter, label)
-            for key, col, dash in (("sewer", BROWN, False), ("water", BLUE, False), ("elec", YELLOW, True)):
-                self._service(p, S, res[key], col, dash, key, s)
-        # service points, house ports
-        for key, col in (("sewer", BROWN), ("water", BLUE), ("elec", YELLOW)):
-            q = S(st["points"][key])
-            p.setPen(QPen(QColor("black"), 1.2))
-            p.setBrush(QBrush(col))
-            p.drawEllipse(q, 7, 7)
-            ft = QFont()
-            ft.setPointSizeF(7.5)
-            ft.setBold(True)
-            p.setFont(ft)
-            p.setPen(QColor("black"))
-            p.drawText(QPointF(q.x() + 9, q.y() - 7), {"sewer": "Main sewer", "water": "W.CON", "elec": "EC"}[key])
+        site_sheet.draw(p, sh, st, res, pg.sheet_opts(), minpx=7 if interactive else 5)
+        # north arrow above the plan, turned to the chosen direction
+        r_px = max(sh.s * 1.5, 18)
+        site_sheet.north_arrow(p, QPointF(sh.W * 0.5, r_px * 2.2 + 8) if interactive else QPointF(sh.W * 0.5, r_px * 2.6), r_px, st["sheet"].get("north", 0))
         if interactive and res:
+            S = sh.pt
+            for key, col in (("sewer", site_sheet.BROWN), ("water", site_sheet.BLUE), ("elec", site_sheet.YELLOW)):
+                q = S(st["points"][key])
+                p.setPen(QPen(QColor("black"), 1.2))
+                p.setBrush(QBrush(col))
+                p.drawEllipse(q, 6, 6)
             hp = res["house"]
-            for pk, col, name in (("sewer", BROWN, "sewer out"), ("water", BLUE, "water in"), ("db", YELLOW, "DB")):
-                port = st["ports"].get(pk) or se.auto_port(hp, st["points"]["sewer" if pk == "sewer" else "water" if pk == "water" else "elec"], 0.5)
-                port = self.page.port_of(pk)
-                pt, _n = se.port_point(hp, port)
+            for pk, col in (("sewer", site_sheet.BROWN), ("water", site_sheet.BLUE), ("db", site_sheet.YELLOW)):
+                pt, _n = se.port_point(hp, self.page.port_of(pk))
                 q = S(pt)
                 p.setPen(QPen(QColor("black"), 1.0))
                 p.setBrush(QBrush(col))
                 p.drawRect(QRectF(q.x() - 4, q.y() - 4, 8, 8))
-        if interactive and self.mode != "select":
-            p.setPen(QColor("#d6209a"))
-            p.setFont(QFont(self.font().family(), 9, QFont.Weight.Bold))
-            p.drawText(QPointF(10, 18), {"pt_sewer": "Click where the main sewer connection is", "pt_water": "Click where the water connection is",
-                                         "pt_elec": "Click where the electrical supply is", "port_sewer": "Click the house outline where the sewer leaves",
-                                         "port_water": "Click the house outline where the water enters", "port_db": "Click the house outline where the DB is"}.get(self.mode, ""))
-
-    def _building_lines(self, p, S, stand):
-        sb = {"street": self.page.params()["sb_street"], "side": self.page.params()["sb_side"], "rear": self.page.params()["sb_rear"]}
-        sb.update({k: v for k, v in (self.page.st["stand"].get("setbacks") or {}).items() if v is not None})
-        kinds = se.edge_kinds(stand)
-        n = len(stand)
-        lines = []
-        for i in range(n):
-            a, b = stand[i], stand[(i + 1) % n]
-            dx, dy = b[0] - a[0], b[1] - a[1]
-            L = math.hypot(dx, dy) or 1
-            nx, ny = -dy / L, dx / L                     # inward for a stand listed street-first with y into the stand
-            if se.area(stand) < 0:
-                nx, ny = -nx, -ny
-            d = sb[kinds[i]]
-            lines.append(((a[0] + nx * d, a[1] + ny * d), (b[0] + nx * d, b[1] + ny * d)))
-        for i in range(n):
-            (a1, a2), (b1, b2) = lines[i], lines[(i + 1) % n]
-            # intersect neighbouring offset lines so the building line closes at the corners
-            den = (a1[0] - a2[0]) * (b1[1] - b2[1]) - (a1[1] - a2[1]) * (b1[0] - b2[0])
-            if abs(den) < 1e-9:
-                continue
-            t = ((a1[0] - b1[0]) * (b1[1] - b2[1]) - (a1[1] - b1[1]) * (b1[0] - b2[0])) / den
-            lines[i] = (lines[i][0], (a1[0] + t * (a2[0] - a1[0]), a1[1] + t * (a2[1] - a1[1])))
-            t2 = ((a1[0] - b1[0]) * (a1[1] - a2[1]) - (a1[1] - b1[1]) * (a1[0] - a2[0])) / den
-            lines[(i + 1) % n] = ((a1[0] + t * (a2[0] - a1[0]), a1[1] + t * (a2[1] - a1[1])), lines[(i + 1) % n][1])
-        poly = [l[1] for l in lines]
-        p.drawPolygon(QPolygonF([S(q) for q in poly]))
-
-    def _service(self, p, S, svc, col, dash, key, s):
-        path = svc["path"]
-        pen = QPen(col, 2.6 if key == "sewer" else 2.0)
-        if dash:
-            pen.setStyle(Qt.PenStyle.DashDotLine)
-        p.setPen(pen)
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawPolyline(QPolygonF([S(q) for q in path]))
-        f = QFont()
-        f.setPointSizeF(7)
-        p.setFont(f)
-        for n in svc["nodes"]:
-            q = S(n["pt"])
-            kind = n["kind"]
-            p.setPen(QPen(QColor("black"), 1.0))
-            if kind in ("IE", "RE", "MAIN", "WM", "SC", "WCON", "EC"):
-                p.setBrush(QBrush(QColor("white")))
-                r = 5.5 if kind in ("IE", "RE") else 4.5
-                if kind == "MAIN":
-                    p.setBrush(QBrush(col))
-                    r = 6
-                p.drawEllipse(q, r, r)
-            elif kind == "DB":
-                p.setBrush(QBrush(QColor("white")))
-                p.drawRect(QRectF(q.x() - 6, q.y() - 4, 12, 8))
-            p.setPen(QColor("black"))
-            txt = {"IE": "IE", "RE": "RE", "WM": "WM", "SC": "SC", "DB": "DB", "WCON": "", "EC": "", "MAIN": ""}.get(kind, "")
-            if txt:
-                p.drawText(QPointF(q.x() + 7, q.y() - 6), txt)
-            if key == "sewer" and kind in ("RE", "IE") and n.get("depth") is not None:
-                left = kind == "IE" and svc["nodes"].index(n) % 2 == 0
-                p.drawText(QPointF(q.x() - 30 if left else q.x() + 7, q.y() + 12), "%d" % round(n["depth"] * 1000))
-        # label in the middle of the longest run
-        best, bl = None, 0
-        for i in range(len(path) - 1):
-            L = math.hypot(path[i + 1][0] - path[i][0], path[i + 1][1] - path[i][1])
-            if L > bl:
-                best, bl = i, L
-        if best is not None and bl > 1.5:
-            m = S(((path[best][0] + path[best + 1][0]) / 2, (path[best][1] + path[best + 1][1]) / 2))
-            p.setPen(QColor("black"))
-            f2 = QFont()
-            f2.setPointSizeF(7)
-            p.setFont(f2)
-            p.drawText(QPointF(m.x() + 4, m.y() - 4), svc.get("note", ""))
+            if self.mode != "select":
+                p.setPen(QColor("#d6209a"))
+                p.setFont(QFont(self.font().family(), 9, QFont.Weight.Bold))
+                p.drawText(QPointF(10, 18), {"pt_sewer": "Click where the main sewer connection is", "pt_water": "Click where the water connection is",
+                                             "pt_elec": "Click where the electrical supply is", "port_sewer": "Click the house outline where the sewer leaves",
+                                             "port_water": "Click the house outline where the water enters", "port_db": "Click the house outline where the DB is"}.get(self.mode, ""))
 
     # ---- mouse
     def mousePressEvent(self, e):
-        if not self._v:
+        if not self.sh:
             return
         w = self.world(e.position())
         pg = self.page
@@ -308,12 +203,16 @@ class ServicesView(QWidget):
 
     def mouseMoveEvent(self, e):
         d = self.drag
-        if not d or not self._v:
+        if not d or not self.sh:
             return
         pg = self.page
         if d[0] == "pan":
             s, cx, cy = d[2]
-            self.view = (s, cx - (e.position().x() - d[1].x()) / s, cy - (e.position().y() - d[1].y()) / s)
+            dx, dy = e.position().x() - d[1].x(), e.position().y() - d[1].y()
+            a = site_sheet.Sheet(s, (cx, cy), (self.width(), self.height()), pg.st["sheet"].get("road", "left"))
+            p0 = a.inv(QPointF(self.width() / 2, self.height() / 2))
+            p1 = a.inv(QPointF(self.width() / 2 - dx, self.height() / 2 - dy))
+            self.view = (s, cx + p1[0] - p0[0], cy + p1[1] - p0[1])
             self.update()
             return
         w = self.world(e.position())
@@ -352,6 +251,7 @@ class SiteServicesPage(ToolBase):
         self.st = blank_state()
         self.under = {}
         self.res = None
+        self.show_under = True
         self._busy = False
         self._t = QTimer(self)
         self._t.setSingleShot(True)
@@ -393,6 +293,29 @@ class SiteServicesPage(ToolBase):
         self.stand_lbl.setObjectName("xaSub")
         self.stand_lbl.setWordWrap(True)
         bv.addWidget(self.stand_lbl)
+        v1.addWidget(bx)
+        bx, bv = self.box("The sheet", "What goes on the plan beside the stand: the stand number, the street, which side the road is on, and where north is.")
+        row = QHBoxLayout()
+        self.sh_no, self.sh_street, self.sh_rw, self.sh_se = QLineEdit(), QLineEdit(), QLineEdit(), QLineEdit()
+        self.sh_no.setPlaceholderText("2155")
+        self.sh_street.setPlaceholderText("BLUESTEM STREET")
+        self.sh_rw.setPlaceholderText("13m")
+        self.sh_se.setPlaceholderText("2246")
+        for lab, w_, st_ in (("Stand no.", self.sh_no, 0), ("Street", self.sh_street, 2), ("Road", self.sh_rw, 0), ("Street erf", self.sh_se, 0)):
+            row.addWidget(QLabel(lab))
+            row.addWidget(w_, st_ or 1)
+        bv.addLayout(row)
+        row = QHBoxLayout()
+        self.sh_road = QComboBox()
+        for t_ in ("left", "right", "top", "bottom"):
+            self.sh_road.addItem(t_)
+        self.sh_north = spin(-360, 360, 0, 1, " deg", 5)
+        row.addWidget(QLabel("The road is on the"))
+        row.addWidget(self.sh_road)
+        row.addWidget(QLabel("North arrow turned"))
+        row.addWidget(self.sh_north)
+        row.addStretch(1)
+        bv.addLayout(row)
         v1.addWidget(bx)
         bx, bv = self.box("The house", "The footprint, as the red box on your site plans. Rotation 90 puts the long side away from the street.")
         row = QHBoxLayout()
@@ -504,6 +427,10 @@ class SiteServicesPage(ToolBase):
                   self.p_depth, self.p_fall, self.p_ie):
             w.valueChanged.connect(self._edited)
         self.c_on.toggled.connect(self._edited)
+        for w_ in (self.sh_no, self.sh_street, self.sh_rw, self.sh_se):
+            w_.textChanged.connect(self._edited)
+        self.sh_road.currentIndexChanged.connect(self._edited)
+        self.sh_north.valueChanged.connect(self._edited)
         self.p_pipe.currentIndexChanged.connect(self._edited)
         for sx, sy in self.pt_spin.values():
             sx.valueChanged.connect(self._edited)
@@ -525,7 +452,7 @@ class SiteServicesPage(ToolBase):
         self.under_cb = QCheckBox("Engineer's lines")
         self.under_cb.setChecked(True)
         self.under_cb.setToolTip("The sewer, water and stormwater lines from the SG sheets, faint, under the plan.")
-        self.under_cb.toggled.connect(lambda on: (setattr(self.view, "show_under", on), self.view.update()))
+        self.under_cb.toggled.connect(lambda on: (setattr(self, "show_under", on), self.view.update()))
         fl.addWidget(self.under_cb)
         bar.setMinimumHeight(40)
         v.addWidget(bar)
@@ -540,6 +467,15 @@ class SiteServicesPage(ToolBase):
     def set_hint(self, t):
         self.hint_lbl.setText(t)
         self.hint_lbl.setVisible(bool(t))
+
+    def sheet_opts(self):
+        sh = dict(self.st.get("sheet") or {})
+        try:
+            no = int(sh.get("stand_no", ""))
+            sh["neigh"] = [no - 1, no + 1]
+        except ValueError:
+            sh["neigh"] = []
+        return sh
 
     def params(self):
         return dict(se.DEFAULTS, **(self.st.get("params") or {}))
@@ -557,6 +493,10 @@ class SiteServicesPage(ToolBase):
             st["carport"] = None
         for k, (sx, sy) in self.pt_spin.items():
             st["points"][k] = [sx.value(), sy.value()]
+        st["sheet"] = {"road": self.sh_road.currentText(), "street": self.sh_street.text().strip(), "road_w": self.sh_rw.text().strip(), "street_erf": self.sh_se.text().strip(),
+                       "stand_no": self.sh_no.text().strip(), "north": self.sh_north.value()}
+        if self.view.auto is False and False:
+            pass
         st["params"] = {"conn_depth": self.p_depth.value(), "fall": self.p_fall.value(), "max_ie": self.p_ie.value(), "sewer_pipe": self.p_pipe.currentText(),
                         "sb_street": self.sb_street.value(), "sb_side": self.sb_side.value(), "sb_rear": self.sb_rear.value()}
         self.schedule()
@@ -579,6 +519,13 @@ class SiteServicesPage(ToolBase):
             for k, (sx, sy) in self.pt_spin.items():
                 sx.setValue(st["points"][k][0])
                 sy.setValue(st["points"][k][1])
+            sh = st.get("sheet") or {}
+            self.sh_no.setText(str(sh.get("stand_no", "")))
+            self.sh_street.setText(str(sh.get("street", "")))
+            self.sh_rw.setText(str(sh.get("road_w", "13m")))
+            self.sh_se.setText(str(sh.get("street_erf", "")))
+            self.sh_road.setCurrentText(str(sh.get("road", "left")))
+            self.sh_north.setValue(float(sh.get("north", 0)))
             pr = st.get("params") or {}
             self.p_depth.setValue(pr.get("conn_depth", 1.5))
             self.p_fall.setValue(pr.get("fall", 50))
@@ -685,6 +632,8 @@ class SiteServicesPage(ToolBase):
         if not k:
             return
         d = STANDS[k]
+        road, street, north = SHEET_DEFAULTS.get(k, ("left", "", 0.0))
+        self.st["sheet"] = {"road": road, "street": street, "road_w": "13m", "street_erf": "2246", "stand_no": k, "north": north}
         self.set_stand(d["corners"], "Blue Hills Ext 120 - stand " + k, under=d["layers"], points=se.default_points(d))
 
     def make_rect(self):
@@ -775,31 +724,42 @@ class SiteServicesPage(ToolBase):
             self.set_state(json.load(open(path)))
             self.view.fit()
 
-    def _render(self, p, W, H):
+    def _render(self, p, W, H, dpi=300):
+        """the sheet: the plan at 1:200 on the paper if it fits (it nearly always does on A3), the title and the notes in the corner"""
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
         p.fillRect(0, 0, W, H, QColor("white"))
         x0, y0, x1, y1 = self.view.bounds()
-        pad = 0.08
-        s = min(W * (1 - 2 * pad) / max(x1 - x0, 1e-3), H * (1 - 2 * pad - 0.1) / max(y1 - y0, 1e-3))
-        v = (s, (x0 + x1) / 2, (y0 + y1) / 2 - 0.0)
-        under = self.view.show_under
-        self.view.show_under = False
-        self.view.draw(p, v, W, H, interactive=False, sheet=True)
-        self.view.show_under = under
-        f = QFont()
-        f.setPointSizeF(max(8, W / 90))
-        f.setBold(True)
-        p.setFont(f)
+        road = self.st["sheet"].get("road", "left")
+        rot = site_sheet.ROTS.get(road, 270)
+        w_m, h_m = (x1 - x0, y1 - y0) if rot in (0, 180) else (y1 - y0, x1 - x0)
+        s200 = 5.0 * dpi / 25.4                                  # pixels per metre at 1:200
+        fit = min(W * 0.92 / w_m, H * 0.80 / h_m)
+        s = min(s200, fit)
+        scale_txt = "1:200" if s >= s200 - 1e-6 else "1:%d" % round(200 * s200 / s / 10) * 1 if False else ("1:200" if s >= s200 - 1e-6 else "1:%d" % int(round(200 * s200 / s / 50.0) * 50))
+        sh = site_sheet.Sheet(s, ((x0 + x1) / 2, (y0 + y1) / 2), (W, H * 0.92), road)
+        p.save()
+        site_sheet.draw(p, sh, self.st, self.res, self.sheet_opts(), minpx=5)
+        r_px = max(s * 1.5, 18)
+        site_sheet.north_arrow(p, QPointF(W * 0.5, r_px * 2.6), r_px, self.st["sheet"].get("north", 0))
+        p.restore()
+        name = self.st["sheet"].get("stand_no") or self.st["stand"].get("name", "Stand")
+        base = H * 0.945
         p.setPen(QColor("black"))
-        name = self.st["stand"].get("name", "Stand")
-        p.drawText(QPointF(W * 0.04, H * 0.94), "SITE PLAN - %s" % name)
-        f.setBold(False)
-        f.setPointSizeF(max(7, W / 130))
-        p.setFont(f)
+        p.setFont(site_sheet.font(s * 0.62, True, 100))
+        p.drawText(QPointF(W * 0.04, base), "Site Plan")
+        p.setFont(site_sheet.font(s * 0.62, False, 100))
+        p.drawText(QPointF(W * 0.04, base + s * 0.9), scale_txt)
+        p.setPen(site_sheet.RED)
+        p.setFont(site_sheet.font(s * 0.8, True, 100))
+        p.drawText(QPointF(W * 0.20, base + s * 0.9), "To Scale if printed to A3" if scale_txt == "1:200" else "Not to scale")
         r = self.res
-        lines = ["Sewer: %s, %.1f m, drop %d mm, depth at the house %d mm" % (r["sewer"]["note"], r["sewer"]["length"], r["sewer"]["drop_mm"], round(r["sewer"]["depth_house"] * 1000)),
-                 "Water: %s, %.1f m.   Electrical: %.1f m.   Coverage %.1f%% of %.0f m2." % (r["water"]["note"], r["water"]["length"], r["elec"]["length"], r["coverage_pct"], r["stand_area"])]
+        p.setPen(QColor("black"))
+        p.setFont(site_sheet.font(s * 0.5, False, 100))
+        lines = ["Stand %s   %.0f m2   coverage %.1f%%" % (name, r["stand_area"], r["coverage_pct"]),
+                 "Sewer %s, %.1f m, depth at the house %d mm.   Water %.1f m.   Electrical %.1f m." % (r["sewer"]["note"], r["sewer"]["length"], round(r["sewer"]["depth_house"] * 1000), r["water"]["length"], r["elec"]["length"])]
         for i, t in enumerate(lines):
-            p.drawText(QPointF(W * 0.04, H * 0.94 + (i + 1) * f.pointSizeF() * 1.8), t)
+            p.drawText(QPointF(W * 0.55, base + i * s * 0.9), t)
 
     def save_pdf(self):
         path, _ = QFileDialog.getSaveFileName(self, "Save the plan", "site_services.pdf", "PDF (*.pdf)")
@@ -811,9 +771,9 @@ class SiteServicesPage(ToolBase):
         w = QPdfWriter(path)
         w.setPageSize(QPageSize(QPageSize.PageSizeId.A3))
         w.setPageOrientation(QPageLayout.Orientation.Landscape)
-        w.setResolution(120)
+        w.setResolution(300)
         p = QPainter(w)
-        self._render(p, w.width(), w.height())
+        self._render(p, w.width(), w.height(), 300)
         p.end()
 
     def save_png(self):
@@ -821,10 +781,9 @@ class SiteServicesPage(ToolBase):
         if path:
             self.write_png(path)
 
-    def write_png(self, path, W=1800, H=1300):
+    def write_png(self, path, W=4960, H=3508):
         img = QImage(W, H, QImage.Format.Format_RGB32)
         p = QPainter(img)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        self._render(p, W, H)
+        self._render(p, W, H, 300)
         p.end()
         img.save(path)
