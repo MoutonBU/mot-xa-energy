@@ -518,6 +518,19 @@ def sewer(state, hp, cp, params, others=()):
             rest = dedupe(rest[:-1] + ortho(route(rest[-1], v_, stand, obs)))
         if not man:
             rest = dedupe(rest[:-1] + best_ortho(rest[-1], cands, stand, obs))
+        while len(rest) > 2:                                     # fail-safe: the outlet pipe never runs past the run. If the run's first leg turns back along the outlet
+            e1 = (rest[1][0] - rest[0][0], rest[1][1] - rest[0][1])   # (a hand-placed run that sits nearer the wall than the stub), the outlet ends where the run is
+            le = math.hypot(*e1) or 1.0
+            back = (e1[0] * n0[0] + e1[1] * n0[1]) / le < -0.9
+            s_ = (rest[1][0] - p0[0]) * n0[0] + (rest[1][1] - p0[1]) * n0[1]
+            if back and s_ >= 0.15 and abs((rest[1][0] - p0[0]) * n0[1] - (rest[1][1] - p0[1]) * n0[0]) < 0.05:
+                q1 = rest[1]
+                rest = rest[1:]
+            else:
+                break
+        e1 = (rest[1][0] - rest[0][0], rest[1][1] - rest[0][1]) if len(rest) > 1 else (0.0, 0.0)
+        if math.hypot(*e1) > 0.02 and (e1[0] * n0[0] + e1[1] * n0[1]) / math.hypot(*e1) < -0.3:
+            rest = dedupe([q1] + best_ortho(q1, cands, stand, obs))   # still turning back into the outlet: that hand-placed run cannot be used, so route it automatically
         d1 = (rest[1][0] - rest[0][0], rest[1][1] - rest[0][1])
         L1 = math.hypot(*d1) or 1.0
         u = (d1[0] / L1, d1[1] / L1)

@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.111**
+Current version: **1.86.112**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Site services:** fail-safe on the sewer outlet: the pipe from the house can never run past the sewer run any more. If a hand-placed run sits nearer the wall than the outlet's stub, the outlet now ends exactly on the run; if the run would turn back into the outlet, that hand-placed run is dropped and routed automatically. Pinned by test_sewer_failsafe.py.
 - **Site services:** a house square to the stand now gets the full set of setting-out dimensions too: on all four boundaries (street side included) a chain outside the boundary gives the stand corner to the house corner, the house, and on to the other corner, with the light blue setting-out lines carried out from the house corners.
 - **Site services:** importing a house footprint from a DXF/DWG now reads what is drawn on it like your footprint sheets: the SD, FD, DB, G and KD marks, and where the blue water pipe meets the house (taken as the kitchen connection, KD, or by the gully G), so the sewer and water start there automatically (still movable). A tick box "Include the covered patio / stoep / braai" joins the C.PATIO outline that touches the house to its outline.
 - **Site services:** the rodding eyes (solid) and inspection eyes (hollow) on the sewer can be clicked, dragged along the pipe (their text goes with them) and deleted (Delete key or button; Eyes back restores them). At the stand boundary the rodding eye now comes first with the inspection eye against the stand. A sewer corner can be moved on its own (Shift, or Free bends in the toolbar) so the pipe takes a custom bend while the rest stays put. A text placed on the house, carport, an eye or the sewer line is linked to it and moves with it (Unlink in the text toolbar).
