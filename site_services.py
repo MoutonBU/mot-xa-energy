@@ -2396,7 +2396,7 @@ class SiteServicesPage(ToolBase):
             got = self._dialog(path, "stand")
             if not got:
                 return
-            poly, under, street = got
+            poly, under, street = got[:3]
             self.set_stand_world(poly, "Imported stand", src_shapes=[1], street_edge=street)
             xs_, ys_ = [p[0] for p in poly], [p[1] for p in poly]
             self.set_hint("Stand imported at true size: %.2f x %.2f m, %.0f m2." % (max(xs_) - min(xs_), max(ys_) - min(ys_), abs(se.area(poly))))

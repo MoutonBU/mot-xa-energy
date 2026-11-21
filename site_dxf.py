@@ -264,7 +264,7 @@ def outlines(drawing, factor, min_area=0.5):
     return out
 
 
-def _rectangles(segs, factor, min_len=3.0, tol=0.06, cover=0.85):
+def _rectangles(segs, factor, min_len=3.0, tol=0.06, cover=0.97):
     """level and upright lines (in the drawing's units) that make a closed box even where they cross or run past the corners"""
     H, V = [], []
     for (x1, y1), (x2, y2) in segs:
@@ -310,7 +310,8 @@ def _rectangles(segs, factor, min_len=3.0, tol=0.06, cover=0.85):
                           and span(0, ylo, yhi, v1) >= cover * Hh and span(0, ylo, yhi, v2) >= cover * Hh)
                     if ok:
                         res.append([(xlo, ylo), (xhi, ylo), (xhi, yhi), (xlo, yhi)])
-    return [[(x / factor, y / factor) for x, y in r] for r in res]
+    res.sort(key=lambda r: -abs((r[2][0] - r[0][0]) * (r[2][1] - r[0][1])))
+    return [[(x / factor, y / factor) for x, y in r] for r in res[:12]]
 
 
 MARK_NAMES = ("DB", "SD", "FD", "G", "KD")
