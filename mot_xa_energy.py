@@ -9296,7 +9296,7 @@ class MainWindow(QMainWindow):
         try:
             import site_services
             self.services_page = site_services.SiteServicesPage(self)
-            self.main_tabs.addTab(self.services_page, "Site services")
+            self.main_tabs.addTab(self.services_page, "House placing")
         except Exception as e_:
             print("tool not started: site_services", e_)
             self.services_page = None

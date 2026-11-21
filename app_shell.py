@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton, QSizePo
 # main tab index -> (rail label, icon name); order of the main tabs in the window
 SUBJECTS = [(0, "Project", "home"), (6, "Drawing register", "clipboard"), (10, "Orders", "tag"), (11, "Invoicing", "calc"), (1, "Light && ventilation", "lightvent"), (2, "Energy (XA)", "bolt"),
             (3, "Coverage && FAR", "building"), (4, "Detail notes", "ruler"), (5, "Costing", "tag"),
-            (7, "Area schedule", "layers"), (8, "Building lines", "land"), (12, "Site services", "land"), (9, "Guidelines review", "clipboard")]
+            (7, "Area schedule", "layers"), (8, "Building lines", "land"), (12, "House placing", "land"), (9, "Guidelines review", "clipboard")]
 CTX = {11: "invoicing", 10: "orders", 1: "sans", 2: "sans", 3: "sans", 4: "detail", 5: "costing", 6: "register", 7: "site", 8: "site", 9: "rules", 12: "site"}      # which tool a main tab belongs to
 PSUB_ICONS = {"Drawings": "clipboard", "Orders": "tag", "Client changes": "edit", "Sent and revisions": "export",
               "Fixtures and sanitary ware": "drop", "Building materials": "layers", "Whole building and budget": "calc"}
@@ -171,7 +171,7 @@ class Rail(QFrame):
         col = "#1c1f24" if self.light_fn() else "#eceef0"
         for label, idx, ico in (("Drawing register", 6, "clipboard"), ("Orders", 10, "tag"), ("Invoicing", 11, "calc"), ("Detail Notes", 4, "ruler"), ("Costing", 5, "calc"), (None, None, None),
                                 ("Light && Ventilation", 1, "lightvent"), ("Energy (XA)", 2, "bolt"), ("Coverage && FAR", 3, "building"), (None, None, None),
-                                ("Building lines", 8, "land"), ("Site services", 12, "land"), ("Area schedule", 7, "layers"), ("Guidelines review", 9, "clipboard"), (None, None, None),
+                                ("Building lines", 8, "land"), ("House placing", 12, "land"), ("Area schedule", 7, "layers"), ("Guidelines review", 9, "clipboard"), (None, None, None),
                                 ("Home (the four squares)", -1, "home")):
             if label is None:
                 m.addSeparator()

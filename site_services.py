@@ -744,11 +744,27 @@ class ServicesView(QWidget):
 # ------------------------------------------------------------------ the page
 class SiteServicesPage(ToolBase):
     KEY = "services"
-    TITLE = "Site services"
-    STEP_NAMES = ["Stand and buildings", "Service points", "The lines"]
-    STEP_HINTS = ["Pick the stand, set the house and the carport. Drag them in the plan, or press Suggest to place them inside the building lines.",
-                  "Say where the main sewer, the water connection and the electrical supply are, and where on the house they enter. Drag the dots in the plan.",
-                  "Lengths, eyes, invert depths and checks. Save the plan as a PDF or an image."]
+    TITLE = "House placing"
+    STEP_NAMES = ["Stand and house", "Connections", "Results"]
+    STEP_HINTS = ["Bring in your stand, then drag the house in the plan, or press \"Place them for me\" at the bottom.",
+                  "Show where the sewer, water and electricity come in. Click the plan, or drag the dots.",
+                  "Pipe lengths and checks. Save the plan when you are happy."]
+
+    def more(self, bv, text="More options"):
+        """A folded-away section for the less used settings."""
+        from PySide6.QtWidgets import QToolButton
+        btn = QToolButton()
+        btn.setText("\u25b8 " + text)
+        btn.setCheckable(True)
+        btn.setStyleSheet("QToolButton{border:none;text-align:left;padding:2px 0;}")
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        w.setVisible(False)
+        btn.toggled.connect(lambda on: (w.setVisible(on), btn.setText(("\u25be " if on else "\u25b8 ") + text)))
+        bv.addWidget(btn)
+        bv.addWidget(w)
+        return lay
 
     def __init__(self, win):
         super().__init__(win)
@@ -770,11 +786,11 @@ class SiteServicesPage(ToolBase):
         p1 = QWidget()
         v1 = QVBoxLayout(p1)
         v1.setContentsMargins(0, 0, 8, 8)
-        bx, bv = self.box("The stand", "Bring in your own stand from a DXF, take it from the Building lines tool, or type a rectangle. The Blue Hills stands and finished plans are built in as the reference the tool works from.")
+        bx, bv = self.box("1. Your stand", "Start here. Open your stand drawing, or just type its size.")
         row = QHBoxLayout()
-        ib = QPushButton("Import the stand from DXF...")
+        ib = QPushButton("Open a stand drawing (DXF)...")
         ib.clicked.connect(self.import_stand_dxf)
-        sb_ = QPushButton("Street edge: click it in the plan")
+        sb_ = QPushButton("Mark the street side (click it in the plan)")
         sb_.setToolTip("After an import, click the boundary that faces the street.")
         sb_.clicked.connect(lambda: self.arm("street"))
         row.addWidget(ib)
@@ -787,18 +803,18 @@ class SiteServicesPage(ToolBase):
         bv.addWidget(self.ref_lbl)
         row = QHBoxLayout()
         self.q_w, self.q_d = spin(2, 500, 13.5, 2, " m"), spin(2, 500, 22, 2, " m")
-        mk = QPushButton("Make a rectangle")
+        mk = QPushButton("Draw it")
         mk.clicked.connect(self.make_rect)
-        fb = QPushButton("Take the stand and buildings from Building lines")
+        fb = QPushButton("Use the stand from the Building lines tool")
         fb.clicked.connect(self.from_site_page)
-        for w in (QLabel("Along the street"), self.q_w, QLabel("Depth"), self.q_d, mk):
+        for w in (QLabel("Width along the street"), self.q_w, QLabel("Depth"), self.q_d, mk):
             row.addWidget(w)
         row.addStretch(1)
         bv.addLayout(row)
         bv.addWidget(fb)
         row = QHBoxLayout()
         self.sb_street, self.sb_side, self.sb_rear = spin(0, 20, 1.0, 2, " m"), spin(0, 20, 1.0, 2, " m"), spin(0, 20, 2.0, 2, " m")
-        for lab, w in (("Building line: street", self.sb_street), ("side", self.sb_side), ("rear", self.sb_rear)):
+        for lab, w in (("Space to keep clear: street", self.sb_street), ("side", self.sb_side), ("rear", self.sb_rear)):
             row.addWidget(QLabel(lab))
             row.addWidget(w)
         row.addStretch(1)
@@ -808,7 +824,7 @@ class SiteServicesPage(ToolBase):
         self.stand_lbl.setWordWrap(True)
         bv.addWidget(self.stand_lbl)
         v1.addWidget(bx)
-        bx, bv = self.box("The sheet", "What goes on the plan beside the stand: the stand number, the street, which side the road is on, and where north is.")
+        bx, bv = self.box("2. Plan labels", "The stand number and street name that print on the plan.")
         row = QHBoxLayout()
         self.sh_no, self.sh_street, self.sh_rw, self.sh_se = QLineEdit(), QLineEdit(), QLineEdit(), QLineEdit()
         self.sh_no.setPlaceholderText("2155")
@@ -819,6 +835,7 @@ class SiteServicesPage(ToolBase):
             row.addWidget(QLabel(lab))
             row.addWidget(w_, st_ or 1)
         bv.addLayout(row)
+        ml = self.more(bv, "Road side and north arrow")
         row = QHBoxLayout()
         self.sh_road = QComboBox()
         for t_ in ("left", "right", "top", "bottom"):
@@ -829,59 +846,73 @@ class SiteServicesPage(ToolBase):
         row.addWidget(QLabel("North arrow turned"))
         row.addWidget(self.sh_north)
         row.addStretch(1)
-        bv.addLayout(row)
+        ml.addLayout(row)
         row = QHBoxLayout()
-        rb_ = QPushButton("Road: click where it is in the plan")
+        rb_ = QPushButton("Show where the road is")
         rb_.setToolTip("Click on the side of the stand where the road is. The plan turns so the street faces that way, then you click the direction of north.")
         rb_.clicked.connect(lambda: self.arm("road"))
-        nb_ = QPushButton("North: click its direction")
+        nb_ = QPushButton("Show where north is")
         nb_.clicked.connect(lambda: self.arm("north_dir"))
-        nm_ = QPushButton("North arrow back to the top")
+        nm_ = QPushButton("North arrow to the top")
         nm_.clicked.connect(lambda: (self.st["sheet"].__setitem__("north_pos", None), self.view.update(), self.changed()))
         for b_ in (rb_, nb_, nm_):
             row.addWidget(b_)
         row.addStretch(1)
-        bv.addLayout(row)
+        ml.addLayout(row)
         v1.addWidget(bx)
-        bx, bv = self.box("The house", "The footprint, as the red box on your site plans. Rotation 90 puts the long side away from the street.")
+        bx, bv = self.box("3. Your house", "The red box. Drag it in the plan, turn it with the ring, or type its size.")
         row = QHBoxLayout()
         self.h_w, self.h_d, self.h_rot = spin(1, 60, 14.8, 2, " m"), spin(1, 60, 6.5, 2, " m"), spin(-360, 360, 90, 0, " deg", 90)
         self.h_x, self.h_y = spin(-100, 500, 9, 2, " m"), spin(-100, 500, 12, 2, " m")
-        for lab, w in (("Length", self.h_w), ("Width", self.h_d), ("Rotation", self.h_rot), ("Centre x", self.h_x), ("y", self.h_y)):
+        for lab, w in (("Length", self.h_w), ("Width", self.h_d), ("Turned", self.h_rot)):
             row.addWidget(QLabel(lab))
             row.addWidget(w)
         row.addStretch(1)
         bv.addLayout(row)
+        ml = self.more(bv, "Exact position")
         row = QHBoxLayout()
-        for text, fn in (("House from the library...", self.pick_footprint), ("Rotate...", lambda: self.rotate_dialog("house")), ("Import the house from DXF...", lambda: self.import_building_dxf("house")),
-                         ("Plain rectangle", lambda: self.plain_rect("house"))):
+        for lab, w in (("Centre x", self.h_x), ("y", self.h_y)):
+            row.addWidget(QLabel(lab))
+            row.addWidget(w)
+        row.addStretch(1)
+        ml.addLayout(row)
+        row = QHBoxLayout()
+        for text, fn in (("Pick a house from the library...", self.pick_footprint), ("Turn it...", lambda: self.rotate_dialog("house")), ("Open a house drawing (DXF)...", lambda: self.import_building_dxf("house")),
+                         ("Plain box", lambda: self.plain_rect("house"))):
             b_ = QPushButton(text)
             b_.clicked.connect(lambda _=False, f=fn: f())
             row.addWidget(b_)
         row.addStretch(1)
         bv.addLayout(row)
         v1.addWidget(bx)
-        bx, bv = self.box("The carport", "")
+        bx, bv = self.box("4. Carport (optional)", "Tick it if the house has a carport.")
         row = QHBoxLayout()
         self.c_on = QCheckBox("Carport")
         self.c_on.setChecked(True)
         self.c_w, self.c_d = spin(1, 30, 5, 2, " m"), spin(1, 30, 5, 2, " m")
         self.c_x, self.c_y = spin(-100, 500, 3.5, 2, " m"), spin(-100, 500, 3.5, 2, " m")
         row.addWidget(self.c_on)
-        for lab, w in (("Width", self.c_w), ("Depth", self.c_d), ("Centre x", self.c_x), ("y", self.c_y)):
+        for lab, w in (("Width", self.c_w), ("Depth", self.c_d)):
             row.addWidget(QLabel(lab))
             row.addWidget(w)
         row.addStretch(1)
         bv.addLayout(row)
+        ml = self.more(bv, "Exact position")
         row = QHBoxLayout()
-        for text, fn in (("Rotate...", lambda: self.rotate_dialog("carport")), ("Import the carport from DXF...", lambda: self.import_building_dxf("carport")),
-                         ("Plain rectangle", lambda: self.plain_rect("carport"))):
+        for lab, w in (("Centre x", self.c_x), ("y", self.c_y)):
+            row.addWidget(QLabel(lab))
+            row.addWidget(w)
+        row.addStretch(1)
+        ml.addLayout(row)
+        row = QHBoxLayout()
+        for text, fn in (("Turn it...", lambda: self.rotate_dialog("carport")), ("Open a carport drawing (DXF)...", lambda: self.import_building_dxf("carport")),
+                         ("Plain box", lambda: self.plain_rect("carport"))):
             b_ = QPushButton(text)
             b_.clicked.connect(lambda _=False, f=fn: f())
             row.addWidget(b_)
         row.addStretch(1)
         bv.addLayout(row)
-        sg = QPushButton("Suggest placement inside the building lines")
+        sg = QPushButton("Place them for me (inside the building lines)")
         sg.setToolTip("Carport at the street on one side, house at the back. Where everything cannot fit, it places them and the checks show by how much.")
         sg.clicked.connect(self.suggest)
         bv.addWidget(sg)
@@ -893,39 +924,43 @@ class SiteServicesPage(ToolBase):
         v2.setContentsMargins(0, 0, 8, 8)
         self.pt_spin = {}
         self.main_spin = {}
-        for key, title, sub in (("sewer", "Main sewer connection", "Where your house sewer joins the main, from the SG sewer sheet. The sewer depth there sets the invert levels along the pipe."),
-                                ("water", "Water connection (W.CON)", "Where the water line is brought to the stand."),
-                                ("elec", "Electrical supply (EC)", "Not on the SG sheets: place it where the supply box or connection is.")):
+        for key, title, sub in (("sewer", "Sewer", "Where the house sewer joins the municipal main (see the SG sewer sheet)."),
+                                ("water", "Water", "Where the water connection (W.CON) is."),
+                                ("elec", "Electricity", "Where the electrical supply (EC) is. It is not on the SG sheets.")):
             bx, bv = self.box(title, sub)
             row = QHBoxLayout()
             sx, sy = spin(-100, 500, 0, 2, " m"), spin(-100, 500, 0, 2, " m")
             self.pt_spin[key] = (sx, sy)
             pb = QPushButton("Click it in the plan")
             pb.clicked.connect(lambda _=False, k=key: self.arm("pt_" + k))
-            ab = QPushButton("House side: click on the house")
+            ab = QPushButton("Where it leaves the house (click the house)")
             ab.clicked.connect(lambda _=False, k=key: self.arm("port_" + ("db" if k == "elec" else k)))
-            rb = QPushButton("Automatic")
+            rb = QPushButton("Let the program choose")
             rb.clicked.connect(lambda _=False, k=key: self.reset_port("db" if k == "elec" else k))
-            for lab, w in (("along the street x", sx),):
-                row.addWidget(QLabel(lab))
-                row.addWidget(w)
             row.addWidget(pb)
+            row.addWidget(ab)
+            row.addStretch(1)
             bv.addLayout(row)
+            ml = self.more(bv, "Exact position and settings")
+            row = QHBoxLayout()
+            row.addWidget(QLabel("Along the street"))
+            row.addWidget(sx)
+            row.addStretch(1)
+            ml.addLayout(row)
             row = QHBoxLayout()
             ms = spin(0, 40, -se.DEFAULT_MAINS[key], 2, " m", 0.1)
             self.main_spin[key] = ms
-            row.addWidget(QLabel("The main line is this far outside the street boundary"))
+            row.addWidget(QLabel("Main line is this far outside the street boundary"))
             row.addWidget(ms)
             row.addStretch(1)
-            bv.addLayout(row)
+            ml.addLayout(row)
             row = QHBoxLayout()
-            row.addWidget(ab)
             row.addWidget(rb)
             row.addStretch(1)
-            bv.addLayout(row)
+            ml.addLayout(row)
             if key == "water":
                 row = QHBoxLayout()
-                wb_ = QPushButton("Add a water point on the house: click on it")
+                wb_ = QPushButton("Add another water point (click the house)")
                 wb_.setToolTip("Up to 4 water points on the house. Each one branches off the water pipe already laid, in square runs.")
                 wb_.clicked.connect(lambda: self.arm("wport_add"))
                 wr_ = QPushButton("Remove the last water point")
@@ -936,11 +971,11 @@ class SiteServicesPage(ToolBase):
                 bv.addLayout(row)
             if key == "sewer":
                 row = QHBoxLayout()
-                dr_ = QPushButton("Draw the sewer: start, corners, main")
+                dr_ = QPushButton("Draw the sewer (click start, corners, main)")
                 dr_.setToolTip("Click where the sewer starts on the house (minimum invert), click each 90 degree corner, then click the main sewer line. The eyes go in by themselves.")
                 dr_.clicked.connect(self.sewer_draw_start)
                 row.addWidget(dr_)
-                sb_ = QPushButton("Add a sewer outlet on the house: click on it")
+                sb_ = QPushButton("Add another sewer outlet (click the house)")
                 sb_.setToolTip("Up to 4 sewer outlets on the house. Each runs square to the sewer run and butts onto it. Drag its square on the wall to move it; select it and press Delete to remove it.")
                 sb_.clicked.connect(lambda: self.arm("sport_add"))
                 sr_ = QPushButton("Remove the last extra outlet")
@@ -956,11 +991,12 @@ class SiteServicesPage(ToolBase):
                 self.p_pipe.addItems(["110", "160"])
                 self.p_tail = spin(0.1, 3, 0.35, 2, " m", 0.1)
                 self.p_tail.setToolTip("The rodding eye sits this far past the inspection eye where the house outlet joins the run (and past any other connection). 300 to 400 mm is usual.")
-                for lab, w in (("Depth at the main", self.p_depth), ("Fall 1 :", self.p_fall), ("Eyes at most", self.p_ie), ("Rodding eye past the joint", self.p_tail), ("Pipe", self.p_pipe)):
+                for lab, w in (("Depth at the main", self.p_depth), ("Fall 1 :", self.p_fall), ("Eyes at most", self.p_ie), ("Rodding eye past the joint", self.p_tail), ("Pipe size", self.p_pipe)):
                     row.addWidget(QLabel(lab))
                     row.addWidget(w)
                 row.addStretch(1)
-                bv.addLayout(row)
+                ml2 = self.more(bv, "Pipe settings (depth, fall, eyes)")
+                ml2.addLayout(row)
                 row = QHBoxLayout()
                 vb = QPushButton("Add a sewer point: click in the plan")
                 vb.setToolTip("The sewer is routed through the points you add, in order, in square runs. Drag a point to move it, right-click it to remove it.")
@@ -970,18 +1006,18 @@ class SiteServicesPage(ToolBase):
                 row.addWidget(vb)
                 row.addWidget(cb_)
                 row.addStretch(1)
-                bv.addLayout(row)
+                ml2.addLayout(row)
             v2.addWidget(bx)
-        bx, bv = self.box("Your own service points", "Add a connection point of your own. A sewer, water or electrical point is used when the line to it is shorter than to the main. Other points are just marked on the plan.")
+        bx, bv = self.box("Extra points (optional)", "Add a connection of your own, for example a manhole. Used when it is closer than the main.")
         row = QHBoxLayout()
         self.cu_kind = QComboBox()
         for k_, t_ in (("sewer", "Sewer"), ("water", "Water"), ("elec", "Electrical"), ("other", "Other marker")):
             self.cu_kind.addItem(t_, k_)
         self.cu_name = QLineEdit()
         self.cu_name.setPlaceholderText("Name, e.g. manhole")
-        ab_ = QPushButton("Add: click in the plan")
+        ab_ = QPushButton("Add (click the plan)")
         ab_.clicked.connect(lambda: self.arm("cust_add"))
-        rb_ = QPushButton("Remove the selected")
+        rb_ = QPushButton("Remove selected")
         rb_.clicked.connect(self.remove_custom)
         for w_ in (self.cu_kind, self.cu_name, ab_, rb_):
             row.addWidget(w_)
@@ -1000,7 +1036,7 @@ class SiteServicesPage(ToolBase):
         self.warn_lbl.setWordWrap(True)
         bv.addWidget(self.warn_lbl)
         v3.addWidget(bx)
-        bx, bv = self.box("The lines", "")
+        bx, bv = self.box("Pipe lengths", "")
         self.svc_t = QTableWidget(0, 3)
         self.svc_t.setHorizontalHeaderLabels(["Service", "Length", "Note"])
         self.svc_t.verticalHeader().setVisible(False)
@@ -1009,7 +1045,7 @@ class SiteServicesPage(ToolBase):
         self.svc_t.setMinimumHeight(120)
         bv.addWidget(self.svc_t)
         v3.addWidget(bx)
-        bx, bv = self.box("Eyes and invert depths along the sewer", "Depth is below ground, measured at the pipe invert, from the depth at the main and the fall.")
+        bx, bv = self.box("Sewer eyes and depths", "Depth is below ground at the bottom of the pipe.")
         self.node_t = QTableWidget(0, 4)
         self.node_t.setHorizontalHeaderLabels(["Node", "Distance from the house", "Depth (mm)", "Where"])
         self.node_t.verticalHeader().setVisible(False)
@@ -1018,9 +1054,9 @@ class SiteServicesPage(ToolBase):
         self.node_t.setMinimumHeight(180)
         bv.addWidget(self.node_t)
         v3.addWidget(bx)
-        bx, bv = self.box("Save", "")
+        bx, bv = self.box("Save your plan", "The DXF opens in ArchiCAD exactly as you see it here.")
         row = QHBoxLayout()
-        for text, fn in (("Save the plan as PDF...", self.save_pdf), ("Save as DXF (true size, mm)...", self.save_dxf), ("Save as an image...", self.save_png), ("Save the setup...", self.save_json), ("Open a setup...", self.open_json)):
+        for text, fn in (("Save the plan as PDF...", self.save_pdf), ("Save as DXF (for ArchiCAD)...", self.save_dxf), ("Save as an image...", self.save_png), ("Save my work...", self.save_json), ("Open my work...", self.open_json)):
             b = QPushButton(text)
             b.clicked.connect(lambda _=False, f=fn: f())
             row.addWidget(b)
@@ -1471,11 +1507,11 @@ class SiteServicesPage(ToolBase):
     def from_site_page(self):
         sp = getattr(self.win, "site_page", None)
         if sp is None:
-            QMessageBox.information(self, "Site services", "The Building lines tool is not available.")
+            QMessageBox.information(self, "House placing", "The Building lines tool is not available.")
             return
         v = sp.verts()
         if len(v) < 3:
-            QMessageBox.information(self, "Site services", "Draw the stand in the Building lines tool first.")
+            QMessageBox.information(self, "House placing", "Draw the stand in the Building lines tool first.")
             return
         ed = sp.edges()
         si = next((i for i, e in enumerate(ed) if e["kind"] == "Street"), None)
@@ -1980,7 +2016,7 @@ class SiteServicesPage(ToolBase):
     def pick_footprint(self):
         """a house from the footprint library (your footprint drawings)"""
         if not FOOTPRINTS:
-            QMessageBox.information(self, "Site services", "The footprint library is not available.")
+            QMessageBox.information(self, "House placing", "The footprint library is not available.")
             return
         dlg = QDialog(self)
         dlg.setWindowTitle("House from the library")
@@ -2077,7 +2113,7 @@ class SiteServicesPage(ToolBase):
         try:
             return site_dxf.read_shapes(path)
         except Exception as e:
-            QMessageBox.warning(self, "Site services", str(e))
+            QMessageBox.warning(self, "House placing", str(e))
             return None
 
     def import_stand_dxf(self, path=None, pick=None):
@@ -2107,12 +2143,12 @@ class SiteServicesPage(ToolBase):
         try:
             drawing = site_dxf.read_drawing(path)
         except Exception as e:
-            QMessageBox.warning(self, "Site services", str(e))
+            QMessageBox.warning(self, "House placing", str(e))
             return None
         try:
             dlg = site_dxf_dialog.ImportDialog(self, drawing, role)
         except Exception as e:
-            QMessageBox.warning(self, "Site services", "The drawing could not be shown: %s" % e)
+            QMessageBox.warning(self, "House placing", "The drawing could not be shown: %s" % e)
             return None
         if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.result:
             return None
@@ -2143,7 +2179,7 @@ class SiteServicesPage(ToolBase):
         self.st["pts_manual"] = False
         c0 = [tuple(p) for p in poly]
         if max(max(p[0] for p in c0) - min(p[0] for p in c0), max(p[1] for p in c0) - min(p[1] for p in c0)) > 2000:
-            QMessageBox.warning(self, "Site services", "That stand is more than 2 km across, so the scale must be wrong. Import again and set the drawing units and scale.")
+            QMessageBox.warning(self, "House placing", "That stand is more than 2 km across, so the scale must be wrong. Import again and set the drawing units and scale.")
             return
         c = se.clean_corners(c0)
         n = len(c)
