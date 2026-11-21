@@ -270,8 +270,39 @@ def mains(state):
     return m
 
 
+def main_line(state):
+    """the main sewer as a polyline when it runs through the stand (drawn by the user); None when it is the straight line along the street"""
+    ml = state.get("main_line") or []
+    return [tuple(p) for p in ml] if len(ml) >= 2 else None
+
+
+def snap_main(state, w):
+    """the point on the drawn main sewer nearest to w (None when the main is the straight street line)"""
+    ml = main_line(state)
+    if not ml:
+        return None
+    best = None
+    for a, b in zip(ml[:-1], ml[1:]):
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        L2 = dx * dx + dy * dy
+        t = 0.0 if L2 == 0 else max(0.0, min(1.0, ((w[0] - a[0]) * dx + (w[1] - a[1]) * dy) / L2))
+        q = (a[0] + dx * t, a[1] + dy * t)
+        d = math.hypot(q[0] - w[0], q[1] - w[1])
+        if best is None or d < best[0]:
+            best = (d, q)
+    return (round(best[1][0], 3), round(best[1][1], 3))
+
+
+def main_dist(state, w):
+    """how far w is from the main sewer (the drawn one, or the straight street line)"""
+    q = snap_main(state, w)
+    return math.hypot(q[0] - w[0], q[1] - w[1]) if q else abs(w[1] - mains(state)["sewer"])
+
+
 def conn_point(state, k):
-    """the connection point on the main line: x as placed, y on the main line"""
+    """the connection point on the main line: x as placed, y on the main line (a sewer main that runs through the stand: the nearest point on it)"""
+    if k == "sewer" and main_line(state):
+        return snap_main(state, state["points"]["sewer"])
     return (state["points"][k][0], mains(state)[k])
 
 
@@ -536,9 +567,10 @@ def sewer(state, hp, cp, params, others=()):
         man = [tuple(p) for p in (state.get("sewer_manual") or [])]
         rest = [q1]
         if man:                                                  # a run you have placed by hand: it stays where you put it, kept square, ending on the main line
-            man[-1] = (man[-1][0], mains(state)["sewer"])
+            cpt = conn_point(state, "sewer")
+            man[-1] = (cpt[0], cpt[1])
             via = []
-            rest = manual_route(q1, man, state.get("sewer_modes") or [], mains(state)["sewer"], bool(state.get("sewer_free")))
+            rest = manual_route(q1, man, state.get("sewer_modes") or [], cpt[1], bool(state.get("sewer_free")))
         for v_ in via:                                           # your own sewer points: the run goes through them in order, square
             rest = dedupe(rest[:-1] + ortho(route(rest[-1], v_, stand, obs)))
         if not man:
@@ -943,6 +975,11 @@ def solve(state):
     res["carport"] = cp
     res["warnings"] = checks(state, hp, cp, params, res)
     stand = state["stand"]["corners"]
+    try:
+        import site_plans_data
+        res["reference"] = site_plans_data.notes_for(state, abs(area(stand)))
+    except Exception:
+        res["reference"] = []
     cov = (abs(area(hp)) + (abs(area(cp)) if cp else 0)) / max(abs(area(stand)), 1e-6) * 100
     res["coverage_pct"] = round(cov, 1)
     res["stand_area"] = round(abs(area(stand)), 1)
@@ -1028,9 +1065,10 @@ def fits(poly, stand, sb):
     return True
 
 
-def suggest(state, relax=False):
+def suggest(state, relax=False, gap=1.0):
     """house and carport on the stand: the carport at the street on one side, the house at the back on the other side, everything inside the
-    building lines. Searches positions on a 0.25 m grid and takes the first that fits."""
+    building lines. Searches positions on a 0.25 m grid and takes the first that fits. The house keeps `gap` clear of the carport (1.0 m, as on the
+    finished plans; tighter only when it cannot fit)."""
     params = dict(DEFAULTS)
     params.update(state.get("params") or {})
     stand = state["stand"]["corners"]
@@ -1069,7 +1107,7 @@ def suggest(state, relax=False):
                     hp = shape_poly(dict(h, cx=x, cy=y, rot=rot))
                     if not fits(hp, stand, sb):
                         continue
-                    if c and seg_overlap(hp, [(px, py) for px, py in rect(cpos[0], cpos[1], c["w"] + 0.5, c["d"] + 0.5, c.get("rot", 0))])[0]:
+                    if c and seg_overlap(hp, [(px, py) for px, py in rect(cpos[0], cpos[1], c["w"] + 2 * gap, c["d"] + 2 * gap, c.get("rot", 0))])[0]:
                         continue
                     hposs = (x, y)
                     break
@@ -1084,6 +1122,8 @@ def suggest(state, relax=False):
             if best is None or score < best[0]:
                 best = (score, cand)
     if best is None:
+        if gap > 0.3:
+            return suggest(state, relax, 0.25)                 # not enough room for the usual 1.0 m: as tight as before
         if not relax:
             out = suggest(state, relax=True)
             out["relaxed"] = True                              # the building lines could not all be met: the warnings will say where

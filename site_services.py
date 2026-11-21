@@ -50,7 +50,7 @@ def blank_state():
             "house": {"cx": 9.0, "cy": 12.0, "w": 14.8, "d": 6.5, "rot": 90},
             "carport": {"cx": 3.5, "cy": 3.5, "w": 5.0, "d": 5.0, "rot": 0},
             "points": {"sewer": [12.0, 0.0], "water": [1.5, 0.0], "elec": [6.75, 0.0]},
-            "ports": {}, "params": {}, "mains": {}, "custom": [], "frame": None, "labels": {}, "underlay": [], "sewer_via": [], "water_ports": [], "dims": [], "sewer_manual": [], "notes": [], "text_edit": {}, "text_hidden": [], "pts_manual": False,
+            "ports": {}, "params": {}, "mains": {}, "custom": [], "frame": None, "labels": {}, "underlay": [], "sewer_via": [], "water_ports": [], "dims": [], "sewer_manual": [], "main_line": [], "manholes": [], "look": {}, "notes": [], "text_edit": {}, "text_hidden": [], "pts_manual": False,
             "sheet": {"road": "left", "street": "", "road_w": "13m", "street_erf": "", "stand_no": "", "north": 0.0}}
 
 
@@ -124,6 +124,9 @@ class ServicesView(QWidget):
         """leave whatever you were adding or picking (Done button, Esc, right-click > Done)"""
         if self._mode == "sewer_draw":
             self.page.sewer_draw_finish()
+        if self._mode == "mline_add":
+            self.page._ml_on = False
+            self.page.commit(True)
         if self._mode != "select":
             self._mode = "select"
             self.page._dim_a = None
@@ -301,6 +304,12 @@ class ServicesView(QWidget):
             if self.mode == "sewer_draw":
                 pg.sewer_draw_click(w, bool(e.modifiers() & Qt.KeyboardModifier.ShiftModifier))
                 self.update()
+                return
+            if self.mode == "mline_add":
+                pg.add_mline(w)
+                return
+            if self.mode == "mh_add":
+                pg.add_manhole(w)
                 return
             if self.mode == "via_add":
                 pg.add_via(w)
@@ -571,11 +580,12 @@ class ServicesView(QWidget):
         if d[0] == "eye":
             pg.move_eye(d[1], w)
         elif d[0] == "pt":
-            pg.st["points"][d[1]] = [round(w[0], 2), se.mains(pg.st)[d[1]]]
+            sn_ = se.snap_main(pg.st, w) if d[1] == "sewer" else None
+            pg.st["points"][d[1]] = list(sn_) if sn_ else [round(w[0], 2), se.mains(pg.st)[d[1]]]
             pg.st["pts_manual"] = True
             if d[1] == "sewer" and pg.st.get("sewer_manual"):                # the run you placed follows its end to the new connection
                 m_ = pg.st["sewer_manual"]
-                m_[-1] = [round(w[0], 2), se.mains(pg.st)["sewer"]]
+                m_[-1] = list(sn_) if sn_ else [round(w[0], 2), se.mains(pg.st)["sewer"]]
                 if len(m_) > 1 and abs(m_[-2][0] - m_[-1][0]) > 1e-6 and not pg.st.get("sewer_free"):
                     m_[-2] = [round(w[0], 2), m_[-2][1]]
         elif d[0] == "wport":
@@ -654,8 +664,8 @@ class ServicesView(QWidget):
                 if hv:
                     man.append((hv[0], hv[1]))
                     mds.append("free" if QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier else pg._sd_mode)
-                mainy = se.mains(pg.st)["sewer"]
-                if hv and hv[1] > 0.3:                              # not yet on the main: the preview ends at the pointer
+                mainy = se.conn_point(pg.st, "sewer")[1]
+                if hv and se.main_dist(pg.st, hv) > (1.2 if se.main_line(pg.st) else max(0.3, mainy + 0.3)):    # not yet on the main: the preview ends at the pointer
                     pts = se.manual_route(q1, man[:-1] + [man[-1]], mds, man[-1][1], False)
                 else:
                     pts = se.manual_route(q1, man, mds, mainy, False) if man else [q1]
@@ -848,6 +858,16 @@ class SiteServicesPage(ToolBase):
         row.addStretch(1)
         ml.addLayout(row)
         row = QHBoxLayout()
+        self.look_cb = {}
+        for key, text in (("fill", "Green stand"), ("walls", "Boundary walls"), ("storm", "Stormwater arrow"), ("wp_box", "WP / VV box and marks")):
+            cb_ = QCheckBox(text)
+            cb_.setChecked(True)
+            cb_.toggled.connect(lambda on, k=key: self.set_look(k, on))
+            self.look_cb[key] = cb_
+            row.addWidget(cb_)
+        row.addStretch(1)
+        ml.addLayout(row)
+        row = QHBoxLayout()
         rb_ = QPushButton("Show where the road is")
         rb_.setToolTip("Click on the side of the stand where the road is. The plan turns so the street faces that way, then you click the direction of north.")
         rb_.clicked.connect(lambda: self.arm("road"))
@@ -1005,6 +1025,25 @@ class SiteServicesPage(ToolBase):
                 cb_.clicked.connect(self.clear_via)
                 row.addWidget(vb)
                 row.addWidget(cb_)
+                row.addStretch(1)
+                ml2.addLayout(row)
+                row = QHBoxLayout()
+                mb_ = QPushButton("Draw the main sewer through the stand")
+                mb_.setToolTip("When the municipal main crosses your stand (as on the finished plans), click along it. The connection then goes to the nearest point on it.")
+                mb_.clicked.connect(lambda: self.arm("mline_add"))
+                mc_ = QPushButton("Main back along the street")
+                mc_.clicked.connect(self.clear_mline)
+                row.addWidget(mb_)
+                row.addWidget(mc_)
+                row.addStretch(1)
+                ml2.addLayout(row)
+                row = QHBoxLayout()
+                hb_ = QPushButton("Add a manhole (click on the main)")
+                hb_.clicked.connect(lambda: self.arm("mh_add"))
+                hr_ = QPushButton("Remove the last manhole")
+                hr_.clicked.connect(self.remove_manhole)
+                row.addWidget(hb_)
+                row.addWidget(hr_)
                 row.addStretch(1)
                 ml2.addLayout(row)
             v2.addWidget(bx)
@@ -1257,6 +1296,8 @@ class SiteServicesPage(ToolBase):
         try:
             st = self.st
             sb = st["stand"].get("setbacks") or {}
+            for k_, cb_ in getattr(self, "look_cb", {}).items():
+                cb_.setChecked(bool((st.get("look") or {}).get(k_, True)))
             if hasattr(self, "so_cb"):
                 self.so_cb.setChecked(bool((st.get("sheet") or {}).get("setting_out", True)))
             for w, k in ((self.sb_street, "street"), (self.sb_side, "side"), (self.sb_rear, "rear")):
@@ -1377,7 +1418,11 @@ class SiteServicesPage(ToolBase):
     def fill_results(self):
         r = self.res
         w = list(r["warnings"])
-        self.warn_lbl.setText("<br>".join("&#9888; " + x for x in w) if w else "&#10003; Inside the building lines. Sewer depth is fine.")
+        txt = "<br>".join("&#9888; " + x for x in w) if w else "&#10003; Inside the building lines. Sewer depth is fine."
+        ref = r.get("reference") or []
+        if ref:
+            txt += "<br><br><b>Compared with your finished plans</b><br>" + "<br>".join("&#8226; " + x for x in ref)
+        self.warn_lbl.setText(txt)
         self.warn_lbl.setStyleSheet("color:#b3261e;" if w else "color:#1a7f37;")
         nr = self.nearest_reference()
         self.ref_lbl.setText("Closest stand in the reference library: Blue Hills Ext 120 stand %s (%.0f m2)." % (nr, STANDS[nr]["area"]) if nr else "")
@@ -1415,7 +1460,7 @@ class SiteServicesPage(ToolBase):
         self.set_hint({"pt_sewer": "Click in the plan where the main sewer connection is.", "pt_water": "Click in the plan where the water connection is.",
                        "pt_elec": "Click in the plan where the electrical supply is.", "port_sewer": "Click on the house outline where the sewer leaves the house.",
                        "port_water": "Click on the house outline where the water enters.", "port_db": "Click on the house outline where the DB is.",
-                       "wport_add": "Click on the house outline where another water point enters. Press Esc when done.", "sport_add": "Click on the house wall where another sewer outlet leaves the house. Press Esc when done.", "sewer_draw": "Click where the sewer starts.", "text_add": "Click in the plan where the text goes.", "dim_add": "Click the first point of the dimension (corners snap), then the second. Drag its figure to slide it. Press Esc when done.", "road": "Click on the side of the stand where the road is.", "north_dir": "Click in the direction north points. You can also drag the arrow to move it.", "via_add": "Click in the plan where the sewer must pass. Click again for the next point, in order from the house to the main. Press Esc when done.", "street": "Click the boundary that faces the street.", "cust_add": "Click in the plan where your point goes."}.get(mode, ""))
+                       "wport_add": "Click on the house outline where another water point enters. Press Esc when done.", "sport_add": "Click on the house wall where another sewer outlet leaves the house. Press Esc when done.", "sewer_draw": "Click where the sewer starts.", "text_add": "Click in the plan where the text goes.", "dim_add": "Click the first point of the dimension (corners snap), then the second. Drag its figure to slide it. Press Esc when done.", "road": "Click on the side of the stand where the road is.", "north_dir": "Click in the direction north points. You can also drag the arrow to move it.", "via_add": "Click in the plan where the sewer must pass. Click again for the next point, in order from the house to the main. Press Esc when done.", "street": "Click the boundary that faces the street.", "mline_add": "Click along where the main sewer runs, point by point (it can cross the stand). Press Done when it is drawn.", "mh_add": "Click on the main sewer where a manhole is. Press Esc when done.", "cust_add": "Click in the plan where your point goes."}.get(mode, ""))
         self.view.update()
 
     def set_point(self, k, w):
@@ -1481,6 +1526,20 @@ class SiteServicesPage(ToolBase):
             return
         keep = list(st["points"]["sewer"])
         best = None
+        ml = se.main_line(st)
+        if ml:                                                     # a main that runs through the stand: the shortest run to any point along it
+            for a_, b_ in zip(ml[:-1], ml[1:]):
+                for i in range(0, 9):
+                    q = [round(a_[0] + (b_[0] - a_[0]) * i / 8.0, 2), round(a_[1] + (b_[1] - a_[1]) * i / 8.0, 2)]
+                    st["points"]["sewer"] = q
+                    try:
+                        r = se.solve(st)["sewer"]
+                    except Exception:
+                        continue
+                    if best is None or r["length"] < best[0] - 0.05:
+                        best = (r["length"], q)
+            st["points"]["sewer"] = best[1] if best else keep
+            return
         for i in range(0, 13):
             x = 0.6 + (L - 1.2) * i / 12.0
             st["points"]["sewer"] = [round(x, 2), 0.0]
@@ -1968,14 +2027,15 @@ class SiteServicesPage(ToolBase):
             return
         mainy = se.mains(self.st)["sewer"]
         mode = "free" if shift else self._sd_mode
-        if w[1] <= max(0.6, mainy + 1.8):                         # on or near the main line, or past the street boundary: that is the end
-            self.sewer_draw_finish(w[0], mode)
+        ml_ = se.main_line(self.st)
+        if (ml_ and se.main_dist(self.st, w) < 1.2) or (not ml_ and w[1] <= max(0.6, mainy + 1.8)):   # on or near the main line, or past the street boundary: that is the end
+            self.sewer_draw_finish(w[0], mode, w[1])
             self.view.finish_mode()
             return
         self._sd.append([round(w[0], 2), round(w[1], 2)])
         self._sdm.append(mode)
 
-    def sewer_draw_finish(self, x=None, mode=None):
+    def sewer_draw_finish(self, x=None, mode=None, y=None):
         if not getattr(self, "_sd_on", False):
             return
         self._sd_on = False
@@ -1984,11 +2044,13 @@ class SiteServicesPage(ToolBase):
         mds = list(self._sdm)
         if x is None:
             x = pts[-1][0] if pts else self.st["points"]["sewer"][0]
-        pts.append([round(x, 2), mainy])
+        end = se.snap_main(self.st, (x, y if y is not None else (pts[-1][1] if pts else 0.0)))
+        end = list(end) if end else [round(x, 2), mainy]
+        pts.append(end)
         mds.append(mode or self._sd_mode)
         self.st["sewer_manual"] = pts
         self.st["sewer_modes"] = mds
-        self.st["points"]["sewer"] = [round(x, 2), mainy]
+        self.st["points"]["sewer"] = list(end)
         self.st["pts_manual"] = True
         self._sd = []
         self.solve_now(False)
@@ -2052,6 +2114,48 @@ class SiteServicesPage(ToolBase):
         self.st["sewer_ports"] = []
         self._to_fields()
         self.suggest()
+
+    def set_look(self, key, on):
+        if self._busy:
+            return
+        self.st.setdefault("look", {})[key] = bool(on)
+        self.view.update()
+        self.changed()
+
+    def add_mline(self, w):
+        if not getattr(self, "_ml_on", False):
+            self._ml_on = True
+            self.st["main_line"] = []
+        self.st.setdefault("main_line", []).append([round(w[0], 2), round(w[1], 2)])
+        if len(self.st["main_line"]) >= 2:
+            self.st["pts_manual"] = False
+            self.best_sewer_point()
+        self.solve_now()
+        self.view.update()
+
+    def clear_mline(self):
+        self.st["main_line"] = []
+        self._ml_on = False
+        self.st["pts_manual"] = False
+        self.solve_now()
+        self.commit(True)
+
+    def add_manhole(self, w):
+        mh = self.st.setdefault("manholes", [])
+        sn = se.snap_main(self.st, w)
+        q = list(sn) if sn else [round(w[0], 2), se.mains(self.st)["sewer"]]
+        from PySide6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(self, "Manhole", "Manhole number or name:", text="MH%d" % (len(mh) + 1))
+        if ok and name.strip():
+            mh.append({"pt": q, "name": name.strip()})
+            self.solve_now(False)
+            self.commit(True)
+
+    def remove_manhole(self):
+        if self.st.get("manholes"):
+            self.st["manholes"].pop()
+            self.solve_now(False)
+            self.commit(True)
 
     def add_via(self, w):
         self.st.setdefault("sewer_via", []).append([round(w[0], 2), round(w[1], 2)])

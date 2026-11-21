@@ -228,8 +228,19 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
     mn = se.mains(st)
     D.line((xa, mn["water"]), (xb, mn["water"]), BLUE, 0.04)
     D.text((xmin - 6.0, mn["water"]), "Main Water Line", 0.5, (1, 0), spacing=110, align="r")
-    D.line((xa, mn["sewer"]), (xb, mn["sewer"]), BROWN, 0.08, dash=[9, 5])
-    D.text((xmax + 10.5, mn["sewer"]), "Main Sewer Line", 0.5, (1, 0), spacing=125, align="r")
+    mline = se.main_line(st)
+    if mline:                                                    # the main runs through the stand, as drawn
+        D.poly(mline, BROWN, 0.08, None, dash=[9, 5], closed=False)
+        k_ = max(range(len(mline) - 1), key=lambda i: edge_len(mline[i], mline[i + 1]))
+        a_, b_ = mline[k_], mline[k_ + 1]
+        D.text(((a_[0] + b_[0]) / 2, (a_[1] + b_[1]) / 2), "Main Sewer Line", 0.5, (b_[0] - a_[0], b_[1] - a_[1]), spacing=125, bg=True)
+    else:
+        D.line((xa, mn["sewer"]), (xb, mn["sewer"]), BROWN, 0.08, dash=[9, 5])
+        D.text((xmax + 10.5, mn["sewer"]), "Main Sewer Line", 0.5, (1, 0), spacing=125, align="r")
+    for mh_ in st.get("manholes") or []:                         # manholes on the main, with their numbers
+        q_ = tuple(mh_["pt"])
+        D.dot(q_, 0.9, BROWN, filled=True)
+        D.text((q_[0] + 1.2, q_[1] - 1.2), mh_.get("name", ""), 0.5, (1, 0), color=BROWN, spacing=110)
     D.line((xa, mn["elec"]), (xmin - 7, mn["elec"]), YELLOW, 0.05, dash=[5, 4])
     D.text((xmin - 11.5, mn["elec"]), "Main Electrical Line", 0.5, (1, 0), spacing=125)
     street = opts.get("street", "")
@@ -247,7 +258,21 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
     # ---- the stand, and the neighbours' boundaries running on from its corners (read from the imported drawing)
     for a_, b_ in opts.get("nb_lines") or []:
         D.line(a_, b_, BLACK, 0.04)
-    D.poly(stand, BLACK, 0.05)
+    look = st.get("look") or {}
+    GREEN, WALLC = QColor(183, 221, 167), QColor(170, 25, 25)
+    D.poly(stand, BLACK, 0.05, GREEN if look.get("fill", True) else None)       # the stand in green, as on the finished sheets
+    if look.get("walls", True):                                                 # the boundary walls (1.2 m high pre-cast concrete) along the side and rear boundaries
+        for i in range(n):
+            if kinds[i] in ("side", "rear"):
+                a, b = stand[i], stand[(i + 1) % n]
+                L = edge_len(a, b) or 1
+                nx, ny = -(b[1] - a[1]) / L, (b[0] - a[0]) / L
+                if se.area(stand) < 0:
+                    nx, ny = -nx, -ny
+                D.poly([a, b, (b[0] + nx * 0.23, b[1] + ny * 0.23), (a[0] + nx * 0.23, a[1] + ny * 0.23)], BLACK, 0.02, WALLC)
+                if L > 6:
+                    m_ = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+                    D.text((m_[0] - nx * 0.75, m_[1] - ny * 0.75), "1.2m High Pre-Cast Concrete Wall", 0.4, (b[0] - a[0], b[1] - a[1]), spacing=105)
     for i in range(n):                                 # side lines run on past the street boundary to the kerb, as on the plans
         if kinds[i] == "side":
             a, b = stand[i], stand[(i + 1) % n]
@@ -330,6 +355,17 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
         D.text((hx, hy), "NEW HOUSE", 0.75, sh.hdir(), bold=True, box=True)
         for nm, q in (res.get("marks") or []) if res else []:
             D.text(q, nm, 0.4, sh.hdir(), spacing=110)
+        if res and look.get("wp_box", True):
+            # the marks the finished plans carry on the house (SD at the soil outlet, KD at the kitchen water) when the footprint has none, and the waste / vent pipe box
+            sp0, sn0 = se.port_point(res["house"], res["sewer"]["port"])
+            if not res.get("marks"):
+                D.text((sp0[0] - sn0[0] * 0.9, sp0[1] - sn0[1] * 0.9), "SD", 0.4, sh.hdir(), spacing=110)
+                wp0, wn0 = se.port_point(res["house"], res["water"]["port"])
+                D.text((wp0[0] - wn0[0] * 0.9, wp0[1] - wn0[1] * 0.9), "KD", 0.4, sh.hdir(), spacing=110)
+            bc = (sp0[0] - sn0[0] * 2.8, sp0[1] - sn0[1] * 2.8)
+            D.poly([_off(sh, bc, -2.3, -0.95), _off(sh, bc, 2.3, -0.95), _off(sh, bc, 2.3, 0.95), _off(sh, bc, -2.3, 0.95)], QColor(220, 20, 20), 0.03, None)
+            D.text(_off(sh, bc, 0, -0.42), "50\u00d8 WP's", 0.45, sh.hdir(), spacing=105)
+            D.text(_off(sh, bc, 0, 0.42), "110\u00d8 GI VV", 0.45, sh.hdir(), spacing=105)
     # ---- services
     if res:
         sw = res["sewer"]
@@ -377,6 +413,28 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
                 D.poly(tri, YELLOW, 0.04)
             if nd["kind"] == "DB":
                 D.text(_off(sh, q, 0.0, 0.9), "DB", 0.55, sh.hdir(), bold=True)
+    if look.get("storm", True) and res:
+        sd = look.get("storm_pos")
+        if not sd:
+            hc = (sum(q[0] for q in house) / len(house), sum(q[1] for q in house) / len(house)) if house else (0, 0)
+            cands_ = []
+            hb = se.offset(se.hull(house), 2.0) if house else None
+            cb = se.offset(se.hull(cp), 1.5) if cp else None
+            gy = [q[1] for q in stand]
+            for gx_ in range(int(min(q[0] for q in stand)) + 2, int(max(q[0] for q in stand)) - 1):
+                for gy_ in range(int(min(gy) + 0.2 * (max(gy) - min(gy))), int(max(gy)) - 2):
+                    q = (float(gx_), float(gy_))
+                    if se.inside(q, stand) and se.inside((q[0], q[1] - 3.0), stand) and not (hb and se.inside(q, hb)) and not (cb and se.inside(q, cb)) \
+                            and not (hb and se.inside((q[0], q[1] - 3.0), hb)):
+                        cands_.append((math.hypot(q[0] - hc[0], q[1] - hc[1]), q))
+            sd = max(cands_)[1] if cands_ else None
+        if sd:
+            SW = QColor(20, 90, 220)
+            t_ = (sd[0], sd[1] - 3.0)                                # the flow runs towards the street
+            D.line(sd, t_, SW, 0.05)
+            D.poly([t_, (t_[0] - 0.35, t_[1] + 0.8), (t_[0] + 0.35, t_[1] + 0.8)], SW, 0.03, SW)
+            D.text(_off(sh, (sd[0], sd[1] - 1.5), 2.6, -0.45), "Stormwater", 0.5, sh.hdir(), color=SW, spacing=110)
+            D.text(_off(sh, (sd[0], sd[1] - 1.5), 2.6, 0.45), "Flow", 0.5, sh.hdir(), color=SW, spacing=110)
     # ---- dimensions, in mm, placed like the plans: along the side boundary outside the stand, and in the strip in front of the street boundary
     lowx = (xmin, -1)
     highx = (xmax, 1)
