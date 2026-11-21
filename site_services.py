@@ -299,7 +299,7 @@ class ServicesView(QWidget):
                 pg.add_sport(w)
                 return
             if self.mode == "sewer_draw":
-                pg.sewer_draw_click(w)
+                pg.sewer_draw_click(w, bool(e.modifiers() & Qt.KeyboardModifier.ShiftModifier))
                 self.update()
                 return
             if self.mode == "via_add":
@@ -648,11 +648,18 @@ class ServicesView(QWidget):
             try:
                 p0, n0 = se.port_point(pg.res["house"], pg.st["ports"]["sewer"])
                 st_ = pg.st["params"].get("stub", se.DEFAULTS["stub"]) if pg.st.get("params") else se.DEFAULTS["stub"]
-                pts = [p0, (p0[0] + n0[0] * st_, p0[1] + n0[1] * st_)] + [tuple(c) for c in pg._sd]
+                q1 = (p0[0] + n0[0] * st_, p0[1] + n0[1] * st_)
+                man, mds = [tuple(c) for c in pg._sd], list(pg._sdm)
                 hv = getattr(self, "hover", None)
                 if hv:
-                    pts.append((hv[0], hv[1]))
-                pts = se.square_join(pts)
+                    man.append((hv[0], hv[1]))
+                    mds.append("free" if QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier else pg._sd_mode)
+                mainy = se.mains(pg.st)["sewer"]
+                if hv and hv[1] > 0.3:                              # not yet on the main: the preview ends at the pointer
+                    pts = se.manual_route(q1, man[:-1] + [man[-1]], mds, man[-1][1], False)
+                else:
+                    pts = se.manual_route(q1, man, mds, mainy, False) if man else [q1]
+                pts = [p0] + pts
                 p.setPen(QPen(pk, 2.2, Qt.PenStyle.DashLine))
                 for a_, b_ in zip(pts[:-1], pts[1:]):
                     p.drawLine(S(a_), S(b_))
@@ -1532,13 +1539,38 @@ class SiteServicesPage(ToolBase):
             b = self.done_btn = QPushButton("Done (Esc or right-click)", v)
             b.setStyleSheet("QPushButton{background:#d6209a;color:white;font-weight:bold;padding:5px 14px;border-radius:6px;}")
             b.clicked.connect(lambda: v.finish_mode())
+        mp = getattr(self, "mode_panel", None)
+        if mp is None:
+            mp = self.mode_panel = QFrame(v)
+            mp.setStyleSheet("QFrame{background:rgba(30,30,34,225);border:1px solid #d6209a;border-radius:8px;} QPushButton{padding:3px 9px;min-width:0;} QPushButton:checked{background:#d6209a;color:white;}")
+            hl = QHBoxLayout(mp)
+            hl.setContentsMargins(6, 4, 6, 4)
+            self.mode_btns = {}
+            for key, text, tip in (("sq", "Square", "The pipe turns 90 degrees to get to your click"), ("free", "Skew", "A straight line at any angle to your click (also: hold Shift)"),
+                                   ("h", "Horizontal", "Force the pipe level to your click's x"), ("v", "Vertical", "Force the pipe upright to your click's y")):
+                bt = QPushButton(text)
+                bt.setCheckable(True)
+                bt.setToolTip(tip)
+                bt.clicked.connect(lambda _=False, k=key: self.set_sd_mode(k))
+                hl.addWidget(bt)
+                self.mode_btns[key] = bt
         if v.mode == "select":
             b.hide()
+            mp.hide()
         else:
             b.adjustSize()
             b.move(max(10, v.width() - b.width() - 10), 8)
             b.show()
             b.raise_()
+            if v.mode == "sewer_draw":
+                for k, bt in self.mode_btns.items():
+                    bt.setChecked(k == getattr(self, "_sd_mode", "sq"))
+                mp.adjustSize()
+                mp.move(max(10, v.width() - mp.width() - 10), b.height() + 14)
+                mp.show()
+                mp.raise_()
+            else:
+                mp.hide()
 
     def refresh_gizmo(self):
         gz = self._gizmo_widget()
@@ -1619,7 +1651,7 @@ class SiteServicesPage(ToolBase):
         """move a leg or a corner of the sewer run by hand; everything stays square"""
         P = [list(p) for p in d[2]]
         n = len(P)
-        free = bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier) or bool(self.st.get("sewer_free"))
+        free = bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier) or bool(self.st.get("sewer_free")) or any(m_ != "sq" for m_ in (self.st.get("sewer_modes") or []))
         if d[0] == "sv" and free:
             k = d[1]
             P[k] = [w[0], P[k][1] if k == n - 1 else w[1]]
@@ -1651,6 +1683,9 @@ class SiteServicesPage(ToolBase):
                     if 0 < j:
                         P[j][0] = d[2][j][0] + dx
         self.st["sewer_manual"] = [[round(p[0], 2), round(p[1], 2)] for p in P[1:]]
+        if any(m_ != "sq" for m_ in (self.st.get("sewer_modes") or [])):          # what was drawn skew stays skew: every point now stands exactly where it is
+            self.st["sewer_free"] = True
+            self.st["sewer_modes"] = []
 
     def sewer_point_auto(self):
         self.st["pts_manual"] = False
@@ -1749,6 +1784,7 @@ class SiteServicesPage(ToolBase):
         self.commit(True)
 
     def sewer_auto(self):
+        self.st["sewer_modes"] = []
         self.st["sewer_free"] = False
         self.st["sewer_manual"] = []
         self.st["sewer_via"] = []
@@ -1871,36 +1907,48 @@ class SiteServicesPage(ToolBase):
         wp.append(se.nearest_port(self.res["house"], w))
         self.solve_now()
 
-    def sewer_draw_start(self):
-        self._sd_on, self._sd = False, []
-        self.arm("sewer_draw")
-        self.set_hint("Draw the sewer: 1) click on the house wall where the sewer starts (the minimum invert is there), 2) click each corner, 3) click on the main sewer line (or press Done) to finish.")
+    def set_sd_mode(self, k):
+        self._sd_mode = k
+        self.sync_done()
+        self.view.update()
 
-    def sewer_draw_click(self, w):
+    def sewer_draw_start(self):
+        self._sd_on, self._sd, self._sdm, self._sd_mode = False, [], [], "sq"
+        self.arm("sewer_draw")
+        self.set_hint("Draw the sewer: 1) click on the house wall where the sewer starts (the minimum invert is there), 2) click each corner, 3) click on the main sewer line (or press Done) to finish. "
+                      "Square / Skew / Horizontal / Vertical (buttons, or hold Shift for skew) say how the pipe gets to the next click.")
+        self.sync_done()
+
+    def sewer_draw_click(self, w, shift=False):
         if not getattr(self, "_sd_on", False):
             self.st.setdefault("ports", {})["sewer"] = se.nearest_port(self.res["house"], w)
-            self.st["sewer_manual"], self.st["sewer_via"], self.st["sewer_free"] = [], [], False
-            self._sd_on, self._sd = True, []
+            self.st["sewer_manual"], self.st["sewer_via"], self.st["sewer_free"], self.st["sewer_modes"] = [], [], False, []
+            self._sd_on, self._sd, self._sdm = True, [], []
             self.solve_now(False)
             self.set_hint("Now click each corner of the run. Click on the main sewer line to finish (or press Done).")
             return
         mainy = se.mains(self.st)["sewer"]
-        if w[1] <= 0.3:                                           # at or past the street boundary: that is the main
-            self.sewer_draw_finish(w[0])
+        mode = "free" if shift else self._sd_mode
+        if w[1] <= max(0.6, mainy + 1.8):                         # on or near the main line, or past the street boundary: that is the end
+            self.sewer_draw_finish(w[0], mode)
             self.view.finish_mode()
             return
         self._sd.append([round(w[0], 2), round(w[1], 2)])
+        self._sdm.append(mode)
 
-    def sewer_draw_finish(self, x=None):
+    def sewer_draw_finish(self, x=None, mode=None):
         if not getattr(self, "_sd_on", False):
             return
         self._sd_on = False
         mainy = se.mains(self.st)["sewer"]
         pts = [list(c) for c in self._sd]
+        mds = list(self._sdm)
         if x is None:
             x = pts[-1][0] if pts else self.st["points"]["sewer"][0]
         pts.append([round(x, 2), mainy])
+        mds.append(mode or self._sd_mode)
         self.st["sewer_manual"] = pts
+        self.st["sewer_modes"] = mds
         self.st["points"]["sewer"] = [round(x, 2), mainy]
         self.st["pts_manual"] = True
         self._sd = []

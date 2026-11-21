@@ -16,10 +16,11 @@ def test_rules():
     sw = nodes_for(st)
     path, nodes = sw["path"], sw["nodes"]
     tail = se.DEFAULTS["re_ext"]
-    # 1. the rodding eye at the wall end of the outlet pipe (Min IL 450); the outlet pipe butts flush on the run: an inspection eye at the joint, no tail past it, no rodding eye there
+    # 1. the rodding eye at the wall end of the outlet pipe (Min IL 450); the outlet butts flush on the run, which carries on re_ext past the joint and ends in a rodding eye;
+    #    an inspection eye at the joint
     assert nodes[0]["kind"] == "RE" and nodes[0]["label"].startswith("RE Min IL 450")
-    assert nodes[1]["kind"] == "IE" and nodes[1]["chainage"] < 0.02
-    assert not any(n["kind"] == "RE" and n is not nodes[0] and n["chainage"] < 0.02 for n in nodes)
+    assert any(n["kind"] == "RE" and n is not nodes[0] and n["chainage"] < 0.02 for n in nodes), "the rodding eye at the end of the run"
+    assert any(n["kind"] == "IE" and abs(n["chainage"] - tail) < 0.02 for n in nodes), "the inspection eye at the joint"
     # 2. at every corner: an inspection eye on the corner and a rodding eye re_ext away on a stub, along the leg that runs on to the main, backwards
     assert sw["stubs"], "a corner needs its stub"
     for a, b in sw["stubs"]:
