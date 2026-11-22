@@ -29,6 +29,22 @@ def guess_category(layer):
     return "other"
 
 
+def colour_category(cols):
+    """what a layer is, from the AutoCAD colour its lines mostly have: yellow = electrical, blue / cyan = water, brown / orange = sewer, green = stormwater"""
+    if not cols:
+        return "other"
+    c = max(cols, key=cols.get)
+    if c == 2 or 50 <= c <= 59:
+        return "elec"
+    if c in (4, 5, 140, 141, 150, 151, 160, 161) or 130 <= c <= 179:
+        return "water"
+    if c in (30, 31, 32, 33, 34, 40, 41, 42, 20, 21, 22, 23, 24, 25):
+        return "sewer"
+    if c in (3, 92, 93, 94, 95, 96) or 80 <= c <= 109:
+        return "storm"
+    return "other"
+
+
 def clean_text(t):
     """plain text out of a drawing text (MTEXT codes removed)"""
     t = str(t)
@@ -85,7 +101,24 @@ class Township:
         u = int(doc.header.get("$INSUNITS", 0) or 0)
         unit = {1: 0.0254, 2: 0.3048, 4: 0.001, 5: 0.01, 6: 1.0, 7: 1000.0}.get(u)
         self.lines, self.shapes, self.texts, self.layers = {}, [], [], {}
+        self.colours = {}                                        # layer -> {AutoCAD colour number: lines}
+        lay_col = {}
+        try:
+            for L in doc.layers:
+                lay_col[L.dxf.name] = abs(int(L.dxf.color))
+        except Exception:
+            pass
         cnt = [0]
+
+        def paint(e, lay):
+            try:
+                c = int(e.dxf.color)
+            except Exception:
+                c = 256
+            if c in (0, 256):
+                c = lay_col.get(lay, 7)
+            d = self.colours.setdefault(lay, {})
+            d[c] = d.get(c, 0) + 1
 
         def add_lines(lay, pts, closed=False):
             arr = self.lines.setdefault(lay, [])
@@ -100,6 +133,8 @@ class Township:
                 try:
                     lay = over or e.dxf.layer
                     cnt[0] += 1
+                    if t in ("LINE", "LWPOLYLINE", "POLYLINE", "ARC", "CIRCLE"):
+                        paint(e, lay)
                     if progress and cnt[0] % 20000 == 0:
                         progress(cnt[0])
                     if t == "LINE":
@@ -145,7 +180,10 @@ class Township:
             xs, ys = [p[0] for p in s["pts"]], [p[1] for p in s["pts"]]
             s["bbox"] = (min(xs), min(ys), max(xs), max(ys))
         for lay in set(self.lines) | {s["layer"] for s in self.shapes} | {t[3] for t in self.texts}:
-            self.layers[lay] = {"n": len(self.lines.get(lay, ())) // 4, "cat": guess_category(lay)}
+            cat = guess_category(lay)
+            if cat == "other":                                   # the layer name says nothing: go by the colour the lines are drawn in
+                cat = colour_category(self.colours.get(lay, {}))
+            self.layers[lay] = {"n": len(self.lines.get(lay, ())) // 4, "cat": cat}
         self.k = self._units(unit)
         self._index = None
         return self
