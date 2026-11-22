@@ -60,6 +60,7 @@ RULES = [
     "Sewer: 110 mm at fall 1:50, Min IL 450 at the gully, an IE at every joint and bend, an RE at the end of every run.",
     "Side and rear boundaries carry a 1.2 m pre-cast concrete wall; stormwater falls to the street.",
     "Street 7071 stands: building lines 3 m to the street and to the no-access road, 2 m to a neighbour, 1 m to a servitude; the carport 5.0 x 5.0 sits 0.5 m off the street boundary and about 2.25 m from the house; the house runs along the side boundary (outlet at the far end, sewer in the servitude side), never across the stand against the road.",
+    "Blue Hills Ext 120 (the MCP site plan, 204 stands, 39 houses placed): stands about 14 x 22 m (280 to 390 m2); the carport is a 5.0 x 5.0 m box with its front edge 1.0 m behind the street boundary, in the left or the right corner 1.0 m off the side boundary; the house (about 10 m wide, 12.7 to 15 m long with its patio / braai) starts 2.8 to 6.0 m from the street (beside or behind the carport) and runs back to the rear boundary; mains and connections are in the road.",
     "On the finished plans the footprint with the carport covers 84 to 105 m2 on stands of 260 to 375 m2 (FAR 0.32 to 0.44).",
 ]
 

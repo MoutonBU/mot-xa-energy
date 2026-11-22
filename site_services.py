@@ -906,11 +906,13 @@ class SiteServicesPage(ToolBase):
         self.tn_no.returnPressed.connect(self.go_to_stand)
         self.tn_go = QPushButton("Go to this stand")
         self.tn_go.clicked.connect(self.go_to_stand)
-        self.tn_go.setEnabled(False)
         row.addWidget(self.tn_no)
         row.addWidget(self.tn_go)
         row.addStretch(1)
         bv.addLayout(row)
+        self.tn_house = QCheckBox("Place the house and carport the way they are on the site plan (built-in Blue Hills Ext 120 stands)")
+        self.tn_house.setChecked(True)
+        bv.addWidget(self.tn_house)
         self.tn_lbl = QLabel("")
         self.tn_lbl.setObjectName("xaSub")
         self.tn_lbl.setWordWrap(True)
@@ -2531,20 +2533,23 @@ class SiteServicesPage(ToolBase):
 
     def go_to_stand(self):
         tn = getattr(self, "tn", None)
-        if not tn:
-            self.open_township()
-            tn = getattr(self, "tn", None)
-            if not tn:
-                return
         no = self.tn_no.text().strip()
         if not no:
             self.tn_lbl.setText("Type the stand number first.")
             return
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
-            r = tn.find(no)
-        finally:
-            QApplication.restoreOverrideCursor()
+        r = None
+        if tn:
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            try:
+                r = tn.find(no)
+            finally:
+                QApplication.restoreOverrideCursor()
+        ref = None
+        if not r:                                                  # no drawing open (or the number is not in it): the built-in Blue Hills Ext 120 site plan
+            r, ref = self._ref_stand(no)
+            if not r and not tn:
+                self.tn_lbl.setText("Stand %s is not in the built-in Blue Hills Ext 120 plan. Open the township drawing (DXF) to use another one." % no)
+                return
         if not r:
             self.tn_lbl.setText("Stand %s was not found. Either no text in the drawing says %s, or no closed outline round it. Check the stand layers with Layers... (the outlines must be on a layer marked Stand boundaries)." % (no, no))
             return
@@ -2552,13 +2557,49 @@ class SiteServicesPage(ToolBase):
         self._set_township_underlay(r)
         got_c = self._township_connections(r)
         self.sh_no.setText(no)
+        placed = self._ref_house(ref) if ref and self.tn_house.isChecked() else ""
         c = self.st["stand"]["corners"]
         found = ", ".join(k for k in ("sewer", "water", "elec", "storm") if r["lines"][k])
         self.tn_lbl.setText("Stand %s: %.0f m2, %d corners. %d stands beside it. Services found: %s.%s%s" % (
-            no, abs(se.area([tuple(p) for p in c])), len(c), len(r["neighbours"]), found or "none (check Layers...)",
+            no, abs(se.area([tuple(p) for p in c])), len(c), len(r["neighbours"]), found or ("none in this plan" if ref else "none (check Layers...)"),
             "" if r["road_known"] else " No road layer was found, so the street side is a guess: click the real street boundary in the plan.",
-            " %d texts said %s; the first was used." % (r["matches"], no) if r["matches"] > 1 else "") + got_c)
+            " %d texts said %s; the first was used." % (r["matches"], no) if r["matches"] > 1 else "") + got_c + placed)
         self.set_hint("")
+
+    def _ref_stand(self, no):
+        """a stand of the built-in site plan (site_township_ref): -> (a result like Township.find gives, the stand's reference data) or (None, None)"""
+        try:
+            import site_township_ref as ref
+        except Exception:
+            return None, None
+        for name, stands in ref.TOWNSHIPS.items():
+            d = stands.get(no)
+            if not d:
+                continue
+            nbs = [{"poly": [tuple(p) for p in stands[n]["poly"]], "no": n} for n in d.get("nb", []) if n in stands and n != no]
+            conn = {k: {"pt": (v[3], v[4]), "label": v[2]} for k, v in d.get("conn", {}).items() if len(v) >= 5}
+            r = {"no": no, "poly": [tuple(p) for p in d["poly"]], "neighbours": nbs, "lines": {c: [] for c in site_township.CATS}, "street_edge": d["street"],
+                 "road_known": True, "connections": conn, "matches": 1, "label": None, "ref": name}
+            return r, d
+        return None, None
+
+    def _ref_house(self, d):
+        """the house and carport as they are on the site plan, put on the stand (in the stand's own frame); -> a sentence for the status line"""
+        h, cp = d.get("house"), d.get("carport")
+        if not h or h.get("rot"):
+            return " (This stand has no house on the site plan that fits a straight box, so the house is placed by the tool.)" if h else " (No house is drawn on this stand in the site plan, so the house is placed by the tool.)"
+        if h["d"] >= h["w"]:
+            self.st["house"].update({"cx": h["cx"], "cy": h["cy"], "w": h["d"], "d": h["w"], "rot": 90})
+        else:
+            self.st["house"].update({"cx": h["cx"], "cy": h["cy"], "w": h["w"], "d": h["d"], "rot": 0})
+        self.st["house"].pop("poly", None)
+        self.st["house"].pop("marks", None)
+        if cp and not cp.get("rot"):
+            self.st["carport"] = {"cx": cp["cx"], "cy": cp["cy"], "w": cp["w"], "d": cp["d"], "rot": 0}
+        self.st["ports"] = {}
+        self._to_fields()
+        self.solve_now(False)
+        return " House as on the site plan: %s, carport %.0f x %.0f m." % (h.get("type", "house"), cp["w"] if cp else 0, cp["d"] if cp else 0)
 
     def _township_connections(self, r):
         """the electrical and water connection symbols on the street boundary become the connection points; -> a sentence for the status line"""
