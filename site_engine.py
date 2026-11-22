@@ -301,22 +301,29 @@ def main_dist(state, w):
 
 
 def main_poly(state, k):
-    """the water or electrical main as a polyline read from the township drawing (None: the straight line along the street)"""
+    """the water or electrical main from the township drawing: a list of polylines (the main and its branches); None when there is none (then the straight line along the street)"""
     p = (state.get("main_poly") or {}).get(k) or []
-    return [tuple(q) for q in p] if len(p) >= 2 else None
+    if not p:
+        return None
+    if isinstance(p[0][0], (int, float)):                        # one polyline given as a list of points
+        p = [p]
+    out = [[tuple(q) for q in pl] for pl in p if len(pl) >= 2]
+    return out or None
 
 
 def snap_poly(poly, w):
-    """the point on the polyline nearest to w"""
+    """the point on a polyline (or on the nearest of several polylines) nearest to w"""
+    polys = poly if poly and isinstance(poly[0][0], (list, tuple)) else [poly]
     best = None
-    for a, b in zip(poly[:-1], poly[1:]):
-        dx, dy = b[0] - a[0], b[1] - a[1]
-        L2 = dx * dx + dy * dy
-        t = 0.0 if L2 == 0 else max(0.0, min(1.0, ((w[0] - a[0]) * dx + (w[1] - a[1]) * dy) / L2))
-        q = (a[0] + dx * t, a[1] + dy * t)
-        d = math.hypot(q[0] - w[0], q[1] - w[1])
-        if best is None or d < best[0]:
-            best = (d, q)
+    for pl in polys:
+        for a, b in zip(pl[:-1], pl[1:]):
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            L2 = dx * dx + dy * dy
+            t = 0.0 if L2 == 0 else max(0.0, min(1.0, ((w[0] - a[0]) * dx + (w[1] - a[1]) * dy) / L2))
+            q = (a[0] + dx * t, a[1] + dy * t)
+            d = math.hypot(q[0] - w[0], q[1] - w[1])
+            if best is None or d < best[0]:
+                best = (d, q)
     return (round(best[1][0], 3), round(best[1][1], 3))
 
 
@@ -1150,10 +1157,29 @@ def suggest(state, relax=False, gap=None):
                 return o
     if outs:
         return outs[0]
+    for g in sorted({pref, 1.0, 0.25}, reverse=True):          # nothing fits square to the street: turn the house to run along the stand's own sides
+        o = _suggest(state, relax, g, strict=True, alt=True)
+        if o:
+            return o
     return _suggest(state, relax, 0.25)
 
 
-def _suggest(state, relax=False, gap=1.0, strict=False):
+def _side_angles(stand):
+    """the directions (degrees, 0..180, in the stand's frame) of its longer sides, and the ones across them"""
+    n = len(stand)
+    out = []
+    for i in range(n):
+        a, b = stand[i], stand[(i + 1) % n]
+        if math.hypot(b[0] - a[0], b[1] - a[1]) < 5.0:
+            continue
+        d = math.degrees(math.atan2(b[1] - a[1], b[0] - a[0])) % 180.0
+        for q in (d, (d + 90.0) % 180.0):
+            if all(abs(((q - o + 90) % 180) - 90) > 1.0 for o in out) and abs(((q - 0 + 90) % 180) - 90) > 1.0 and abs(((q - 90 + 90) % 180) - 90) > 1.0:
+                out.append(round(q, 2))
+    return out
+
+
+def _suggest(state, relax=False, gap=1.0, strict=False, alt=False):
     """house and carport on the stand: the carport at the street on one side, the house at the back on the other side, everything inside the
     building lines. Searches positions on a 0.25 m grid and takes the first that fits. The house keeps `gap` clear of the carport (1.0 m, as on the
     finished plans; tighter only when it cannot fit)."""
@@ -1188,7 +1214,7 @@ def _suggest(state, relax=False, gap=1.0, strict=False):
                     break
             if not cpos:
                 continue
-        for rot in ((h.get("rot", 0),) if h.get("poly") else (90, 0)):
+        for rot in ((h.get("rot", 0),) if h.get("poly") else ((90, 0) if not alt else tuple(_side_angles(stand)))):
             hposs = None
             for y in yr[::-1]:
                 for x in (xr[::-1] if left else xr):
@@ -1203,7 +1229,7 @@ def _suggest(state, relax=False, gap=1.0, strict=False):
                     break
             if not hposs:
                 continue
-            score = (0 if rot == 90 else 3) + math.hypot(hposs[0] - target[0], hposs[1] - target[1]) * 0.05 + (0 if left else 0.01)
+            score = (0 if rot == 90 else 3 if rot == 0 else 5) + math.hypot(hposs[0] - target[0], hposs[1] - target[1]) * 0.05 + (0 if left else 0.01)
             nv = state.get("north_world")
             if nv and not h.get("poly"):                          # the sun: the long wall faces north, and the house sits to the south so the yard is on the north side
                 ln = math.hypot(nv[0], nv[1]) or 1.0

@@ -51,7 +51,39 @@ def test_engine_snaps_to_real_main():
     assert se.conn_point(st, "elec") == (3.0, se.mains(st)["elec"])                  # no real main: the straight line, as before
 
 
+def test_main_runs_and_branches():
+    # a main with a branch: three runs cut at the junction; a short stub and a far line are left out
+    segs = [(0, 0, 10, 0), (10, 0, 20, 0), (20, 0, 20, 8), (20, 0, 30, 0), (30, 0, 40, 0), (100, 100, 105, 100), (3, 3, 3, 4)]
+    runs = tw.main_runs(segs, (5, 2))
+    assert len(runs) == 3 and sorted(len(r) for r in runs) == [2, 2, 2], runs
+    assert tw.main_runs(segs, (500, 500)) == []
+
+
+def test_closing_stand_edges():
+    # lines that meet 8 mm apart across a 3 cm grid border still close the face (a corner stand of the real township was lost to this)
+    import site_township as t2
+    tn = t2.Township()
+    tn.k = 1.0
+    tn.layers = {"a": {"cat": "stand"}}
+    tn.lines = {"a": [0, 0, 20, 0, 20, 0, 20, 10, 20.008, 10, 0, 10.0, 0, 10, 0, 0]}
+    tn.shapes, tn.texts = [], []
+    f = tn._face_at((10, 5))
+    assert f and abs(f["area"] - 200) < 1.0, f
+
+
+def test_house_turns_to_fit_a_diagonal_corner():
+    import site_engine as se
+    st = {"stand": {"corners": [(0, 0), (4, 5), (22, 5), (22, 18.5), (-8, 18.5)]}, "house": {"cx": 0, "cy": 0, "w": 12.7, "d": 7.9, "rot": 0},
+          "carport": None, "points": {"sewer": [1, 0], "water": [1, 0], "elec": [1, 0]}, "params": {}}
+    o = se.suggest(st)
+    from site_engine import shape_poly, fits
+    assert o and not o.get("relaxed")
+
+
 if __name__ == "__main__":
+    test_main_runs_and_branches()
+    test_closing_stand_edges()
+    test_house_turns_to_fit_a_diagonal_corner()
     test_main_chain()
     test_engine_snaps_to_real_main()
     test_bulge()

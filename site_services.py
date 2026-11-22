@@ -2746,14 +2746,16 @@ class SiteServicesPage(ToolBase):
             for g in r["lines"].get(cat, []):
                 p_, q_ = se.apply_frame(fr, (g[0], g[1])), se.apply_frame(fr, (g[2], g[3]))
                 segs.append((p_[0], p_[1], q_[0], q_[1]))
-            pl = site_township.main_chain(segs, ref)
-            if not pl:
-                continue
-            pl = [[round(x, 2), round(y, 2)] for x, y in pl]
             if k == "sewer":
-                self.st["main_line"] = pl
+                pl = site_township.main_chain(segs, ref)
+                if not pl:
+                    continue
+                self.st["main_line"] = [[round(x, 2), round(y, 2)] for x, y in pl]
             else:
-                self.st["main_poly"][k] = pl
+                runs = site_township.main_runs(segs, ref)               # the main with its branches, as they run in the drawing
+                if not runs:
+                    continue
+                self.st["main_poly"][k] = [[[round(x, 2), round(y, 2)] for x, y in r_] for r_ in runs]
             said.append(k)
         return said
 

@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.149**
+Current version: **1.86.150**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **House placing, corner stands and the real water lines:** (1) stands whose outline had a hairline gap (two lines meeting a few millimetres apart), many of them corner stands such as 2228, 2236 and 2237 of Blue Hills Ext 120, were reported as not found; the reader now joins lines that meet within 3 cm, and 208 of the 212 stand numbers in that drawing open (before, many corner stands did not). (2) The water and electrical mains are now the whole line network in the drawing with its branches, run along the road and round the bends exactly as drawn, and the house connection lands on the nearest point of it. (3) When a house cannot fit square to the street (a stand with a diagonal corner frontage), it is turned to run along the stand's own sides, inside the building lines, instead of being left outside the stand.
 - **House placing, plan turned square:** a stand from a township drawing is now turned on the page so its edges run square along the page (a right-angle corner sits as a right angle, not as a diamond), and the north arrow turns with it. "Plan turned" (and a "Square up" button) under "Road side and north arrow" turn the plan to any angle; the PDF, image and DXF follow. New test: test_turn.py.
 - **House placing, the real mains:** for a stand from a township drawing, the main sewer, water and electrical lines are now the ones in the drawing (the nearest run of each to the stand's street boundary), drawn as they run along the road, and the house connections end on them, instead of straight lines beside the stand. A stand with no such lines in the drawing keeps the straight ones.
 - **House placing, fix (road):** a stand brought in from a township drawing now shows the road as it really is in the drawing (curved kerbs and bell-mouths) instead of two straight lines. The drawing's curves were being cut into long straight pieces (polyline arcs were ignored and plain arcs were too coarse); they are now followed smoothly. Also in the DXF you export. New test: test_road.py.

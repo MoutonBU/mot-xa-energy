@@ -306,11 +306,12 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
         D.poly(stand, BLACK, 0.05, None)                  # the street boundary line stays on top of the entry
     # the mains and manholes go over the entry and the green
     def real_main(k_, col, w_, dash, label, sp):
-        pl = se.main_poly(st, k_)
-        if not pl:
+        pls = se.main_poly(st, k_)
+        if not pls:
             return False
-        D.poly(pl, col, w_, None, dash=dash, closed=False)
-        i_ = max(range(len(pl) - 1), key=lambda i: edge_len(pl[i], pl[i + 1]))
+        for pl in pls:
+            D.poly(pl, col, w_, None, dash=dash, closed=False)
+        pl, i_ = max(((pl, i) for pl in pls for i in range(len(pl) - 1)), key=lambda t: edge_len(t[0][t[1]], t[0][t[1] + 1]))
         a_, b_ = pl[i_], pl[i_ + 1]
         D.text(((a_[0] + b_[0]) / 2, (a_[1] + b_[1]) / 2), label, 0.5, (b_[0] - a_[0], b_[1] - a_[1]), spacing=sp, bg=True)
         return True

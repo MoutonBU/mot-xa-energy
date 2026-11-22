@@ -113,6 +113,70 @@ def main_chain(segs, ref, reach=40.0, min_len=12.0):
     return o2
 
 
+def main_runs(segs, ref, reach=40.0, min_len=12.0, max_runs=80):
+    """every service line near a point, with its branches: the lines (x1, y1, x2, y2) are joined end to end into networks; each network that is at least
+    `min_len` long and comes within `reach` of `ref` is returned as a list of polylines (cut where the line branches or ends). Short bits (symbols, house
+    connections) are left out."""
+    key = lambda x, y: (round(x * 20), round(y * 20))
+    par = {}
+
+    def find(a):
+        while par.setdefault(a, a) != a:
+            par[a] = par[par[a]]
+            a = par[a]
+        return a
+    pts = {}
+    es = []
+    for x1, y1, x2, y2 in segs:
+        a, b = key(x1, y1), key(x2, y2)
+        if a == b:
+            continue
+        pts[a], pts[b] = (x1, y1), (x2, y2)
+        par[find(a)] = find(b)
+        es.append((a, b))
+    comps = {}
+    for a, b in es:
+        comps.setdefault(find(a), set()).add((a, b) if a < b else (b, a))
+    out = []
+    for c, edges in comps.items():
+        tot = sum(math.hypot(pts[a][0] - pts[b][0], pts[a][1] - pts[b][1]) for a, b in edges)
+        if tot < min_len or min(_seg_dist(ref, pts[a], pts[b]) for a, b in edges) > reach:
+            continue
+        adj = {}
+        for a, b in edges:
+            adj.setdefault(a, []).append(b)
+            adj.setdefault(b, []).append(a)
+        used = set()
+        starts = [v for v, nb in adj.items() if len(nb) != 2] or [next(iter(adj))]
+        for v0 in starts:
+            for w0 in adj[v0]:
+                e0 = (v0, w0) if v0 < w0 else (w0, v0)
+                if e0 in used:
+                    continue
+                run = [v0, w0]
+                used.add(e0)
+                while len(adj[run[-1]]) == 2:
+                    a, b = run[-2], run[-1]
+                    nxt = adj[b][0] if adj[b][1] == a else adj[b][1]
+                    e1 = (b, nxt) if b < nxt else (nxt, b)
+                    if e1 in used:
+                        break
+                    used.add(e1)
+                    run.append(nxt)
+                out.append((min(_seg_dist(ref, pts[run[i]], pts[run[i + 1]]) for i in range(len(run) - 1)), [pts[v] for v in run]))
+    out.sort(key=lambda t: t[0])
+    res = []
+    for _d, pl in out[:max_runs]:
+        o2 = [pl[0]]
+        for i in range(1, len(pl) - 1):                      # drop points on a straight stretch
+            a, b, c = o2[-1], pl[i], pl[i + 1]
+            if abs((b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0])) > 1e-4:
+                o2.append(b)
+        o2.append(pl[-1])
+        res.append(o2)
+    return res
+
+
 def guess_category(layer):
     n = str(layer).lower()
     if n in ("0", "defpoints") or "dim" in n or "text" in n or "title" in n or "frame" in n or "grid" in n:
@@ -522,12 +586,16 @@ class Township:
         vid = {}
         pts = []
 
-        def vert(x, y):
-            key = (round(x / 0.02), round(y / 0.02))
-            if key not in vid:
-                vid[key] = len(pts)
-                pts.append((x, y))
-            return vid[key]
+        def vert(x, y):                                          # points within 3 cm of each other are one vertex (a plain 2 cm grid split lines that meet exactly on a cell border)
+            cx_, cy_ = int(math.floor(x / 0.03)), int(math.floor(y / 0.03))
+            for dx_ in (-1, 0, 1):
+                for dy_ in (-1, 0, 1):
+                    for v_ in vid.get((cx_ + dx_, cy_ + dy_), ()):
+                        if abs(pts[v_][0] - x) <= 0.03 and abs(pts[v_][1] - y) <= 0.03:
+                            return v_
+            vid.setdefault((cx_, cy_), []).append(len(pts))
+            pts.append((x, y))
+            return len(pts) - 1
         adj = {}
         for sg, cu in zip(segs, cuts):
             cu = sorted(set(round(c, 6) for c in cu))
