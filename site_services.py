@@ -1637,6 +1637,7 @@ class SiteServicesPage(ToolBase):
         self.st["stand"]["name"] = name
         self.under = under or {}
         self.st["road_lines"] = []
+        self.st["main_poly"] = {}
         self.st["underlay"] = []
         self.st["underlay_cat"], self.st["neighbours"] = {}, []
         if points:
@@ -2577,6 +2578,8 @@ class SiteServicesPage(ToolBase):
         self.set_stand_world(r["poly"], "Stand " + no, src_shapes=[1], street_edge=r["street_edge"], north_up=True)
         self._set_township_underlay(r)
         got_c = self._township_connections(r)
+        if not r.get("connections"):
+            self.solve_now(False)                                      # (the mains read from the drawing change where the lines end)
         self.sh_no.setText(no)
         placed = self._ref_house(ref) if ref and self.tn_house.isChecked() else ""
         c = self.st["stand"]["corners"]
@@ -2693,11 +2696,35 @@ class SiteServicesPage(ToolBase):
             p_, q_ = se.apply_frame(fr, (g[0], g[1])), se.apply_frame(fr, (g[2], g[3]))
             rl.append([p_[0], p_[1], q_[0], q_[1]])
         self.st["road_lines"] = self._clip_all(rl, x0, x1, y0, y1)
+        self._township_mains(r, fr)
         self.st["underlay"] = own                                       # the boundaries beside the stand (the house placing reads these)
         self.st["underlay_cat"] = cats
         self.st["neighbours"] = nbs
         self.under = cats
         self.view.update()
+
+    def _township_mains(self, r, fr):
+        """the main sewer, water and electrical lines of the drawing nearest the stand's street boundary, drawn as they run and used as the lines the house connects to"""
+        c = self.st["stand"]["corners"]
+        ref = ((c[0][0] + c[1][0]) / 2, (c[0][1] + c[1][1]) / 2)
+        self.st["main_poly"] = {}
+        self.st["main_line"] = []
+        said = []
+        for cat, k in (("sewer", "sewer"), ("water", "water"), ("elec", "elec")):
+            segs = []
+            for g in r["lines"].get(cat, []):
+                p_, q_ = se.apply_frame(fr, (g[0], g[1])), se.apply_frame(fr, (g[2], g[3]))
+                segs.append((p_[0], p_[1], q_[0], q_[1]))
+            pl = site_township.main_chain(segs, ref)
+            if not pl:
+                continue
+            pl = [[round(x, 2), round(y, 2)] for x, y in pl]
+            if k == "sewer":
+                self.st["main_line"] = pl
+            else:
+                self.st["main_poly"][k] = pl
+            said.append(k)
+        return said
 
     @staticmethod
     def _clip_all(segs, x0, x1, y0, y1):
@@ -2746,6 +2773,7 @@ class SiteServicesPage(ToolBase):
         """a stand in drawing coordinates: put the street edge along x at the origin and remember the move so the house and carport from the same drawing land in place"""
         self.st["pts_manual"] = False
         self.st["road_lines"] = []                                    # (the township import fills these in again)
+        self.st["main_poly"] = {}
         c0 = [tuple(p) for p in poly]
         if max(max(p[0] for p in c0) - min(p[0] for p in c0), max(p[1] for p in c0) - min(p[1] for p in c0)) > 2000:
             QMessageBox.warning(self, "House placing", "That stand is more than 2 km across, so the scale must be wrong. Import again and set the drawing units and scale.")

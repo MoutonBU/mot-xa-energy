@@ -45,6 +45,74 @@ def bulged(vs, closed=False):
     return out
 
 
+def main_chain(segs, ref, reach=40.0, min_len=12.0):
+    """the main service line near a point: the lines (x1, y1, x2, y2) are joined end to end into runs, and the longest run that comes within `reach` of `ref`
+    (closest first, then longest) is returned as a list of points, or None. Short bits (symbols, house connections) are ignored by min_len."""
+    key = lambda x, y: (round(x * 20), round(y * 20))
+    par = {}
+
+    def find(a):
+        while par.setdefault(a, a) != a:
+            par[a] = par[par[a]]
+            a = par[a]
+        return a
+    pts = {}
+    for x1, y1, x2, y2 in segs:
+        a, b = key(x1, y1), key(x2, y2)
+        if a == b:
+            continue
+        pts[a], pts[b] = (x1, y1), (x2, y2)
+        par[find(a)] = find(b)
+    comps = {}
+    for x1, y1, x2, y2 in segs:
+        a, b = key(x1, y1), key(x2, y2)
+        if a != b:
+            comps.setdefault(find(a), []).append((a, b))
+    best = None
+    for c, es in comps.items():
+        tot = sum(math.hypot(pts[a][0] - pts[b][0], pts[a][1] - pts[b][1]) for a, b in es)
+        if tot < min_len:
+            continue
+        d = min(_seg_dist(ref, pts[a], pts[b]) for a, b in es)
+        if d > reach:
+            continue
+        sc = (round(d / 8.0), -tot)
+        if best is None or sc < best[0]:
+            best = (sc, es)
+    if not best:
+        return None
+    adj = {}
+    for a, b in best[1]:
+        w = math.hypot(pts[a][0] - pts[b][0], pts[a][1] - pts[b][1])
+        adj.setdefault(a, []).append((b, w))
+        adj.setdefault(b, []).append((a, w))
+
+    def far(s0):
+        dist, prev, st_ = {s0: 0.0}, {}, [s0]
+        while st_:
+            u = st_.pop()
+            for v, w in adj[u]:
+                if v not in dist:
+                    dist[v] = dist[u] + w
+                    prev[v] = u
+                    st_.append(v)
+        e = max(dist, key=dist.get)
+        return e, prev
+    a0, _ = far(next(iter(adj)))
+    a1, prev = far(a0)
+    path = [a1]
+    while path[-1] != a0:
+        path.append(prev[path[-1]])
+    out = [pts[k] for k in path]
+    o2 = [out[0]]                                              # drop points on a straight stretch
+    for i in range(1, len(out) - 1):
+        a, b, c = o2[-1], out[i], out[i + 1]
+        if abs((b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0])) > 1e-4:
+            o2.append(b)
+    o2.append(out[-1])
+    return o2
+
+
 def guess_category(layer):
     n = str(layer).lower()
     if n in ("0", "defpoints") or "dim" in n or "text" in n or "title" in n or "frame" in n or "grid" in n:

@@ -300,10 +300,33 @@ def main_dist(state, w):
     return math.hypot(q[0] - w[0], q[1] - w[1]) if q else abs(w[1] - mains(state)["sewer"])
 
 
+def main_poly(state, k):
+    """the water or electrical main as a polyline read from the township drawing (None: the straight line along the street)"""
+    p = (state.get("main_poly") or {}).get(k) or []
+    return [tuple(q) for q in p] if len(p) >= 2 else None
+
+
+def snap_poly(poly, w):
+    """the point on the polyline nearest to w"""
+    best = None
+    for a, b in zip(poly[:-1], poly[1:]):
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        L2 = dx * dx + dy * dy
+        t = 0.0 if L2 == 0 else max(0.0, min(1.0, ((w[0] - a[0]) * dx + (w[1] - a[1]) * dy) / L2))
+        q = (a[0] + dx * t, a[1] + dy * t)
+        d = math.hypot(q[0] - w[0], q[1] - w[1])
+        if best is None or d < best[0]:
+            best = (d, q)
+    return (round(best[1][0], 3), round(best[1][1], 3))
+
+
 def conn_point(state, k):
     """the connection point on the main line: x as placed, y on the main line (a sewer main that runs through the stand: the nearest point on it)"""
     if k == "sewer" and main_line(state):
         return snap_main(state, state["points"]["sewer"])
+    mp = main_poly(state, k) if k != "sewer" else None
+    if mp:                                                      # the real main from the township drawing: the nearest point on it to where the line leaves the stand
+        return snap_poly(mp, (state["points"][k][0], 0.0))
     return (state["points"][k][0], mains(state)[k])
 
 

@@ -266,8 +266,18 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
     if cp:
         D.poly(stand, BLACK, 0.05, None)                  # the street boundary line stays on top of the entry
     # the mains and manholes go over the entry and the green
-    D.line((xa, mn["water"]), (xb, mn["water"]), BLUE, 0.04)
-    D.text((xmin - 6.0, mn["water"]), "Main Water Line", 0.5, (1, 0), spacing=110, align="r")
+    def real_main(k_, col, w_, dash, label, sp):
+        pl = se.main_poly(st, k_)
+        if not pl:
+            return False
+        D.poly(pl, col, w_, None, dash=dash, closed=False)
+        i_ = max(range(len(pl) - 1), key=lambda i: edge_len(pl[i], pl[i + 1]))
+        a_, b_ = pl[i_], pl[i_ + 1]
+        D.text(((a_[0] + b_[0]) / 2, (a_[1] + b_[1]) / 2), label, 0.5, (b_[0] - a_[0], b_[1] - a_[1]), spacing=sp, bg=True)
+        return True
+    if not real_main("water", BLUE, 0.04, None, "Main Water Line", 110):
+        D.line((xa, mn["water"]), (xb, mn["water"]), BLUE, 0.04)
+        D.text((xmin - 6.0, mn["water"]), "Main Water Line", 0.5, (1, 0), spacing=110, align="r")
     mline = se.main_line(st)
     if mline:                                                    # the main runs through the stand, as drawn
         D.poly(mline, BROWN, 0.08, None, dash=[9, 5], closed=False)
@@ -281,8 +291,9 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
         q_ = tuple(mh_["pt"])
         D.dot(q_, 0.9, BROWN, filled=True)
         D.text((q_[0] + 1.2, q_[1] - 1.2), mh_.get("name", ""), 0.5, (1, 0), color=BROWN, spacing=110)
-    D.line((xa, mn["elec"]), (xmin - 7, mn["elec"]), YELLOW, 0.05, dash=[5, 4])
-    D.text((xmin - 11.5, mn["elec"]), "Main Electrical Line", 0.5, (1, 0), spacing=125)
+    if not real_main("elec", YELLOW, 0.05, [5, 4], "Main Electrical Line", 125):
+        D.line((xa, mn["elec"]), (xmin - 7, mn["elec"]), YELLOW, 0.05, dash=[5, 4])
+        D.text((xmin - 11.5, mn["elec"]), "Main Electrical Line", 0.5, (1, 0), spacing=125)
     for i in range(n):                                 # side lines run on past the street boundary to the kerb, as on the plans
         if kinds[i] == "side":
             a, b = stand[i], stand[(i + 1) % n]

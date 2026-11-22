@@ -38,7 +38,22 @@ def test_sheet_uses_real_road():
     assert "real_road" in src and "if real_road" in src
 
 
+def test_main_chain():
+    segs = [(0, 0, 10, 0), (10, 0, 20, 0), (20, 0, 30, 5), (30, 5, 31, 5), (50, 50, 52, 50), (5, 3, 5, 4)]
+    assert tw.main_chain(segs, (5, 3)) == [(0, 0), (20, 0), (30, 5), (31, 5)]       # the long run, not the short bits
+    assert tw.main_chain(segs, (500, 500)) is None
+
+
+def test_engine_snaps_to_real_main():
+    import site_engine as se
+    st = {"points": {"water": [4.0, 0.0], "elec": [3.0, 0.0], "sewer": [3.0, 0.0]}, "mains": {}, "main_poly": {"water": [[-10, -6], [20, -6]]}}
+    assert se.conn_point(st, "water") == (4.0, -6.0)
+    assert se.conn_point(st, "elec") == (3.0, se.mains(st)["elec"])                  # no real main: the straight line, as before
+
+
 if __name__ == "__main__":
+    test_main_chain()
+    test_engine_snaps_to_real_main()
     test_bulge()
     test_sheet_uses_real_road()
     print("road ok")
