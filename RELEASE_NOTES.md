@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.135**
+Current version: **1.86.136**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **House placing: township drawing.** New box at the top of step 1: "Open a township drawing (DXF)..." reads a big SG drawing once (any size, metres or millimetres, closed outlines or loose lines), then you type a stand number and press Go. The tool finds that stand, puts the street side at the road (not on a side shared with another stand), shows the stands beside it with their real numbers, and the sewer, water, electrical and stormwater lines round it in their colours (also in the DXF). "Layers..." lets you say which drawing layer is which when the names are unusual. Saved with the setup.
 - **House placing, fix:** after you clicked the corners and then the street side in "Import the stand from a drawing", nothing was placed (an error was swallowed). It places the stand, the street side and the drawing underlay again. The outline list also shows only real boxes now (at most 12, biggest first).
 - **House placing:** importing a stand drawing now finds the stand when its boundary lines only nearly meet (up to 0.4 m apart) or cross and run past the corners, which is how a lot of loose DXFs are drawn. Before, it only found closed shapes and showed small bits. Square boundaries (level and upright lines) are found even with overshoots; the biggest outline is listed first.
 - **House placing:** delete a corner of the sewer line: select the sewer, click the corner and press Delete, or right-click the corner and choose "Delete this corner". The two legs join straight (slanted); eyes are re-placed automatically. "Back to automatic" undoes it.

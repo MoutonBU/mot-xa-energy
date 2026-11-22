@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (QApplication, QFrame, QCheckBox, QComboBox, QDial
 
 import site_dxf
 import site_dxf_dialog
+import site_township
 try:
     from site_footprints_data import FOOTPRINTS
 except Exception:
@@ -50,7 +51,7 @@ def blank_state():
             "house": {"cx": 9.0, "cy": 12.0, "w": 14.8, "d": 6.5, "rot": 90},
             "carport": {"cx": 3.5, "cy": 3.5, "w": 5.0, "d": 5.0, "rot": 0},
             "points": {"sewer": [12.0, 0.0], "water": [1.5, 0.0], "elec": [6.75, 0.0]},
-            "ports": {}, "params": {}, "mains": {}, "custom": [], "frame": None, "labels": {}, "underlay": [], "sewer_via": [], "water_ports": [], "dims": [], "sewer_manual": [], "main_line": [], "manholes": [], "look": {}, "notes": [], "text_edit": {}, "text_hidden": [], "pts_manual": False,
+            "ports": {}, "params": {}, "mains": {}, "custom": [], "frame": None, "labels": {}, "underlay": [], "underlay_cat": {}, "neighbours": [], "sewer_via": [], "water_ports": [], "dims": [], "sewer_manual": [], "main_line": [], "manholes": [], "look": {}, "notes": [], "text_edit": {}, "text_hidden": [], "pts_manual": False,
             "sheet": {"road": "left", "street": "", "road_w": "13m", "street_erf": "", "stand_no": "", "north": 0.0}}
 
 
@@ -208,7 +209,7 @@ class ServicesView(QWidget):
         st, res = pg.st, pg.res
         if interactive and pg.show_under and pg.under and not self.lite:
             S = sh.pt
-            for key, col in (("other", QColor("#cfd6e4")), ("storm", QColor("#b7dcb7")), ("water", QColor("#c6defa")), ("sewer", QColor("#ecd0b6"))):
+            for key, col in (("other", QColor("#cfd6e4")), ("storm", QColor("#b7dcb7")), ("water", QColor("#c6defa")), ("sewer", QColor("#ecd0b6")), ("elec", QColor("#efdc9a"))):
                 for x1, y1, x2, y2, thick in pg.under.get(key, []):
                     p.setPen(QPen(col, 1.4 if thick else 0.7))
                     p.drawLine(S((x1, y1)), S((x2, y2)))
@@ -886,6 +887,35 @@ class SiteServicesPage(ToolBase):
         p1 = QWidget()
         v1 = QVBoxLayout(p1)
         v1.setContentsMargins(0, 0, 8, 8)
+        bx, bv = self.box("Township drawing (all the stands)", "Open the big SG drawing once, then type a stand number: the tool finds that stand, the stands beside it and the sewer, water and electrical lines round it.")
+        row = QHBoxLayout()
+        tb_ = QPushButton("Open a township drawing (DXF)...")
+        tb_.clicked.connect(self.open_township)
+        self.tn_layers_b = QPushButton("Layers...")
+        self.tn_layers_b.setToolTip("Tell the tool which drawing layer is the sewer, the water, the electrical, the stand boundaries and the roads.")
+        self.tn_layers_b.clicked.connect(self.township_layers)
+        self.tn_layers_b.setEnabled(False)
+        row.addWidget(tb_)
+        row.addWidget(self.tn_layers_b)
+        row.addStretch(1)
+        bv.addLayout(row)
+        row = QHBoxLayout()
+        self.tn_no = QLineEdit()
+        self.tn_no.setPlaceholderText("Stand number, e.g. 2155")
+        self.tn_no.setMaximumWidth(220)
+        self.tn_no.returnPressed.connect(self.go_to_stand)
+        self.tn_go = QPushButton("Go to this stand")
+        self.tn_go.clicked.connect(self.go_to_stand)
+        self.tn_go.setEnabled(False)
+        row.addWidget(self.tn_no)
+        row.addWidget(self.tn_go)
+        row.addStretch(1)
+        bv.addLayout(row)
+        self.tn_lbl = QLabel("")
+        self.tn_lbl.setObjectName("xaSub")
+        self.tn_lbl.setWordWrap(True)
+        bv.addWidget(self.tn_lbl)
+        v1.addWidget(bx)
         bx, bv = self.box("1. Your stand", "Start here. Open your stand drawing, or just type its size.")
         row = QHBoxLayout()
         ib = QPushButton("Open a stand drawing (DXF)...")
@@ -1316,7 +1346,7 @@ class SiteServicesPage(ToolBase):
         sh["nb_lines"] = self.neighbour_lines()
         try:
             no = int(sh.get("stand_no", ""))
-            sh["neigh"] = [no - 1, no + 1]
+            sh["neigh"] = [] if self.st.get("neighbours") else [no - 1, no + 1]   # real neighbours come from the township drawing
         except ValueError:
             sh["neigh"] = []
         return sh
@@ -1588,6 +1618,7 @@ class SiteServicesPage(ToolBase):
         self.st["stand"]["name"] = name
         self.under = under or {}
         self.st["underlay"] = []
+        self.st["underlay_cat"], self.st["neighbours"] = {}, []
         if points:
             self.st["points"] = points
         self.st["ports"] = {}
@@ -2425,6 +2456,149 @@ class SiteServicesPage(ToolBase):
             return None
         return dlg.result, dlg.underlay(), dlg.street_edge, getattr(dlg, "extras", {})
 
+    # ---- a whole township drawing
+    def open_township(self, path=None):
+        if not path:
+            path, _ = QFileDialog.getOpenFileName(self, "Open the township drawing", "", "Drawings (*.dxf *.dwg)")
+        if not path:
+            return
+        import threading
+        from PySide6.QtCore import QEventLoop
+        tn = site_township.Township()
+        box = {"err": None, "done": False}
+
+        def work():
+            try:
+                tn.load(path)
+            except Exception as e:                                  # shown on screen below
+                box["err"] = e
+            box["done"] = True
+        self.set_hint("Reading the township drawing... a big one can take a minute or two.")
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        th = threading.Thread(target=work, daemon=True)
+        th.start()
+        loop = QEventLoop()
+        tm = QTimer(self)
+        tm.timeout.connect(lambda: loop.quit() if box["done"] else None)
+        tm.start(150)
+        loop.exec()
+        tm.stop()
+        QApplication.restoreOverrideCursor()
+        self.set_hint("")
+        if box["err"]:
+            QMessageBox.warning(self, "House placing", "The township drawing could not be read: %s" % box["err"])
+            return
+        self.tn = tn
+        self.tn_layers_b.setEnabled(True)
+        self.tn_go.setEnabled(True)
+        n_l = sum(1 for v in tn.layers.values() if v["cat"] != "off")
+        cats = {}
+        for v in tn.layers.values():
+            cats[v["cat"]] = cats.get(v["cat"], 0) + 1
+        self.tn_lbl.setText("Read %d layers, %d stand outlines, %d texts. Found: %s. Check them with Layers... if a service is missing. Now type a stand number." % (
+            len(tn.layers), len(tn.shapes), len(tn.texts), ", ".join("%s %d" % (site_township.CAT_NAMES[c].lower(), n) for c, n in sorted(cats.items()) if c != "off") or "nothing"))
+        self.tn_no.setFocus()
+
+    def township_layers(self):
+        tn = getattr(self, "tn", None)
+        if not tn:
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Which layer is which")
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel("The tool guessed from the layer names. Change any that are wrong, then press OK."))
+        tbl = QTableWidget(len(tn.layers), 3)
+        tbl.setHorizontalHeaderLabels(["Layer", "Lines", "Is"])
+        tbl.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        combos = {}
+        for r, (name, v) in enumerate(sorted(tn.layers.items(), key=lambda kv: -kv[1]["n"])):
+            tbl.setItem(r, 0, QTableWidgetItem(name))
+            tbl.setItem(r, 1, QTableWidgetItem(str(v["n"])))
+            cb = QComboBox()
+            for c in site_township.CATS:
+                cb.addItem(site_township.CAT_NAMES[c], c)
+            cb.setCurrentIndex(site_township.CATS.index(v["cat"]))
+            tbl.setCellWidget(r, 2, cb)
+            combos[name] = cb
+        tbl.setMinimumSize(560, 360)
+        lay.addWidget(tbl)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        lay.addWidget(bb)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            tn.set_categories({n: cb.currentData() for n, cb in combos.items()})
+
+    def go_to_stand(self):
+        tn = getattr(self, "tn", None)
+        if not tn:
+            self.open_township()
+            tn = getattr(self, "tn", None)
+            if not tn:
+                return
+        no = self.tn_no.text().strip()
+        if not no:
+            self.tn_lbl.setText("Type the stand number first.")
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            r = tn.find(no)
+        finally:
+            QApplication.restoreOverrideCursor()
+        if not r:
+            self.tn_lbl.setText("Stand %s was not found. Either no text in the drawing says %s, or no closed outline round it. Check the stand layers with Layers... (the outlines must be on a layer marked Stand boundaries)." % (no, no))
+            return
+        self.set_stand_world(r["poly"], "Stand " + no, src_shapes=[1], street_edge=r["street_edge"])
+        self._set_township_underlay(r)
+        self.sh_no.setText(no)
+        c = self.st["stand"]["corners"]
+        found = ", ".join(k for k in ("sewer", "water", "elec", "storm") if r["lines"][k])
+        self.tn_lbl.setText("Stand %s: %.0f m2, %d corners. %d stands beside it. Services found: %s.%s%s" % (
+            no, abs(se.area([tuple(p) for p in c])), len(c), len(r["neighbours"]), found or "none (check Layers...)",
+            "" if r["road_known"] else " No road layer was found, so the street side is a guess: click the real street boundary in the plan.",
+            " %d texts said %s; the first was used." % (r["matches"], no) if r["matches"] > 1 else ""))
+        self.set_hint("")
+
+    def _set_township_underlay(self, r):
+        """the township's lines and the neighbouring stands, moved into the stand's frame and kept faint under the plan"""
+        fr = self.st.get("frame")
+        cats = {"sewer": [], "water": [], "elec": [], "storm": [], "other": []}
+        if not fr:
+            self.under = {}
+            self.st["underlay"], self.st["underlay_cat"], self.st["neighbours"] = [], {}, []
+            return
+        cs = self.st["stand"]["corners"]
+        xs, ys = [p[0] for p in cs], [p[1] for p in cs]
+        x0, x1, y0, y1 = min(xs) - 45, max(xs) + 45, min(ys) - 45, max(ys) + 45
+
+        def mv(seg, thick=0):
+            p, q = se.apply_frame(fr, (seg[0], seg[1])), se.apply_frame(fr, (seg[2], seg[3]))
+            if max(p[0], q[0]) < x0 or min(p[0], q[0]) > x1 or max(p[1], q[1]) < y0 or min(p[1], q[1]) > y1:
+                return None
+            return [round(p[0], 2), round(p[1], 2), round(q[0], 2), round(q[1], 2), thick]
+        for cat, key in (("sewer", "sewer"), ("water", "water"), ("elec", "elec"), ("storm", "storm"), ("road", "other"), ("other", "other")):
+            for seg in r["lines"].get(cat, []):
+                m = mv(seg)
+                if m:
+                    cats[key].append(m)
+        own = []
+        nbs = []
+        for o in r["neighbours"]:
+            Q = o["poly"]
+            for i in range(len(Q)):
+                m = mv((Q[i][0], Q[i][1], Q[(i + 1) % len(Q)][0], Q[(i + 1) % len(Q)][1]), 1)
+                if m:
+                    own.append(m)
+            cen = se.apply_frame(fr, site_township.centroid(Q))
+            if o.get("no"):
+                nbs.append({"no": o["no"], "c": [round(cen[0], 2), round(cen[1], 2)]})
+        cats["other"] += own
+        self.st["underlay"] = own                                       # the boundaries beside the stand (the house placing reads these)
+        self.st["underlay_cat"] = cats
+        self.st["neighbours"] = nbs
+        self.under = cats
+        self.view.update()
+
     def _set_underlay(self, lines):
         """the imported drawing's own lines, kept faint under the plan, moved into the stand frame"""
         fr = self.st.get("frame")
@@ -2586,6 +2760,8 @@ class SiteServicesPage(ToolBase):
         self.under = STANDS[k]["layers"] if k in STANDS and "Blue Hills" in str(self.st["stand"].get("name")) else {}
         if self.st.get("underlay"):
             self.under = {"other": self.st["underlay"]}
+        if self.st.get("underlay_cat"):
+            self.under = self.st["underlay_cat"]
         self._to_fields()
         self.solve_now()
 

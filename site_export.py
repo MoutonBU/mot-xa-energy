@@ -243,7 +243,7 @@ def build_sheet(page, path, scale_text="1:200"):
     sh = site_sheet.Sheet(S_MM, (cx, cy), (W, H), road)
     # the imported drawing's own lines, faint, under the plan
     if getattr(page, "under", None):
-        for key, col in (("other", QColor("#cfd6e4")), ("storm", QColor("#b7dcb7")), ("water", QColor("#c6defa")), ("sewer", QColor("#ecd0b6"))):
+        for key, col in (("other", QColor("#cfd6e4")), ("storm", QColor("#b7dcb7")), ("water", QColor("#c6defa")), ("sewer", QColor("#ecd0b6")), ("elec", QColor("#efdc9a"))):
             for ux1, uy1, ux2, uy2, thick in page.under.get(key, []):
                 p.setPen(QPen(col, 8 if thick else 4))
                 p.drawLine(sh.pt((ux1, uy1)), sh.pt((ux2, uy2)))

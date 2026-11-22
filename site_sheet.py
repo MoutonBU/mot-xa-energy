@@ -251,6 +251,9 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
                     D.text((m_[0] - nx * 0.75, m_[1] - ny * 0.75), "1.2m High Pre-Cast Concrete Wall", 0.4, (b[0] - a[0], b[1] - a[1]), spacing=105)
     # ---- entry block (kerb to the carport front)
     cp = res.get("carport") if res else None
+    for i_, nb_ in enumerate(st.get("neighbours") or []):          # the stands beside it, from the township drawing
+        if nb_.get("no"):
+            D.text(tuple(nb_["c"]), str(nb_["no"]), 1.6, (1, 0), bold=True, color=QColor(120, 120, 120), key="NB:%d" % i_)
     if cp:
         en = entry_shape(st, cp)
         D.poly(en["poly"], GREY, 0.03, ENTRY)
