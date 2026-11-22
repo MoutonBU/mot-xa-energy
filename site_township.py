@@ -35,8 +35,13 @@ def rgb_category(rgb):
     hi, lo = max(r, g, b), min(r, g, b)
     if hi - lo < 40:
         return "other"                                           # grey, black, white
-    import colorsys
-    h = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)[0] * 360
+    d = float(hi - lo)
+    if hi == r:
+        h = (60 * ((g - b) / d)) % 360
+    elif hi == g:
+        h = 60 * ((b - r) / d) + 120
+    else:
+        h = 60 * ((r - g) / d) + 240
     if 45 <= h < 70:
         return "elec"
     if 170 <= h < 260:
