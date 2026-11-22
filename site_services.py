@@ -170,7 +170,7 @@ class ServicesView(QWidget):
             s, cx, cy = self.current(W, H)
         else:
             cx, cy = centre
-        return site_sheet.Sheet(s, (cx, cy), (W, H), road or self.page.st["sheet"].get("road", "left"))
+        return site_sheet.Sheet(s, (cx, cy), (W, H), road or self.page.st["sheet"].get("road", "left"), self.page.st["sheet"].get("turn", 0.0))
 
     def fit(self):
         self.auto = True
@@ -180,8 +180,7 @@ class ServicesView(QWidget):
         W, H = W or self.width(), H or self.height()
         if self.auto or self.view is None:
             x0, y0, x1, y1 = self.bounds()
-            rot = site_sheet.ROTS.get(self.page.st["sheet"].get("road", "left"), 270)
-            w, h = (x1 - x0, y1 - y0) if rot in (0, 180) else (y1 - y0, x1 - x0)
+            w, h = site_sheet.page_extent(x0, y0, x1, y1, self.page.st["sheet"].get("road", "left"), self.page.st["sheet"].get("turn", 0.0))
             s = min((W - 30) / max(w, 1e-3), (H - 30) / max(h, 1e-3))
             self.view = (s, (x0 + x1) / 2, (y0 + y1) / 2)
         return self.view
@@ -644,7 +643,7 @@ class ServicesView(QWidget):
         if d[0] == "pan":
             s, cx, cy = d[2]
             dx, dy = e.position().x() - d[1].x(), e.position().y() - d[1].y()
-            a = site_sheet.Sheet(s, (cx, cy), (self.width(), self.height()), pg.st["sheet"].get("road", "left"))
+            a = site_sheet.Sheet(s, (cx, cy), (self.width(), self.height()), pg.st["sheet"].get("road", "left"), pg.st["sheet"].get("turn", 0.0))
             p0 = a.inv(QPointF(self.width() / 2, self.height() / 2))
             p1 = a.inv(QPointF(self.width() / 2 - dx, self.height() / 2 - dy))
             self.view = (s, cx + p1[0] - p0[0], cy + p1[1] - p0[1])
@@ -983,6 +982,14 @@ class SiteServicesPage(ToolBase):
         row.addWidget(self.sh_road)
         row.addWidget(QLabel("North arrow turned"))
         row.addWidget(self.sh_north)
+        self.sh_turn = spin(-180, 180, 0, 1, " deg", 5)
+        self.sh_turn.setToolTip("Turn the whole plan on the page (degrees clockwise). The north arrow turns with it.")
+        sq_ = QPushButton("Square up")
+        sq_.setToolTip("Turn the plan so the stand's edges run along the page")
+        sq_.clicked.connect(lambda _=False: self.square_up())
+        row.addWidget(QLabel("Plan turned"))
+        row.addWidget(self.sh_turn)
+        row.addWidget(sq_)
         row.addStretch(1)
         ml.addLayout(row)
         row = QHBoxLayout()
@@ -1244,6 +1251,7 @@ class SiteServicesPage(ToolBase):
             w_.textChanged.connect(self._edited)
         self.sh_road.currentIndexChanged.connect(self._edited)
         self.sh_north.valueChanged.connect(self._edited)
+        self.sh_turn.valueChanged.connect(self._edited)
         self.p_pipe.currentIndexChanged.connect(self._edited)
         for sx, sy in self.pt_spin.values():
             sx.valueChanged.connect(self._edited)
@@ -1422,17 +1430,19 @@ class SiteServicesPage(ToolBase):
         st["mains"] = {k: -ms.value() for k, ms in self.main_spin.items()}
         prev = st.get("sheet") or {}
         road_new, deg_new = self.sh_road.currentText(), self.sh_north.value()
+        turn_new = self.sh_turn.value()
+        turn_old = prev.get("turn", 0.0) or 0.0
         nw = st.get("north_world")
-        if nw and prev.get("road") and road_new != prev.get("road"):          # the road moved to another side of the page: the arrow turns, north stays
-            deg_new = round(se.north_world_to_screen(nw, road_new), 1)
+        if nw and ((prev.get("road") and road_new != prev.get("road")) or abs(turn_new - turn_old) > 1e-9):          # the road moved to another side of the page, or the plan was turned: the arrow turns, north stays
+            deg_new = round(se.north_world_to_screen(nw, road_new, turn_new), 1)
             self._busy = True
             self.sh_north.setValue(deg_new)
             self._busy = False
         else:
-            nw = list(se.north_screen_to_world(deg_new, road_new))
+            nw = list(se.north_screen_to_world(deg_new, road_new, turn_new))
         st["north_world"] = [round(nw[0], 4), round(nw[1], 4)]
         st["sheet"] = {"road": road_new, "street": self.sh_street.text().strip(), "road_w": self.sh_rw.text().strip(), "street_erf": self.sh_se.text().strip(),
-                       "stand_no": self.sh_no.text().strip(), "north": deg_new,
+                       "stand_no": self.sh_no.text().strip(), "north": deg_new, "turn": turn_new,
                        "north_pos": prev.get("north_pos")}
         if self.view.auto is False and False:
             pass
@@ -1475,6 +1485,7 @@ class SiteServicesPage(ToolBase):
             self.sh_se.setText(str(sh.get("street_erf", "")))
             self.sh_road.setCurrentText(str(sh.get("road", "left")))
             self.sh_north.setValue(float(sh.get("north", 0)))
+            self.sh_turn.setValue(float(sh.get("turn", 0)))
             pr = st.get("params") or {}
             self.p_depth.setValue(pr.get("conn_depth", 1.5))
             self.p_fall.setValue(pr.get("fall", 50))
@@ -2626,6 +2637,25 @@ class SiteServicesPage(ToolBase):
         self.solve_now(False)
         return " House as on the site plan: %s, carport %.0f x %.0f m." % (h.get("type", "house"), cp["w"] if cp else 0, cp["d"] if cp else 0)
 
+    def square_up(self, quiet=False):
+        """turn the plan on the page so the stand's edges run along it, and let the north arrow follow"""
+        st = self.st
+        road = (st.get("sheet") or {}).get("road", "left")
+        t = site_sheet.square_turn([tuple(p) for p in st["stand"]["corners"]], road)
+        nw = st.get("north_world")
+        st["sheet"]["turn"] = t
+        self._busy = True
+        self.sh_turn.setValue(t)
+        if nw:
+            deg = round(se.north_world_to_screen(nw, road, t), 1)
+            st["sheet"]["north"] = deg
+            self.sh_north.setValue(deg)
+        self._busy = False
+        if not quiet:
+            self.view.fit()
+            self.view.update()
+        return t
+
     def _township_north(self):
         """north on the drawing is up the page (+y of the survey coordinates): turn it into the stand's frame, set the arrow and let the house placement use it"""
         fr = self.st.get("frame")
@@ -2634,11 +2664,12 @@ class SiteServicesPage(ToolBase):
         nx, ny = site_township.Township.NORTH
         v = (fr[0] * nx - fr[1] * ny, fr[1] * nx + fr[0] * ny)       # north turned into the stand's frame
         road = (self.st.get("sheet") or {}).get("road", "left")
+        turn = (self.st.get("sheet") or {}).get("turn", 0.0) or 0.0
         self._busy = True
-        self.sh_north.setValue(round(se.north_world_to_screen(v, road), 1))
+        self.sh_north.setValue(round(se.north_world_to_screen(v, road, turn), 1))
         self._busy = False
         self.st["north_world"] = [round(v[0], 4), round(v[1], 4)]
-        self.st["sheet"]["north"] = round(se.north_world_to_screen(v, road), 1)
+        self.st["sheet"]["north"] = round(se.north_world_to_screen(v, road, turn), 1)
 
     def _township_connections(self, r):
         """the electrical and water connection symbols on the street boundary become the connection points; -> a sentence for the status line"""
@@ -2797,6 +2828,11 @@ class SiteServicesPage(ToolBase):
         self.st["points"] = {"sewer": [round(L * 0.85, 2), 0.0], "water": [round(min(1.5, L / 3), 2), 0.0], "elec": [round(L / 2, 2), 0.0]}
         self.st["custom"] = []
         if north_up:                                               # a site plan: north is up the drawing, so the house placement knows where the sun is
+            road_ = (self.st.get("sheet") or {}).get("road", "left")
+            self.st["sheet"]["turn"] = site_sheet.square_turn([tuple(p) for p in self.st["stand"]["corners"]], road_)    # and the stand sits square on the page
+            self._busy = True
+            self.sh_turn.setValue(self.st["sheet"]["turn"])
+            self._busy = False
             self._township_north()
         self._to_fields()
         self.suggest()
@@ -2937,13 +2973,12 @@ class SiteServicesPage(ToolBase):
         p.fillRect(0, 0, W, H, QColor("white"))
         x0, y0, x1, y1 = self.view.bounds()
         road = self.st["sheet"].get("road", "left")
-        rot = site_sheet.ROTS.get(road, 270)
-        w_m, h_m = (x1 - x0, y1 - y0) if rot in (0, 180) else (y1 - y0, x1 - x0)
+        w_m, h_m = site_sheet.page_extent(x0, y0, x1, y1, road, self.st["sheet"].get("turn", 0.0))
         s200 = 5.0 * dpi / 25.4                                  # pixels per metre at 1:200
         fit = min(W * 0.92 / w_m, H * 0.80 / h_m)
         s = min(s200, fit)
         scale_txt = "1:200" if s >= s200 - 1e-6 else "1:%d" % round(200 * s200 / s / 10) * 1 if False else ("1:200" if s >= s200 - 1e-6 else "1:%d" % int(round(200 * s200 / s / 50.0) * 50))
-        sh = site_sheet.Sheet(s, ((x0 + x1) / 2, (y0 + y1) / 2), (W, H * 0.92), road)
+        sh = site_sheet.Sheet(s, ((x0 + x1) / 2, (y0 + y1) / 2), (W, H * 0.92), road, self.st["sheet"].get("turn", 0.0))
         p.save()
         site_sheet.draw(p, sh, self.st, self.res, self.sheet_opts(), minpx=5)
         r_px = max(s * 1.5, 18)

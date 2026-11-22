@@ -225,13 +225,13 @@ def build_sheet(page, path, scale_text="1:200"):
     view = page.view
     x0, y0, x1, y1 = view.bounds()
     road = st["sheet"].get("road", "left")
-    rot = site_sheet.ROTS.get(road, 270)
-    w_m, h_m = (x1 - x0, y1 - y0) if rot in (0, 180) else (y1 - y0, x1 - x0)
+    turn = st["sheet"].get("turn", 0.0)
+    w_m, h_m = site_sheet.page_extent(x0, y0, x1, y1, road, turn)
     W, H = w_m * S_MM, h_m * S_MM
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
     opts = page.sheet_opts()
     # where texts have to move off each other is worked out the way the screen does it, at the zoom on the screen
-    scr = view.sh or site_sheet.Sheet(max(min(800.0 / w_m, 600.0 / h_m), 2.0), (cx, cy), (800, 600), road)
+    scr = view.sh or site_sheet.Sheet(max(min(800.0 / w_m, 600.0 / h_m), 2.0), (cx, cy), (800, 600), road, turn)
     pic = QPicture()
     pp = QPainter(pic)
     d1 = site_sheet._draw(pp, scr, st, res, opts, 7)
@@ -240,7 +240,7 @@ def build_sheet(page, path, scale_text="1:200"):
     o2["auto_off"] = site_sheet._avoid(scr, d1.hits, set(opts.get("labels") or {}))
     doc = new_doc()
     p = DxfPainter(doc, doc.modelspace())
-    sh = site_sheet.Sheet(S_MM, (cx, cy), (W, H), road)
+    sh = site_sheet.Sheet(S_MM, (cx, cy), (W, H), road, turn)
     # the imported drawing's own lines, faint, under the plan
     if getattr(page, "under", None):
         for key, col in (("other", QColor("#cfd6e4")), ("storm", QColor("#b7dcb7")), ("water", QColor("#c6defa")), ("sewer", QColor("#ecd0b6")), ("elec", QColor("#efdc9a"))):

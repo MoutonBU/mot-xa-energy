@@ -28,7 +28,8 @@ def mm(v):
 class Sheet:
     """world (x along the street, y into the stand, metres) -> paper, with the road on the chosen side"""
 
-    def __init__(self, s, centre, size, road="left"):
+    def __init__(self, s, centre, size, road="left", turn=0.0):
+        self.turn = float(turn or 0.0)                  # the whole plan turned on the paper, degrees clockwise, on top of the road side
         self.s = s
         self.cx, self.cy = centre
         self.W, self.H = size
@@ -46,10 +47,16 @@ class Sheet:
             sx, sy = -x, -y
         else:
             sx, sy = y, -x
+        if self.turn:
+            c, sn = math.cos(math.radians(self.turn)), math.sin(math.radians(self.turn))
+            sx, sy = sx * c - sy * sn, sx * sn + sy * c
         return QPointF(self.W / 2 + sx * self.s, self.H / 2 + sy * self.s)
 
     def inv(self, pt):
         sx, sy = (pt.x() - self.W / 2) / self.s, (pt.y() - self.H / 2) / self.s
+        if self.turn:
+            c, sn = math.cos(math.radians(-self.turn)), math.sin(math.radians(-self.turn))
+            sx, sy = sx * c - sy * sn, sx * sn + sy * c
         r = self.rot
         if r == 0:
             x, y = sx, sy
@@ -63,7 +70,8 @@ class Sheet:
 
     def hdir(self):
         """the world direction that runs left-right on the paper (for labels that must read across the page)"""
-        return (0, 1) if self.rot in (90, 270) else (1, 0)
+        eff = (self.rot + self.turn) % 180
+        return (0, 1) if 45 <= eff < 135 else (1, 0)
 
     def angle(self, d):
         """screen angle in degrees of a world direction, turned so text is never upside down"""
@@ -75,6 +83,37 @@ class Sheet:
         elif ang <= -90.01:
             ang += 180
         return ang
+
+
+def page_extent(x0, y0, x1, y1, road="left", turn=0.0):
+    """the width and height on the paper (metres) of the box x0..x1, y0..y1 with the road on `road` and the plan turned by `turn`"""
+    sh = Sheet(1.0, ((x0 + x1) / 2, (y0 + y1) / 2), (0, 0), road, turn)
+    ps = [sh.pt(q) for q in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))]
+    return max(p.x() for p in ps) - min(p.x() for p in ps), max(p.y() for p in ps) - min(p.y() for p in ps)
+
+
+def square_turn(corners, road="left"):
+    """the turn (degrees clockwise, -45..45) that puts the stand square on the page: the stand's edges are tried one by one as the one to lay along the
+    page's horizontal or vertical, and the turn that leaves the most boundary length close to horizontal or vertical wins"""
+    sh = Sheet(1.0, (0, 0), (0, 0), road, 0.0)
+    P = [sh.pt(q) for q in corners]
+    n = len(P)
+    E = []
+    for i in range(n):
+        a, b = P[i], P[(i + 1) % n]
+        L = math.hypot(b.x() - a.x(), b.y() - a.y())
+        if L > 1e-6:
+            E.append((math.degrees(math.atan2(b.y() - a.y(), b.x() - a.x())), L))
+    best = None
+    for th, _ in E:
+        sc = sum(L * math.cos(math.radians(4 * (t2 - th))) for t2, L in E)
+        if best is None or sc > best[0] + 1e-9:
+            best = (sc, th)
+    if best is None:
+        return 0.0
+    t = -best[1]
+    t = (t + 45.0) % 90.0 - 45.0
+    return round(t, 1)
 
 
 def font(px, bold=False, spacing=100, family="Arial"):

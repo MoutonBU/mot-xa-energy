@@ -1101,10 +1101,11 @@ def fits(poly, stand, sb):
     return True
 
 
-def north_screen_to_world(deg, road):
+def north_screen_to_world(deg, road, turn=0.0):
     """the direction north points, in the stand's own frame (x along the street, y into the stand), from the arrow's turn (degrees clockwise from up on the
     page) and the side of the plan the road is on"""
     rot = {"top": 0, "right": 90, "bottom": 180, "left": 270}.get(road, 270)
+    deg = deg - (turn or 0.0)                                    # (the whole plan may be turned on the page by `turn` degrees clockwise)
     sx, sy = math.sin(math.radians(deg)), -math.cos(math.radians(deg))
     if rot == 0:
         return (sx, sy)
@@ -1115,7 +1116,7 @@ def north_screen_to_world(deg, road):
     return (-sy, sx)
 
 
-def north_world_to_screen(v, road):
+def north_world_to_screen(v, road, turn=0.0):
     """the arrow's turn (degrees clockwise from up) for a north direction in the stand's frame"""
     rot = {"top": 0, "right": 90, "bottom": 180, "left": 270}.get(road, 270)
     x, y = v
@@ -1127,7 +1128,7 @@ def north_world_to_screen(v, road):
         sx, sy = -x, -y
     else:
         sx, sy = y, -x
-    return math.degrees(math.atan2(sx, -sy))
+    return math.degrees(math.atan2(sx, -sy)) + (turn or 0.0)
 
 
 def suggest(state, relax=False, gap=None):

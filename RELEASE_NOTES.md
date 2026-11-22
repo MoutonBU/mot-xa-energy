@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.148**
+Current version: **1.86.149**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **House placing, plan turned square:** a stand from a township drawing is now turned on the page so its edges run square along the page (a right-angle corner sits as a right angle, not as a diamond), and the north arrow turns with it. "Plan turned" (and a "Square up" button) under "Road side and north arrow" turn the plan to any angle; the PDF, image and DXF follow. New test: test_turn.py.
 - **House placing, the real mains:** for a stand from a township drawing, the main sewer, water and electrical lines are now the ones in the drawing (the nearest run of each to the stand's street boundary), drawn as they run along the road, and the house connections end on them, instead of straight lines beside the stand. A stand with no such lines in the drawing keeps the straight ones.
 - **House placing, fix (road):** a stand brought in from a township drawing now shows the road as it really is in the drawing (curved kerbs and bell-mouths) instead of two straight lines. The drawing's curves were being cut into long straight pieces (polyline arcs were ignored and plain arcs were too coarse); they are now followed smoothly. Also in the DXF you export. New test: test_road.py.
 - **House placing, corner stands:** a stand with a road on two sides is recognised when it is brought in from a township drawing. The short frontage becomes the street (entry, carport, connections), and the message says which side is the side street, which keeps its own building line (1 m on the finished plans). New test: test_corner.py.
