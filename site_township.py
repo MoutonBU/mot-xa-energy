@@ -19,6 +19,32 @@ WORDS = (("sewer", ("sewer", "swr", "sanit", "sewage", "foul", "manhole", "sew_"
          ("stand", ("erf", "erven", "stand", "cadast", "parcel", "boundar", "prop", "lot", "cad", "sg_", "_sg", "diagram", "portion", "ptn")))
 
 
+def bulged(vs, closed=False):
+    """polyline vertices (x, y, bulge) -> points, with every arc segment (bulge <> 0) cut into short straight pieces (about 5 degrees each)"""
+    out = []
+    n = len(vs)
+    for i in range(n):
+        x0, y0, b = vs[i]
+        out.append((x0, y0))
+        if not b or (i == n - 1 and not closed):
+            continue
+        x1, y1 = vs[(i + 1) % n][0], vs[(i + 1) % n][1]
+        ch = math.hypot(x1 - x0, y1 - y0)
+        if ch < 1e-9:
+            continue
+        th = 4 * math.atan(b)                                        # the angle the arc turns through (signed)
+        r = ch / (2 * math.sin(abs(th) / 2))
+        mx, my = (x0 + x1) / 2, (y0 + y1) / 2
+        off = ch / 2 * (1 - b * b) / (2 * b)                         # the centre, along the chord's left-hand normal (negative when the arc turns clockwise)
+        cx, cy = mx - (y1 - y0) / ch * off, my + (x1 - x0) / ch * off
+        a_s = math.atan2(y0 - cy, x0 - cx)
+        k = max(2, int(abs(th) / (math.pi / 36)) + 1)
+        for q in range(1, k):
+            a = a_s + th * q / k
+            out.append((cx + r * math.cos(a), cy + r * math.sin(a)))
+    return out
+
+
 def guess_category(layer):
     n = str(layer).lower()
     if n in ("0", "defpoints") or "dim" in n or "text" in n or "title" in n or "frame" in n or "grid" in n:
@@ -212,14 +238,14 @@ class Township:
                     if t == "LINE":
                         self.lines.setdefault(lay, []).extend((e.dxf.start.x, e.dxf.start.y, e.dxf.end.x, e.dxf.end.y))
                     elif t == "LWPOLYLINE":
-                        pts = [(p[0], p[1]) for p in e.get_points("xy")]
+                        pts = bulged([(p[0], p[1], p[2]) for p in e.get_points("xyb")], bool(e.closed))
                         if len(pts) < 2:
                             continue
                         if e.closed and len(pts) >= 3:
                             self.shapes.append({"layer": lay, "pts": pts})
                         add_lines(lay, pts, bool(e.closed))
                     elif t == "POLYLINE" and not e.is_polygon_mesh:
-                        pts = [(v.dxf.location.x, v.dxf.location.y) for v in e.vertices]
+                        pts = bulged([(v.dxf.location.x, v.dxf.location.y, v.dxf.bulge if v.dxf.hasattr("bulge") else 0.0) for v in e.vertices], bool(e.is_closed))
                         if len(pts) < 2:
                             continue
                         if e.is_closed and len(pts) >= 3:
@@ -230,7 +256,7 @@ class Township:
                         a0, a1 = (math.radians(e.dxf.start_angle), math.radians(e.dxf.end_angle)) if t == "ARC" else (0.0, 2 * math.pi)
                         if a1 <= a0:
                             a1 += 2 * math.pi
-                        n = max(6, int((a1 - a0) / (math.pi / 8)))
+                        n = max(6, int((a1 - a0) / (math.pi / 36)))
                         add_lines(lay, [(c.x + r * math.cos(a0 + (a1 - a0) * q / n), c.y + r * math.sin(a0 + (a1 - a0) * q / n)) for q in range(n + 1)])
                     elif t in ("TEXT", "MTEXT"):
                         tx = e.dxf.text if t == "TEXT" else e.text

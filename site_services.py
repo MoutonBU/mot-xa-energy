@@ -1636,6 +1636,7 @@ class SiteServicesPage(ToolBase):
         self.st["stand"]["corners"] = [[round(a, 2), round(b, 2)] for a, b in c]
         self.st["stand"]["name"] = name
         self.under = under or {}
+        self.st["road_lines"] = []
         self.st["underlay"] = []
         self.st["underlay_cat"], self.st["neighbours"] = {}, []
         if points:
@@ -2687,11 +2688,39 @@ class SiteServicesPage(ToolBase):
             if o.get("no"):
                 nbs.append({"no": o["no"], "c": [round(cen[0], 2), round(cen[1], 2)]})
         cats["other"] += own
+        rl = []
+        for g in r["lines"].get("road", []):
+            p_, q_ = se.apply_frame(fr, (g[0], g[1])), se.apply_frame(fr, (g[2], g[3]))
+            rl.append([p_[0], p_[1], q_[0], q_[1]])
+        self.st["road_lines"] = self._clip_all(rl, x0, x1, y0, y1)
         self.st["underlay"] = own                                       # the boundaries beside the stand (the house placing reads these)
         self.st["underlay_cat"] = cats
         self.st["neighbours"] = nbs
         self.under = cats
         self.view.update()
+
+    @staticmethod
+    def _clip_all(segs, x0, x1, y0, y1):
+        """segments [x1, y1, x2, y2] cut to the window (Liang-Barsky); the ones outside are left out"""
+        out = []
+        for a, b, c, d in segs:
+            t0, t1 = 0.0, 1.0
+            dx, dy = c - a, d - b
+            ok = True
+            for p_, q_ in ((-dx, a - x0), (dx, x1 - a), (-dy, b - y0), (dy, y1 - b)):
+                if abs(p_) < 1e-12:
+                    if q_ < 0:
+                        ok = False
+                        break
+                else:
+                    r_ = q_ / p_
+                    if p_ < 0:
+                        t0 = max(t0, r_)
+                    else:
+                        t1 = min(t1, r_)
+            if ok and t0 < t1:
+                out.append([round(a + t0 * dx, 2), round(b + t0 * dy, 2), round(a + t1 * dx, 2), round(b + t1 * dy, 2)])
+        return out
 
     def _set_underlay(self, lines):
         """the imported drawing's own lines, kept faint under the plan, moved into the stand frame"""
@@ -2716,6 +2745,7 @@ class SiteServicesPage(ToolBase):
     def set_stand_world(self, poly, name="Stand", src_shapes=None, street_edge=None, north_up=False):
         """a stand in drawing coordinates: put the street edge along x at the origin and remember the move so the house and carport from the same drawing land in place"""
         self.st["pts_manual"] = False
+        self.st["road_lines"] = []                                    # (the township import fills these in again)
         c0 = [tuple(p) for p in poly]
         if max(max(p[0] for p in c0) - min(p[0] for p in c0), max(p[1] for p in c0) - min(p[1] for p in c0)) > 2000:
             QMessageBox.warning(self, "House placing", "That stand is more than 2 km across, so the scale must be wrong. Import again and set the drawing units and scale.")

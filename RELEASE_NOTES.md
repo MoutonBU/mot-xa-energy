@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.146**
+Current version: **1.86.147**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **House placing, fix (road):** a stand brought in from a township drawing now shows the road as it really is in the drawing (curved kerbs and bell-mouths) instead of two straight lines. The drawing's curves were being cut into long straight pieces (polyline arcs were ignored and plain arcs were too coarse); they are now followed smoothly. Also in the DXF you export. New test: test_road.py.
 - **House placing, corner stands:** a stand with a road on two sides is recognised when it is brought in from a township drawing. The short frontage becomes the street (entry, carport, connections), and the message says which side is the side street, which keeps its own building line (1 m on the finished plans). New test: test_corner.py.
 - **House placing, north direction:** a stand brought in from a township drawing now takes the drawing's north (up the drawing): the north arrow is set from it and turns with the road side, and "Place them for me" uses it: the long wall of the house faces north when the stand lets it, and the house goes to the south side so the yard is on the north. Change north any time with "Show where north is".
 - **House placing, fix (mirror image):** the plan drawn for a township stand was a mirror image of the real site (the stand to the south was drawn above, north pointed down). It is drawn true to the site now, and the built-in Blue Hills Ext 120 plan was rebuilt the same way (carports and houses that were on the wrong side are on the right side).

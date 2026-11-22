@@ -223,8 +223,13 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
     ROAD_K, ROAD_K2 = -3.4, -3.8                       # the two kerb lines
     xa, xb = xmin - 14, xmax + 14
     # ---- road: kerb lines, the mains, the street name
-    D.line((xa, ROAD_K), (xb, ROAD_K), BLACK, 0.04)
-    D.line((xa, ROAD_K2), (xb, ROAD_K2), BLACK, 0.04)
+    real_road = st.get("road_lines") or []
+    if real_road:                                      # a township drawing: the road as it really is (kerbs, bends, bell-mouths), not two straight lines
+        for a_, b_, c_, d_ in real_road:
+            D.line((a_, b_), (c_, d_), BLACK, 0.04)
+    else:
+        D.line((xa, ROAD_K), (xb, ROAD_K), BLACK, 0.04)
+        D.line((xa, ROAD_K2), (xb, ROAD_K2), BLACK, 0.04)
     mn = se.mains(st)
     street = opts.get("street", "")
     if street:
@@ -282,7 +287,7 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
         if kinds[i] == "side":
             a, b = stand[i], stand[(i + 1) % n]
             street_end = a if abs(a[1]) < abs(b[1]) else b
-            if abs(street_end[1]) < 0.6:
+            if abs(street_end[1]) < 0.6 and not real_road:
                 D.line(street_end, (street_end[0], ROAD_K2), BLACK, 0.05)
     # building lines
     inset = []
