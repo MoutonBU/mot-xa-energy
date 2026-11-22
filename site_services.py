@@ -2540,6 +2540,7 @@ class SiteServicesPage(ToolBase):
     def go_to_stand(self):
         tn = getattr(self, "tn", None)
         no = self.tn_no.text().strip()
+        no = site_township.stand_no(no) or no                         # "Erf 2155" and "2155/0" mean 2155
         if not no:
             self.tn_lbl.setText("Type the stand number first.")
             return
@@ -2557,7 +2558,9 @@ class SiteServicesPage(ToolBase):
                 self.tn_lbl.setText("Stand %s is not in the built-in Blue Hills Ext 120 plan. Open the township drawing (DXF) to use another one." % no)
                 return
         if not r:
-            self.tn_lbl.setText("Stand %s was not found. Either no text in the drawing says %s, or no closed outline round it. Check the stand layers with Layers... (the outlines must be on a layer marked Stand boundaries)." % (no, no))
+            smp = tn.sample_numbers() if tn else []
+            self.tn_lbl.setText("Stand %s was not found. Either no text in the drawing says %s, or the lines round it do not close. %sIf the numbers are there, check the stand layers with Layers... (the boundary lines must be on a layer marked Stand boundaries)." % (
+                no, no, ("Numbers written in this drawing include: %s. " % ", ".join(smp)) if smp else "No stand numbers were found in the drawing's texts. "))
             return
         self.set_stand_world(r["poly"], "Stand " + no, src_shapes=[1], street_edge=r["street_edge"])
         self._set_township_underlay(r)

@@ -75,6 +75,12 @@ def colour_category(cols):
     return "other"
 
 
+def stand_no(text):
+    """the stand number a text says (2155, ERF 2155, Erf 2155/0, Stand 12, Lot 12), or None"""
+    m = re.match(r"^(?:ERF|ERVEN|ERVEN NO|STAND|LOT|SITE|PLOT|NO\.?)?\s*[:#.-]?\s*(\d{1,6})(?:\s*/\s*\d+)?$", str(text).strip().upper())
+    return m.group(1) if m else None
+
+
 def clean_text(t):
     """plain text out of a drawing text (MTEXT codes removed)"""
     t = str(t)
@@ -115,6 +121,7 @@ class Township:
         self.lines = {}             # layer -> array('d') x1 y1 x2 y2 ... in drawing units
         self.shapes = []            # closed outlines: {"layer", "pts" (drawing units), "bbox"}
         self.texts = []             # (clean text, x, y, layer) in drawing units
+        self.text_h = []            # the heights of those texts (drawing units), for guessing the unit
         self.k = 1.0                # metres per drawing unit
         self.path = ""
 
@@ -131,6 +138,7 @@ class Township:
         u = int(doc.header.get("$INSUNITS", 0) or 0)
         unit = {1: 0.0254, 2: 0.3048, 4: 0.001, 5: 0.01, 6: 1.0, 7: 1000.0}.get(u)
         self.lines, self.shapes, self.texts, self.layers = {}, [], [], {}
+        self.text_h = []
         self.colours = {}                                        # layer -> {AutoCAD colour number: lines}
         self.marks = []                                          # small filled triangles and boxes (connection symbols): {"pts", "layer", "col"}
         lay_col = {}
@@ -228,6 +236,10 @@ class Township:
                         s = clean_text(tx)
                         if s:
                             self.texts.append((s, e.dxf.insert.x, e.dxf.insert.y, lay))
+                            try:
+                                self.text_h.append(float(e.dxf.height if t == "TEXT" else e.dxf.char_height))
+                            except Exception:
+                                pass
                     elif t == "INSERT" and depth < 3:
                         walk(e.virtual_entities(), depth + 1, lay if over is None and e.dxf.layer not in ("0",) else over)
                 except Exception:
@@ -272,6 +284,11 @@ class Township:
             return sum(1 for a in ar if 60 <= a * k * k <= 6000) / len(ar)
         if unit and score(unit) >= 0.1:                          # the drawing says what its unit is, and the shapes agree
             return unit
+        if max([score(k) for k in cands] or [0]) < 0.05 and self.text_h:   # no usable outlines to measure: the writing is usually 0.3 to 6 m high on the ground
+            mh = sorted(self.text_h)[len(self.text_h) // 2]
+            ok = [k for k in cands if 0.3 <= mh * k <= 6.0]
+            if ok:
+                return unit if unit in ok else max(ok)
         return max(cands, key=lambda k: (round(score(k), 2), k == unit, k == 1.0))
 
     def set_categories(self, mapping):
@@ -326,9 +343,21 @@ class Township:
                 out.append({"pts": lp, "bbox": (min(xs), min(ys), max(xs), max(ys)), "area": a, "layer": "lines"})
         return out
 
+    def sample_numbers(self, n=8):
+        """a few stand numbers that are written in the drawing (to show when the one typed is not there)"""
+        seen, out = set(), []
+        for s_, x, y, lay in self.texts:
+            sn = stand_no(s_)
+            if sn and 2 <= len(sn) <= 6 and sn not in seen and self.cat_of(lay) != "off":
+                seen.add(sn)
+                out.append(sn)
+                if len(out) >= n:
+                    break
+        return out
+
     def labels_for(self, number):
         """the texts that are this stand number (the whole text, or one word of it such as ERF 2155)"""
-        num = str(number).strip().upper()
+        num = stand_no(number) or str(number).strip().upper()
         if not num:
             return []
         pat = re.compile(r"(?<![\w/.])" + re.escape(num) + r"(?![\w/])")
@@ -337,7 +366,7 @@ class Township:
             if self.cat_of(lay) == "off":
                 continue
             u = s.upper()
-            if u == num or (pat.search(u) and len(u) <= len(num) + 16):
+            if u == num or stand_no(u) == num or (pat.search(u) and len(u) <= len(num) + 16):
                 out.append((s, x, y, lay))
         return out
 
@@ -349,8 +378,10 @@ class Township:
             return c[1]
         segs = []
         r = reach / k
+        has_stand = any(v["cat"] == "stand" and self.lines.get(l) for l, v in self.layers.items())
+        use = ("stand",) if has_stand else ("other", "road", "stand")
         for lay, v in self.layers.items():
-            if v["cat"] != "stand":
+            if v["cat"] not in use:
                 continue
             arr = self.lines.get(lay)
             if not arr:
@@ -513,8 +544,10 @@ class Township:
         pc = centroid(P)
         for s_, x_, y_, lay_ in self.texts:                      # the stands beside it: the area round each stand number written near it
             X, Y = x_ * k, y_ * k
-            if not (bx[0] <= X <= bx[2] and bx[1] <= Y <= bx[3]) or not s_.isdigit() or not 3 <= len(s_) <= 5 or self.cat_of(lay_) == "off":
+            sn_ = stand_no(s_)
+            if not (bx[0] <= X <= bx[2] and bx[1] <= Y <= bx[3]) or not sn_ or not 2 <= len(sn_) <= 6 or self.cat_of(lay_) == "off":
                 continue
+            s_ = sn_
             if inside((X, Y), P):
                 continue
             f = self._poly_at((x_, y_))
@@ -599,10 +632,11 @@ class Township:
         best = None
         for s, x, y, lay in self.texts:
             X, Y = x * k, y * k
-            if min(xs) <= X <= max(xs) and min(ys) <= Y <= max(ys) and self.cat_of(lay) != "off" and len(s) <= 12 and inside((X, Y), Q):
-                key = (not s.replace("/", "").replace(" ", "").isdigit(), len(s))
+            if min(xs) <= X <= max(xs) and min(ys) <= Y <= max(ys) and self.cat_of(lay) != "off" and len(s) <= 14 and inside((X, Y), Q):
+                sn = stand_no(s)
+                key = (sn is None, len(s))
                 if best is None or key < best[0]:
-                    best = (key, s)
+                    best = (key, sn or s)
         return best[1] if best else ""
 
     @staticmethod

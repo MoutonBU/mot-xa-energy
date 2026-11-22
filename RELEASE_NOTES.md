@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.143**
+Current version: **1.86.144**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **House placing, township drawing, for any site:** works whatever the office called its layers (boundaries on layer 0 or any name, with the faint lines of the road and others used when no layer is marked as stand boundaries), rotated layouts, mm or metres (also worked out from the writing size when the outlines are loose lines), labels such as 2155, Erf 2155, ERVEN 2155 or 2155/0, MTEXT, and boundaries as closed shapes or as long lines that cross. When a stand number is not in the drawing, the message shows some numbers that are. New test (test_township_any.py) draws ten different made-up sites for this.
 - **House placing, township drawing:** the colour rule is firm: brown (all browns and oranges) = sewer, yellow = electrical, blue / cyan = water, pink / magenta = stormwater, used whenever a layer's name doesn't say.
 - **House placing:** going to a township stand now zooms so the stands beside it are in view too (the one on each side, with their numbers), ready to bring in your house footprint and place the house. Press Fit to come back to the view after you have moved the plan.
 - **House placing: your Blue Hills Ext 120 site plan is built in.** 199 stands with their outlines, street sides, neighbours and the electrical / water connection symbols, and 39 houses with their carports as you placed them (house types 71, 81, 91, 101, 102 and ds181; the 5 x 5 carport 1 m off the street, in the left or right corner). Type a stand number in the township box and press Go to stand: no drawing needs opening, and the house and carport are placed as on the plan (untick the box to have the tool place them). The rules in the program's data now say how you place houses there. extract_township_ref.py rebuilds this from a newer site plan.
