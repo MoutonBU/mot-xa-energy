@@ -69,6 +69,8 @@ def build(path, name):
         for kind, c in r.get("connections", {}).items():
             q = se.apply_frame(frame, c["pt"])
             conn[kind] = [round(q[0], 2), round(q[1], 2), c.get("label", ""), round(c["pt"][0], 2), round(c["pt"][1], 2)]
+        if not 120 <= abs(tw._area(P)) <= 700:                  # not a house stand (open space, a block or an odd shape): left out
+            continue
         L = math.hypot(new[1][0] - new[0][0], new[1][1] - new[0][1])
         out[no] = {"area": round(abs(tw._area(P)), 1), "poly": [[round(x, 2), round(y, 2)] for x, y in P], "street": r["street_edge"], "frontage": round(L, 2),
                    "conn": conn, "nb": sorted(o["no"] for o in r["neighbours"] if o.get("no"))[:24]}
