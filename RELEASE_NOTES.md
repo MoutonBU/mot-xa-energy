@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.144**
+Current version: **1.86.145**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **House placing, north direction:** a stand brought in from a township drawing now takes the drawing's north (up the drawing): the north arrow is set from it and turns with the road side, and "Place them for me" uses it: the long wall of the house faces north when the stand lets it, and the house goes to the south side so the yard is on the north. Change north any time with "Show where north is".
+- **House placing, fix (mirror image):** the plan drawn for a township stand was a mirror image of the real site (the stand to the south was drawn above, north pointed down). It is drawn true to the site now, and the built-in Blue Hills Ext 120 plan was rebuilt the same way (carports and houses that were on the wrong side are on the right side).
 - **House placing, township drawing, for any site:** works whatever the office called its layers (boundaries on layer 0 or any name, with the faint lines of the road and others used when no layer is marked as stand boundaries), rotated layouts, mm or metres (also worked out from the writing size when the outlines are loose lines), labels such as 2155, Erf 2155, ERVEN 2155 or 2155/0, MTEXT, and boundaries as closed shapes or as long lines that cross. When a stand number is not in the drawing, the message shows some numbers that are. New test (test_township_any.py) draws ten different made-up sites for this.
 - **House placing, township drawing:** the colour rule is firm: brown (all browns and oranges) = sewer, yellow = electrical, blue / cyan = water, pink / magenta = stormwater, used whenever a layer's name doesn't say.
 - **House placing:** going to a township stand now zooms so the stands beside it are in view too (the one on each side, with their numbers), ready to bring in your house footprint and place the house. Press Fit to come back to the view after you have moved the plan.

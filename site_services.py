@@ -1420,9 +1420,20 @@ class SiteServicesPage(ToolBase):
         for k, (sx, sy) in self.pt_spin.items():
             st["points"][k] = [sx.value(), sy.value()]
         st["mains"] = {k: -ms.value() for k, ms in self.main_spin.items()}
-        st["sheet"] = {"road": self.sh_road.currentText(), "street": self.sh_street.text().strip(), "road_w": self.sh_rw.text().strip(), "street_erf": self.sh_se.text().strip(),
-                       "stand_no": self.sh_no.text().strip(), "north": self.sh_north.value(),
-                       "north_pos": (st.get("sheet") or {}).get("north_pos")}
+        prev = st.get("sheet") or {}
+        road_new, deg_new = self.sh_road.currentText(), self.sh_north.value()
+        nw = st.get("north_world")
+        if nw and prev.get("road") and road_new != prev.get("road"):          # the road moved to another side of the page: the arrow turns, north stays
+            deg_new = round(se.north_world_to_screen(nw, road_new), 1)
+            self._busy = True
+            self.sh_north.setValue(deg_new)
+            self._busy = False
+        else:
+            nw = list(se.north_screen_to_world(deg_new, road_new))
+        st["north_world"] = [round(nw[0], 4), round(nw[1], 4)]
+        st["sheet"] = {"road": road_new, "street": self.sh_street.text().strip(), "road_w": self.sh_rw.text().strip(), "street_erf": self.sh_se.text().strip(),
+                       "stand_no": self.sh_no.text().strip(), "north": deg_new,
+                       "north_pos": prev.get("north_pos")}
         if self.view.auto is False and False:
             pass
         st["params"] = {"conn_depth": self.p_depth.value(), "fall": self.p_fall.value(), "max_ie": self.p_ie.value(), "re_ext": self.p_tail.value(), "sewer_pipe": self.p_pipe.currentText(),
@@ -2562,7 +2573,7 @@ class SiteServicesPage(ToolBase):
             self.tn_lbl.setText("Stand %s was not found. Either no text in the drawing says %s, or the lines round it do not close. %sIf the numbers are there, check the stand layers with Layers... (the boundary lines must be on a layer marked Stand boundaries)." % (
                 no, no, ("Numbers written in this drawing include: %s. " % ", ".join(smp)) if smp else "No stand numbers were found in the drawing's texts. "))
             return
-        self.set_stand_world(r["poly"], "Stand " + no, src_shapes=[1], street_edge=r["street_edge"])
+        self.set_stand_world(r["poly"], "Stand " + no, src_shapes=[1], street_edge=r["street_edge"], north_up=True)
         self._set_township_underlay(r)
         got_c = self._township_connections(r)
         self.sh_no.setText(no)
@@ -2609,6 +2620,20 @@ class SiteServicesPage(ToolBase):
         self._to_fields()
         self.solve_now(False)
         return " House as on the site plan: %s, carport %.0f x %.0f m." % (h.get("type", "house"), cp["w"] if cp else 0, cp["d"] if cp else 0)
+
+    def _township_north(self):
+        """north on the drawing is up the page (+y of the survey coordinates): turn it into the stand's frame, set the arrow and let the house placement use it"""
+        fr = self.st.get("frame")
+        if not fr:
+            return
+        nx, ny = site_township.Township.NORTH
+        v = (fr[0] * nx - fr[1] * ny, fr[1] * nx + fr[0] * ny)       # north turned into the stand's frame
+        road = (self.st.get("sheet") or {}).get("road", "left")
+        self._busy = True
+        self.sh_north.setValue(round(se.north_world_to_screen(v, road), 1))
+        self._busy = False
+        self.st["north_world"] = [round(v[0], 4), round(v[1], 4)]
+        self.st["sheet"]["north"] = round(se.north_world_to_screen(v, road), 1)
 
     def _township_connections(self, r):
         """the electrical and water connection symbols on the street boundary become the connection points; -> a sentence for the status line"""
@@ -2687,7 +2712,7 @@ class SiteServicesPage(ToolBase):
         self.under = {"other": out}
         self.view.update()
 
-    def set_stand_world(self, poly, name="Stand", src_shapes=None, street_edge=None):
+    def set_stand_world(self, poly, name="Stand", src_shapes=None, street_edge=None, north_up=False):
         """a stand in drawing coordinates: put the street edge along x at the origin and remember the move so the house and carport from the same drawing land in place"""
         self.st["pts_manual"] = False
         c0 = [tuple(p) for p in poly]
@@ -2712,6 +2737,8 @@ class SiteServicesPage(ToolBase):
         L = math.hypot(new[1][0] - new[0][0], new[1][1] - new[0][1])
         self.st["points"] = {"sewer": [round(L * 0.85, 2), 0.0], "water": [round(min(1.5, L / 3), 2), 0.0], "elec": [round(L / 2, 2), 0.0]}
         self.st["custom"] = []
+        if north_up:                                               # a site plan: north is up the drawing, so the house placement knows where the sun is
+            self._township_north()
         self._to_fields()
         self.suggest()
 

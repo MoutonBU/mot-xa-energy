@@ -1078,6 +1078,35 @@ def fits(poly, stand, sb):
     return True
 
 
+def north_screen_to_world(deg, road):
+    """the direction north points, in the stand's own frame (x along the street, y into the stand), from the arrow's turn (degrees clockwise from up on the
+    page) and the side of the plan the road is on"""
+    rot = {"top": 0, "right": 90, "bottom": 180, "left": 270}.get(road, 270)
+    sx, sy = math.sin(math.radians(deg)), -math.cos(math.radians(deg))
+    if rot == 0:
+        return (sx, sy)
+    if rot == 90:
+        return (sy, -sx)
+    if rot == 180:
+        return (-sx, -sy)
+    return (-sy, sx)
+
+
+def north_world_to_screen(v, road):
+    """the arrow's turn (degrees clockwise from up) for a north direction in the stand's frame"""
+    rot = {"top": 0, "right": 90, "bottom": 180, "left": 270}.get(road, 270)
+    x, y = v
+    if rot == 0:
+        sx, sy = x, y
+    elif rot == 90:
+        sx, sy = -y, x
+    elif rot == 180:
+        sx, sy = -x, -y
+    else:
+        sx, sy = y, -x
+    return math.degrees(math.atan2(sx, -sy))
+
+
 def suggest(state, relax=False, gap=None):
     """house and carport placement: tries the clear distance between carport and house that your finished plans keep, then smaller ones, and takes the
     first that also puts the house the usual way round (long side down the stand); otherwise the best of what fits"""
@@ -1151,6 +1180,16 @@ def _suggest(state, relax=False, gap=1.0, strict=False):
             if not hposs:
                 continue
             score = (0 if rot == 90 else 3) + math.hypot(hposs[0] - target[0], hposs[1] - target[1]) * 0.05 + (0 if left else 0.01)
+            nv = state.get("north_world")
+            if nv and not h.get("poly"):                          # the sun: the long wall faces north, and the house sits to the south so the yard is on the north side
+                ln = math.hypot(nv[0], nv[1]) or 1.0
+                nx, ny = nv[0] / ln, nv[1] / ln
+                ax, ay = (0.0, 1.0) if rot == 90 else (1.0, 0.0)          # the long axis of the house
+                facing = abs(ax * ny - ay * nx)                           # 1 = the long wall faces north (or south), 0 = it faces east or west
+                score += (1.0 - facing) * 4.0
+                cxs, cys = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+                span = max(max(xs) - min(xs), max(ys) - min(ys)) or 1.0
+                score += max(0.0, (hposs[0] - cxs) * nx + (hposs[1] - cys) * ny) / span * 2.0
             cand = {"house": dict(h, cx=round(hposs[0], 2), cy=round(hposs[1], 2), rot=rot)}
             if c:
                 cand["carport"] = dict(c, cx=round(cpos[0], 2), cy=round(cpos[1], 2), rot=c.get("rot", 0) if c.get("poly") else 0)

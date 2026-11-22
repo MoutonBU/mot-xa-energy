@@ -43,7 +43,7 @@ def build(path, name):
             for lay in layers:
                 a = T.lines.get(lay, [])
                 for i in range(0, len(a), 4):
-                    p, q = (a[i] * k, a[i + 1] * k), (a[i + 2] * k, a[i + 3] * k)
+                    p, q = (a[i] * k, -a[i + 1] * k), (a[i + 2] * k, -a[i + 3] * k)      # y negated, as Township.find hands the stands over
                     m = ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2)
                     if bb[0] <= m[0] <= bb[2] and bb[1] <= m[1] <= bb[3] and tw.inside(m, P):
                         res.append((se.apply_frame(frame, p), se.apply_frame(frame, q)))

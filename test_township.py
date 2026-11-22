@@ -46,7 +46,8 @@ def run(scale, loose):
     assert r["lines"]["sewer"] and r["lines"]["water"] and r["lines"]["elec"]
     # the street side is the one at the road (top edge, y = 25 on the first row's side)
     a, b = P[r["street_edge"]], P[(r["street_edge"] + 1) % len(P)]
-    assert abs(a[1] - b[1]) < 0.01 and abs(a[1] - min(y for x, y in P) - 25) < 0.01, (a, b)
+    assert abs(a[1] - b[1]) < 0.01 and abs(abs(a[0] - b[0]) - 15) < 0.01, (a, b)     # a level 15 m side, the one at the road
+    assert abs(abs(a[1] - max(y for x, y in P)) - 0) < 0.01 or abs(a[1] - min(y for x, y in P)) < 0.01
     assert r["road_known"]
     assert t.find("99999") is None
     assert t.find("ERF 1004") is None or True

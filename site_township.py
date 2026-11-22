@@ -116,6 +116,7 @@ def _seg_dist(p, a, b):
 
 
 class Township:
+    NORTH = (0.0, -1.0)         # where north points in the coordinates find() hands over
     def __init__(self):
         self.layers = {}            # name -> {"n": entity count, "cat": category}
         self.lines = {}             # layer -> array('d') x1 y1 x2 y2 ... in drawing units
@@ -590,6 +591,14 @@ class Township:
                     break
         edge, known = self.street_edge(P, nb, lines)
         conn = self.connections(P, edge, reach=8.0)
+        # Survey coordinates have north up (y up); the plan sheet is drawn with y down. So the picture is not turned into its own mirror image, everything is handed over
+        # with y negated (the drawing's north is then -y; see Township.NORTH).
+        P = [(x, -y) for x, y in P]
+        for o in nb:
+            o["poly"] = [(x, -y) for x, y in o["poly"]]
+        lines = {c: [(a, -b_, c_, -d) for a, b_, c_, d in v] for c, v in lines.items()}
+        for c_ in conn.values():
+            c_["pt"] = (c_["pt"][0], -c_["pt"][1])
         return {"no": str(number).strip(), "poly": P, "connections": conn, "neighbours": nb, "lines": lines, "street_edge": edge, "road_known": known,
                 "label": label, "matches": len(hits)}
 
