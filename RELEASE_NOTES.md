@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.142**
+Current version: **1.86.143**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **House placing, township drawing:** the colour rule is firm: brown (all browns and oranges) = sewer, yellow = electrical, blue / cyan = water, pink / magenta = stormwater, used whenever a layer's name doesn't say.
 - **House placing:** going to a township stand now zooms so the stands beside it are in view too (the one on each side, with their numbers), ready to bring in your house footprint and place the house. Press Fit to come back to the view after you have moved the plan.
 - **House placing: your Blue Hills Ext 120 site plan is built in.** 199 stands with their outlines, street sides, neighbours and the electrical / water connection symbols, and 39 houses with their carports as you placed them (house types 71, 81, 91, 101, 102 and ds181; the 5 x 5 carport 1 m off the street, in the left or right corner). Type a stand number in the township box and press Go to stand: no drawing needs opening, and the house and carport are placed as on the plan (untick the box to have the tool place them). The rules in the program's data now say how you place houses there. extract_township_ref.py rebuilds this from a newer site plan.
 - **House placing, township drawing (tested on your big site plan):** stands drawn as long boundary lines that cross and run past each other (not closed shapes) are found now: the lines are cut where they cross and the smallest closed area round the stand number is the stand. The neighbouring stands and their numbers come the same way, the street side is the free side nearest the road, units are taken from the drawing (mm), STORMWATER layers are stormwater (not water), and house drawings on other layers stay out of the faint underlay. Tried on your Untitled.dxf: stand 2100 comes out as 14 x 22.3 m, 312 m2, with 2099 / 2101 beside it, in about a second.

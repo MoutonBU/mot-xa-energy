@@ -68,7 +68,7 @@ def colour_category(cols):
         return "elec"
     if c in (4, 5, 140, 141, 150, 151, 160, 161) or 130 <= c <= 179:
         return "water"
-    if c in (30, 31, 32, 33, 34, 40, 41, 42, 20, 21, 22, 23, 24, 25):
+    if 10 <= c <= 49:                                            # browns and oranges
         return "sewer"
     if c in (3, 92, 93, 94, 95, 96) or 80 <= c <= 109:
         return "storm"
