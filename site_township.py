@@ -12,9 +12,9 @@ CATS = ("stand", "road", "sewer", "water", "elec", "storm", "other", "off")
 CAT_NAMES = {"stand": "Stand boundaries", "road": "Roads and kerbs", "sewer": "Sewer", "water": "Water", "elec": "Electrical", "storm": "Stormwater",
              "other": "Other lines", "off": "Leave out"}
 WORDS = (("sewer", ("sewer", "swr", "sanit", "sewage", "foul", "manhole", "sew_", "_sew", "-sew", "sew-", "sew ")),
+         ("storm", ("storm", "drain", "culvert", "swale", "sw_", "_sw", "kerb inlet", "catchpit", "channel")),
          ("water", ("water", "wtr", "wat_", "_wat", "-wat", "wat-", "potable", "hydrant", "w.con", "wcon")),
          ("elec", ("elec", "power", "cable", "eskom", "lv_", "mv_", "_lv", "_mv", "lighting", "transf", "ecs")),
-         ("storm", ("storm", "drain", "culvert", "swale", "sw_", "_sw", "kerb inlet", "catchpit", "channel")),
          ("road", ("road", "kerb", "curb", "street", "carriageway", "pavement", "verge", "asphalt")),
          ("stand", ("erf", "erven", "stand", "cadast", "parcel", "boundar", "prop", "lot", "cad", "sg_", "_sg", "diagram", "portion", "ptn")))
 
@@ -244,7 +244,7 @@ class Township:
             s["bbox"] = (min(xs), min(ys), max(xs), max(ys))
         for lay in set(self.lines) | {s["layer"] for s in self.shapes} | {t[3] for t in self.texts}:
             cat = guess_category(lay)
-            if cat == "other":                                   # the layer name says nothing: go by the colour the lines are drawn in
+            if cat == "other" and not any(w in lay.lower() for w in ("(", "sqm", "patio", "braai", "carport", "house", "pond")):                                   # the layer name says nothing: go by the colour the lines are drawn in
                 cat = colour_category(self.colours.get(lay, {}))
             self.layers[lay] = {"n": len(self.lines.get(lay, ())) // 4, "cat": cat}
         self.k = self._units(unit)
@@ -270,6 +270,8 @@ class Township:
             if not ar:
                 return 0
             return sum(1 for a in ar if 60 <= a * k * k <= 6000) / len(ar)
+        if unit and score(unit) >= 0.1:                          # the drawing says what its unit is, and the shapes agree
+            return unit
         return max(cands, key=lambda k: (round(score(k), 2), k == unit, k == 1.0))
 
     def set_categories(self, mapping):
@@ -339,8 +341,145 @@ class Township:
                 out.append((s, x, y, lay))
         return out
 
+    def _seg_cache(self, pt, reach=130.0):
+        """the stand-layer line segments round a point, in metres (kept for the next stand beside it)"""
+        c = getattr(self, "_sc", None)
+        k = self.k
+        if c and abs(c[0][0] - pt[0] * k) < reach * 0.4 and abs(c[0][1] - pt[1] * k) < reach * 0.4:
+            return c[1]
+        segs = []
+        r = reach / k
+        for lay, v in self.layers.items():
+            if v["cat"] != "stand":
+                continue
+            arr = self.lines.get(lay)
+            if not arr:
+                continue
+            for i in range(0, len(arr), 4):
+                x1, y1, x2, y2 = arr[i], arr[i + 1], arr[i + 2], arr[i + 3]
+                if min(x1, x2) > pt[0] + r or max(x1, x2) < pt[0] - r or min(y1, y2) > pt[1] + r or max(y1, y2) < pt[1] - r:
+                    continue
+                if abs(x2 - x1) + abs(y2 - y1) > 1e-9:
+                    segs.append((x1 * k, y1 * k, x2 * k, y2 * k))
+        self._sc = ((pt[0] * k, pt[1] * k), segs)
+        return segs
+
+    def _face_at(self, pt):
+        """the smallest closed area round a point, made from stand-layer lines that cross, run past each other or only nearly meet (boundaries drawn as long
+        lines): the lines are cut where they cross, dead ends are dropped, and the area's edge is walked round. -> {"pts" (drawing units), "area" (m2)} or None"""
+        k = self.k
+        P = (pt[0] * k, pt[1] * k)
+        segs = [sg for sg in self._seg_cache(pt) if min(sg[0], sg[2]) < P[0] + 70 and max(sg[0], sg[2]) > P[0] - 70 and min(sg[1], sg[3]) < P[1] + 70 and max(sg[1], sg[3]) > P[1] - 70]
+        if len(segs) < 3:
+            return None
+        tol = 0.08
+        cuts = [[0.0, 1.0] for _ in segs]
+        n = len(segs)
+        for i in range(n):
+            ax, ay, bx, by = segs[i]
+            for j in range(i + 1, n):
+                cx, cy, dx, dy = segs[j]
+                if max(ax, bx) + tol < min(cx, dx) or max(cx, dx) + tol < min(ax, bx) or max(ay, by) + tol < min(cy, dy) or max(cy, dy) + tol < min(ay, by):
+                    continue
+                r1x, r1y, r2x, r2y = bx - ax, by - ay, dx - cx, dy - cy
+                den = r1x * r2y - r1y * r2x
+                if abs(den) < 1e-12:
+                    continue
+                t = ((cx - ax) * r2y - (cy - ay) * r2x) / den
+                u = ((cx - ax) * r1y - (cy - ay) * r1x) / den
+                l1, l2 = math.hypot(r1x, r1y), math.hypot(r2x, r2y)
+                e1, e2 = tol / l1, tol / l2
+                if -e1 <= t <= 1 + e1 and -e2 <= u <= 1 + e2:
+                    cuts[i].append(min(1.0, max(0.0, t)))
+                    cuts[j].append(min(1.0, max(0.0, u)))
+        # the graph: vertices on a 2 cm grid
+        vid = {}
+        pts = []
+
+        def vert(x, y):
+            key = (round(x / 0.02), round(y / 0.02))
+            if key not in vid:
+                vid[key] = len(pts)
+                pts.append((x, y))
+            return vid[key]
+        adj = {}
+        for sg, cu in zip(segs, cuts):
+            cu = sorted(set(round(c, 6) for c in cu))
+            for a, b in zip(cu, cu[1:]):
+                if b - a < 1e-9:
+                    continue
+                p = vert(sg[0] + (sg[2] - sg[0]) * a, sg[1] + (sg[3] - sg[1]) * a)
+                q = vert(sg[0] + (sg[2] - sg[0]) * b, sg[1] + (sg[3] - sg[1]) * b)
+                if p != q:
+                    adj.setdefault(p, set()).add(q)
+                    adj.setdefault(q, set()).add(p)
+        changed = True
+        while changed:                                           # lines that only hang off (overshoots) are not part of any area
+            changed = False
+            for v in [v for v, nb in adj.items() if len(nb) <= 1]:
+                for w in adj.pop(v, ()):
+                    adj[w].discard(v)
+                changed = True
+        if len(adj) < 3:
+            return None
+        # the nearest edge straight along +x from the point: the area is on its left (if the edge runs up) or right
+        best = None
+        for p, nb in adj.items():
+            for q in nb:
+                (x1, y1), (x2, y2) = pts[p], pts[q]
+                if (y1 > P[1]) != (y2 > P[1]):
+                    x = x1 + (P[1] - y1) * (x2 - x1) / (y2 - y1)
+                    if x > P[0] and (best is None or x < best[0]):
+                        best = (x, p, q)
+        if best is None:
+            return None
+        _x, p, q = best
+        if pts[q][1] < pts[p][1]:                                # walk it downwards: then the point (to its left) is inside
+            p, q = q, p
+        # now p -> q runs with y rising; the point is to the left of it
+        start = (p, q)
+        walk = [p]
+        cur = (p, q)
+        for _ in range(4000):
+            a, b = cur
+            walk.append(b)
+            din = math.atan2(pts[b][1] - pts[a][1], pts[b][0] - pts[a][0])
+            nxt = None
+            best_t = -10.0
+            for c in adj.get(b, ()):
+                if c == a and len(adj[b]) > 1:
+                    continue
+                dout = math.atan2(pts[c][1] - pts[b][1], pts[c][0] - pts[b][0])
+                t = (dout - din + math.pi) % (2 * math.pi) - math.pi        # a turn to the left is positive
+                if t > best_t:
+                    best_t, nxt = t, c
+            if nxt is None:
+                return None
+            cur = (b, nxt)
+            if cur == start:
+                break
+        else:
+            return None
+        poly = [pts[v] for v in walk[:-1]]
+        # drop points that sit on a straight run
+        out = []
+        for i, q in enumerate(poly):
+            a, b = poly[i - 1], poly[(i + 1) % len(poly)]
+            if abs((q[0] - a[0]) * (b[1] - q[1]) - (q[1] - a[1]) * (b[0] - q[0])) > 1e-6 * (1 + math.hypot(b[0] - a[0], b[1] - a[1])):
+                out.append(q)
+        if len(out) < 3 or not inside(P, out):
+            return None
+        area = abs(_area(out))
+        if not (25 <= area <= 60000):
+            return None
+        return {"pts": [(x / k, y / k) for x, y in out], "area": area, "layer": "faces",
+                "bbox": (min(x for x, y in out) / k, min(y for x, y in out) / k, max(x for x, y in out) / k, max(y for x, y in out) / k)}
+
     def _poly_at(self, pt):
         cands = [s for s in self._stand_shapes() if s["bbox"][0] <= pt[0] <= s["bbox"][2] and s["bbox"][1] <= pt[1] <= s["bbox"][3] and inside(pt, s["pts"])]
+        f = self._face_at(pt)
+        if f:
+            cands.append(f)
         if not cands:
             cands = [s for s in self._from_lines(pt) if inside(pt, s["pts"])]
         if not cands:
@@ -372,7 +511,21 @@ class Township:
         # the stands beside it
         nb = []
         pc = centroid(P)
-        for s in self._stand_shapes():
+        for s_, x_, y_, lay_ in self.texts:                      # the stands beside it: the area round each stand number written near it
+            X, Y = x_ * k, y_ * k
+            if not (bx[0] <= X <= bx[2] and bx[1] <= Y <= bx[3]) or not s_.isdigit() or not 3 <= len(s_) <= 5 or self.cat_of(lay_) == "off":
+                continue
+            if inside((X, Y), P):
+                continue
+            f = self._poly_at((x_, y_))
+            if not f:
+                continue
+            Q = [(x * k, y * k) for x, y in site_dxf._clean(f["pts"])]
+            if len(Q) < 3 or any(math.hypot(centroid(Q)[0] - centroid(o["poly"])[0], centroid(Q)[1] - centroid(o["poly"])[1]) < 0.5 for o in nb) or math.hypot(centroid(Q)[0] - pc[0], centroid(Q)[1] - pc[1]) < 0.5:
+                continue
+            if math.hypot(centroid(Q)[0] - pc[0], centroid(Q)[1] - pc[1]) <= 42.0:
+                nb.append({"poly": Q, "no": s_, "area": abs(_area(Q))})
+        for s in ([] if len(nb) >= 2 else self._stand_shapes()):
             sb = s["bbox"]
             if sb[2] * k < bx[0] or sb[0] * k > bx[2] or sb[3] * k < bx[1] or sb[1] * k > bx[3]:
                 continue
@@ -434,7 +587,7 @@ class Township:
             best = None
             for s, x, y, lay in self.texts:
                 dd = math.hypot(x * k - c["pt"][0], y * k - c["pt"][1])
-                if dd < 6.0 and len(s) <= 12 and (best is None or dd < best[0]):
+                if dd < 6.0 and re.match(r"^([A-Za-z]{1,3}\d+(\.\d+)?|\d+ ?[pP])$", s.strip()) and (best is None or dd < best[0]):
                     best = (dd, s)
             c["label"] = best[1] if best else ""
         return out

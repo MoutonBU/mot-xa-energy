@@ -2594,7 +2594,7 @@ class SiteServicesPage(ToolBase):
             if max(p[0], q[0]) < x0 or min(p[0], q[0]) > x1 or max(p[1], q[1]) < y0 or min(p[1], q[1]) > y1:
                 return None
             return [round(p[0], 2), round(p[1], 2), round(q[0], 2), round(q[1], 2), thick]
-        for cat, key in (("sewer", "sewer"), ("water", "water"), ("elec", "elec"), ("storm", "storm"), ("road", "other"), ("other", "other")):
+        for cat, key in (("sewer", "sewer"), ("water", "water"), ("elec", "elec"), ("storm", "storm"), ("road", "other")):                    # (lines on layers that are none of these, such as house drawings, stay out)
             for seg in r["lines"].get(cat, []):
                 m = mv(seg)
                 if m:
