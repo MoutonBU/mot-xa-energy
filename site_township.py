@@ -5,7 +5,6 @@ Layers are told apart by name (sewer / swr / san ..., water / wtr ..., elec / po
 guess can be changed by the person before the stand is searched for."""
 import math
 import re
-from array import array
 
 import site_dxf
 
@@ -89,7 +88,7 @@ class Township:
         cnt = [0]
 
         def add_lines(lay, pts, closed=False):
-            arr = self.lines.setdefault(lay, array("d"))
+            arr = self.lines.setdefault(lay, [])
             n = len(pts)
             for i in range(n - 1 + (1 if closed else 0)):
                 a, b = pts[i], pts[(i + 1) % n]
@@ -104,7 +103,7 @@ class Township:
                     if progress and cnt[0] % 20000 == 0:
                         progress(cnt[0])
                     if t == "LINE":
-                        self.lines.setdefault(lay, array("d")).extend((e.dxf.start.x, e.dxf.start.y, e.dxf.end.x, e.dxf.end.y))
+                        self.lines.setdefault(lay, []).extend((e.dxf.start.x, e.dxf.start.y, e.dxf.end.x, e.dxf.end.y))
                     elif t == "LWPOLYLINE":
                         pts = [(p[0], p[1]) for p in e.get_points("xy")]
                         if len(pts) < 2:
