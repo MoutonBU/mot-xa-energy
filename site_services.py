@@ -155,6 +155,12 @@ class ServicesView(QWidget):
         for k in ("sewer", "water", "elec"):
             pts += r[k]["path"] if r else []
             pts.append(tuple(st["points"][k]))
+        cs = st["stand"]["corners"]
+        cen = (sum(p[0] for p in cs) / len(cs), sum(p[1] for p in cs) / len(cs))
+        for nb in st.get("neighbours") or []:                         # a township stand: the stands beside it come into view too
+            c = nb.get("c")
+            if c and math.hypot(c[0] - cen[0], c[1] - cen[1]) < 24:
+                pts += [(c[0] - 7, c[1] - 11), (c[0] + 7, c[1] + 11)]
         xs, ys = [p[0] for p in pts], [p[1] for p in pts]
         # the road, the street name and the dimension lines round the stand
         return min(xs) - 15, min(ys) - 10, max(xs) + 15, max(ys) + 4
