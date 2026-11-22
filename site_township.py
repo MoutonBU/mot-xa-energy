@@ -29,11 +29,36 @@ def guess_category(layer):
     return "other"
 
 
+def rgb_category(rgb):
+    """what a true (RGB) colour stands for: yellow = electrical, blue / cyan = water, orange / brown = sewer, pink / magenta = stormwater, green = stormwater"""
+    r, g, b = (rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255
+    hi, lo = max(r, g, b), min(r, g, b)
+    if hi - lo < 40:
+        return "other"                                           # grey, black, white
+    import colorsys
+    h = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)[0] * 360
+    if 45 <= h < 70:
+        return "elec"
+    if 170 <= h < 260:
+        return "water"
+    if 10 <= h < 45:
+        return "sewer"
+    if h >= 290 or h < 10:
+        return "storm"
+    if 70 <= h < 170:
+        return "storm"
+    return "other"
+
+
 def colour_category(cols):
     """what a layer is, from the AutoCAD colour its lines mostly have: yellow = electrical, blue / cyan = water, brown / orange = sewer, green = stormwater"""
     if not cols:
         return "other"
     c = max(cols, key=cols.get)
+    if isinstance(c, str):                                       # "rgb:<number>" a true colour
+        return rgb_category(int(c[4:]))
+    if c in (6, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216, 217, 218, 219):
+        return "storm"
     if c == 2 or 50 <= c <= 59:
         return "elec"
     if c in (4, 5, 140, 141, 150, 151, 160, 161) or 130 <= c <= 179:
@@ -118,6 +143,11 @@ class Township:
                 c = 256
             if c in (0, 256):
                 c = lay_col.get(lay, 7)
+            try:
+                if e.dxf.hasattr("true_color") and int(e.dxf.true_color):
+                    c = "rgb:%d" % (int(e.dxf.true_color) & 0xFFFFFF)
+            except Exception:
+                pass
             d = self.colours.setdefault(lay, {})
             d[c] = d.get(c, 0) + 1
 
