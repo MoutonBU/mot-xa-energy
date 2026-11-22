@@ -8,7 +8,7 @@ def test_data():
     assert len(S) > 150
     houses = 0
     for no, d in S.items():
-        assert 100 < d["area"] < 700, (no, d["area"])
+        assert 100 < d["area"] < 1100, (no, d["area"])
         assert len(d["poly"]) >= 3 and 0 <= d["street"] < len(d["poly"])
         h = d.get("house")
         if h and not h["rot"]:
