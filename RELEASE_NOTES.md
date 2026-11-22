@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.137**
+Current version: **1.86.138**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **House placing, township drawing:** the connection symbols on the street boundary (the small yellow filled triangle for electrical, a blue one for water, with their tag such as C5.1) now set the house's electrical and water connection points when you go to a stand. The status line says what was set.
 - **House placing, township drawing:** when a layer's name does not say what it is, the tool now goes by the colour of its lines (yellow = electrical, blue / cyan = water, brown / orange = sewer, green = stormwater), as SG sheets are drawn. Change any guess with Layers...
 - **House placing: township drawing.** New box at the top of step 1: "Open a township drawing (DXF)..." reads a big SG drawing once (any size, metres or millimetres, closed outlines or loose lines), then you type a stand number and press Go. The tool finds that stand, puts the street side at the road (not on a side shared with another stand), shows the stands beside it with their real numbers, and the sewer, water, electrical and stormwater lines round it in their colours (also in the DXF). "Layers..." lets you say which drawing layer is which when the names are unusual. Saved with the setup.
 - **House placing, fix:** after you clicked the corners and then the street side in "Import the stand from a drawing", nothing was placed (an error was swallowed). It places the stand, the street side and the drawing underlay again. The outline list also shows only real boxes now (at most 12, biggest first).

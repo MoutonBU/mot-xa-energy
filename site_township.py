@@ -102,6 +102,7 @@ class Township:
         unit = {1: 0.0254, 2: 0.3048, 4: 0.001, 5: 0.01, 6: 1.0, 7: 1000.0}.get(u)
         self.lines, self.shapes, self.texts, self.layers = {}, [], [], {}
         self.colours = {}                                        # layer -> {AutoCAD colour number: lines}
+        self.marks = []                                          # small filled triangles and boxes (connection symbols): {"pts", "layer", "col"}
         lay_col = {}
         try:
             for L in doc.layers:
@@ -135,6 +136,33 @@ class Township:
                     cnt[0] += 1
                     if t in ("LINE", "LWPOLYLINE", "POLYLINE", "ARC", "CIRCLE"):
                         paint(e, lay)
+                    if t in ("SOLID", "TRACE", "3DFACE") and len(self.marks) < 60000:
+                        vs = [e.dxf.vtx0, e.dxf.vtx1, e.dxf.vtx2, e.dxf.vtx3] if t != "3DFACE" else [e.dxf.vtx0, e.dxf.vtx1, e.dxf.vtx2, e.dxf.vtx3]
+                        pts = [(v.x, v.y) for v in vs]
+                        try:
+                            c = int(e.dxf.color)
+                        except Exception:
+                            c = 256
+                        if c in (0, 256):
+                            c = lay_col.get(lay, 7)
+                        u = []
+                        for q in pts:                              # a triangle repeats a corner
+                            if not u or q != u[-1]:
+                                u.append(q)
+                        if len(u) > 1 and u[0] == u[-1]:
+                            u.pop()
+                        self.marks.append({"pts": u, "layer": lay, "col": c})
+                        paint(e, lay)
+                    elif t == "HATCH" and len(self.marks) < 60000:
+                        for hp in e.paths:
+                            if hasattr(hp, "vertices") and 3 <= len(hp.vertices) <= 4:
+                                try:
+                                    c = int(e.dxf.color)
+                                except Exception:
+                                    c = 256
+                                if c in (0, 256):
+                                    c = lay_col.get(lay, 7)
+                                self.marks.append({"pts": [(q[0], q[1]) for q in hp.vertices], "layer": lay, "col": c})
                     if progress and cnt[0] % 20000 == 0:
                         progress(cnt[0])
                     if t == "LINE":
@@ -340,8 +368,41 @@ class Township:
                 if len(lines[cat]) > 40000:
                     break
         edge, known = self.street_edge(P, nb, lines)
-        return {"no": str(number).strip(), "poly": P, "neighbours": nb, "lines": lines, "street_edge": edge, "road_known": known,
+        conn = self.connections(P, edge, reach=8.0)
+        return {"no": str(number).strip(), "poly": P, "connections": conn, "neighbours": nb, "lines": lines, "street_edge": edge, "road_known": known,
                 "label": label, "matches": len(hits)}
+
+    def connections(self, P, edge, reach=8.0):
+        """the connection symbols (a small filled triangle or box) on or near the stand's street boundary: {"elec": {...}, "water": {...}}. Each has "pt" (the point of
+        the triangle that touches the boundary, in metres) and "label" (the text beside it, such as C5.1 2p)."""
+        k = self.k
+        n = len(P)
+        a, b = P[edge], P[(edge + 1) % n]
+        out = {}
+        for m in self.marks:
+            kind = "elec" if (m["col"] == 2 or self.cat_of(m["layer"]) == "elec") else ("water" if (m["col"] in (4, 5) or 130 <= m["col"] <= 179 or self.cat_of(m["layer"]) == "water") else None)
+            if not kind:
+                continue
+            Q = [(x * k, y * k) for x, y in m["pts"]]
+            if len(Q) < 3:
+                continue
+            ext = max(max(q[0] for q in Q) - min(q[0] for q in Q), max(q[1] for q in Q) - min(q[1] for q in Q))
+            if ext > 4.0 or ext < 0.05:
+                continue
+            tip = min(Q, key=lambda q: _seg_dist(q, a, b))
+            d = _seg_dist(tip, a, b)
+            if d > reach:
+                continue
+            if kind not in out or d < out[kind]["d"]:
+                out[kind] = {"pt": tip, "d": d, "kind": kind}
+        for kind, c in out.items():
+            best = None
+            for s, x, y, lay in self.texts:
+                dd = math.hypot(x * k - c["pt"][0], y * k - c["pt"][1])
+                if dd < 6.0 and len(s) <= 12 and (best is None or dd < best[0]):
+                    best = (dd, s)
+            c["label"] = best[1] if best else ""
+        return out
 
     def _number_in(self, Q):
         """the stand number written inside an outline (the shortest all-digit text in it, else the shortest text)"""

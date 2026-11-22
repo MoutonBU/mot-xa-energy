@@ -2550,14 +2550,32 @@ class SiteServicesPage(ToolBase):
             return
         self.set_stand_world(r["poly"], "Stand " + no, src_shapes=[1], street_edge=r["street_edge"])
         self._set_township_underlay(r)
+        got_c = self._township_connections(r)
         self.sh_no.setText(no)
         c = self.st["stand"]["corners"]
         found = ", ".join(k for k in ("sewer", "water", "elec", "storm") if r["lines"][k])
         self.tn_lbl.setText("Stand %s: %.0f m2, %d corners. %d stands beside it. Services found: %s.%s%s" % (
             no, abs(se.area([tuple(p) for p in c])), len(c), len(r["neighbours"]), found or "none (check Layers...)",
             "" if r["road_known"] else " No road layer was found, so the street side is a guess: click the real street boundary in the plan.",
-            " %d texts said %s; the first was used." % (r["matches"], no) if r["matches"] > 1 else ""))
+            " %d texts said %s; the first was used." % (r["matches"], no) if r["matches"] > 1 else "") + got_c)
         self.set_hint("")
+
+    def _township_connections(self, r):
+        """the electrical and water connection symbols on the street boundary become the connection points; -> a sentence for the status line"""
+        fr = self.st.get("frame")
+        if not fr or not r.get("connections"):
+            return ""
+        L = abs(self.st["stand"]["corners"][1][0] - self.st["stand"]["corners"][0][0])
+        said = []
+        for kind, c in r["connections"].items():
+            q = se.apply_frame(fr, c["pt"])
+            x = max(0.3, min(L - 0.3, q[0]))
+            self.st["points"][kind] = [round(x, 2), 0.0]
+            said.append("%s connection%s at %.1f m along the street" % ("electrical" if kind == "elec" else "water", (" " + c["label"]) if c.get("label") else "", x))
+        self.st["ports"] = {}
+        self.solve_now(False)
+        self._to_fields()
+        return " Set from the drawing: " + "; ".join(said) + "."
 
     def _set_township_underlay(self, r):
         """the township's lines and the neighbouring stands, moved into the stand's frame and kept faint under the plan"""
