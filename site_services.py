@@ -128,6 +128,10 @@ class ServicesView(QWidget):
         if self._mode == "mline_add":
             self.page._ml_on = False
             self.page.commit(True)
+        if self._mode in ("wmain_add", "emain_add"):
+            self.page._mn_on = {}
+            self.page.solve_now(False)
+            self.page.commit(True)
         if self._mode != "select":
             self._mode = "select"
             self.page._dim_a = None
@@ -224,6 +228,11 @@ class ServicesView(QWidget):
         site_sheet.north_arrow(p, pg.north_centre(sh.W, sh.H, r_px, interactive), r_px, st["sheet"].get("north", 0))
         if interactive and res:
             S = sh.pt
+            dr_ = self.drag
+            if dr_ and dr_[0] == "fh" and len(dr_[1]) > 1:
+                p.setPen(QPen(QColor("#d6209a"), 2))
+                for q1_, q2_ in zip(dr_[1][:-1], dr_[1][1:]):
+                    p.drawLine(S(q1_), S(q2_))
             for c in st.get("sewer_via") or []:
                 q = S(c)
                 p.setPen(QPen(site_sheet.BROWN, 2))
@@ -290,6 +299,12 @@ class ServicesView(QWidget):
             return
         w = self.world(e.position())
         pg = self.page
+        if e.button() == Qt.MouseButton.LeftButton and (e.modifiers() & Qt.KeyboardModifier.AltModifier):       # Alt + drag: turn the plan about its middle
+            c_ = QPointF(self.width() / 2, self.height() / 2)
+            self.drag = ("turn", math.atan2(e.position().y() - c_.y(), e.position().x() - c_.x()), pg.st["sheet"].get("turn", 0.0) or 0.0)
+            self.auto = False
+            self._go_lite()
+            return
         if e.button() == Qt.MouseButton.LeftButton:
             if self.mode == "street":
                 pg.set_street_edge(w)
@@ -325,11 +340,17 @@ class ServicesView(QWidget):
                 pg.add_sport(w)
                 return
             if self.mode == "sewer_draw":
+                if getattr(pg, "_sd_on", False) and getattr(pg, "_sd_mode", "sq") == "fh":      # freeform: hold and draw
+                    self.drag = ("fh", [w])
+                    return
                 pg.sewer_draw_click(w, bool(e.modifiers() & Qt.KeyboardModifier.ShiftModifier))
                 self.update()
                 return
             if self.mode == "mline_add":
                 pg.add_mline(w)
+                return
+            if self.mode in ("wmain_add", "emain_add"):
+                pg.add_main("water" if self.mode == "wmain_add" else "elec", w)
                 return
             if self.mode == "mh_add":
                 pg.add_manhole(w)
@@ -649,6 +670,19 @@ class ServicesView(QWidget):
             self.view = (s, cx + p1[0] - p0[0], cy + p1[1] - p0[1])
             self.update()
             return
+        if d[0] == "fh":
+            w_ = self.world(e.position())
+            if math.hypot(w_[0] - d[1][-1][0], w_[1] - d[1][-1][1]) > 0.12:
+                d[1].append(w_)
+                self.update()
+            return
+        if d[0] == "turn":
+            a1 = math.atan2(e.position().y() - self.height() / 2, e.position().x() - self.width() / 2)
+            t = d[2] + math.degrees(a1 - d[1])
+            if e.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                t = round(t / 5.0) * 5.0
+            pg.set_turn(t)
+            return
         if d[0] == "north":
             pg.st["sheet"]["north_pos"] = [round(e.position().x() / self.width(), 4), round(e.position().y() / self.height(), 4)]
             self.update()
@@ -720,7 +754,21 @@ class ServicesView(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, e):
-        if self.drag and self.drag[0] in ("label", "north"):
+        if self.drag and self.drag[0] == "fh":
+            stroke = self.drag[1]
+            self.drag = None
+            if len(stroke) >= 2:
+                self.page.sewer_draw_stroke(stroke)
+            else:
+                self.page.sewer_draw_click(stroke[0], True)
+            self.update()
+        elif self.drag and self.drag[0] == "turn":
+            self.page.changed()
+            self.page.commit(True)
+            self.drag = None
+            self.auto = True
+            self.update()
+        elif self.drag and self.drag[0] in ("label", "north"):
             self.page.changed()
             self.page.commit(True)
         elif self.drag and self.drag[0] != "pan":
@@ -989,12 +1037,18 @@ class SiteServicesPage(ToolBase):
         sq_.clicked.connect(lambda _=False: self.square_up())
         row.addWidget(QLabel("Plan turned"))
         row.addWidget(self.sh_turn)
+        for txt_, d_, tip_ in (("\u21ba", -15, "Turn the plan 15 degrees anticlockwise"), ("\u21bb", 15, "Turn the plan 15 degrees clockwise")):
+            b_ = QPushButton(txt_)
+            b_.setToolTip(tip_)
+            b_.setFixedWidth(30)
+            b_.clicked.connect(lambda _=False, d=d_: (self.set_turn((self.st["sheet"].get("turn", 0.0) or 0.0) + d), self.view.fit(), self.changed(), self.commit(True)))
+            row.addWidget(b_)
         row.addWidget(sq_)
         row.addStretch(1)
         ml.addLayout(row)
         row = QHBoxLayout()
         self.look_cb = {}
-        for key, text in (("fill", "Green stand"), ("walls", "Boundary walls"), ("storm", "Stormwater arrow"), ("wp_box", "WP / VV box and marks")):
+        for key, text in (("fill", "Green stand"), ("walls", "Boundary walls"), ("storm", "Stormwater arrow"), ("wp_box", "WP / VV box and marks"), ("upright", "Names and numbers stay level when the plan is turned")):
             cb_ = QCheckBox(text)
             cb_.setChecked(True)
             cb_.toggled.connect(lambda on, k=key: self.set_look(k, on))
@@ -1117,6 +1171,19 @@ class SiteServicesPage(ToolBase):
             row.addWidget(rb)
             row.addStretch(1)
             ml.addLayout(row)
+            if key in ("water", "elec"):
+                row = QHBoxLayout()
+                nm_ = "water" if key == "water" else "electrical"
+                mb2_ = QPushButton("Draw the main %s line (click along it)" % nm_)
+                mb2_.setToolTip("Click along where the main %s line runs, point by point; the house connection goes to the nearest point on it. Press Done when it is drawn." % nm_)
+                mb2_.clicked.connect(lambda _=False, k=key: self.arm("wmain_add" if k == "water" else "emain_add"))
+                mc2_ = QPushButton("Main as in the drawing")
+                mc2_.setToolTip("Take back the main as it is in the imported drawing (or the straight line along the street when there is none).")
+                mc2_.clicked.connect(lambda _=False, k=key: self.clear_main(k))
+                row.addWidget(mb2_)
+                row.addWidget(mc2_)
+                row.addStretch(1)
+                bv.addLayout(row)
             if key == "water":
                 row = QHBoxLayout()
                 wb_ = QPushButton("Add another water point (click the house)")
@@ -1626,7 +1693,7 @@ class SiteServicesPage(ToolBase):
         self.set_hint({"pt_sewer": "Click in the plan where the main sewer connection is.", "pt_water": "Click in the plan where the water connection is.",
                        "pt_elec": "Click in the plan where the electrical supply is.", "port_sewer": "Click on the house outline where the sewer leaves the house.",
                        "port_water": "Click on the house outline where the water enters.", "port_db": "Click on the house outline where the DB is.",
-                       "wport_add": "Click on the house outline where another water point enters. Press Esc when done.", "sport_add": "Click on the house wall where another sewer outlet leaves the house. Press Esc when done.", "sewer_draw": "Click where the sewer starts.", "text_add": "Click in the plan where the text goes.", "dim_add": "Click the first point of the dimension (corners snap), then the second. Drag its figure to slide it. Press Esc when done.", "road": "Click on the side of the stand where the road is.", "north_dir": "Click in the direction north points. You can also drag the arrow to move it.", "via_add": "Click in the plan where the sewer must pass. Click again for the next point, in order from the house to the main. Press Esc when done.", "street": "Click the boundary that faces the street.", "mline_add": "Click along where the main sewer runs, point by point (it can cross the stand). Press Done when it is drawn.", "mh_add": "Click on the main sewer where a manhole is. Press Esc when done.", "cust_add": "Click in the plan where your point goes."}.get(mode, ""))
+                       "wport_add": "Click on the house outline where another water point enters. Press Esc when done.", "sport_add": "Click on the house wall where another sewer outlet leaves the house. Press Esc when done.", "sewer_draw": "Click where the sewer starts.", "text_add": "Click in the plan where the text goes.", "dim_add": "Click the first point of the dimension (corners snap), then the second. Drag its figure to slide it. Press Esc when done.", "road": "Click on the side of the stand where the road is.", "north_dir": "Click in the direction north points. You can also drag the arrow to move it.", "via_add": "Click in the plan where the sewer must pass. Click again for the next point, in order from the house to the main. Press Esc when done.", "street": "Click the boundary that faces the street.", "wmain_add": "Click along where the main water line runs, point by point. Press Done when it is drawn.", "emain_add": "Click along where the main electrical line runs, point by point. Press Done when it is drawn.", "mline_add": "Click along where the main sewer runs, point by point (it can cross the stand). Press Done when it is drawn.", "mh_add": "Click on the main sewer where a manhole is. Press Esc when done.", "cust_add": "Click in the plan where your point goes."}.get(mode, ""))
         self.view.update()
 
     def set_point(self, k, w):
@@ -1649,6 +1716,7 @@ class SiteServicesPage(ToolBase):
         self.under = under or {}
         self.st["road_lines"] = []
         self.st["main_poly"] = {}
+        self.st["main_poly_dxf"] = {}
         self.st["underlay"] = []
         self.st["underlay_cat"], self.st["neighbours"] = {}, []
         if points:
@@ -1811,7 +1879,8 @@ class SiteServicesPage(ToolBase):
             hl.setContentsMargins(6, 4, 6, 4)
             self.mode_btns = {}
             for key, text, tip in (("sq", "Square", "The pipe turns 90 degrees to get to your click"), ("free", "Skew", "A straight line at any angle to your click (also: hold Shift)"),
-                                   ("h", "Horizontal", "Force the pipe level to your click's x"), ("v", "Vertical", "Force the pipe upright to your click's y")):
+                                   ("h", "Horizontal", "Force the pipe level to your click's x"), ("v", "Vertical", "Force the pipe upright to your click's y"),
+                                   ("fh", "Freeform", "Hold the mouse down and draw the pipe freehand; it is kept as straight legs at any angle along your stroke")):
                 bt = QPushButton(text)
                 bt.setCheckable(True)
                 bt.setToolTip(tip)
@@ -2197,6 +2266,30 @@ class SiteServicesPage(ToolBase):
                       "Square / Skew / Horizontal / Vertical (buttons, or hold Shift for skew) say how the pipe gets to the next click.")
         self.sync_done()
 
+    @staticmethod
+    def simplify_path(P, tol=0.3):
+        """Douglas-Peucker: a freehand stroke cut down to the few points that keep its shape within `tol` metres"""
+        if len(P) < 3:
+            return list(P)
+        a, b = P[0], P[-1]
+        dm, im = -1.0, 0
+        for i in range(1, len(P) - 1):
+            d = se.line_dist(P[i], a, b) if (a != b) else math.hypot(P[i][0] - a[0], P[i][1] - a[1])
+            if d > dm:
+                dm, im = d, i
+        if dm <= tol:
+            return [a, b]
+        return SiteServicesPage.simplify_path(P[:im + 1], tol)[:-1] + SiteServicesPage.simplify_path(P[im:], tol)
+
+    def sewer_draw_stroke(self, stroke):
+        """a freehand stroke while drawing the sewer: its corner points are added in turn, as skew legs"""
+        pts = self.simplify_path([tuple(p) for p in stroke], 0.3)
+        for q in pts[1:] if len(pts) > 1 else pts:
+            if not getattr(self, "_sd_on", False):
+                break
+            self.sewer_draw_click(q, True)
+        self.view.update()
+
     def sewer_draw_click(self, w, shift=False):
         if not getattr(self, "_sd_on", False):
             self.st.setdefault("ports", {})["sewer"] = se.nearest_port(self.res["house"], w)
@@ -2326,6 +2419,32 @@ class SiteServicesPage(ToolBase):
             self.best_sewer_point()
         self.solve_now()
         self.view.update()
+
+    def add_main(self, k, w):
+        """a click of the drawn main water or electrical line: the first click starts a new line (it replaces the one from the drawing), the others add to it"""
+        on = getattr(self, "_mn_on", None)
+        if on is None:
+            on = self._mn_on = {}
+        mp = self.st.setdefault("main_poly", {})
+        if not on.get(k):
+            on[k] = True
+            mp[k] = [[]]
+        mp[k][0].append([round(w[0], 2), round(w[1], 2)])
+        if len(mp[k][0]) >= 2:
+            self.solve_now(False)
+        self.view.update()
+
+    def clear_main(self, k):
+        """back to the main as the imported drawing has it (or the straight line along the street)"""
+        self._mn_on = {}
+        src = (self.st.get("main_poly_dxf") or {}).get(k)
+        mp = self.st.setdefault("main_poly", {})
+        if src:
+            mp[k] = [list(map(list, pl)) for pl in src]
+        else:
+            mp.pop(k, None)
+        self.solve_now()
+        self.commit(True)
 
     def clear_mline(self):
         self.st["main_line"] = []
@@ -2637,11 +2756,11 @@ class SiteServicesPage(ToolBase):
         self.solve_now(False)
         return " House as on the site plan: %s, carport %.0f x %.0f m." % (h.get("type", "house"), cp["w"] if cp else 0, cp["d"] if cp else 0)
 
-    def square_up(self, quiet=False):
-        """turn the plan on the page so the stand's edges run along it, and let the north arrow follow"""
+    def set_turn(self, t, quiet=False):
+        """turn the plan on the page to t degrees (clockwise); the north arrow follows, north itself stays where it is"""
         st = self.st
+        t = round(((t + 180.0) % 360.0) - 180.0, 1)
         road = (st.get("sheet") or {}).get("road", "left")
-        t = site_sheet.square_turn([tuple(p) for p in st["stand"]["corners"]], road)
         nw = st.get("north_world")
         st["sheet"]["turn"] = t
         self._busy = True
@@ -2651,6 +2770,14 @@ class SiteServicesPage(ToolBase):
             st["sheet"]["north"] = deg
             self.sh_north.setValue(deg)
         self._busy = False
+        if not quiet:
+            self.view.update()
+        return t
+
+    def square_up(self, quiet=False):
+        """turn the plan on the page so the stand's edges run along it, and let the north arrow follow"""
+        road = (self.st.get("sheet") or {}).get("road", "left")
+        t = self.set_turn(site_sheet.square_turn([tuple(p) for p in self.st["stand"]["corners"]], road), quiet=True)
         if not quiet:
             self.view.fit()
             self.view.update()
@@ -2739,6 +2866,7 @@ class SiteServicesPage(ToolBase):
         c = self.st["stand"]["corners"]
         ref = ((c[0][0] + c[1][0]) / 2, (c[0][1] + c[1][1]) / 2)
         self.st["main_poly"] = {}
+        self.st["main_poly_dxf"] = {}
         self.st["main_line"] = []
         said = []
         for cat, k in (("sewer", "sewer"), ("water", "water"), ("elec", "elec")):
@@ -2757,6 +2885,7 @@ class SiteServicesPage(ToolBase):
                     continue
                 self.st["main_poly"][k] = [[[round(x, 2), round(y, 2)] for x, y in r_] for r_ in runs]
             said.append(k)
+        self.st["main_poly_dxf"] = {k_: [list(map(list, pl)) for pl in v_] for k_, v_ in self.st["main_poly"].items()}
         return said
 
     @staticmethod
@@ -2807,6 +2936,7 @@ class SiteServicesPage(ToolBase):
         self.st["pts_manual"] = False
         self.st["road_lines"] = []                                    # (the township import fills these in again)
         self.st["main_poly"] = {}
+        self.st["main_poly_dxf"] = {}
         c0 = [tuple(p) for p in poly]
         if max(max(p[0] for p in c0) - min(p[0] for p in c0), max(p[1] for p in c0) - min(p[1] for p in c0)) > 2000:
             QMessageBox.warning(self, "House placing", "That stand is more than 2 km across, so the scale must be wrong. Import again and set the drawing units and scale.")

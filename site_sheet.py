@@ -133,7 +133,7 @@ class Drawer:
     def lw(self, m):                                    # a line weight in metres of paper-at-1:200 -> pixels
         return max(0.8, m * self.s)
 
-    def text(self, q, txt, h=0.5, d=(1, 0), bold=False, color=BLACK, spacing=100, box=None, align="c", family="Arial", rot=None, bg=False, key=None, fixed=False):
+    def text(self, q, txt, h=0.5, d=(1, 0), bold=False, color=BLACK, spacing=100, box=None, align="c", family="Arial", rot=None, bg=False, key=None, fixed=False, upright=False):
         """text with its centre at world point q, running along world direction d. h = capital height in metres."""
         if self.lite:
             return
@@ -157,7 +157,7 @@ class Drawer:
         p.setFont(font(px, bold, spacing, family))
         pt = self.sh.pt(q)
         p.translate(pt)
-        ang = (self.sh.angle(d) if rot is None else rot) + extra_rot
+        ang = ((0.0 if (upright and getattr(self, "upright_on", False)) else self.sh.angle(d)) if rot is None else rot) + extra_rot
         p.rotate(ang)
         fm = p.fontMetrics()
         w = fm.horizontalAdvance(txt)
@@ -244,6 +244,7 @@ def edge_len(a, b):
 def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=False):
     """the whole plan. st = engine state, res = engine result, opts = sheet details (names, north, scale text)"""
     D = Drawer(p, sh, minpx, lite)
+    D.upright_on = bool((st.get("look") or {}).get("upright", True))     # names and numbers stay level on the page when the plan is turned
     D.offsets = dict(opts.get("auto_off") or {})                 # texts moved off each other by the program ...
     D.offsets.update(opts.get("labels") or {})                   # ... and the ones you moved by hand, which win
     D.edits = opts.get("text_edit") or {}
@@ -272,9 +273,9 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
     mn = se.mains(st)
     street = opts.get("street", "")
     if street:
-        D.text(((xmin + xmax) / 2 + 3.0, -6.4), street, 1.05, (1, 0))
+        D.text(((xmin + xmax) / 2 + 3.0, -6.4), street, 1.05, (1, 0), upright=True)
         sub = "%s  %s" % (opts.get("road_w", ""), opts.get("street_erf", ""))
-        D.text(((xmin + xmax) / 2 + 3.0, -8.0), sub.strip(), 1.05, (1, 0))
+        D.text(((xmin + xmax) / 2 + 3.0, -8.0), sub.strip(), 1.05, (1, 0), upright=True)
     # ---- the stand, and the neighbours' boundaries running on from its corners (read from the imported drawing)
     for a_, b_ in opts.get("nb_lines") or []:
         D.line(a_, b_, BLACK, 0.04)
@@ -297,7 +298,7 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
     cp = res.get("carport") if res else None
     for i_, nb_ in enumerate(st.get("neighbours") or []):          # the stands beside it, from the township drawing
         if nb_.get("no"):
-            D.text(tuple(nb_["c"]), str(nb_["no"]), 1.6, (1, 0), bold=True, color=QColor(120, 120, 120), key="NB:%d" % i_)
+            D.text(tuple(nb_["c"]), str(nb_["no"]), 1.6, (1, 0), bold=True, color=QColor(120, 120, 120), key="NB:%d" % i_, upright=True)
     if cp:
         en = entry_shape(st, cp)
         D.poly(en["poly"], GREY, 0.03, ENTRY)
@@ -393,11 +394,11 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
                         best = (dd, c)
             if best:
                 pos = best[1]
-        D.text(pos, str(num), 1.9, sh.hdir(), bold=True, family="Arial Black")
+        D.text(pos, str(num), 1.9, sh.hdir(), bold=True, family="Arial Black", upright=True)
     for k, no in enumerate(nb[:2]):
         yy = depth * 0.45
         xx = xmin - F * 0.55 if k == 0 else xmax + F * 0.55
-        D.text((xx, yy), str(no), 1.9, sh.hdir(), bold=True, family="Arial Black")
+        D.text((xx, yy), str(no), 1.9, sh.hdir(), bold=True, family="Arial Black", upright=True)
     # ---- carport
     if cp:
         D.poly(cp, BLACK, 0.04, CARPORT)
@@ -420,7 +421,7 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
         D.poly(house, BLACK, 0.04, RED)
         hx = sum(q[0] for q in house) / len(house)
         hy = sum(q[1] for q in house) / len(house)
-        D.text((hx, hy), "NEW HOUSE", 0.75, sh.hdir(), bold=True, box=True)
+        D.text((hx, hy), "NEW HOUSE", 0.75, sh.hdir(), bold=True, box=True, upright=True)
         for nm, q in (res.get("marks") or []) if res else []:
             D.text(q, nm, 0.4, sh.hdir(), spacing=110)
         if res and look.get("wp_box", True):
