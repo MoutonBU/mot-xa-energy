@@ -591,6 +591,9 @@ class Township:
                     break
         edge, known = self.street_edge(P, nb, lines)
         conn = self.connections(P, edge, reach=8.0)
+        corner = [i for i in self.side_streets(P, edge, lines) if not any(
+            _seg_dist(((P[i][0] + P[(i + 1) % len(P)][0]) / 2, (P[i][1] + P[(i + 1) % len(P)][1]) / 2), o["poly"][j], o["poly"][(j + 1) % len(o["poly"])]) < 0.4
+            for o in nb for j in range(len(o["poly"])))]
         # Survey coordinates have north up (y up); the plan sheet is drawn with y down. So the picture is not turned into its own mirror image, everything is handed over
         # with y negated (the drawing's north is then -y; see Township.NORTH).
         P = [(x, -y) for x, y in P]
@@ -599,7 +602,7 @@ class Township:
         lines = {c: [(a, -b_, c_, -d) for a, b_, c_, d in v] for c, v in lines.items()}
         for c_ in conn.values():
             c_["pt"] = (c_["pt"][0], -c_["pt"][1])
-        return {"no": str(number).strip(), "poly": P, "connections": conn, "neighbours": nb, "lines": lines, "street_edge": edge, "road_known": known,
+        return {"no": str(number).strip(), "poly": P, "connections": conn, "neighbours": nb, "lines": lines, "street_edge": edge, "road_known": known, "corner": corner,
                 "label": label, "matches": len(hits)}
 
     def connections(self, P, edge, reach=8.0):
@@ -649,6 +652,21 @@ class Township:
         return best[1] if best else ""
 
     @staticmethod
+    def side_streets(P, edge, lines):
+        """the other sides of a corner stand that face a road (edge indexes), apart from the street side; [] for an ordinary stand"""
+        n = len(P)
+        road = lines.get("road") or []
+        out = []
+        for i in range(n):
+            if i == edge or i in (edge,):
+                continue
+            a, b = P[i], P[(i + 1) % n]
+            mid = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+            if road and min(_seg_dist(mid, (r[0], r[1]), (r[2], r[3])) for r in road) < 5.0 and math.hypot(b[0] - a[0], b[1] - a[1]) > 5:
+                out.append(i)
+        return out
+
+    @staticmethod
     def street_edge(P, nb, lines):
         """the side of the stand that is the street: not shared with a stand beside it, and nearest to the road and kerb lines. -> (edge index, road known)"""
         n = len(P)
@@ -673,6 +691,10 @@ class Township:
                 a, b = P[i], P[(i + 1) % n]
                 mid = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
                 return min(_seg_dist(mid, (r[0], r[1]), (r[2], r[3])) for r in road)
+            near = [i for i in free if d(i) < 5.0]
+            if len(near) >= 2:                      # a corner stand: the road is on two sides. The short frontage is the street (entry, carport); the long side is the side street
+                L = lambda i: math.hypot(P[(i + 1) % n][0] - P[i][0], P[(i + 1) % n][1] - P[i][1])
+                return min(near, key=L), True
             return min(free, key=d), True
         # no road layer: the free side that has the most open space outside it (nobody beside it), the longest wins a tie
         def open_space(i):

@@ -2580,8 +2580,9 @@ class SiteServicesPage(ToolBase):
         placed = self._ref_house(ref) if ref and self.tn_house.isChecked() else ""
         c = self.st["stand"]["corners"]
         found = ", ".join(k for k in ("sewer", "water", "elec", "storm") if r["lines"][k])
-        self.tn_lbl.setText("Stand %s: %.0f m2, %d corners. %d stands beside it. Services found: %s.%s%s" % (
+        self.tn_lbl.setText("Stand %s: %.0f m2, %d corners. %d stands beside it. Services found: %s.%s%s%s" % (
             no, abs(se.area([tuple(p) for p in c])), len(c), len(r["neighbours"]), found or ("none in this plan" if ref else "none (check Layers...)"),
+            (" Corner stand: the road is also on side %d; the short frontage is used as the street, and the long side keeps its own %.1f m building line." % (r["corner"][0] + 1, (self.st["stand"].get("setbacks") or {}).get("side", 1.0))) if r.get("corner") else "",
             "" if r["road_known"] else " No road layer was found, so the street side is a guess: click the real street boundary in the plan.",
             " %d texts said %s; the first was used." % (r["matches"], no) if r["matches"] > 1 else "") + got_c + placed)
         self.set_hint("")
