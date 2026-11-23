@@ -1,11 +1,15 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.204**
+Current version: **1.86.205**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **A drop has a rodding eye only:** the program no longer draws an inspection eye at a drop. The rodding eye at the top of the steep part is what is needed to rod down it (SANS 10252-2, 6.5.2.2). An eye that is already on the pipe at that spot stays. The long section, the site plan, the table, the checks and the sewer elevation all follow. (Whether your council wants more access there is for you to confirm.)
+- **Left bar icons turn red** while you point at them, and grow a little (they are sharper now when they grow).
+- **Detail generator learns your details:** after a detail is drawn, "Save as my detail" keeps it. The next time you ask for a detail the generator is shown your saved details that are closest to the request (up to two) as examples, so new details are drawn the way you draw them: your material names, layers, note wording. "My details" lists them; "Open my detail" puts one back in the workspace and "Delete it" removes it. They are kept in the Detail notes outputs folder (my_details.json). Tested with a pretend reply only, because no API key was available here.
+- **Detail notes is less cramped:** the new "Hide the notes table" button gives the drawing the whole width, and the table needs less width when it is shown.
 - **Animated icons:** on the start screens the big tile icons now come alive: pointing at a tile lifts the icon, grows it, wobbles it once and lights a soft red glow behind it; pressing squeezes it and sends a ring spreading out, then it pops back. The small icons on every button in the program (Preview, Save, Add ...) grow a little while you point at them, squeeze when pressed and settle back, without changing the size of the button. Buttons without an icon are left alone. (The icons in the left bar's list are not animated yet.)
 - **Contoured sites:** in the sewer section settings, "Import contours (DXF)..." reads the contours of a site plan or survey (polylines with an elevation or Z, flat polylines with the level written on them, and spot heights; millimetre drawings are understood). The contours must be in the same coordinates as the stand. The ground along the sewer is then read off the contours every half metre (between the two nearest contour levels), so the long section, the eyes' ground levels, the covers and the sewer elevation follow the real ground. The cover is checked every half metre: if the ground falls faster than the pipe and the pipe would come out of the ground, the check names the chainage where it happens and suggests starting deeper or using a steeper fall. "Take the ground levels from the contours" switches them off again (the typed levels are used) and "Remove the contours" deletes them. Tested on made-up contours only: check it on a real survey.
 - **Sewer elevation: pipes or brown lines:** the tick box "Sewer as brown lines only (no pipe width)" draws the sewer as one brown line at the invert level, with single lines for the eyes, instead of the pipes with their outside diameter.

@@ -160,7 +160,28 @@ class Rail(QFrame):
         for b in self.findChildren(QPushButton):
             n = b.property("iconName")
             if n:
-                b.setIcon(self.make_icon(n, col, 20))
+                b.setIcon(self.make_icon(n, col, 28))              # drawn larger than shown, so it stays sharp while it grows under the pointer
+        if not getattr(self, "_hover_filter", None):
+            from PySide6.QtCore import QEvent, QObject
+
+            rail = self
+
+            class _Hover(QObject):
+                """a bar icon turns red while it is pointed at (it also grows: see ui_extras.IconMotion)"""
+                def eventFilter(self, obj, ev):
+                    try:
+                        t = ev.type()
+                        n_ = obj.property("iconName") if isinstance(obj, QPushButton) else None
+                        if n_ and t in (QEvent.Type.Enter, QEvent.Type.Leave):
+                            c_ = "#ff4056" if t == QEvent.Type.Enter else ("#1c1f24" if rail.light_fn() else "#eceef0")
+                            obj.setIcon(rail.make_icon(n_, c_, 28))
+                    except Exception:
+                        pass
+                    return False
+            self._hover_filter = _Hover(self)
+            for b in self.findChildren(QPushButton):
+                if b.property("iconName"):
+                    b.installEventFilter(self._hover_filter)
 
     def _inner_tabs(self, idx):
         """The tab widget inside the Drawing register (6) or the Costing (5), whose sections the bar lists."""

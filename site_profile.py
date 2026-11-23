@@ -112,7 +112,7 @@ def build(state, res, il_head=None, lean_ratio=None):
         return ngl1
 
     il_head = ngl0 - D0 if il_head is None else float(il_head)
-    # drops the designer added (chainage = invert level just after the drop): the pipe steps down inside an inspection eye and carries on at the fall
+    # drops the designer added (chainage = invert level just after the drop): the pipe steps down at a rodding eye and carries on at the fall
     drops_in = [(x, y) for x, y in parse_spots(lv.get("drops")) if 0 < x < Hh]
     # the steep part of a drop is drawn at 45 degrees on the sheet (horizontal 1:50, vertical 1:100): it takes half its height in metres of chainage,
     # and the lower run starts at the foot of it
@@ -146,8 +146,8 @@ def build(state, res, il_head=None, lean_ratio=None):
         d = n.get("dist")
         x = (Hh - d) if d is not None else (Hh - Lp + n["chainage"])
         nodes.append((max(0.0, min(Hh, x)), n))
-    for xd, _yd in drops_in:                                    # an inspection eye and a rodding eye where the pipe drops
-        for k_ in ("IE", "RE"):
+    for xd, _yd in drops_in:                                    # a rodding eye where the pipe drops (it is rodded down the steep part); an eye already there stays
+        for k_ in ("RE",):
             if not any(abs(x_ - xd) < 0.05 and n_["kind"] == k_ for x_, n_ in nodes):
                 nodes.append((xd, {"kind": k_, "label": k_, "drop": True}))
     nodes.sort(key=lambda t: (t[0], t[1]["kind"]))
@@ -170,9 +170,9 @@ def build(state, res, il_head=None, lean_ratio=None):
         if dr is not None:
             i = dr
         if dr is not None and k != "MAIN":
-            desc = ("Inspection eye with a drop of %d mm" % round((il_in(x) - i) * 1000)) if k == "IE" else "Rodding eye at the drop"
+            desc = ("Rodding eye with a drop of %d mm" % round((il_in(x) - i) * 1000)) if k == "RE" else "Inspection eye at the drop"
         st.append({"name": name, "kind": k, "desc": desc, "x": round(x, 2), "ngl": g, "il": i, "depth": g - i, "cover": g - i - od,
-                   "drop": (il_in(x) - i) if dr is not None and k == "IE" else 0.0, "top": il_in(x) if dr is not None else i})
+                   "drop": (il_in(x) - i) if dr is not None and k == "RE" else 0.0, "top": il_in(x) if dr is not None else i})
     covers = [ngl(k / 10.0 * Hh) - il(k / 10.0 * Hh) - od for k in range(0, 11)]
     if terr is not None:                                        # on a contoured site look every half metre, so no hump in the ground is missed
         covers += [ngl(x_) - il(x_) - od for x_ in xs_c]
@@ -199,7 +199,7 @@ def build(state, res, il_head=None, lean_ratio=None):
         checks.append(("The pipe arrives %d mm BELOW the invert of the main: it cannot drain to the main by gravity. Lay it shallower or flatter, or check the main's level." % round(-drop * 1000), False))
     for xd, yd in drops_in:
         h_ = il_in(xd) - yd
-        checks.append(("Drop of %d mm at chainage %.1f m, in an inspection eye with a rodding eye." % (round(h_ * 1000), xd), h_ >= -1e-6) if h_ >= -1e-6 else
+        checks.append(("Drop of %d mm at chainage %.1f m, with a rodding eye at the top of the steep part." % (round(h_ * 1000), xd), h_ >= -1e-6) if h_ >= -1e-6 else
                       ("The drop at chainage %.1f m would lift the pipe by %d mm: type a lower invert level." % (xd, round(-h_ * 1000)), False))
     gaps = [b["x"] - a["x"] for a, b in zip(st[:-1], st[1:])]
     mx = float(par.get("max_ie", 25.0))

@@ -4115,7 +4115,7 @@ class SiteServicesPage(ToolBase):
             ds = d["drops"][0] if d["drops"] else None
             dep = round((ds[1] - ds[2]) * 1000) if ds else 0
             tail = ("The pipe falls at 1:%d from the house to the drop at %.1f m (%.1f m before the main), steps down %d mm at 45 degrees, then falls on to the main's invert "
-                    "level. A rodding eye is needed at the top of the drop; the program also draws an inspection eye there." % (round(d["fall"]), x, H - x, dep))
+                    "level. A rodding eye is put at the top of the drop so it can be rodded down the steep part." % (round(d["fall"]), x, H - x, dep))
         elif d["drop"] > 0.005 and mode == 0:
             tail = "With no drop the pipe arrives %d mm ABOVE the main's invert level: choose a drop." % round(d["drop"] * 1000)
         elif d["drop"] < -0.002:

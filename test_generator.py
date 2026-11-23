@@ -54,6 +54,28 @@ def main():
     finally:
         ur.urlopen = old
     assert len(sp2["shapes"]) == 8 and calls
+    # the designer's own details: saved, found again by their words, and shown to Claude as examples of the style
+    lp = os.path.join(d, "lib.json")
+    g.save_detail("Loffelstein retaining wall 1 m high on a strip footing", dict(g.SAMPLE_SPEC, title="Loffelstein wall"), lp)
+    g.save_detail("cavity wall on strip footing", dict(g.SAMPLE_SPEC, title="Cavity wall"), lp)
+    g.save_detail("cavity wall on strip footing, new version", dict(g.SAMPLE_SPEC, title="Cavity wall"), lp)       # the same title replaces
+    lib = g.load_library(lp)
+    assert [x["title"] for x in lib] == ["Loffelstein wall", "Cavity wall"] and "new version" in lib[1]["request"]
+    assert g.pick_examples("a Loffelstein retaining wall detail", lib, 1)[0]["title"] == "Loffelstein wall"
+    seen = []
+    def fake2(req, timeout=0):
+        seen.append(_j.loads(req.data.decode())["system"])
+        return R(_j.dumps({"content": [{"type": "tool_use", "input": g.SAMPLE_SPEC}]}).encode())
+    ur.urlopen = fake2
+    try:
+        g.generate("Loffelstein retaining wall", "k", "m", library=lib)
+        g.generate("something else", "k", "m", library=[])
+    finally:
+        ur.urlopen = old
+    assert "SAVED DETAILS" in seen[0] and "Loffelstein wall" in seen[0] and "SAVED DETAILS" not in seen[1]
+    g.delete_detail("Loffelstein wall", lp)
+    assert [x["title"] for x in g.load_library(lp)] == ["Cavity wall"]
+    assert g.load_library(os.path.join(d, "none.json")) == []
     print("generator ok")
 
 if __name__ == "__main__":

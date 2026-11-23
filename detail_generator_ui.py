@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QMessageBox, QPlainTextEdit, QPushButton,
+from PySide6.QtWidgets import (QComboBox, QFileDialog, QHBoxLayout, QLabel, QMessageBox, QPlainTextEdit, QPushButton,
                                QScrollArea, QVBoxLayout, QWidget)
 
 import detail_generator as gen
@@ -76,6 +76,19 @@ class GeneratorPage(QWidget):
         for b in (self.b_dict, self.b_go, self.b_sample):
             row.addWidget(b)
         tl.addLayout(row)
+        row2 = FlowLayout(None, 8, 6)                       # the designer's own details: saved ones teach the generator their style
+        self.mine = QComboBox()
+        self.mine.setMinimumWidth(240)
+        self.b_save = QPushButton("Save as my detail")
+        self.b_save.setToolTip("Keeps this detail. When you ask for a new one, the generator is shown your saved details that are closest to the request, so new details are drawn the way you draw them.")
+        self.b_save.setEnabled(False)
+        self.b_open = QPushButton("Open my detail")
+        self.b_del = QPushButton("Delete it")
+        for w in (self.b_save, QLabel("My details"), self.mine, self.b_open, self.b_del):
+            row2.addWidget(w)
+        tl.addLayout(row2)
+        self._last = None
+        self.refresh_mine()
         self.status = QLabel("")
         self.status.setWordWrap(True)
         tl.addWidget(self.status)
@@ -84,6 +97,47 @@ class GeneratorPage(QWidget):
         self.b_dict.clicked.connect(self.dictate)
         self.b_go.clicked.connect(self.draw)
         self.b_sample.clicked.connect(self.sample)
+        self.b_save.clicked.connect(self.save_mine)
+        self.b_open.clicked.connect(self.open_mine)
+        self.b_del.clicked.connect(self.delete_mine)
+
+    # ---- my details
+    def refresh_mine(self, pick=None):
+        lib = gen.load_library()
+        self.mine.clear()
+        for d in lib:
+            self.mine.addItem(d["title"])
+        if pick:
+            i = self.mine.findText(pick)
+            if i >= 0:
+                self.mine.setCurrentIndex(i)
+        self.b_open.setEnabled(bool(lib))
+        self.b_del.setEnabled(bool(lib))
+        return lib
+
+    def save_mine(self):
+        if not self._last:
+            self.say("Draw a detail first, then save it.")
+            return
+        req, spec = self._last
+        n = gen.save_detail(req or self.box.toPlainText(), spec)
+        self.refresh_mine(spec.get("title"))
+        self.say("Saved \"%s\" (%d saved). The generator now draws new details with your saved ones as examples of your style." % (spec.get("title"), n))
+
+    def open_mine(self):
+        t = self.mine.currentText()
+        for d in gen.load_library():
+            if d["title"] == t:
+                self.box.setPlainText(d.get("request", ""))
+                self._drawn((gen.clean_spec(d["spec"])[0], []), d.get("request", ""))
+                return
+
+    def delete_mine(self):
+        t = self.mine.currentText()
+        if t and QMessageBox.question(self, "My details", "Delete \"%s\" from your saved details?" % t) == QMessageBox.StandardButton.Yes:
+            gen.delete_detail(t)
+            self.refresh_mine()
+            self.say("Deleted.")
 
     # ---- actions
     def dictate(self):
@@ -112,7 +166,7 @@ class GeneratorPage(QWidget):
         self.b_go.setEnabled(False)
         self.say("Drawing...")
         self._job = _Job(lambda: gen.generate(txt, key, model))
-        self._job.done.connect(self._drawn)
+        self._job.done.connect(lambda res, t=txt: self._drawn(res, t))
         self._job.fail.connect(self._failed)
         self._job.start()
 
@@ -123,13 +177,15 @@ class GeneratorPage(QWidget):
         self.b_go.setEnabled(True)
         self.say(msg)
 
-    def _drawn(self, res):
+    def _drawn(self, res, request=""):
         import re
         import time
         import json
         import mot_detail_notes_app as dn
         self.b_go.setEnabled(True)
         spec, problems = res
+        self._last = (request, spec)
+        self.b_save.setEnabled(True)
         slug = re.sub(r"[^A-Za-z0-9]+", "_", spec["title"]).strip("_")[:40] or "detail"
         dxf = Path(dn.OUT_DIR) / ("generated_%s_%s.dxf" % (slug, time.strftime("%H%M%S")))
         try:

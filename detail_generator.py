@@ -88,9 +88,77 @@ def api_model():
         return core.MODEL
 
 
-def ask_claude(request, key, model, timeout=120):
+# ---------------------------------------------------------------- the designer's own details
+LIB_MAX = 60
+
+
+def library_path():
+    try:
+        import mot_detail_notes_app as dn
+        return os.path.join(str(dn.OUT_DIR), "my_details.json")
+    except Exception:
+        return os.path.join(os.path.expanduser("~"), "my_details.json")
+
+
+def load_library(path=None):
+    """-> [{"title", "request", "spec"}] saved by the designer (empty when there are none or the file cannot be read)"""
+    try:
+        with open(path or library_path(), encoding="utf-8") as f:
+            data = json.load(f)
+        return [d for d in data if isinstance(d, dict) and isinstance(d.get("spec"), dict) and d.get("title")]
+    except Exception:
+        return []
+
+
+def _write_library(lib, path=None):
+    p = path or library_path()
+    os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(lib[-LIB_MAX:], f, ensure_ascii=False)
+
+
+def save_detail(request, spec, path=None):
+    """keep a detail the designer is happy with; the generator reads these as examples of how they like details drawn. Same title replaces."""
+    lib = [d for d in load_library(path) if d["title"] != spec.get("title")]
+    lib.append({"title": spec.get("title") or "Detail", "request": (request or "").strip(), "spec": spec})
+    _write_library(lib, path)
+    return len(lib)
+
+
+def delete_detail(title, path=None):
+    lib = load_library(path)
+    _write_library([d for d in lib if d["title"] != title], path)
+
+
+def pick_examples(request, lib, n=2):
+    """the saved details whose words are closest to the request"""
+    words = {w for w in re.findall(r"[a-z]{4,}", (request or "").lower())}
+    scored = []
+    for d in lib:
+        dw = {w for w in re.findall(r"[a-z]{4,}", (d["title"] + " " + d.get("request", "")).lower())}
+        scored.append((len(words & dw), d))
+    scored = [t for t in scored if t[0] > 0] or [(0, d) for d in lib[-1:]]          # nothing close: the latest one still shows the style
+    scored.sort(key=lambda t: -t[0])
+    return [d for _s, d in scored[:n]]
+
+
+def examples_text(exs, limit=7000):
+    out, used = [], 0
+    for d in exs:
+        t = json.dumps(d["spec"], ensure_ascii=False, separators=(",", ":"))
+        if used + len(t) > limit:
+            break
+        used += len(t)
+        out.append("Request: %s\nDrawing: %s" % (d.get("request") or d["title"], t))
+    if not out:
+        return ""
+    return ("\n\nTHE DESIGNER'S OWN SAVED DETAILS. Draw in the same style: the same material names, layers, level of detail, note wording and way of "
+            "dimensioning, unless the request asks for something different. Do not copy a detail that does not match the request.\n\n" + "\n\n".join(out))
+
+
+def ask_claude(request, key, model, timeout=120, examples=""):
     """-> raw reply text. Raises GenError with a plain message."""
-    body = {"model": model, "max_tokens": 8000, "system": SYSTEM, "tools": [TOOL], "tool_choice": {"type": "auto"},
+    body = {"model": model, "max_tokens": 8000, "system": SYSTEM + (examples or ""), "tools": [TOOL], "tool_choice": {"type": "auto"},
             "messages": [{"role": "user", "content": request.strip()}]}
     req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=json.dumps(body).encode(),
                                  headers={"x-api-key": key, "anthropic-version": "2023-06-01",
@@ -226,16 +294,18 @@ def make_detail(spec, dxf_path, png_path=None, **kw):
     return len(placed)
 
 
-def generate(request, key=None, model=None):
+def generate(request, key=None, model=None, library=None):
     """request words -> (clean spec, problems). Needs an API key."""
     key = key or api_key()
     if not key:
         raise GenError("No API key saved. Add one under Settings in the Detail notes tab "
                        "(a Claude Pro subscription does not give the program a key).")
     last = None
+    lib = load_library() if library is None else library
+    ex = examples_text(pick_examples(request, lib)) if lib else ""
     for _try in range(2):                           # a reply that cannot be read is tried once more
         try:
-            return clean_spec(parse_reply(ask_claude(request, key, model or api_model())))
+            return clean_spec(parse_reply(ask_claude(request, key, model or api_model(), examples=ex)))
         except GenError as ex:
             last = ex
             if "Claude said" in str(ex) or "internet" in str(ex):

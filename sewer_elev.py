@@ -435,8 +435,8 @@ def draw(p, W, H, S, d, title_lines=(), when=None):
             c_ = seg_clip(ua, d["il"](xa) + off, ub, end_il + off)
             if c_:
                 line(X(c_[0]), Y(c_[1]), X(c_[2]), Y(c_[3]), BROWN, 0.7 if lo else 0.25, DD)
-    for t in sts:                                                       # a drop: the pipe steps down inside the inspection eye
-        if t["kind"] == "IE" and t.get("drop", 0) > 0.002 and ulo - 0.01 <= t["u"] <= uhi + 0.01:
+    for t in sts:                                                       # a drop: the pipe steps down at the rodding eye
+        if t["kind"] == "RE" and t.get("drop", 0) > 0.002 and ulo - 0.01 <= t["u"] <= uhi + 0.01:
             for off in offs:
                 line(X(t["u"]), Y(t["il"] + t["drop"] + off), X(t["u"]), Y(t["il"] + off), BROWN, 0.7 if lo else 0.5)
             text(X(t["u"]) + 2.0, (Y(t["il"] + t["drop"]) + Y(t["il"])) / 2 + 0.8, "drop %d mm" % round(t["drop"] * 1000), 2.0, False, BROWN)

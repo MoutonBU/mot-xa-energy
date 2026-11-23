@@ -1226,7 +1226,7 @@ def drop_chainages(state):
 
 
 def add_drop_eyes(state, sw, params):
-    """each drop is an inspection eye with a rodding eye: they are put on the sewer where the drop is, so the plan shows what the section shows"""
+    """each drop gets a rodding eye on the sewer where the drop is, so the plan shows what the section shows"""
     path, H = sw["path"], float(sw["length"])
     Lp = sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(path[:-1], path[1:]))
     fall, D0 = float(params.get("fall", 50.0)), float(params.get("min_depth", 0.45))
@@ -1235,7 +1235,7 @@ def add_drop_eyes(state, sw, params):
         if not (0.0 < x < H) or c < 0 or c > Lp:
             continue
         pt = _point_at(path, c)
-        for kind in ("IE", "RE"):
+        for kind in ("RE",):
             same = [n for n in sw["nodes"] if n["kind"] == kind and math.hypot(n["pt"][0] - pt[0], n["pt"][1] - pt[1]) < 0.3]
             if same:
                 same[0]["drop"] = True
