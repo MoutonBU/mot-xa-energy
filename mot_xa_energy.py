@@ -7584,6 +7584,21 @@ def st_weather_fallback(lat, lon):
     return {"T": T, "GHI": G, "DNI": DN, "DHI": DF, "lat": lat, "lon": lon, "name": "estimated clear-sky year (no weather file loaded)", "tz": 2.0, "_est": True}
 
 
+def sun_arrays(w):
+    """(sun altitude, sun azimuth) in radians for each of the 8760 hours of a weather file, kept on the weather dict."""
+    import numpy as np
+    sun = w.get("_sun")
+    if sun is None:
+        tz = epw_clock_zone(w)
+        alt = np.zeros(8760); az = np.zeros(8760)
+        for h in range(8760):
+            a_, z_ = solar_pos(w["lat"], w["lon"], h // 24 + 1, h % 24 + 0.5, tz)
+            alt[h], az[h] = a_, z_
+        sun = (np.radians(alt), np.radians(az))
+        w["_sun"] = sun
+    return sun
+
+
 def solar_thermal_calc(w, area, tilt, azim, eta0, a1, a2, persons, lit_pp, store_l, t_set=60.0, t_mean=45.0, loss=0.90, albedo=0.2):
     """Hour by hour solar thermal estimate. Sun on the tilted collector from DNI/DHI/GHI, collector efficiency from the usual
     eta0 - a1*dT/G - a2*dT^2/G curve, then per day: heat delivered = min(collector heat - tank loss, heat the hot water needs)."""
@@ -11202,6 +11217,7 @@ class MainWindow(QMainWindow):
         add(xa, "Export each subject as its own PDF...", lambda: self.export_subject_pdfs("xa"))
         add(xa, "Export pages as PNG (for Archicad)...", lambda: self.export_pages_png("xa"))
         rd = rp.addMenu("Rational design")
+        add(rd, "Run the energy simulation (reference building vs design)...", self.rational_design_dialog)
         add(rd, "Report details...", self.rd_dialog)
         add(rd, "Preview report", lambda: self.preview_pdf_report(self._write_rd_pdf, self._run_xa_quiet))
         add(rd, "Export report...", self.export_rd_pdf)
@@ -18109,9 +18125,8 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    def _sim_export_to(self, base):
-        """Write base.gbxml, base.idf and base.epw from the IFC model, the build-ups, glass and lighting entered. Returns a summary dict."""
-        import shutil
+    def _sim_inputs(self):
+        """The IFC model, build-ups, glass and weather the simulation export and the built-in rational design both use."""
         ifc_path = getattr(self, "ifc_path", "") or ""
         geo = sim_read_geometry(ifc_path, self._north_deg(), EXTERNAL_RE)
         rooms = self.xa_rooms()
@@ -18153,6 +18168,13 @@ class MainWindow(QMainWindow):
             lat, lon = self._site_lonlat()
             w = st_weather_fallback(lat, lon); est = True
         loc = {"lat": float(w["lat"]), "lon": float(w["lon"]), "tz": float(w.get("tz", 2.0)), "elev": float(w.get("elev", 0.0)), "name": w.get("name", "Site")}
+        return {"geo": geo, "model": model, "cons": cons, "glass": glass, "w": w, "est": est, "loc": loc}
+
+    def _sim_export_to(self, base):
+        """Write base.gbxml, base.idf and base.epw from the IFC model, the build-ups, glass and lighting entered. Returns a summary dict."""
+        import shutil
+        si = self._sim_inputs()
+        geo, model, cons, glass, w, est, loc = si["geo"], si["model"], si["cons"], si["glass"], si["w"], si["est"], si["loc"]
         epw_src = self.rd.get("epw") or ""
         epw_path = base + ".epw"
         if epw_src and os.path.exists(epw_src) and not est:
@@ -18196,6 +18218,193 @@ class MainWindow(QMainWindow):
         if r["skipped"]:
             txt += "\n\nLeft out (no usable shape): " + ", ".join(r["skipped"][:12])
         QMessageBox.information(self, APP_NAME, txt)
+
+    # ------------------------------------------------------------------ built-in rational design (reference building vs the design)
+    def rational_inputs(self):
+        """Everything the built-in energy model needs: rooms and openings from the IFC, build-ups, glass, shading, weather, deemed-to-satisfy values."""
+        import rd_engine as E
+        si = self._sim_inputs()
+        shade = {}
+        for t_, g_ in (self.xa_glass or {}).items():
+            try:
+                shade[str(t_)] = float(g_.get("P") or 0.0)
+            except (TypeError, ValueError):
+                pass
+        zone = self.xa_zone.currentText()
+        zones = E.zones_from_model(si["model"], si["cons"], si["glass"], shade)
+        cons = {k: {"layers": [dict(l) for l in v["layers"]], "r_default": v["r_default"], "name": v["name"]} for k, v in si["cons"].items()}
+        wall_t = "Wall - heavy (>= 270 kg/m2)"
+        for el in self.xa_elements or []:
+            if str(el.get("type", "")).startswith("Wall - light") and el.get("layers"):
+                wall_t = "Wall - light (< 270 kg/m2)"
+                break
+            if str(el.get("type", "")).startswith("Wall - heavy") and el.get("layers"):
+                break
+        req = {"ext_wall": xa_required_r(zone, wall_t), "roof": xa_required_r(zone, "Roof / ceiling"), "floor_exp": xa_required_r(zone, "Suspended floor")}
+        floor = sum(z["area"] for z in zones)
+        glz = sum(wn["area"] for z in zones for wn in z["wins"])
+        limit = float(self.xa_limit.value())
+        pct = min(limit, glz / floor * 100.0) if floor else limit
+        row = xa_table4_row(pct)
+        ref_glass = (float(row[1]), float(row[3])) if row[1] else (5.6, 0.77)
+        return {"E": E, "zones": zones, "cons": cons, "req": req, "limit": limit, "ref_glass": ref_glass, "w": si["w"], "est": si["est"],
+                "weather": si["loc"]["name"], "lpd": self._lt_lpd(), "floor": floor, "glass": glz, "wall_type": wall_t, "skipped": si["geo"]["skipped"],
+                "unplaced": si["model"]["unplaced"]}
+
+    def rational_design_dialog(self):
+        if not self._ifc_active() or not os.path.exists(getattr(self, "ifc_path", "") or ""):
+            QMessageBox.information(self, APP_NAME, "Import the Archicad IFC first. The energy model is built from the shapes of its rooms, windows and doors.")
+            return
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            ri = self.rational_inputs()
+        except Exception as ex:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, APP_NAME, "The model could not be built from the IFC:\n%s" % ex)
+            return
+        QApplication.restoreOverrideCursor()
+        d = QDialog(self)
+        d.setWindowTitle("Rational design - energy simulation (built in)")
+        d.resize(980, 780)
+        v = QVBoxLayout(d)
+        intro = QLabel("The same building is simulated hour by hour for a whole year, twice: as you designed it, and as the REFERENCE building "
+                       "(same rooms and shape, the deemed-to-satisfy insulation for zone %s, glass kept to %g%% of the floor area, no shading, "
+                       "lights at the allowed power). The design passes when its yearly energy use and its peak demand are not more than the reference's."
+                       % (self.xa_zone.currentText(), ri["limit"]))
+        intro.setWordWrap(True)
+        v.addWidget(intro)
+        grid = QGridLayout()
+        spins = {}
+
+        def spin(r_, c_, label, key, val, lo, hi, dec, step, tip=""):
+            lb = QLabel(label)
+            sp = QDoubleSpinBox()
+            sp.setDecimals(dec); sp.setRange(lo, hi); sp.setSingleStep(step); sp.setValue(val)
+            if tip:
+                sp.setToolTip(tip); lb.setToolTip(tip)
+            grid.addWidget(lb, r_, c_ * 2)
+            grid.addWidget(sp, r_, c_ * 2 + 1)
+            spins[key] = sp
+        spin(0, 0, "Air leakage (air changes / hour)", "ach", 0.5, 0.0, 5.0, 2, 0.1, "Same in the design and the reference building.")
+        spin(1, 0, "Heating switches on below (C)", "heat_sp", 19.0, 10.0, 25.0, 1, 0.5)
+        spin(2, 0, "Cooling switches on above (C)", "cool_sp", 25.0, 20.0, 35.0, 1, 0.5)
+        spin(0, 1, "Heating efficiency (COP; 1 = electric element)", "cop_heat", 1.0, 0.5, 6.0, 2, 0.1)
+        spin(1, 1, "Cooling efficiency (COP)", "cop_cool", 3.0, 1.0, 8.0, 2, 0.1)
+        spin(2, 1, "Lights on (hours per evening)", "light_hours", 4.0, 0.0, 24.0, 1, 0.5, "Used for rooms where no lighting was calculated.")
+        spin(0, 2, "Reference glass U (W/m2K)", "ref_u", ri["ref_glass"][0], 0.5, 8.0, 2, 0.1, "From SANS 10400-XA table 4 for the glass share; single glass when the share has no limit.")
+        spin(1, 2, "Reference glass SHGC", "ref_g", ri["ref_glass"][1], 0.1, 0.95, 2, 0.01)
+        spin(2, 2, "Reference glass kept to (% of floor)", "limit", ri["limit"], 1.0, 100.0, 1, 1.0)
+        v.addLayout(grid)
+        from PySide6.QtWidgets import QTextBrowser as _TB
+        out = _TB()
+        out.setOpenExternalLinks(False)
+        v.addWidget(out, 1)
+        state = {}
+        btns = QHBoxLayout()
+        run = QPushButton("Run the simulation")
+        use = QPushButton("Put these results in the report")
+        use.setEnabled(False)
+        close = QPushButton("Close")
+        btns.addWidget(run); btns.addWidget(use); btns.addStretch(); btns.addWidget(close)
+        v.addLayout(btns)
+
+        def go():
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                E = ri["E"]
+                o = {k: sp.value() for k, sp in spins.items() if k in ("ach", "heat_sp", "cool_sp", "cop_heat", "cop_cool", "light_hours")}
+                occ = self.xa_occ.currentText().split(" - ")[0].strip()
+                try:
+                    o["hours"] = float(str(self.rd.get("hrs", "")).replace(",", ".") or 0)
+                    o["days"] = int(float(str(self.rd.get("days", "")).replace(",", ".") or 7))
+                except ValueError:
+                    o["hours"], o["days"] = 0.0, 7
+                if occ.startswith("H"):
+                    o["hours"] = 0.0
+                res = E.run_rational(ri["zones"], ri["cons"], ri["w"], sun_arrays(ri["w"]), ri["req"], spins["limit"].value(),
+                                     (spins["ref_u"].value(), spins["ref_g"].value()), ri["lpd"], o)
+            except Exception as ex:
+                QApplication.restoreOverrideCursor()
+                QMessageBox.warning(self, APP_NAME, "The simulation stopped:\n%s" % ex)
+                return
+            QApplication.restoreOverrideCursor()
+            state["res"] = res
+            out.setHtml(self._rd_result_html(res, ri))
+            use.setEnabled(True)
+
+        def put():
+            res = state.get("res")
+            if not res:
+                return
+            self.rd["route"] = RD_ROUTES[1]
+            self.rd["sim_software"] = "MCP Architecture & Interiors built-in hourly model (EN ISO 13790 5R1C, 8760 h, ideal loads)"
+            self.rd["sim_cert"] = "Weather: %s. Built-in model, not a certified product; competent person to confirm." % ri["weather"]
+            self.rd["ref_demand"] = "%.1f" % res["ref_demand"]
+            self.rd["act_demand"] = "%.1f" % res["act_demand"]
+            self.rd["ref_cons"] = "%.1f" % res["ref_cons"]
+            self.rd["act_cons"] = "%.1f" % res["act_cons"]
+            QMessageBox.information(d, APP_NAME, "The results are in the Rational design report (Reports > Rational design > Report details, Simulation results).")
+        run.clicked.connect(go)
+        use.clicked.connect(put)
+        close.clicked.connect(d.accept)
+        out.setHtml("<p>Press <b>Run the simulation</b>. It takes a few seconds.</p>" + self._rd_model_note(ri))
+        d.exec()
+
+    def _rd_model_note(self, ri):
+        n = sum(len(z["wins"]) for z in ri["zones"])
+        txt = ("<p style='color:#666'>%d rooms, %d windows, floor %.1f m2, glass %.1f m2 (%.1f%% of the floor). Weather: %s.%s" % (
+            len(ri["zones"]), n, ri["floor"], ri["glass"], ri["glass"] / ri["floor"] * 100.0 if ri["floor"] else 0.0, ri["weather"],
+            " <b style='color:#b3202f'>No weather file is loaded: this is a clear-sky estimate and must not be used for a submission. Load a weather file first.</b>" if ri["est"] else ""))
+        if ri["unplaced"]:
+            txt += " %d windows or doors could not be matched to an exterior wall and are left out." % ri["unplaced"]
+        return txt + "</p>"
+
+    def _rd_result_html(self, res, ri):
+        a, r = res["actual"], res["reference"]
+        ok = res["ok"]
+        col = "background:#e7f5ec;color:#14532d;border:2px solid #1f7a3d;" if ok else "background:#fdecee;color:#7f1020;border:2px solid #b3202f;"
+        A = a["area"]
+
+        def pm(x, A_=A):
+            return x / A_ if A_ else 0.0
+        h = ["<div style='%spadding:8px 12px'><b>%s</b><br>Yearly energy use: design %.1f, reference %.1f kWh/m2/year (%s).<br>Peak demand: design %.1f, reference %.1f VA/m2 (%s)."
+             % (col, "The design is not worse than the reference building" if ok else "The design uses MORE than the reference building",
+                res["act_cons"], res["ref_cons"], "ok" if res["cons_ok"] else "%.1f too much" % (res["act_cons"] - res["ref_cons"]),
+                res["act_demand"], res["ref_demand"], "ok" if res["demand_ok"] else "%.1f too much" % (res["act_demand"] - res["ref_demand"]))]
+        if res["glass_scale"] < 1.0:
+            h.append("<br>The reference building has %.0f%% of your glass area: the most that SANS 10400-XA allows for its deemed-to-satisfy fenestration." % (res["glass_scale"] * 100.0))
+        h.append("</div>")
+        h.append(self._rd_model_note(ri))
+        row = lambda lab, ra, ac, fmt="%.1f": "<tr><td>%s</td><td align=right>%s</td><td align=right>%s</td><td align=right>%s</td></tr>" % (
+            lab, fmt % ra, fmt % ac, ("%+.1f" % (ac - ra)))
+        h.append("<h3>Per square metre, per year</h3><table cellpadding=4 border=1 style='border-collapse:collapse'><tr><th></th><th>Reference</th><th>Design</th><th>Difference</th></tr>")
+        h.append(row("Heating (thermal, kWh/m2)", pm(r["heat"]), pm(a["heat"])))
+        h.append(row("Cooling (thermal, kWh/m2)", pm(r["cool"]), pm(a["cool"])))
+        h.append(row("Heating electricity (kWh/m2)", pm(r["elec_heat"]), pm(a["elec_heat"])))
+        h.append(row("Cooling electricity (kWh/m2)", pm(r["elec_cool"]), pm(a["elec_cool"])))
+        h.append(row("Lighting (kWh/m2)", pm(r["lights"]), pm(a["lights"])))
+        h.append(row("<b>Total energy use (kWh/m2/year)</b>", res["ref_cons"], res["act_cons"]))
+        h.append(row("<b>Peak demand (VA/m2)</b>", res["ref_demand"], res["act_demand"]))
+        h.append("</table>")
+        h.append("<h3>Where the heat goes (W per degree)</h3><table cellpadding=4 border=1 style='border-collapse:collapse'><tr><th></th><th>Reference</th><th>Design</th></tr>")
+        for k in ("Walls", "Roof", "Floor", "Windows", "Doors", "Air leakage"):
+            h.append("<tr><td>%s</td><td align=right>%.1f</td><td align=right>%.1f</td></tr>" % (k, r["ua"][k], a["ua"][k]))
+        h.append("</table>")
+        mon = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        h.append("<h3>Month by month, design (kWh thermal)</h3><table cellpadding=3 border=1 style='border-collapse:collapse'><tr><th></th>%s</tr>" % "".join("<th>%s</th>" % m for m in mon))
+        h.append("<tr><td>Heating</td>%s</tr>" % "".join("<td align=right>%.0f</td>" % x for x in a["monthly_heat"]))
+        h.append("<tr><td>Cooling</td>%s</tr></table>" % "".join("<td align=right>%.0f</td>" % x for x in a["monthly_cool"]))
+        h.append("<h3>Rooms, design (kWh/m2/year, thermal)</h3><table cellpadding=3 border=1 style='border-collapse:collapse'><tr><th>Room</th><th>Area</th><th>Heating</th><th>Cooling</th></tr>")
+        for z in sorted(a["zones"], key=lambda z: -(z["heat"] + z["cool"]) / max(z["area"], 1e-6))[:25]:
+            h.append("<tr><td>%s</td><td align=right>%.1f</td><td align=right>%.1f</td><td align=right>%.1f</td></tr>" % (
+                html.escape(z["name"]), z["area"], z["heat"] / max(z["area"], 1e-6), z["cool"] / max(z["area"], 1e-6)))
+        h.append("</table>")
+        h.append("<h3>How it was worked out</h3><p style='color:#555'>Hourly 5R1C model of EN ISO 13790 (annex C), one zone per room, 8760 hours of the weather file, ideal heating and cooling between the two set-points. "
+                 "Sun on every wall and window from the hourly direct and diffuse sun, with the angle of the sun on the glass and overhang shading from the P and H you entered. "
+                 "Walls and roof take the sun-heated outside temperature; the slab is held at the yearly mean air temperature. Both buildings have the same air leakage, people, "
+                 "equipment and hours. Rooms are boxes with flat ceilings. The model was checked against the plain heat-loss sum (UA x temperature difference). "
+                 "It is not a certified simulation product: the competent person who signs the rational design must accept it.</p>")
+        return "".join(h)
 
     def export_xa_pdf(self):
         self._run_xa()
