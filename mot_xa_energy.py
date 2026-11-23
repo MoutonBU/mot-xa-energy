@@ -9176,7 +9176,7 @@ class MainWindow(QMainWindow):
         for _w in (_wt, _dt):                                  # are the windows and glazed doors within the glazing limit that is set?
             _l = QLabel("")
             _l.setWordWrap(True)
-            _l.setStyleSheet("padding:4px 8px;border-radius:6px;font-weight:bold;")
+            _l.setStyleSheet("padding:6px 10px;border-radius:6px;")
             _w.layout().insertWidget(0, _l)
             self._glz_labels.append(_l)
         self._glz_timer = QTimer(self)
@@ -10613,39 +10613,65 @@ class MainWindow(QMainWindow):
             float(it.get("qty", 1)), float(it.get("glazed_m2") or 0.0))
 
     def update_glazing_status(self):
-        """the line over the Windows and Doors tables: the glazing of every room (windows and glazed doors) against the glazing limit that is set"""
+        """the box over the Windows and Doors tables, in plain words: what the glazing limit allows, what the plan has, and what to change to be within it"""
+        import dataclasses
         try:
             sched = self._with_skips(self.read_schedule(), "skip_lv")
-            rooms = [rm for rm in self.read_rooms() if not lv_excluded_reason(rm.name)]
+            rooms = [rm for rm in self.read_rooms() if not lv_excluded_reason(rm.name) and rm.area_m2 > 0]
         except Exception:
             return
         lim = GLAZE_LIMIT[0]
-        tot_g = tot_a = 0.0
-        over = []
-        for rm in rooms:
-            if rm.area_m2 <= 0:
-                continue
-            g = sum(sched[t].glazed_m2 * q for t, q in parse_tags(rm.tags).items() if t in sched and sched[t].counts)
-            tot_g += g
-            tot_a += rm.area_m2
-            if g > 0 and g / rm.area_m2 * 100.0 > lim + 1e-9:
-                over.append((g / rm.area_m2 * 100.0, rm.name))
-        if not tot_a:
-            txt, ok = "Glazing limit %g%%: give the rooms an area and their window tags to check it." % lim, None
+
+        def per_room(frame=None):
+            out = []
+            for rm in rooms:
+                g = 0.0
+                for t, q in parse_tags(rm.tags).items():
+                    o = sched.get(t)
+                    if o is None or not o.counts:
+                        continue
+                    if frame is not None and o.glazed_area_m2 <= 0:
+                        o = dataclasses.replace(o, frame_mm=max(o.frame_mm, frame))
+                    g += o.glazed_m2 * q
+                out.append((rm, g, rm.area_m2 * lim / 100.0))
+            return out
+        rows = per_room()
+        flr = sum(a for _r, _g, a in [(r, g, r.area_m2) for r, g, _al in rows])
+        have = sum(g for _r, g, _al in rows)
+        allow = flr * lim / 100.0
+        over = sorted([(g - al, rm, g, al) for rm, g, al in rows if g > al + 1e-6], key=lambda t: -t[0])
+        if not rows or not flr:
+            html, ok = "<b>Glazing limit %g%%</b><br>Give the rooms an area and their window tags to check the glazing." % lim, None
+        elif not over:
+            html = ("<b>Glazing is within the limit</b><br>Allowed: %.2f m\u00b2 of glass (%g%% of %.1f m\u00b2 floor).<br>"
+                    "We have: %.2f m\u00b2, so %.2f m\u00b2 to spare. No room is over its own limit." % (allow, lim, flr, have, allow - have))
+            ok = True
         else:
-            pct = tot_g / tot_a * 100.0
-            over.sort(reverse=True)
-            if over:
-                txt = ("OVER the glazing limit of %g%%: %d room(s) are above it (%s). Whole plan %.1f m2 of glass on %.1f m2 = %.1f%%."
-                       % (lim, len(over), ", ".join("%s %.1f%%" % (n[:18], p_) for p_, n in over[:4]), tot_g, tot_a, pct))
-                ok = False
+            cut = sum(d for d, *_ in over)
+            fix = None
+            for f_ in range(0, 201, 5):                          # how wide would the frames have to be, on every window and door, to be within the limit?
+                if all(g <= al + 1e-6 for _r, g, al in per_room(float(f_))):
+                    fix = f_
+                    break
+            lines = ["<b>Glazing is over the limit</b>",
+                     "Allowed: %.2f m\u00b2 of glass (%g%% of %.1f m\u00b2 floor).<br>We have: %.2f m\u00b2 &nbsp;&rarr;&nbsp; <b>%.2f m\u00b2 too much</b> (%d room%s)." % (
+                         allow, lim, flr, have, cut, len(over), "" if len(over) == 1 else "s"),
+                     "<b>To be within the limit, do one of these:</b>",
+                     "&bull; Take out <b>%.2f m\u00b2</b> of glass: make the windows / doors smaller, or take one out." % cut]
+            if fix is not None and fix > 0:
+                lines.append("&bull; Or make the frames wider: about <b>%d mm</b> on every window and door (set Frame width in the toolbar)." % fix)
+            elif fix == 0:
+                lines.append("&bull; Frames alone are enough: tick Deduct frames.")
             else:
-                txt = "Within the glazing limit of %g%%: %.1f m2 of glass on %.1f m2 of floor = %.1f%%, and no room is above it." % (lim, tot_g, tot_a, pct)
-                ok = True
-        col = {True: "background:#1f7a3d;color:white;", False: "background:#b3202f;color:white;", None: "background:#555;color:white;"}[ok]
+                lines.append("&bull; Frames alone cannot do it (even 200 mm frames are not enough).")
+            lines.append("<b>Rooms over:</b> " + "; ".join("%s has %.2f m\u00b2, allowed %.2f (reduce %.2f)" % (rm.name[:20], g, al, d) for d, rm, g, al in over[:4]))
+            html, ok = "<br>".join(lines), False
+        col = {True: "background:#e7f5ec;color:#14532d;border:2px solid #1f7a3d;", False: "background:#fdecee;color:#7f1020;border:2px solid #b3202f;",
+               None: "background:#eee;color:#333;border:2px solid #999;"}[ok]
         for l_ in getattr(self, "_glz_labels", []):
-            l_.setText(txt)
-            l_.setStyleSheet("padding:4px 8px;border-radius:6px;font-weight:bold;" + col)
+            l_.setTextFormat(Qt.TextFormat.RichText)
+            l_.setText(html)
+            l_.setStyleSheet("padding:6px 10px;border-radius:6px;" + col)
 
     def _skip_tags(self, key):
         return {t.strip().upper() for t in str(self.rd.get(key, "") or "").split(",") if t.strip()}
