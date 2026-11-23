@@ -34,3 +34,10 @@ hz=E.block_horizon(180,5,7.5,10)
 assert hz[18]>0 and hz[0]==0 and abs(hz[18]-round(__import__("math").degrees(__import__("math").atan2(6.0,5)),1))<0.2
 assert hz[17]>0 and hz[19]>0 and hz[12]==0
 print("ok block")
+pg.shade_cb.setChecked(True)
+o=pg.sheet_opts(); assert o["shade"] and all(len(w[0])==4 for w in o["shade"])
+from PySide6.QtGui import QImage, QPainter
+img=QImage(900,700,QImage.Format_RGB32); p_=QPainter(img)
+import site_sheet as sx
+sh=sx.Sheet(20.0,(9,10),(900,700),"left",0.0); sx._draw(p_,sh,pg.st,pg.res,o,7); p_.end()
+img.save("/tmp/claude-0/-home-claude/3e984422-d403-5b77-8b1a-953c242365ed/scratchpad/shade.png"); print("ok shade")

@@ -1311,7 +1311,10 @@ class SiteServicesPage(ToolBase):
         sendb = QPushButton("Send to the energy tools")
         sendb.setToolTip("Hands the stand number, house, compass bearing and the shade of the neighbouring houses to the light, ventilation, XA energy and rational design tools.")
         sendb.clicked.connect(self.send_to_energy)
-        for w in (QLabel("Neighbours' house height (for their shade)"), self.z_nbh, sendb):
+        self.shade_cb = QCheckBox("Show their shade on the plan")
+        self.shade_cb.setToolTip("Red wedges round the house: the neighbours' skyline as the energy tools will use it (angle above the horizon, by compass direction). Screen only.")
+        self.shade_cb.toggled.connect(lambda *_: self.view.update())
+        for w in (QLabel("Neighbours' house height (for their shade)"), self.z_nbh, self.shade_cb, sendb):
             row.addWidget(w)
         row.addStretch(1)
         bv.addLayout(row)
@@ -1322,12 +1325,13 @@ class SiteServicesPage(ToolBase):
         v1.addWidget(bx)
         bx, bv = self.box("2. Plan labels", "The stand number and street name that print on the plan.")
         row = QHBoxLayout()
-        self.sh_no, self.sh_street, self.sh_rw, self.sh_se = QLineEdit(), QLineEdit(), QLineEdit(), QLineEdit()
+        self.sh_no, self.sh_street, self.sh_rw, self.sh_se, self.sh_dwg = QLineEdit(), QLineEdit(), QLineEdit(), QLineEdit(), QLineEdit()
+        self.sh_dwg.setPlaceholderText("SP-01")
         self.sh_no.setPlaceholderText("2155")
         self.sh_street.setPlaceholderText("BLUESTEM STREET")
         self.sh_rw.setPlaceholderText("13m")
         self.sh_se.setPlaceholderText("2246")
-        for lab, w_, st_ in (("Stand no.", self.sh_no, 0), ("Street", self.sh_street, 2), ("Road", self.sh_rw, 0), ("Street erf", self.sh_se, 0)):
+        for lab, w_, st_ in (("Stand no.", self.sh_no, 0), ("Street", self.sh_street, 2), ("Road", self.sh_rw, 0), ("Street erf", self.sh_se, 0), ("Drawing no.", self.sh_dwg, 0)):
             row.addWidget(QLabel(lab))
             row.addWidget(w_, st_ or 1)
         bv.addLayout(row)
@@ -1626,7 +1630,7 @@ class SiteServicesPage(ToolBase):
                   self.z_cov, self.z_far, self.z_sto, self.z_hmax, self.z_h, self.z_breq, self.z_bays, self.z_nbh):
             w.valueChanged.connect(self._edited)
         self.c_on.toggled.connect(self._edited)
-        for w_ in (self.sh_no, self.sh_street, self.sh_rw, self.sh_se):
+        for w_ in (self.sh_no, self.sh_street, self.sh_rw, self.sh_se, self.sh_dwg):
             w_.textChanged.connect(self._edited)
         self.sh_road.currentIndexChanged.connect(self._edited)
         self.sh_north.valueChanged.connect(self._edited)
@@ -1751,6 +1755,7 @@ class SiteServicesPage(ToolBase):
         sh["text_edit"] = self.st.get("text_edit") or {}
         sh["hidden"] = self.st.get("text_hidden") or []
         sh["nb_lines"] = self.neighbour_lines()
+        sh["shade"] = self.shade_wedges() if getattr(self, "shade_cb", None) is not None and self.shade_cb.isChecked() else []
         try:
             no = int(sh.get("stand_no", ""))
             sh["neigh"] = [] if self.st.get("neighbours") else [no - 1, no + 1]   # real neighbours come from the township drawing
@@ -1842,7 +1847,7 @@ class SiteServicesPage(ToolBase):
             nw = list(se.north_screen_to_world(deg_new, road_new, turn_new))
         st["north_world"] = [round(nw[0], 4), round(nw[1], 4)]
         st["sheet"] = {"road": road_new, "street": self.sh_street.text().strip(), "road_w": self.sh_rw.text().strip(), "street_erf": self.sh_se.text().strip(),
-                       "stand_no": self.sh_no.text().strip(), "north": deg_new, "turn": turn_new,
+                       "stand_no": self.sh_no.text().strip(), "dwg_no": self.sh_dwg.text().strip(), "north": deg_new, "turn": turn_new,
                        "north_pos": prev.get("north_pos")}
         if self.view.auto is False and False:
             pass
@@ -1886,6 +1891,7 @@ class SiteServicesPage(ToolBase):
             self.sh_street.setText(str(sh.get("street", "")))
             self.sh_rw.setText(str(sh.get("road_w", "13m")))
             self.sh_se.setText(str(sh.get("street_erf", "")))
+            self.sh_dwg.setText(str(sh.get("dwg_no", "")))
             self.sh_road.setCurrentText(str(sh.get("road", "left")))
             self.sh_north.setValue(float(sh.get("north", 0)))
             self.sh_turn.setValue(float(sh.get("turn", 0)))
@@ -2035,6 +2041,47 @@ class SiteServicesPage(ToolBase):
             QMessageBox.information(self, "House placing", "The energy tools are not available here.")
             return
         QMessageBox.information(self, "House placing", f(link))
+
+    def title_block_lines(self):
+        """the title block of the sheet from the project details of the report (Project details) and this plan: -> [(label, value)] without the empty ones"""
+        rd = getattr(self.win, "rd", None) or {}
+        sh = self.st.get("sheet") or {}
+        no = sh.get("stand_no") or ""
+        rows = [("Project", rd.get("project", "")), ("Stand", ("Erf %s" % no) if no else ""), ("Details", rd.get("details", "")), ("Owner", rd.get("owner", "")),
+                ("Architect", rd.get("architect", "") or rd.get("company", "")), ("Drawing no.", sh.get("dwg_no", "")), ("Revision", rd.get("rev", "")), ("Date", rd.get("date", "") or __import__("datetime").date.today().strftime("%d/%m/%Y"))]
+        return [(a, str(b).strip()) for a, b in rows if str(b).strip()]
+
+    def compliance_lines(self):
+        """the zoning limits and building lines, one line each, for the sheet"""
+        rows = (self.res or {}).get("compliance") or []
+        out = []
+        for r_ in rows:
+            if r_["key"] == "inside":
+                continue
+            tag = "OK" if r_["ok"] else "NOT MET" if r_["ok"] is False else "-"
+            if r_["ok"] is None:
+                continue
+            out.append("%s: %s (%s) %s" % (r_["label"], r_["value"], r_["limit"], tag) if r_["limit"] else "%s: %s %s" % (r_["label"], r_["value"], tag))
+        return out
+
+    def shade_wedges(self):
+        """the neighbours' skyline round the house, for the screen: [(polygon in the stand's frame, label point, altitude in degrees)], one wedge per 10 degrees of compass bearing"""
+        hz = self.site_horizon()
+        hc = (self.st["house"]["cx"], self.st["house"]["cy"])
+        out = []
+        for k, alt in enumerate(hz):
+            if alt <= 0.05:
+                continue
+            r = 3.0 + alt * 0.45
+            pts = [hc]
+            for b in (k * 10.0 - 5.0, k * 10.0, k * 10.0 + 5.0):
+                v = self.bearing_vec(b)
+                n_ = math.hypot(*v) or 1.0
+                pts.append((hc[0] + v[0] / n_ * r, hc[1] + v[1] / n_ * r))
+            v = self.bearing_vec(k * 10.0)
+            n_ = math.hypot(*v) or 1.0
+            out.append((pts, (hc[0] + v[0] / n_ * (r + 1.0), hc[1] + v[1] / n_ * (r + 1.0)), alt))
+        return out
 
     def show_compliance(self):
         """the pass / fail rows of the zoning limits, redrawn on every move"""
@@ -3738,10 +3785,10 @@ class SiteServicesPage(ToolBase):
         cpoly = self.cutout_poly()
         road = self.st["sheet"].get("road", "left")
         s200 = 5.0 * dpi / 25.4                                  # pixels per metre at 1:200
-        fit = min(W * 0.92 / w_m, H * 0.80 / h_m)
+        fit = min(W * 0.92 / w_m, H * 0.74 / h_m)
         s = min(s200, fit)
         scale_txt = "1:200" if s >= s200 - 1e-6 else "1:%d" % round(200 * s200 / s / 10) * 1 if False else ("1:200" if s >= s200 - 1e-6 else "1:%d" % int(round(200 * s200 / s / 50.0) * 50))
-        sh = site_sheet.Sheet(s, (ccx, ccy), (W, H * 0.92), road, self.st["sheet"].get("turn", 0.0))
+        sh = site_sheet.Sheet(s, (ccx, ccy), (W, H * 0.82), road, self.st["sheet"].get("turn", 0.0))
         p.save()
         p.setClipPath(QPainterPath_from(QPolygonF([sh.pt(q_) for q_ in cpoly])))
         site_sheet.draw(p, sh, self.st, self.res, self.export_opts(), minpx=5)
@@ -3749,22 +3796,41 @@ class SiteServicesPage(ToolBase):
         site_sheet.north_arrow(p, self.north_centre(W, H, r_px, False), r_px, self.st["sheet"].get("north", 0))
         p.restore()
         name = self.st["sheet"].get("stand_no") or self.st["stand"].get("name", "Stand")
-        base = H * 0.945
+        base = H * 0.855
         p.setPen(QColor("black"))
+        p.drawLine(QPointF(W * 0.03, base - s * 0.8), QPointF(W * 0.97, base - s * 0.8))
         p.setFont(site_sheet.font(s * 0.62, True, 100))
         p.drawText(QPointF(W * 0.04, base), "Site Plan")
         p.setFont(site_sheet.font(s * 0.62, False, 100))
         p.drawText(QPointF(W * 0.04, base + s * 0.9), scale_txt)
         p.setPen(site_sheet.RED)
-        p.setFont(site_sheet.font(s * 0.8, True, 100))
-        p.drawText(QPointF(W * 0.20, base + s * 0.9), "To Scale if printed to A3" if scale_txt == "1:200" else "Not to scale")
+        p.setFont(site_sheet.font(s * 0.5, True, 100))
+        p.drawText(QPointF(W * 0.04, base + s * 1.8), "To Scale if printed to A3" if scale_txt == "1:200" else "Not to scale")
         r = self.res
         p.setPen(QColor("black"))
-        p.setFont(site_sheet.font(s * 0.5, False, 100))
-        lines = ["Stand %s   %.0f m2   coverage %.1f%%" % (name, r["stand_area"], r["coverage_pct"]),
-                 "Sewer %s, %.1f m, depth at the house %d mm.   Water %.1f m.   Electrical %.1f m." % (r["sewer"]["note"], r["sewer"]["length"], round(r["sewer"]["depth_house"] * 1000), r["water"]["length"], r["elec"]["length"])]
+        f_ = site_sheet.font(s * 0.48, False, 100)
+        fb_ = site_sheet.font(s * 0.48, True, 100)
+        step = s * 0.72
+        for i, (a_, b_) in enumerate(self.title_block_lines()):                       # the title block
+            y_ = base + i * step - step * 0.2
+            if i >= 4:
+                x_, y_ = W * 0.36, base + (i - 4) * step - step * 0.2
+            else:
+                x_ = W * 0.20
+            p.setFont(fb_)
+            p.drawText(QPointF(x_, y_), a_ + ":")
+            p.setFont(f_)
+            p.drawText(QPointF(x_ + s * 4.0, y_), b_)
+        lines = ["Stand %s   %.0f m2   coverage %.1f%%" % (name if name != "Stand" else "", r["stand_area"], r["coverage_pct"]),
+                 "Sewer %s, %.1f m, depth at the house %d mm." % (r["sewer"]["note"], r["sewer"]["length"], round(r["sewer"]["depth_house"] * 1000)),
+                 "Water %.1f m.   Electrical %.1f m." % (r["water"]["length"], r["elec"]["length"])] + self.compliance_lines()
+        p.setFont(f_)
         for i, t in enumerate(lines):
-            p.drawText(QPointF(W * 0.55, base + i * s * 0.9), t)
+            bad = t.endswith("NOT MET")
+            p.setPen(site_sheet.RED if bad else QColor("black"))
+            x_ = W * 0.55 if i < 5 else W * 0.78
+            y_ = base + (i if i < 5 else i - 5) * step - step * 0.2
+            p.drawText(QPointF(x_, y_), t)
 
     def save_pdf(self):
         path, _ = QFileDialog.getSaveFileName(self, "Save the plan", "site_services.pdf", "PDF (*.pdf)")

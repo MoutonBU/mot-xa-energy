@@ -404,6 +404,10 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
         D.L("STAND NUMBERS")
         D.text(cn_, str(nb_["no"]), 1.3, (1, 0), bold=True, color=QColor(120, 120, 120), key="NB:%d" % i_, upright=True)
         D.L(None)
+    if minpx > 0 and opts.get("shade"):                                  # on the screen only: the neighbours' skyline round the house (what the energy tools use)
+        for pts_, lp_, alt_ in opts["shade"]:
+            D.poly(pts_, QColor(200, 15, 32), 0.02, QColor(200, 15, 32, 70))
+            D.text(lp_, "%d\u00b0" % round(alt_), 0.6, (1, 0), color=QColor(200, 15, 32), bold=True, upright=True)
     if minpx > 0 and res:                                                # on the screen only: a red ring where a service line leaves the stand
         for f_ in res.get("flags") or []:
             D.dot(tuple(f_["pt"]), 0.9, QColor(200, 15, 32), filled=False)

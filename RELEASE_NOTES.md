@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.176**
+Current version: **1.86.177**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **House placing sheet: title block and zoning table:** the PDF and DXF now carry a title block (project, stand, owner, architect, drawing number, revision, date, taken from Project details and a new "Drawing no." field in Plan labels) and the zoning list (building lines, coverage, floor area ratio, height, parking) with OK / NOT MET in red. In the DXF they sit on a TITLE BLOCK layer.
+- **House placing, neighbour shade on the plan:** the tick "Show their shade on the plan" draws red wedges round the house, one per 10 degrees of compass bearing, with the angle above the horizon, exactly what "Send to the energy tools" hands over (screen only).
 - **Council submission pack carries the House placing plan:** the checklist has a new line "Site plan with services (house placing: sewer, water, electrical)", made from House placing as an A3 PDF and joined into the pack with the other sheets. Projects saved earlier get the new line too.
 - **Light and ventilation, light on the whole opening:** a new tick "Light on the whole opening" counts daylight on the full window or door opening including its frame, as SANS 10400-O 4.2.1.1.3 words it. Off (as before) counts the glass only. The glazing limit of SANS 10400-XA still uses the glass, the report says which basis was used, and the choice is saved with the project.
 - **Rational design, shade from a building next door, on or off:** the simulation window has a tick "A building next to this one throws shade on it": type the compass bearing it lies in, its distance, height and width facing the house, and its shade is taken off the sun's beam hour by hour. It works with the neighbours' skyline sent from House placing (both can be on together), and a second tick decides whether the reference building gets the same shade or only the design does. Untick them all for no shade. The result page says which was used.

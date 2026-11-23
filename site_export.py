@@ -20,7 +20,7 @@ LAYER_OF = {
     (255, 128, 128): ("CARPORT", 6), (255, 235, 214): ("ENTRY", 51), (110, 190, 245): ("SETTING OUT", 4), (120, 120, 120): ("ENTRY", 8),
 }
 UNDER_COLOURS = {(207, 214, 228), (183, 220, 183), (198, 222, 250), (236, 208, 182)}
-EXTRA_LAYERS = [("SITE PLAN", 7), ("TEXT", 7), ("UNDERLAY", 9), ("BOUNDARY", 7), ("NEIGHBOURS", 8), ("ROAD", 8), ("WALLS", 1), ("DIMENSIONS", 3), ("STAND NUMBERS", 8)]
+EXTRA_LAYERS = [("SITE PLAN", 7), ("TEXT", 7), ("UNDERLAY", 9), ("BOUNDARY", 7), ("NEIGHBOURS", 8), ("ROAD", 8), ("WALLS", 1), ("DIMENSIONS", 3), ("STAND NUMBERS", 8), ("TITLE BLOCK", 7)]
 STYLES = {("Arial", False): ("ARIAL", "arial.ttf"), ("Arial", True): ("ARIAL_BOLD", "arialbd.ttf"),
           ("Arial Black", True): ("ARIAL_BLACK", "ariblk.ttf"), ("Arial Black", False): ("ARIAL_BLACK", "ariblk.ttf")}
 VALID_LW = [0, 5, 9, 13, 15, 18, 20, 25, 30, 35, 40, 50, 53, 60, 70, 80, 90, 100, 106, 120, 140, 158, 200, 211]   # the line weights DXF allows (1/100 mm)
@@ -274,6 +274,21 @@ def build_sheet(page, path, scale_text="1:200"):
              "Sewer %s, %.1f m, depth at the house %d mm.   Water %.1f m.   Electrical %.1f m." % (res["sewer"]["note"], res["sewer"]["length"], round(res["sewer"]["depth_house"] * 1000), res["water"]["length"], res["elec"]["length"])]
     for i, t in enumerate(lines):
         p.drawText(QPointF(W * 0.55, base + i * S_MM * 0.9), t)
+    # the title block and the zoning table below the plan (own layer, so Archicad can switch it off)
+    if hasattr(p, "set_layer"):
+        p.set_layer("TITLE BLOCK")
+    step = S_MM * 0.62
+    y0 = base + S_MM * 2.2
+    p.setPen(QColor("black"))
+    p.setFont(site_sheet.font(S_MM * 0.42, False, 100))
+    for i, (a_, b_) in enumerate(page.title_block_lines()):
+        x_, y_ = (W * 0.04, y0 + i * step) if i < 4 else (W * 0.30, y0 + (i - 4) * step)
+        p.drawText(QPointF(x_, y_), "%s: %s" % (a_, b_))
+    for i, t in enumerate(page.compliance_lines()):
+        p.setPen(site_sheet.RED if t.endswith("NOT MET") else QColor("black"))
+        p.drawText(QPointF(W * 0.55, y0 + i * step), t)
+    if hasattr(p, "set_layer"):
+        p.set_layer(None)
     doc.saveas(path)
     return path
 
