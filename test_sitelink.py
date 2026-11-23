@@ -17,7 +17,7 @@ app=QApplication.instance() or QApplication([])
 class W:
     got=None
     def receive_site_link(self,l): W.got=l; return "ok"
-pg=ss.SiteServicesPage(W())
+pg=ss.SiteServicesPage(W()); pg.set_state(ss.blank_state())
 pg.st["neighbours"]=[{"no":"2","c":[-8,10],"poly":[[-15,0],[-1.5,0],[-1.5,22],[-15,22]]}]
 pg.st["sheet"]["north"]=0.0
 pg.solve_now(False)
