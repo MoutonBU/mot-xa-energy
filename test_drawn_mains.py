@@ -27,3 +27,10 @@ assert side == "left" and x == 0.1
 x, side = pd.water_pair_x(14, 3.0, [21])
 assert side == "right"
 print("ok")
+# wall runs snap to the boundary and to corners
+sn = se.snap_to_edge(stand, (5.0, 1.5))
+assert sn[0] == 0 and abs(sn[1] - 5 / 14) < 1e-9 and sn[2] == (5.0, 0.0), sn
+assert se.snap_to_edge(stand, (0.2, 0.3))[1] == 0.0
+assert se.snap_to_edge(stand, (5.0, 1.5), edge=2, tol=99)[0] == 2
+assert se.snap_to_edge(stand, (50, 50)) is None
+print("ok runs")

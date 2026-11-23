@@ -950,6 +950,32 @@ def wall_on(state, i, kind):
     return kind in ("side", "rear")
 
 
+def snap_to_edge(stand, w, edge=None, tol=4.0, corner=0.4):
+    """the point on the stand's boundary nearest to w (on boundary `edge` only when given): (edge, t along it 0..1, point), or None when it is further than tol.
+    It sticks to a corner when within `corner` metres of it."""
+    n = len(stand)
+    best = None
+    for i in ([edge] if edge is not None else range(n)):
+        a, b = stand[i], stand[(i + 1) % n]
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        L2 = dx * dx + dy * dy
+        if L2 < 1e-9:
+            continue
+        t = max(0.0, min(1.0, ((w[0] - a[0]) * dx + (w[1] - a[1]) * dy) / L2))
+        L = math.sqrt(L2)
+        if t * L < corner:
+            t = 0.0
+        elif (1 - t) * L < corner:
+            t = 1.0
+        q = (a[0] + dx * t, a[1] + dy * t)
+        d = math.hypot(w[0] - q[0], w[1] - q[1])
+        if best is None or d < best[0]:
+            best = (d, i, t, q)
+    if best is None or best[0] > tol:
+        return None
+    return best[1], best[2], best[3]
+
+
 def line_dist(p, a, b):
     dx, dy = b[0] - a[0], b[1] - a[1]
     L = math.hypot(dx, dy) or 1
