@@ -9170,9 +9170,24 @@ class MainWindow(QMainWindow):
             _t.setMouseTracking(True)
             _t.viewport().setMouseTracking(True)
             _t.viewport().installEventFilter(self._hover)
-        self.tabs.addTab(self._with_buttons(self.sched_table, self.add_sched_row, extra=[("Leave out...", lambda: self.leave_out_dialog())]), "1  Windows")
-        self.tabs.addTab(self._with_buttons(
-            self.door_table, lambda: self.add_sched_row(None, self.door_table), extra=[("Leave out...", lambda: self.leave_out_dialog())]), "2  Doors")
+        _wt = self._with_buttons(self.sched_table, self.add_sched_row, extra=[("Leave out...", lambda: self.leave_out_dialog())])
+        _dt = self._with_buttons(self.door_table, lambda: self.add_sched_row(None, self.door_table), extra=[("Leave out...", lambda: self.leave_out_dialog())])
+        self._glz_labels = []
+        for _w in (_wt, _dt):                                  # are the windows and glazed doors within the glazing limit that is set?
+            _l = QLabel("")
+            _l.setWordWrap(True)
+            _l.setStyleSheet("padding:4px 8px;border-radius:6px;font-weight:bold;")
+            _w.layout().insertWidget(0, _l)
+            self._glz_labels.append(_l)
+        self._glz_timer = QTimer(self)
+        self._glz_timer.setSingleShot(True)
+        self._glz_timer.setInterval(350)
+        self._glz_timer.timeout.connect(self.update_glazing_status)
+        for _t in (self.sched_table, self.door_table):
+            _t.itemChanged.connect(lambda *_: self._glz_timer.start())
+        self.glaze_spin.valueChanged.connect(lambda *_: self._glz_timer.start())
+        self.tabs.addTab(_wt, "1  Windows")
+        self.tabs.addTab(_dt, "2  Doors")
 
         self.combined = {}      # open-plan room name -> the rooms it was made from
         self._units_chks = []
@@ -10597,6 +10612,41 @@ class MainWindow(QMainWindow):
             float(it.get("openable", 50)), it.get("kind", "Window"), it.get("style", "Custom"), 0.0, 0.0, 1.0, 0.0,
             float(it.get("qty", 1)), float(it.get("glazed_m2") or 0.0))
 
+    def update_glazing_status(self):
+        """the line over the Windows and Doors tables: the glazing of every room (windows and glazed doors) against the glazing limit that is set"""
+        try:
+            sched = self._with_skips(self.read_schedule(), "skip_lv")
+            rooms = [rm for rm in self.read_rooms() if not lv_excluded_reason(rm.name)]
+        except Exception:
+            return
+        lim = GLAZE_LIMIT[0]
+        tot_g = tot_a = 0.0
+        over = []
+        for rm in rooms:
+            if rm.area_m2 <= 0:
+                continue
+            g = sum(sched[t].glazed_m2 * q for t, q in parse_tags(rm.tags).items() if t in sched and sched[t].counts)
+            tot_g += g
+            tot_a += rm.area_m2
+            if g > 0 and g / rm.area_m2 * 100.0 > lim + 1e-9:
+                over.append((g / rm.area_m2 * 100.0, rm.name))
+        if not tot_a:
+            txt, ok = "Glazing limit %g%%: give the rooms an area and their window tags to check it." % lim, None
+        else:
+            pct = tot_g / tot_a * 100.0
+            over.sort(reverse=True)
+            if over:
+                txt = ("OVER the glazing limit of %g%%: %d room(s) are above it (%s). Whole plan %.1f m2 of glass on %.1f m2 = %.1f%%."
+                       % (lim, len(over), ", ".join("%s %.1f%%" % (n[:18], p_) for p_, n in over[:4]), tot_g, tot_a, pct))
+                ok = False
+            else:
+                txt = "Within the glazing limit of %g%%: %.1f m2 of glass on %.1f m2 of floor = %.1f%%, and no room is above it." % (lim, tot_g, tot_a, pct)
+                ok = True
+        col = {True: "background:#1f7a3d;color:white;", False: "background:#b3202f;color:white;", None: "background:#555;color:white;"}[ok]
+        for l_ in getattr(self, "_glz_labels", []):
+            l_.setText(txt)
+            l_.setStyleSheet("padding:4px 8px;border-radius:6px;font-weight:bold;" + col)
+
     def _skip_tags(self, key):
         return {t.strip().upper() for t in str(self.rd.get(key, "") or "").split(",") if t.strip()}
 
@@ -10653,6 +10703,7 @@ class MainWindow(QMainWindow):
             return
         self.rd["skip_xa"] = ", ".join(tg for r, tg in enumerate(tags) if tb.item(r, 1).checkState() == Qt.CheckState.Checked)
         self.rd["skip_lv"] = ", ".join(tg for r, tg in enumerate(tags) if tb.item(r, 2).checkState() == Qt.CheckState.Checked)
+        self.update_glazing_status()
         for fn in ("run_check", "_run_xa"):
             try:
                 if fn == "run_check" and getattr(self, "results", None):

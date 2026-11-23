@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.162**
+Current version: **1.86.163**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Glazing limit check on the Windows and Doors tabs:** a coloured line over both tables says whether you are within the glazing limit you set ("Glazing limit %"): green "Within the limit" with the glass area, floor area and %, or red "OVER" naming the rooms above the limit and their %. It updates as you edit the windows, the rooms, the limit, or what you leave out.
 - **Leave a window or door out:** a new "Leave out..." button under the Windows and Doors tables lists every window and door with two tick boxes: "Not in Energy XA" (left out of the fenestration: conductance, solar gain and % of floor) and "Not in Light & Ventilation" (left out of the light and ventilation check, its room list and its PDF). The window stays in the schedule; the choice is saved with the project and the checks rerun when you press OK. A left-out window shows "Left out by you - not counted" in the room list.
 - **IFC doors, inside doors with an outside door's tag are left out everywhere:** the 1.86.160 fix only changed the row; the room links still counted the inside door, so the report said D1 x 3. Inside doors that carry the tag of an outside door are now removed from the counts, the room links and the schedule (Stand 2066: D1 x 2, D2 x 1), with a note on the row.
 - **IFC doors, inside doors no longer inflate an outside door:** when the same door tag is used on an outside door and on an inside door of another size (for example D1 1800 x 2100 on two outside doors and a D1 1500 x 2100 object in an inside wall), only the outside ones are counted in the fenestration calculation (Stand 2066: D1 was 3, now 2). The note on the row says what was left out.
