@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.215**
+Current version: **1.86.216**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Ground-fall arrows also work without contours:** if there is no contour file, the arrows, label and water streaks use the two ground levels you typed in the sewer section (at the house and at the main). The label then says "from the typed levels". With only one level typed there is nothing to show.
 - **Which way the ground falls (with contours):** small blue arrows on the stand point downhill, with a label "GROUND FALLS 1:20 (5.0 %)" beside the stand; on the screen, thin blue water streaks run downhill over the stand; a tick box in the plan look options turns the arrows and streaks off. The sewer checks gain a pill "Ground" that says how the ground falls along the sewer towards the main and whether that makes the pipe deeper or shallower at the main.
 - **Several drops in the sewer:** a new "Number of drops" box (1 to 5) next to the drop choice. With "the program places it" the drops are spread along the pipe (on an eye where one is near); with "I choose where" each drop has its own box for its place. All the drops are the same height and the pipe still arrives exactly at the main's invert level. Each drop gets its own rodding eye and its own steep part on the long section, the plan, the table and the elevation. If you put two drops too close together the program moves them apart and says so.
 - **Levels can be below zero:** the ground level at the house, the ground level at the main, the main sewer invert level and the finished floor level now accept negative values (for example -2.500 m). "Not set" is now the very bottom of the box, so 0.000 is a real level. Older projects open as before (a 0 in an old project still means "not set"). The "No contours yet" card text is no longer cut off.

@@ -525,24 +525,36 @@ class ServicesView(QWidget):
     def _drops_downhill(self, p, S, ph):
         pg = self.page
         stand = pg.st["stand"]["corners"]
-        gg = site_sheet.ground_grid(pg.st, stand)
-        if gg is None:
-            return
-        _t, g = gg
         x0, y0 = min(q[0] for q in stand), min(q[1] for q in stand)
+        gg = site_sheet.ground_grid(pg.st, stand)
+        f = site_sheet.ground_fall(pg.st, stand, pg.res)
+        if f is None or f[2] < 1e-4:
+            return
+        key = (gg[1][0] if gg is not None else ("typed", round(f[0], 3), round(f[1], 3)), len(stand))
         seeds = getattr(self, "_seeds", None)
-        key = (g[0], len(stand))
         if seeds is None or seeds[0] != key:
-            _k, nx, ny, dx, dy, z = g
             pts = []
-            for j in range(ny * 2):
-                for i in range(nx * 2):
-                    cx, cy = x0 + (i + 0.5) * dx / 2.0, y0 + (j + 0.5) * dy / 2.0
-                    if site_sheet.point_in_poly((cx, cy), stand):
-                        s_ = site_sheet.grid_slope(g, cx, cy, x0, y0)
-                        if s_ is not None and math.hypot(*s_) >= 0.01:
-                            m_ = math.hypot(*s_)
-                            pts.append((cx, cy, -s_[0] / m_, -s_[1] / m_, min(1.0, m_ * 6.0)))
+            if gg is not None:
+                g = gg[1]
+                _k, nx, ny, dx, dy, z = g
+                for j in range(ny * 2):
+                    for i in range(nx * 2):
+                        cx, cy = x0 + (i + 0.5) * dx / 2.0, y0 + (j + 0.5) * dy / 2.0
+                        if site_sheet.point_in_poly((cx, cy), stand):
+                            s_ = site_sheet.grid_slope(g, cx, cy, x0, y0)
+                            if s_ is not None and math.hypot(*s_) >= 0.01:
+                                m_ = math.hypot(*s_)
+                                pts.append((cx, cy, -s_[0] / m_, -s_[1] / m_, min(1.0, m_ * 6.0)))
+            else:                                                  # typed levels: the same direction all over the stand
+                x1, y1 = max(q[0] for q in stand), max(q[1] for q in stand)
+                y = y0 + 0.8
+                while y < y1:
+                    x = x0 + 0.8
+                    while x < x1:
+                        if site_sheet.point_in_poly((x, y), stand):
+                            pts.append((x, y, f[0], f[1], min(1.0, f[2] * 6.0)))
+                        x += 1.6
+                    y += 1.6
             step = max(1, len(pts) // 70)
             seeds = (key, pts[::step])
             self._seeds = seeds
@@ -1864,7 +1876,7 @@ class SiteServicesPage(ToolBase):
         ml.addLayout(row)
         row = FlowLayout(None, 8, 6)
         self.look_cb = {}
-        for key, text in (("fill", "Green stand"), ("walls", "Boundary walls"), ("cutout", "Export frame (blue)"), ("storm", "Stormwater arrow"), ("wp_box", "WP / VV box and marks"), ("upright", "Names and numbers stay level when the plan is turned"), ("ground", "Colour the stand by height and show steep ground (needs contours)"), ("fall", "Arrows for which way the ground falls (needs contours)"), ("flow", "Moving things on the screen: flow of the sewer, water and electrical, pulses at the eyes (not on the PDF)")):
+        for key, text in (("fill", "Green stand"), ("walls", "Boundary walls"), ("cutout", "Export frame (blue)"), ("storm", "Stormwater arrow"), ("wp_box", "WP / VV box and marks"), ("upright", "Names and numbers stay level when the plan is turned"), ("ground", "Colour the stand by height and show steep ground (needs contours)"), ("fall", "Arrows for which way the ground falls (from the contours, or from the two typed ground levels)"), ("flow", "Moving things on the screen: flow of the sewer, water and electrical, pulses at the eyes (not on the PDF)")):
             cb_ = QCheckBox(text)
             cb_.setChecked(True)
             cb_.toggled.connect(lambda on, k=key: self.set_look(k, on))

@@ -355,11 +355,37 @@ def grid_slope(g, x, y, x0, y0):
     return gx, gy
 
 
-def ground_fall(st, stand):
-    """the overall fall of the ground over the stand: (direction x, direction y, slope as rise/run), or None. Direction points downhill."""
+def typed_fall(st, res):
+    """without contours: the ground falls from the higher typed level to the lower one, along the line between the house outlet and the main.
+    Returns (direction x, direction y, slope) or None when two levels have not been typed."""
+    import site_profile
+    lv = st.get("levels") or {}
+    n0, n1 = lv.get("ngl_head"), lv.get("ngl_main")
+    path = ((res or {}).get("sewer") or {}).get("path")
+    if not (site_profile._set(n0) and site_profile._set(n1)) or not path or len(path) < 2:
+        return None
+    a, b = path[0], path[-1]
+    hp = (res or {}).get("house") or []
+    if hp:                                                        # make a the end at the house
+        c = (sum(q[0] for q in hp) / len(hp), sum(q[1] for q in hp) / len(hp))
+        if math.hypot(a[0] - c[0], a[1] - c[1]) > math.hypot(b[0] - c[0], b[1] - c[1]):
+            a, b = b, a
+    L = math.hypot(b[0] - a[0], b[1] - a[1])
+    if L < 1.0:
+        return None
+    drop = float(n0) - float(n1)                                  # positive: the ground falls from the house towards the main
+    ux, uy = (b[0] - a[0]) / L, (b[1] - a[1]) / L
+    if abs(drop) / L < 1e-4:
+        return 0.0, 0.0, 0.0
+    return (ux, uy, drop / L) if drop > 0 else (-ux, -uy, -drop / L)
+
+
+def ground_fall(st, stand, res=None):
+    """the overall fall of the ground over the stand: (direction x, direction y, slope as rise/run), or None. Direction points downhill.
+    From the contours when there are some, else from the two ground levels typed for the sewer section."""
     gg = ground_grid(st, stand)
     if gg is None:
-        return None
+        return typed_fall(st, res)
     _t, g = gg
     _k, nx, ny, dx, dy, z = g
     x0, y0 = min(q[0] for q in stand), min(q[1] for q in stand)
@@ -372,7 +398,7 @@ def ground_fall(st, stand):
                 sy += s[1]
                 n += 1
     if not n:
-        return None
+        return typed_fall(st, res)
     gx, gy = sx / n, sy / n
     m = math.hypot(gx, gy)
     if m < 1e-4:
@@ -380,46 +406,58 @@ def ground_fall(st, stand):
     return -gx / m, -gy / m, m
 
 
-def _falls(D, st, stand):
-    """small arrows over the stand that point downhill, and one label saying how much the ground falls and which way"""
+def _arrow(D, a, b, ux, uy, col, w, head=0.35):
+    D.line(a, b, col, w)
+    for sg in (-1, 1):
+        D.line(b, (b[0] - ux * head - sg * uy * head * 0.57, b[1] - uy * head + sg * ux * head * 0.57), col, w)
+
+
+def _falls(D, st, stand, res=None):
+    """small arrows over the stand that point downhill, and one label saying how much the ground falls and which way.
+    With contours every arrow follows the real ground; without, they follow the two ground levels typed for the sewer section."""
     if D.lite or not (st.get("look") or {}).get("fall", True):
         return
-    gg = ground_grid(st, stand)
-    if gg is None:
+    f = ground_fall(st, stand, res)
+    if f is None:
         return
-    _t, g = gg
-    _k, nx, ny, dx, dy, z = g
-    x0, y0 = min(q[0] for q in stand), min(q[1] for q in stand)
     col = QColor(30, 100, 190)
     D.L("GROUND_FALL")
-    step = 2 if nx * ny > 60 else 1
-    for j in range(0, ny, step):
-        for i in range(0, nx, step):
-            cx, cy = x0 + (i + 0.5) * dx, y0 + (j + 0.5) * dy
-            if not point_in_poly((cx, cy), stand):
-                continue
-            s = grid_slope(g, cx, cy, x0, y0)
-            if s is None:
-                continue
-            m = math.hypot(*s)
-            if m < 0.01:
-                continue
-            ux, uy = -s[0] / m, -s[1] / m
-            L = min(1.6, 0.7 + 6.0 * m)
-            a = (cx - ux * L / 2, cy - uy * L / 2)
-            b = (cx + ux * L / 2, cy + uy * L / 2)
-            D.line(a, b, col, 0.05)
-            for sg in (-1, 1):
-                D.line(b, (b[0] - ux * 0.35 - sg * uy * 0.2, b[1] - uy * 0.35 + sg * ux * 0.2), col, 0.05)
-    f = ground_fall(st, stand)
-    if f and f[2] > 1e-4:
+    x0, y0 = min(q[0] for q in stand), min(q[1] for q in stand)
+    gg = ground_grid(st, stand)
+    if gg is not None:
+        _t, g = gg
+        _k, nx, ny, dx, dy, z = g
+        step = 2 if nx * ny > 60 else 1
+        for j in range(0, ny, step):
+            for i in range(0, nx, step):
+                cx, cy = x0 + (i + 0.5) * dx, y0 + (j + 0.5) * dy
+                if not point_in_poly((cx, cy), stand):
+                    continue
+                s = grid_slope(g, cx, cy, x0, y0)
+                if s is None:
+                    continue
+                m = math.hypot(*s)
+                if m < 0.01:
+                    continue
+                ux, uy = -s[0] / m, -s[1] / m
+                L = min(1.6, 0.7 + 6.0 * m)
+                _arrow(D, (cx - ux * L / 2, cy - uy * L / 2), (cx + ux * L / 2, cy + uy * L / 2), ux, uy, col, 0.05)
+    elif f[2] > 1e-4:                                              # no contours: the same arrow all over the stand, on a regular grid
+        x1, y1 = max(q[0] for q in stand), max(q[1] for q in stand)
+        L = min(1.6, 0.7 + 6.0 * f[2])
+        y = y0 + 2.0
+        while y < y1:
+            x = x0 + 2.0
+            while x < x1:
+                if point_in_poly((x, y), stand):
+                    _arrow(D, (x - f[0] * L / 2, y - f[1] * L / 2), (x + f[0] * L / 2, y + f[1] * L / 2), f[0], f[1], col, 0.05)
+                x += 4.0
+            y += 4.0
+    if f[2] > 1e-4:
         xs, ys = [q[0] for q in stand], [q[1] for q in stand]
         ox, oy = (min(xs) + max(xs)) / 2.0, max(ys) + 3.2                 # the label sits above the top side of the stand
-        D.line((ox - f[0] * 1.6, oy - f[1] * 1.6), (ox + f[0] * 1.6, oy + f[1] * 1.6), col, 0.1)
-        for sg in (-1, 1):
-            tip = (ox + f[0] * 1.6, oy + f[1] * 1.6)
-            D.line(tip, (tip[0] - f[0] * 0.7 - sg * f[1] * 0.4, tip[1] - f[1] * 0.7 + sg * f[0] * 0.4), col, 0.1)
-        D.text((ox, oy + 1.4), "GROUND FALLS 1:%d (%.1f %%)" % (round(1.0 / f[2]), f[2] * 100.0), 0.55, (1, 0), True, col, key="fall_dir", fixed=True, upright=True)
+        _arrow(D, (ox - f[0] * 1.6, oy - f[1] * 1.6), (ox + f[0] * 1.6, oy + f[1] * 1.6), f[0], f[1], col, 0.1, 0.7)
+        D.text((ox, oy + 1.4), "GROUND FALLS 1:%d (%.1f %%)%s" % (round(1.0 / f[2]), f[2] * 100.0, "" if gg is not None else " from the typed levels"), 0.55, (1, 0), True, col, key="fall_dir", fixed=True, upright=True)
     D.L(None)
 
 
@@ -556,7 +594,7 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
     GREEN, WALLC = QColor(183, 221, 167), QColor(170, 25, 25)
     D.poly(stand, BLACK, 0.05, GREEN if look.get("fill", True) else None)       # the stand in green, as on the finished sheets
     _ground(D, st, stand)                                                        # on top of the green: the height colours and the arrows for the fall
-    _falls(D, st, stand)
+    _falls(D, st, stand, res)
     D.L(None)
     def _wall_strip(a, b):
         D.L("WALLS")

@@ -112,4 +112,11 @@ pg.view.lite = False; pg.view._dirty = True; pg.view.grab()                     
 pg.view._ph = 0.5; pg.view.grab()
 pg.remove_contours()
 assert not sp.build(pg.st, pg.res)["terrain"] and "No contours" in pg.lv_continfo.text()
+# no contours: the fall comes from the two typed ground levels
+pg.lv_spin["ngl_head"].setValue(100.0); pg.lv_spin["ngl_main"].setValue(98.5); pg.solve_now(False)
+ft_ = _sh.ground_fall(pg.st, pg.st["stand"]["corners"], pg.res)
+assert ft_ and ft_[2] > 0.01, ft_
+pg.view.lite = False; pg.view._dirty = True; pg.view.grab(); pg.view._ph = 0.5; pg.view.grab()
+pg.lv_spin["ngl_main"].setValue(-1000.0); pg.solve_now(False)
+assert _sh.ground_fall(pg.st, pg.st["stand"]["corners"], pg.res) is None
 print("ok")
