@@ -432,3 +432,152 @@ def run_rational(zones, cons, w, sun, required_r, table4, clear_glass, lpd, opts
     return {"actual": act, "reference": ref, "act_cons": ca, "ref_cons": cr, "act_demand": da, "ref_demand": dr,
             "cons_ok": ca <= cr + 0.05, "demand_ok": da <= dr + 0.05, "ok": ca <= cr + 0.05 and da <= dr + 0.05,
             "ref_glass": notes, "opts": od}
+
+
+# ---------------------------------------------------------------------------------------------- what to change to pass
+def _add_r(c, r):
+    """More insulation in a construction: a plain resistance layer on the outside."""
+    c = {"layers": [dict(l) for l in (c.get("layers") or [])], "r_default": c.get("r_default", 0.0), "name": c.get("name", "")}
+    if c["layers"]:
+        c["layers"].insert(0, {"name": "Added insulation", "t": 0.0, "lam": 0.0, "rfix": r, "dens": 20.0, "cp": 1400.0})
+    else:
+        c["r_default"] = c["r_default"] + r
+    return c
+
+
+def advice_measures(shade_mult=0.54):
+    """Changes a designer can make, as (group, name, function(state) -> text or None). state = {'z','c','o','d'}: zones, constructions, options, hot water."""
+    def dhw_hp(st):
+        if st["d"].get("dhw_kind") in ("heatpump", "solar"):
+            return None
+        st["d"] = dict(st["d"], dhw_kind="heatpump", dhw_cop=3.0)
+        return "Heat the hot water with a heat pump (COP 3) instead of electric elements"
+
+    def dhw_solar(st):
+        if st["d"].get("dhw_kind") == "solar" and st["d"].get("dhw_solar", 0) >= 0.6:
+            return None
+        st["d"] = dict(st["d"], dhw_kind="solar", dhw_solar=0.6)
+        return "Heat the hot water with a solar water heater (60% of the heat) and electric back-up"
+
+    def roof(st):
+        st["c"] = dict(st["c"], roof=_add_r(st["c"]["roof"], 1.5))
+        return "Add 1.5 m2K/W more insulation in the ceiling (about 60 mm of glasswool or 55 mm of PIR on top of what is there)"
+
+    def wall(st):
+        st["c"] = dict(st["c"], ext_wall=_add_r(st["c"]["ext_wall"], 0.7))
+        return "Add 0.7 m2K/W of insulation to the outside walls (about 25 mm of EPS or 30 mm of PIR)"
+
+    def glass1(st):
+        n = 0
+        for z in st["z"]:
+            for wn in z["wins"]:
+                if wn["U"] > 3.0:
+                    wn["U"], wn["g"] = 3.0, min(wn["g"], 0.65)
+                    n += 1
+        return "Fit double glazing (U 3.0, SHGC 0.65) in all windows" if n else None
+
+    def glass2(st):
+        n = 0
+        for z in st["z"]:
+            for wn in z["wins"]:
+                if wn["U"] > 2.0:
+                    wn["U"], wn["g"] = 2.0, min(wn["g"], 0.45)
+                    n += 1
+        return "Fit low-e double glazing (U 2.0, SHGC 0.45) in all windows" if n else None
+
+    def shade(st):
+        n = 0
+        for z in st["z"]:
+            for wn in z["wins"]:
+                a = wn["az"] % 360
+                if (a >= 270 or a <= 100) and wn["P"] < shade_mult * wn["h"] - 1e-9:
+                    wn["P"] = shade_mult * wn["h"]
+                    n += 1
+        return ("Shade the north, east and west windows with a projection of %.2f x the window height (verandah, canopy or eaves)" % shade_mult) if n else None
+
+    def less_glass(st):
+        n = 0
+        for z in st["z"]:
+            for wn in z["wins"]:
+                a = wn["az"] % 360
+                if 225 <= a <= 315 or 45 <= a <= 135:
+                    cut = wn["area"] * 0.25
+                    wn["area"] -= cut
+                    for sf in z["surfs"]:
+                        if sf["cons"] == "ext_wall" and abs(((sf["az"] - wn["az"]) + 180) % 360 - 180) < 1.0:
+                            sf["area"] += cut
+                            break
+                    n += 1
+        return "Make the east and west windows 25% smaller" if n else None
+
+    def light(st):
+        for z in st["z"]:
+            z["lights_w"] = 0.75 * (z["lights_w"] if z["lights_w"] > 0 else st["o"]["lpd"] * z["area"])
+        return "Lower the lighting power by 25% (LED fittings, fewer points)"
+
+    def air(st):
+        if st["o"].get("ach", 0.5) <= 0.3:
+            return None
+        st["o"] = dict(st["o"], ach=0.3)
+        return "Seal the building better: air leakage 0.3 air changes an hour (clause 5.7)"
+
+    def hvac(st):
+        if st["o"].get("cop_heat", 1.0) >= 3.0:
+            return None
+        st["o"] = dict(st["o"], cop_heat=3.0)
+        return "Heat the rooms with an air-conditioner / heat pump (COP 3) instead of electric elements"
+    return [("dhw", "dhw_hp", dhw_hp), ("dhw", "dhw_solar", dhw_solar), ("roof", "roof", roof), ("wall", "wall", wall), ("glass", "glass1", glass1),
+            ("glass", "glass2", glass2), ("shade", "shade", shade), ("area", "less_glass", less_glass), ("light", "light", light), ("air", "air", air),
+            ("hvac", "hvac", hvac)]
+
+
+def advise(zones, cons, w, sun, opts, dhw_design, lpd, ref_cons, ref_demand, shade_mult=0.54, max_steps=6):
+    """Each change on its own (how much energy and demand it saves), then the order of changes that gets the design to or under the reference.
+    Returns {'single': [...], 'plan': [...], 'ok': bool, 'base': (cons, demand)}."""
+    import copy
+    o0 = dict(DEFAULTS)
+    o0.update(opts or {})
+    o0["lpd"] = lpd
+
+    def run(st):
+        od = dict(st["o"])
+        od.update(st["d"] or {})
+        r = simulate(st["z"], st["c"], w, sun, od)
+        return consumption(r), demand_va_m2(r)
+    base_st = {"z": zones, "c": cons, "o": o0, "d": dict(dhw_design or {})}
+    b_c, b_d = run(base_st)
+    ok = lambda c, d: c <= ref_cons + 0.05 and d <= ref_demand + 0.05
+    meas = advice_measures(shade_mult)
+    singles = []
+    for grp, key, fn in meas:
+        st = {"z": copy.deepcopy(zones), "c": dict(cons), "o": dict(o0), "d": dict(dhw_design or {})}
+        txt = fn(st)
+        if not txt:
+            continue
+        c_, d_ = run(st)
+        singles.append({"group": grp, "key": key, "text": txt, "cons": c_, "demand": d_, "dcons": c_ - b_c, "ddemand": d_ - b_d, "passes": ok(c_, d_)})
+    singles.sort(key=lambda s: s["dcons"])
+    plan, st = [], {"z": copy.deepcopy(zones), "c": dict(cons), "o": dict(o0), "d": dict(dhw_design or {})}
+    cur_c, cur_d = b_c, b_d
+    used = set()
+    done = ok(cur_c, cur_d)
+    while not done and len(plan) < max_steps:
+        best = None
+        for grp, key, fn in meas:
+            if grp in used:
+                continue
+            t = {"z": copy.deepcopy(st["z"]), "c": dict(st["c"]), "o": dict(st["o"]), "d": dict(st["d"])}
+            txt = fn(t)
+            if not txt:
+                continue
+            c_, d_ = run(t)
+            score = (c_ - ref_cons) + (d_ - ref_demand) * 0.5
+            if best is None or score < best[0]:
+                best = (score, grp, txt, t, c_, d_)
+        if best is None or best[4] >= cur_c - 1e-6 and best[5] >= cur_d - 1e-6:
+            break
+        _s, grp, txt, st, cur_c, cur_d = best
+        used.add(grp)
+        plan.append({"text": txt, "cons": cur_c, "demand": cur_d})
+        done = ok(cur_c, cur_d)
+    return {"single": singles, "plan": plan, "ok": done, "base": (b_c, b_d), "ref": (ref_cons, ref_demand)}

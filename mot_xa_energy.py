@@ -1410,6 +1410,34 @@ def house_totals(results):
 # --------------------------------------------------------------------------
 # Rational design report - cover / declaration details kept with the project
 # --------------------------------------------------------------------------
+RD_CERT_HTML = (
+    "<h3>What 'certified' means</h3>"
+    "<p>SANS 10400-XA:2021 clause 3.3: software certified by the <b>Board of Agrement South Africa</b> under its Energy Software Protocols as fit for thermal modelling. "
+    "Certification is not a promise of exact numbers. It says the software was tested against international test cases and meets the protocol's modelling requirements. "
+    "No simulation is '100% accurate'; certified software is checked to be inside accepted ranges.</p>"
+    "<h3>The protocol (Agrement SA, second edition, September 2011)</h3><ol>"
+    "<li><b>Choose a level.</b> Level 1: all buildings. Level 2: small domestic buildings only (the right start for a house tool).</li>"
+    "<li><b>Documentation:</b> applicant and developer details, a copy of the software and manuals, a description of the method (consistent with thermodynamics and fluid mechanics), "
+    "South African material and insulation data that the user can edit, and the developer's support and training experience.</li>"
+    "<li><b>Quality management:</b> a documented system based on ISO 9001, with technical support and training.</li>"
+    "<li><b>Modelling capability:</b> hourly (8760 h) climate data and schedules, 3D walls, roofs and ceilings, shading, surface absorptance and emissivity, thermal mass, floor assemblies. "
+    "Level 1 adds 3D geometry and part-load equipment performance.</li>"
+    "<li><b>Testing:</b> Level 2: HERS BESTEST (1995) or ASHRAE Standard 140-2001. Level 1: ASHRAE 140-2001, with any result outside the comparison ranges explained.</li>"
+    "<li><b>Board evaluation</b> by Agrement SA, then certification.</li></ol>"
+    "<h3>Where this model stands</h3><ul>"
+    "<li><b>Has:</b> 8760-hour weather, hourly schedules, 3D room shapes from the IFC, sun on every wall and window with shading, thermal mass by layer, editable build-ups, "
+    "and a check that its steady-state heat loss equals the plain UA sum.</li>"
+    "<li><b>Missing for the protocol:</b> the ASHRAE 140 / BESTEST test runs and their results (these need the test weather files and the published result ranges from the standard); "
+    "inputs for surface absorptance and emissivity; a documented quality system; user manuals; a South African material database; the application itself.</li>"
+    "<li><b>Simplifications that BESTEST would test:</b> one thermal-mass node per room, interior walls treated as adiabatic, flat ceilings, fixed surface coefficients, "
+    "a simple window angle correction, and ground temperature held at the yearly mean.</li></ul>"
+    "<h3>Realistic route</h3><ol>"
+    "<li>Buy ASHRAE Standard 140 (and HERS BESTEST) and get its weather file; build the test cases into the program and tune until every case falls inside the published ranges.</li>"
+    "<li>Add absorptance and emissivity inputs, and write the method description and manual.</li>"
+    "<li>Contact Agrement South Africa (agrement.co.za) for the current application form, fees and timelines. They are not in the protocol, and the 2012 experience of another applicant was a wait of more than two years.</li>"
+    "<li>Until then, run the submission in software that already holds the certificate (for example Bsimac, which the rational design example used).</li></ol>"
+    "<p style='color:#555'>Source: Agrement South Africa, Protocol for the Certification of Energy Simulation Software, second edition, September 2011; SANS 10400-XA:2021 clauses 3.3 and 4.3.</p>")
+
 RD_ROUTES = ["Deemed-to-satisfy (SANS 10400-XA:2021 clause 4.4) - envelope and fenestration",
              "Rational design (SANS 10400-XA:2021 clause 4.3) - reference building, certified thermal calculation software"]
 
@@ -18354,8 +18382,9 @@ class MainWindow(QMainWindow):
         run = QPushButton("Run the simulation")
         use = QPushButton("Put these results in the report")
         use.setEnabled(False)
+        cert = QPushButton("How to get this certified")
         close = QPushButton("Close")
-        btns.addWidget(run); btns.addWidget(use); btns.addStretch(); btns.addWidget(close)
+        btns.addWidget(run); btns.addWidget(use); btns.addWidget(cert); btns.addStretch(); btns.addWidget(close)
         v.addLayout(btns)
 
         def go():
@@ -18380,9 +18409,16 @@ class MainWindow(QMainWindow):
                 QApplication.restoreOverrideCursor()
                 QMessageBox.warning(self, APP_NAME, "The simulation stopped:\n%s" % ex)
                 return
+            adv = None
+            try:
+                sun_ = sun_arrays(ri["w"])
+                adv = E.advise(ri["zones"], ri["cons"], ri["w"], sun_, o, dd, ri["lpd"], res["ref_cons"], res["ref_demand"],
+                               shade_mult=xa_shade_multiplier(self._xa_latitude())) if not res["ok"] else None
+            except Exception:
+                adv = None
             QApplication.restoreOverrideCursor()
             state["res"] = res
-            out.setHtml(self._rd_result_html(res, ri))
+            out.setHtml(self._rd_result_html(res, ri, adv))
             use.setEnabled(True)
 
         def put():
@@ -18397,11 +18433,27 @@ class MainWindow(QMainWindow):
             self.rd["ref_cons"] = "%.1f" % res["ref_cons"]
             self.rd["act_cons"] = "%.1f" % res["act_cons"]
             QMessageBox.information(d, APP_NAME, "The results are in the Rational design report (Reports > Rational design > Report details, Simulation results).")
+        cert.clicked.connect(lambda: self._rd_cert_roadmap(d))
         run.clicked.connect(go)
         use.clicked.connect(put)
         close.clicked.connect(d.accept)
         out.setHtml("<p>Press <b>Run the simulation</b>. It takes a few seconds.</p>" + self._rd_model_note(ri))
         d.exec()
+
+    def _rd_cert_roadmap(self, parent):
+        from PySide6.QtWidgets import QTextBrowser as _TB
+        dlg = QDialog(parent)
+        dlg.setWindowTitle("Getting the built-in model certified")
+        dlg.resize(780, 640)
+        v = QVBoxLayout(dlg)
+        tb = _TB()
+        tb.setOpenExternalLinks(True)
+        tb.setHtml(RD_CERT_HTML)
+        v.addWidget(tb)
+        b = QPushButton("Close")
+        b.clicked.connect(dlg.accept)
+        v.addWidget(b)
+        dlg.exec()
 
     def _rd_model_note(self, ri):
         n = sum(len(z["wins"]) for z in ri["zones"])
@@ -18412,7 +18464,7 @@ class MainWindow(QMainWindow):
             txt += " %d windows or doors could not be matched to an exterior wall and are left out." % ri["unplaced"]
         return txt + "</p>"
 
-    def _rd_result_html(self, res, ri):
+    def _rd_result_html(self, res, ri, adv=None):
         a, r = res["actual"], res["reference"]
         ok = res["ok"]
         col = "background:#e7f5ec;color:#14532d;border:2px solid #1f7a3d;" if ok else "background:#fdecee;color:#7f1020;border:2px solid #b3202f;"
@@ -18425,6 +18477,27 @@ class MainWindow(QMainWindow):
                 res["act_cons"], res["ref_cons"], "ok" if res["cons_ok"] else "%.1f too much" % (res["act_cons"] - res["ref_cons"]),
                 res["act_demand"], res["ref_demand"], "ok" if res["demand_ok"] else "%.1f too much" % (res["act_demand"] - res["ref_demand"]))]
         h.append("</div>")
+        if adv is not None:
+            gap_c = res["act_cons"] - res["ref_cons"]
+            gap_d = res["act_demand"] - res["ref_demand"]
+            h.append("<h3>What to change so the design is not worse than the reference</h3>")
+            h.append("<p>The design is <b>%.1f kWh/m2/year</b> over on energy%s. Each change below was tried on its own, then the best ones were added together.</p>" % (
+                max(gap_c, 0.0), (" and <b>%.1f VA/m2</b> over on demand" % gap_d) if gap_d > 0.05 else ""))
+            if adv["plan"]:
+                bg_, ln_, ttl_ = (("#e7f5ec", "#1f7a3d", "Do these together and the design passes:") if adv["ok"]
+                                  else ("#fff4e0", "#c77700", "These get closest, but the design still does not pass:"))
+                h.append("<div style='background:%s;padding:8px 12px;border:2px solid %s'><b>%s</b><ol>" % (bg_, ln_, ttl_))
+                for st_ in adv["plan"]:
+                    h.append("<li>%s &nbsp;<span style='color:#555'>(then %.1f kWh/m2, %.1f VA/m2)</span></li>" % (st_["text"], st_["cons"], st_["demand"]))
+                h.append("</ol>Reference: %.1f kWh/m2 and %.1f VA/m2.</div>" % adv["ref"])
+            else:
+                h.append("<p>None of the changes tried lowers the energy use. Check the build-ups, glass and hot water entered.</p>")
+            if adv["single"]:
+                h.append("<h4>Each change on its own</h4><table cellpadding=4 border=1 style='border-collapse:collapse'><tr><th>Change</th><th>Energy</th><th>Demand</th><th>Enough alone?</th></tr>")
+                for sg in adv["single"]:
+                    h.append("<tr><td>%s</td><td align=right>%+.1f kWh/m2</td><td align=right>%+.1f VA/m2</td><td align=center>%s</td></tr>" % (
+                        sg["text"], sg["dcons"], sg["ddemand"], "<b style='color:#1f7a3d'>yes</b>" if sg["passes"] else "no"))
+                h.append("</table>")
         h.append("<p style='color:#b3202f'><b>Not certified:</b> SANS 10400-XA:2021 clause 4.3 needs thermal software certified by Agrement South Africa. Use this as a pre-check; run the submission in certified software.</p>")
         rg = res.get("ref_glass") or {}
         if rg:
