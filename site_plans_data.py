@@ -49,6 +49,7 @@ CONVENTIONS = {
     "carport_gap": 1.0, "street_building_line": 1.0, "carport_size": 5.0,
     # Street 7071 stands: B/L 3 m to the street and the no-access road, 2 m to a neighbour, 1 m to a 1 m servitude; the carport 0.5 m off the street boundary
     "b7071": {"street": 3.0, "no_access": 3.0, "side": 2.0, "servitude": 1.0}, "carport_street_gap_7071": 0.5, "carport_house_gap_7071": 2.25,
+    "elec_symbol": "the electrical connection of a stand is the triangle symbol (solid or an outline, yellow) on the electrical layers: its point touches the stand boundary, where thin lines fan out from it, with a label such as EC or E3.1 beside it. It is read from the drawing on whichever side of the stand it is, within TOWNSHIP_SEARCH['connection'], and is not drawn on the plan again",
     "water_pair": "the water connection of two adjacent stands is shared: one pair of water meters sits on the common side boundary at the street, split on that boundary (finished plans, Blue Hills Ext 120). A stand's water point goes on the street end of the side boundary it shares with the neighbour, 0.1 m inside",
     "storm_arrow": "a blue Stormwater Flow arrow on every plan, pointing down the fall of the stand (usually towards the street)",
 }
@@ -61,6 +62,7 @@ TOWNSHIP_SEARCH = {
     "road": 130.0,         # kerbs, road edges, road names: the whole bend, both sides of the street, the next streets
     "services": 90.0,      # sewer, water, electrical, stormwater lines and their symbols
     "stands": 45.0,        # neighbouring stands and their numbers
+    "connection": 14.0,    # the electrical / water connection symbol is looked for this far from ANY side of the stand (it can sit on the side or at the rear street)
     "main": 40.0,          # a main line is taken from the nearest run of lines that comes this close to the stand's street boundary
 }
 
@@ -69,6 +71,7 @@ RULES = [
     "The house is 1.0 m clear of the carport, and 1.0 to 2.5 m behind the street boundary.",
     "The house long side runs parallel to the street, or square to the nearest boundary on a corner or skew stand.",
     "Sewer: 110 mm at fall 1:50, Min IL 450 at the gully, an IE at every joint and bend, an RE at the end of every run.",
+    "Electrical: the connection is the yellow triangle symbol (solid or outline) whose point touches the stand boundary; it is searched on every side of the stand, not only the street side.",
     "Water: two adjacent stands share one water connection, split on their common side boundary at the street (the point is the street end of the shared side boundary).",
     "Mains you draw snap parallel to the stand's boundaries, square to them or at 45 degrees to them; the 1.2 m boundary wall can be switched on or off per boundary (none at the front when it is not wanted).",
     "Side and rear boundaries carry a 1.2 m pre-cast concrete wall; stormwater falls to the street.",

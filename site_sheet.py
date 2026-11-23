@@ -308,7 +308,7 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
     cp = res.get("carport") if res else None
     for i_, nb_ in enumerate(st.get("neighbours") or []):          # the stands beside it, from the township drawing
         if nb_.get("no"):
-            D.text(tuple(nb_["c"]), str(nb_["no"]), 1.6, (1, 0), bold=True, color=QColor(120, 120, 120), key="NB:%d" % i_, upright=True)
+            D.text(tuple(nb_["c"]), str(nb_["no"]), 1.3, (1, 0), bold=True, color=QColor(120, 120, 120), key="NB:%d" % i_, upright=True)
     if cp:
         en = entry_shape(st, cp)
         D.poly(en["poly"], GREY, 0.03, ENTRY)
@@ -404,11 +404,11 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
                         best = (dd, c)
             if best:
                 pos = best[1]
-        D.text(pos, str(num), 1.9, sh.hdir(), bold=True, family="Arial Black", upright=True)
+        D.text(pos, str(num), 1.5, sh.hdir(), bold=True, family="Arial Black", upright=True)
     for k, no in enumerate(nb[:2]):
         yy = depth * 0.45
         xx = xmin - F * 0.55 if k == 0 else xmax + F * 0.55
-        D.text((xx, yy), str(no), 1.9, sh.hdir(), bold=True, family="Arial Black", upright=True)
+        D.text((xx, yy), str(no), 1.5, sh.hdir(), bold=True, family="Arial Black", upright=True)
     # ---- carport
     if cp:
         D.poly(cp, BLACK, 0.04, CARPORT)

@@ -87,7 +87,34 @@ def build(path, name):
     return {"name": name, "stands": out, "houses": houses}
 
 
+def write_lines(path, name, out="site_township_lines.py"):
+    """the road, sewer, water, electrical and stormwater lines of the whole site plan (y negated like the stands, whole centimetres, packed), so a stand of the built-in
+    plan gets its road and services without the DXF being open"""
+    import base64
+    import struct
+    import zlib
+    T = tw.Township().load(path)
+    k = T.k
+    data = {}
+    for lay, v in T.layers.items():
+        a = T.lines.get(lay)
+        if v["cat"] in ("road", "sewer", "water", "elec", "storm") and a:
+            seg = data.setdefault(v["cat"], [])
+            for i in range(0, len(a), 4):
+                seg += [round(a[i] * k * 100), round(-a[i + 1] * k * 100), round(a[i + 2] * k * 100), round(-a[i + 3] * k * 100)]
+    with open(out, "w", encoding="utf-8") as f:
+        f.write('"""The road and service lines of the MCP site plan (written by extract_township_ref.write_lines; not edited by hand). Per category: zlib-compressed little-endian int32\ncentimetres, x1 y1 x2 y2 per line, y negated as in site_township_ref."""\n')
+        f.write("LINES = {%r: {\n" % name)
+        for cat, arr in sorted(data.items()):
+            f.write("    %r: %r,\n" % (cat, base64.b64encode(zlib.compress(struct.pack("<%di" % len(arr), *arr), 9)).decode()))
+        f.write("}}\n")
+    return {c: len(v) // 4 for c, v in data.items()}
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 3 and sys.argv[3] == "lines":
+        print(write_lines(sys.argv[1], sys.argv[2]))
+        sys.exit(0)
     d = build(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else "Township")
     with open("site_township_ref.py", "w", encoding="utf-8") as f:
         f.write('"""Reference township read from the MCP site plan (the extraction script extract_township_ref.py; not edited by hand). Metres, survey coordinates; a stand\'s house and\ncarport are in the stand\'s own frame (x along the street, y into the stand)."""\n')

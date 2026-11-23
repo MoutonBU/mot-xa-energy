@@ -1865,6 +1865,9 @@ class SiteServicesPage(ToolBase):
         self.st["road_lines"] = []
         self.st["main_poly"] = {}
         self.st["main_poly_dxf"] = {}
+        self.st["main_line"] = []                         # (the last stand's main is in another frame: it would send every run to the wrong place and make the search slow)
+        self._ml_on = False
+        self._mn_on = {}
         self.st["underlay"] = []
         self.st["underlay_cat"], self.st["neighbours"] = {}, []
         if points:
@@ -1913,16 +1916,24 @@ class SiteServicesPage(ToolBase):
         best = None
         ml = se.main_line(st)
         if ml:                                                     # a main that runs through the stand: the shortest run to any point along it
+            cand = []                                              # points along the main, only those near the stand (a long main would otherwise be tried point by point)
             for a_, b_ in zip(ml[:-1], ml[1:]):
-                for i in range(0, 9):
-                    q = [round(a_[0] + (b_[0] - a_[0]) * i / 8.0, 2), round(a_[1] + (b_[1] - a_[1]) * i / 8.0, 2)]
-                    st["points"]["sewer"] = q
-                    try:
-                        r = se.solve(st)["sewer"]
-                    except Exception:
-                        continue
-                    if best is None or r["length"] < best[0] - 0.05:
-                        best = (r["length"], q)
+                n_ = max(2, int(math.hypot(b_[0] - a_[0], b_[1] - a_[1]) / 1.5))
+                for i in range(0, n_ + 1):
+                    q = [round(a_[0] + (b_[0] - a_[0]) * i / n_, 2), round(a_[1] + (b_[1] - a_[1]) * i / n_, 2)]
+                    dd = min(se.seg_dist(q, c[j], c[(j + 1) % len(c)]) for j in range(len(c)))
+                    if dd <= 12.0:
+                        cand.append((dd, q))
+            cand.sort(key=lambda t: t[0])
+            cand = [q for _, q in cand[:16]]
+            for q in cand:
+                st["points"]["sewer"] = q
+                try:
+                    r = se.solve(st)["sewer"]
+                except Exception:
+                    continue
+                if best is None or r["length"] < best[0] - 0.05:
+                    best = (r["length"], q)
             st["points"]["sewer"] = best[1] if best else keep
             return
         for i in range(0, 13):
@@ -2999,7 +3010,13 @@ class SiteServicesPage(ToolBase):
                 continue
             nbs = [{"poly": [tuple(p) for p in stands[n]["poly"]], "no": n} for n in d.get("nb", []) if n in stands and n != no]
             conn = {k: {"pt": (v[3], v[4]), "label": v[2]} for k, v in d.get("conn", {}).items() if len(v) >= 5}
-            r = {"no": no, "poly": [tuple(p) for p in d["poly"]], "neighbours": nbs, "lines": {c: [] for c in site_township.CATS}, "street_edge": d["street"],
+            P_ = [tuple(p) for p in d["poly"]]
+            lines = site_township.ref_lines(name, P_)                    # the road and the services of the site plan, kept with the program
+            lines, tris = site_township.Township.strip_symbols(lines)
+            corner = [i for i in site_township.Township.side_streets(P_, d["street"], lines) if not any(
+                site_township._seg_dist(((P_[i][0] + P_[(i + 1) % len(P_)][0]) / 2, (P_[i][1] + P_[(i + 1) % len(P_)][1]) / 2), o["poly"][j], o["poly"][(j + 1) % len(o["poly"])]) < 0.4
+                for o in nbs for j in range(len(o["poly"])))]
+            r = {"no": no, "poly": P_, "neighbours": nbs, "lines": lines, "street_edge": d["street"], "corner": corner,
                  "road_known": True, "connections": conn, "matches": 1, "label": None, "ref": name}
             return r, d
         return None, None

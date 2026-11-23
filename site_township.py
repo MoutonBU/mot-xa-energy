@@ -46,6 +46,7 @@ def bulged(vs, closed=False):
 
 
 from site_plans_data import TOWNSHIP_SEARCH as _TS
+CONN_REACH = _TS["connection"]
 ROAD_REACH = _TS["road"]          # metres: how far round the stand the road is read (the bend, the other side of the street, the next streets); a rule in site_plans_data
 SERVICE_REACH = _TS["services"]
 STAND_REACH = _TS["stands"]
@@ -763,7 +764,7 @@ class Township:
                     break
         edge, known = self.street_edge(P, nb, lines)
         lines, tris = self.strip_symbols(lines)
-        conn = self.connections(P, edge, reach=8.0, tris=tris)
+        conn = self.connections(P, edge, reach=CONN_REACH, tris=tris)
         corner = [i for i in self.side_streets(P, edge, lines) if not any(
             _seg_dist(((P[i][0] + P[(i + 1) % len(P)][0]) / 2, (P[i][1] + P[(i + 1) % len(P)][1]) / 2), o["poly"][j], o["poly"][(j + 1) % len(o["poly"])]) < 0.4
             for o in nb for j in range(len(o["poly"])))]
@@ -827,8 +828,8 @@ class Township:
                             tris.append((cat, pts))
                         break
             if used:
-                lines[cat] = [sg for sg in lines[cat] if not (math.hypot(sg[2] - sg[0], sg[3] - sg[1]) <= max_ext and any(
-                    sg is segs[u] for u in used))]
+                drop = {id(segs[u]) for u in used}
+                lines[cat] = [sg for sg in lines[cat] if id(sg) not in drop]
         return lines, tris
 
     def connections(self, P, edge, reach=8.0, tris=()):
@@ -838,6 +839,17 @@ class Township:
         n = len(P)
         a, b = P[edge], P[(edge + 1) % n]
         out = {}
+
+        def dist_to(q):
+            """distance of a symbol point to the stand: the street side counts as it is, any other side counts 1 m further (so the street side wins a tie)"""
+            best_ = 1e9
+            for j in range(n):
+                dj = _seg_dist(q, P[j], P[(j + 1) % n])
+                if j == edge:
+                    best_ = min(best_, dj)
+                elif dj <= 3.0:                                  # on another side the symbol has to touch the boundary
+                    best_ = min(best_, dj + 1.0)
+            return best_
         for m in self.marks:
             kind = "elec" if (m["col"] == 2 or self.cat_of(m["layer"]) == "elec") else ("water" if (m["col"] in (4, 5) or 130 <= m["col"] <= 179 or self.cat_of(m["layer"]) == "water") else None)
             if not kind:
@@ -848,15 +860,15 @@ class Township:
             ext = max(max(q[0] for q in Q) - min(q[0] for q in Q), max(q[1] for q in Q) - min(q[1] for q in Q))
             if ext > 4.0 or ext < 0.05:
                 continue
-            tip = min(Q, key=lambda q: _seg_dist(q, a, b))
-            d = _seg_dist(tip, a, b)
+            tip = min(Q, key=dist_to)
+            d = dist_to(tip)
             if d > reach:
                 continue
             if kind not in out or d < out[kind]["d"]:
                 out[kind] = {"pt": tip, "d": d, "kind": kind}
         for kind, Q in tris:                                  # symbols drawn as triangle outlines
-            tip = min(Q, key=lambda q: _seg_dist(q, a, b))
-            d = _seg_dist(tip, a, b)
+            tip = min(Q, key=dist_to)
+            d = dist_to(tip)
             if d <= reach and (kind not in out or d < out[kind]["d"]):
                 out[kind] = {"pt": tip, "d": d, "kind": kind}
         for kind, c in out.items():
@@ -932,3 +944,32 @@ class Township:
             a, b = P[i], P[(i + 1) % n]
             return -math.hypot(b[0] - a[0], b[1] - a[1])
         return min(free, key=open_space), False
+
+
+_REF_LINES = {}
+
+
+def ref_lines(name, P):
+    """the road and service lines of a stand of the built-in site plan: the whole plan's lines (site_township_lines, unpacked once) cut to the same windows a DXF
+    search uses (road ROAD_REACH, services SERVICE_REACH round the stand). P in the reference's (y negated) coordinates. -> {cat: [(x1, y1, x2, y2)]}"""
+    out = {c: [] for c in CATS}
+    try:
+        import base64
+        import struct
+        import zlib
+        import site_township_lines as tl
+    except Exception:
+        return out
+    if name not in _REF_LINES:
+        d = {}
+        for cat, packed in tl.LINES.get(name, {}).items():
+            raw = zlib.decompress(base64.b64decode(packed))
+            v = struct.unpack("<%di" % (len(raw) // 4), raw)
+            d[cat] = [(v[i] / 100.0, v[i + 1] / 100.0, v[i + 2] / 100.0, v[i + 3] / 100.0) for i in range(0, len(v), 4)]
+        _REF_LINES[name] = d
+    x0, y0, x1, y1 = min(p[0] for p in P), min(p[1] for p in P), max(p[0] for p in P), max(p[1] for p in P)
+    for cat, segs in _REF_LINES[name].items():
+        r = ROAD_REACH if cat == "road" else SERVICE_REACH
+        b = (x0 - r, y0 - r, x1 + r, y1 + r)
+        out[cat] = [sg for sg in segs if not (min(sg[0], sg[2]) > b[2] or max(sg[0], sg[2]) < b[0] or min(sg[1], sg[3]) > b[3] or max(sg[1], sg[3]) < b[1])]
+    return out
