@@ -412,41 +412,80 @@ class ServicesView(QWidget):
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.setPen(QPen(QColor(255, 64, 86, int(40 + 40 * pulse)), 9, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
         p.drawPath(shape)
-        p.setPen(QPen(QColor("#ff4056"), 2.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        ants = QPen(QColor("#ff4056"), 2.4, Qt.PenStyle.CustomDashLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+        ants.setDashPattern([3.0, 2.2])
+        ants.setDashOffset(-getattr(self, "_ph", 0.0) * 10.0)          # the dashes run round the outline
+        p.setPen(ants)
         p.drawPath(shape)
         p.restore()
 
     def draw_flow(self, p):
-        """small dots drift along the sewer from the house to the main, so the way it flows is clear (the screen only, never the PDF)"""
+        """things move on the screen only (never the PDF): brown dots down the sewer to the main, blue dots along the water line to the house,
+        amber sparks along the electrical line, and a soft ring that pulses out of each eye and each connection point"""
         pg = self.page
         if not pg.res or not self.sh or not (pg.st.get("look") or {}).get("flow", True):
             return
-        path = (pg.res.get("sewer") or {}).get("path") or []
-        if len(path) < 2:
-            return
         S = self.sh.pt
-        pts = [S(q) for q in path]
-        seg = [math.hypot(b.x() - a.x(), b.y() - a.y()) for a, b in zip(pts[:-1], pts[1:])]
-        tot = sum(seg)
-        if tot < 8:
-            return
+        ph = getattr(self, "_ph", 0.0)
+        hp = pg.res.get("house") or []
+        hc = (sum(q[0] for q in hp) / len(hp), sum(q[1] for q in hp) / len(hp)) if hp else None
         gap = max(26.0, self.sh.s * 1.4)
+
+        def run(path, col, to_house, r, speed=1.0):
+            if not path or len(path) < 2:
+                return
+            q = list(path)
+            if hc is not None:                                  # make the list start at the house end, then turn it round if it flows towards the house
+                if math.hypot(q[0][0] - hc[0], q[0][1] - hc[1]) > math.hypot(q[-1][0] - hc[0], q[-1][1] - hc[1]):
+                    q.reverse()
+                if to_house:
+                    q.reverse()
+            pts = [S(c) for c in q]
+            seg = [math.hypot(b.x() - a.x(), b.y() - a.y()) for a, b in zip(pts[:-1], pts[1:])]
+            tot = sum(seg)
+            if tot < 8:
+                return
+            d = (ph * speed * gap) % gap
+            while d < tot:
+                k, acc = 0, 0.0
+                while k < len(seg) - 1 and acc + seg[k] < d:
+                    acc += seg[k]
+                    k += 1
+                f = (d - acc) / seg[k] if seg[k] > 1e-9 else 0.0
+                x = pts[k].x() + (pts[k + 1].x() - pts[k].x()) * f
+                y = pts[k].y() + (pts[k + 1].y() - pts[k].y()) * f
+                fade = max(0.0, min(1.0, d / 30.0, (tot - d) / 30.0))
+                c = QColor(col)
+                c.setAlpha(int(215 * fade))
+                p.setBrush(c)
+                p.drawEllipse(QPointF(x, y), r, r)
+                d += gap
         p.save()
         p.setPen(Qt.PenStyle.NoPen)
-        ph = getattr(self, "_ph", 0.0)
-        d = (ph * gap) % gap
-        while d < tot:
-            k, acc = 0, 0.0
-            while k < len(seg) - 1 and acc + seg[k] < d:
-                acc += seg[k]
-                k += 1
-            f = (d - acc) / seg[k] if seg[k] > 1e-9 else 0.0
-            x = pts[k].x() + (pts[k + 1].x() - pts[k].x()) * f
-            y = pts[k].y() + (pts[k + 1].y() - pts[k].y()) * f
-            fade = min(1.0, d / 30.0, (tot - d) / 30.0)
-            p.setBrush(QColor(139, 90, 43, int(210 * max(0.0, fade))))
-            p.drawEllipse(QPointF(x, y), 2.8, 2.8)
-            d += gap
+        sw_, wt_, el_ = (pg.res.get(k) or {} for k in ("sewer", "water", "elec"))
+        run(sw_.get("path"), QColor(139, 90, 43), False, 2.8)
+        run(wt_.get("path"), QColor(40, 120, 230), True, 2.4, 1.4)
+        for br in wt_.get("branches") or []:
+            run(br.get("path"), QColor(40, 120, 230), True, 2.2, 1.4)
+        run(el_.get("path"), QColor(238, 170, 20), True, 2.2, 2.0)
+        # a ring that grows and fades out of each eye and each connection point, one after the other
+        spots = [(n["pt"], QColor(139, 90, 43)) for n in sw_.get("nodes") or [] if n.get("kind") in ("IE", "RE")]
+        for pr_, col_ in ((sw_.get("port"), QColor(139, 90, 43)), (wt_.get("port"), QColor(40, 120, 230)), (el_.get("port"), QColor(238, 170, 20))):
+            try:
+                spots.append((se.port_point(hp, pr_)[0], col_))
+            except Exception:
+                pass
+        for i, (pt, col) in enumerate(spots):
+            try:
+                f = (ph * 1.0 + i * 0.17) % 1.0
+                c = QColor(col)
+                c.setAlpha(int(170 * (1.0 - f)))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.setPen(QPen(c, 1.6))
+                r = 4.0 + 12.0 * f
+                p.drawEllipse(S((pt[0], pt[1])), r, r)
+            except Exception:
+                pass
         p.restore()
 
     def draw(self, p, sh, interactive=False):
@@ -1566,7 +1605,7 @@ class SiteServicesPage(ToolBase):
         ml.addLayout(row)
         row = FlowLayout(None, 8, 6)
         self.look_cb = {}
-        for key, text in (("fill", "Green stand"), ("walls", "Boundary walls"), ("cutout", "Export frame (blue)"), ("storm", "Stormwater arrow"), ("wp_box", "WP / VV box and marks"), ("upright", "Names and numbers stay level when the plan is turned"), ("flow", "Show the sewer flowing on the screen (not on the PDF)")):
+        for key, text in (("fill", "Green stand"), ("walls", "Boundary walls"), ("cutout", "Export frame (blue)"), ("storm", "Stormwater arrow"), ("wp_box", "WP / VV box and marks"), ("upright", "Names and numbers stay level when the plan is turned"), ("flow", "Moving things on the screen: flow of the sewer, water and electrical, pulses at the eyes (not on the PDF)")):
             cb_ = QCheckBox(text)
             cb_.setChecked(True)
             cb_.toggled.connect(lambda on, k=key: self.set_look(k, on))
