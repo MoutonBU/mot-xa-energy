@@ -87,12 +87,26 @@ def build(path, name):
     return {"name": name, "stands": out, "houses": houses}
 
 
+def pack_ints(vals):
+    """whole-centimetre line coordinates -> bytes: each value as the step from the line's own previous end (x1, y1) or its start (x2, y2), zigzag, 7 bits per byte"""
+    out = bytearray()
+    px = py = 0
+    for i in range(0, len(vals), 4):
+        x1, y1, x2, y2 = vals[i:i + 4]
+        for d in (x1 - px, y1 - py, x2 - x1, y2 - y1):
+            z = (d << 1) if d >= 0 else ((-d << 1) - 1)
+            while z >= 128:
+                out.append((z & 127) | 128)
+                z >>= 7
+            out.append(z)
+        px, py = x2, y2
+    return bytes(out)
+
+
 def write_lines(path, name, out="site_township_lines.py"):
     """the road, sewer, water, electrical and stormwater lines of the whole site plan (y negated like the stands, whole centimetres, packed), so a stand of the built-in
     plan gets its road and services without the DXF being open"""
     import base64
-    import struct
-    import zlib
     T = tw.Township().load(path)
     k = T.k
     data = {}
@@ -103,10 +117,10 @@ def write_lines(path, name, out="site_township_lines.py"):
             for i in range(0, len(a), 4):
                 seg += [round(a[i] * k * 100), round(-a[i + 1] * k * 100), round(a[i + 2] * k * 100), round(-a[i + 3] * k * 100)]
     with open(out, "w", encoding="utf-8") as f:
-        f.write('"""The road and service lines of the MCP site plan (written by extract_township_ref.write_lines; not edited by hand). Per category: zlib-compressed little-endian int32\ncentimetres, x1 y1 x2 y2 per line, y negated as in site_township_ref."""\n')
+        f.write('"""The road and service lines of the MCP site plan (written by extract_township_ref.write_lines; not edited by hand). Per category, base64 of the lines in whole\ncentimetres, y negated as in site_township_ref: per line the steps x1, y1 from the previous line\'s end and x2, y2 from its own start, zigzag, 7 bits per byte."""\n')
         f.write("LINES = {%r: {\n" % name)
         for cat, arr in sorted(data.items()):
-            f.write("    %r: %r,\n" % (cat, base64.b64encode(zlib.compress(struct.pack("<%di" % len(arr), *arr), 9)).decode()))
+            f.write("    %r: %r,\n" % (cat, base64.b64encode(pack_ints(arr)).decode()))
         f.write("}}\n")
     return {c: len(v) // 4 for c, v in data.items()}
 

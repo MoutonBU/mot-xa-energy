@@ -955,17 +955,28 @@ def ref_lines(name, P):
     out = {c: [] for c in CATS}
     try:
         import base64
-        import struct
-        import zlib
         import site_township_lines as tl
     except Exception:
         return out
     if name not in _REF_LINES:
         d = {}
         for cat, packed in tl.LINES.get(name, {}).items():
-            raw = zlib.decompress(base64.b64decode(packed))
-            v = struct.unpack("<%di" % (len(raw) // 4), raw)
-            d[cat] = [(v[i] / 100.0, v[i + 1] / 100.0, v[i + 2] / 100.0, v[i + 3] / 100.0) for i in range(0, len(v), 4)]
+            raw = base64.b64decode(packed)
+            vals, z, sh = [], 0, 0
+            for b in raw:
+                z |= (b & 127) << sh
+                if b & 128:
+                    sh += 7
+                    continue
+                vals.append((z >> 1) if not z & 1 else -((z + 1) >> 1))
+                z, sh = 0, 0
+            segs, px, py = [], 0, 0
+            for i in range(0, len(vals) - 3, 4):
+                x1, y1 = px + vals[i], py + vals[i + 1]
+                x2, y2 = x1 + vals[i + 2], y1 + vals[i + 3]
+                segs.append((x1 / 100.0, y1 / 100.0, x2 / 100.0, y2 / 100.0))
+                px, py = x2, y2
+            d[cat] = segs
         _REF_LINES[name] = d
     x0, y0, x1, y1 = min(p[0] for p in P), min(p[1] for p in P), max(p[0] for p in P), max(p[1] for p in P)
     for cat, segs in _REF_LINES[name].items():
