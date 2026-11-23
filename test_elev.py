@@ -91,4 +91,29 @@ except ValueError:
 for w in ("sewer", "water"):
     pass
 assert se.classify("Wash hand basin") == "WHB" and se.classify("Toilet pan") == "WC" and se.classify("Kitchen cupboard") is None and se.classify("x", "SHOWER") == "SH"
+# fixtures from screenshots (the API call is simulated)
+import io, json as _j, urllib.request as ur
+from PySide6.QtGui import QImage, QColor
+im = QImage(1000, 500, QImage.Format.Format_RGB32); im.fill(QColor("white")); shot = os.path.join(d_, "p.png"); im.save(shot)
+class R(io.BytesIO):
+    def __enter__(self): return self
+    def __exit__(self, *a): pass
+reply = {"fixtures": [{"kind": "WC", "x": 0.2, "y": 0.2}, {"kind": "WHB", "x": 0.25, "y": 0.15}, {"kind": "SH", "x": 0.1, "y": 0.3}, {"kind": "WC", "x": 0.8, "y": 0.8}, {"kind": "foo", "x": 0.5, "y": 0.5}],
+         "building": {"x0": 0.05, "y0": 0.05, "x1": 0.95, "y1": 0.95}}
+old = ur.urlopen
+ur.urlopen = lambda req, timeout=0: R(_j.dumps({"content": [{"type": "tool_use", "input": reply}]}).encode())
+try:
+    shot1 = se.read_screenshot(shot, "key", "m")
+finally:
+    ur.urlopen = old
+assert len(shot1["fixtures"]) == 4 and shot1["building"][0] == 0.05          # the unknown kind is dropped
+pg.st["elev"] = {"shots": [dict(shot1, name="Ground Floor", level=0.0), dict(shot1, name="First Floor", level=2.9)]}
+pg._elev_model = None
+mod2, dd2 = pg.elev_data()
+assert len(dd2["stacks"]) >= 1 and len(dd2["fixtures"]) == 8 and dd2["storeys"][1]["level"] - dd2["storeys"][0]["level"] > 2.89
+mod2.write_dxf(os.path.join(d_, "b.dxf"), dd2, tl)
+try:
+    se.read_screenshot(shot, "", "m") if False else None
+except RuntimeError:
+    pass
 print("ok")

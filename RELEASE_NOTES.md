@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.190**
+Current version: **1.86.191**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Sewer elevation from floor plan screenshots (no IFC needed):** next to "Choose the IFC model", "Or add a floor plan screenshot (AI)" takes a screenshot of one floor plan, asks which floor it is and its level, and Claude (using your API key from Settings) lists the WCs, basins, showers, baths, sinks and washing machines and where they are. Add one screenshot per floor. The plan is scaled so the building outline on the screenshot is as long as the house on the site plan, and then the same turning, stacks, levels and sheet as the IFC route are used. The positions come from an AI reading of a picture: check that the fixtures on the sheet are where they are on the plan (an unclear screenshot gives wrong or missing fixtures). Tested with a simulated reply and a blank picture only; no live request has been run (no key in the build environment).
 - **Rodding eyes drawn at 45 degrees:** on the sewer long section and the sewer elevation every rodding eye (RE) now leans at 45 degrees up the line, back towards the house, instead of standing straight up. Inspection eyes (IE) stay vertical. The direction is my reading of your marked-up drawing: if you want them to lean the other way, say so.
 - **Detail generator: "tool_choice ... not supported for this model" fixed:** the request no longer forces the drawing tool, which some models refuse, and still reads the answer whether it comes back as the tool call or as plain text. Not run against the live service here (no key in the build environment).
 - **Detail generator no longer fails with "The reply could not be read":** the request now asks Claude for the drawing as a checked structure instead of free text, so a stray comma can no longer break it, and an unreadable reply is tried once more. Retaining walls and proprietary blocks (Loffelstein and similar) are drawn as generic shapes with "to manufacturer's spec" in the note and the assumed sizes listed. Checked against a simulated reply only: no Anthropic key in the build environment, so a live request has not been run.

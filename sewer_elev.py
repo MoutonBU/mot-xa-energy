@@ -663,3 +663,110 @@ def write_dxf(path, d, title_lines=(), when=None):
     draw(p, 420.0 * S, 297.0 * S, S, d, title_lines, when)
     doc.saveas(path)
     return path
+
+
+# ---------------------------------------------------------------- fixtures from a screenshot of a plan
+SHOT_SYSTEM = (
+    "You read a floor plan screenshot (an architectural plan, usually from ArchiCAD) and list the plumbing fixtures on it. Answer ONLY by calling the "
+    "list_fixtures tool. Positions are fractions of the picture: x from 0 (left edge) to 1 (right edge), y from 0 (top edge) to 1 (bottom edge), taken at the "
+    "middle of each fixture. Kinds: WC (toilet), WHB (wash hand basin or vanity basin), SH (shower), B (bath), S (kitchen or scullery sink), WM (washing machine "
+    "point), DW (dishwasher), G (gully or floor trap). List every fixture you can see and nothing you cannot. building = the rectangle (same fractions) that just "
+    "contains the whole building outline on the plan, outer walls included, without dimension lines or text outside the walls.")
+SHOT_TOOL = {"name": "list_fixtures", "description": "The plumbing fixtures on the plan and the building outline.",
+             "input_schema": {"type": "object", "properties": {
+                 "fixtures": {"type": "array", "items": {"type": "object", "properties": {
+                     "kind": {"type": "string", "enum": sorted(KINDS)}, "x": {"type": "number"}, "y": {"type": "number"}}, "required": ["kind", "x", "y"]}},
+                 "building": {"type": "object", "properties": {"x0": {"type": "number"}, "y0": {"type": "number"}, "x1": {"type": "number"}, "y1": {"type": "number"}},
+                              "required": ["x0", "y0", "x1", "y1"]}},
+                 "required": ["fixtures", "building"]}}
+
+
+def read_screenshot(path, key=None, model=None, timeout=120):
+    """a plan screenshot -> {"fixtures": [{kind, x, y}], "building": (x0, y0, x1, y1), "w": px, "h": px}. Needs an API key; raises RuntimeError with a plain message."""
+    import base64
+    import json
+    import urllib.error
+    import urllib.request
+    from PySide6.QtCore import QBuffer, QByteArray, QIODevice
+    from PySide6.QtGui import QImage
+    import detail_generator as gen
+    key = key or gen.api_key()
+    if not key:
+        raise RuntimeError("No API key saved. Add one under Settings in the Detail notes tab (a Claude Pro subscription does not give the program a key).")
+    img = QImage(str(path))
+    if img.isNull():
+        raise RuntimeError("That picture could not be opened.")
+    w, h = img.width(), img.height()
+    if max(w, h) > 1600:
+        img = img.scaled(1600, 1600, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+    ba = QByteArray()
+    buf = QBuffer(ba)
+    buf.open(QIODevice.OpenModeFlag.WriteOnly)
+    img.save(buf, "PNG")
+    body = {"model": model or gen.api_model(), "max_tokens": 4000, "system": SHOT_SYSTEM, "tools": [SHOT_TOOL], "tool_choice": {"type": "auto"},
+            "messages": [{"role": "user", "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": base64.b64encode(bytes(ba)).decode()}},
+                {"type": "text", "text": "List the plumbing fixtures on this plan and the building outline."}]}]}
+    req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=json.dumps(body).encode(),
+                                 headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            msg = json.loads(e.read().decode("utf-8")).get("error", {}).get("message", "")
+        except Exception:
+            msg = ""
+        raise RuntimeError("Claude said: %s (code %s)" % (msg or e.reason, e.code))
+    except urllib.error.URLError as e:
+        raise RuntimeError("No internet connection (%s)" % e.reason)
+    inp = next((p["input"] for p in data.get("content", []) if p.get("type") == "tool_use" and isinstance(p.get("input"), dict)), None)
+    if inp is None:
+        raise RuntimeError("Claude did not list any fixtures. Try a clearer or larger screenshot of one floor.")
+    fx = []
+    for f in inp.get("fixtures") or []:
+        try:
+            k = str(f["kind"]).upper()
+            if k in KINDS:
+                fx.append({"kind": k, "x": min(1.0, max(0.0, float(f["x"]))), "y": min(1.0, max(0.0, float(f["y"])))})
+        except (KeyError, TypeError, ValueError):
+            pass
+    b = inp.get("building") or {}
+    try:
+        bb = (float(b["x0"]), float(b["y0"]), float(b["x1"]), float(b["y1"]))
+        if bb[2] - bb[0] < 0.05 or bb[3] - bb[1] < 0.05:
+            raise ValueError
+    except (KeyError, TypeError, ValueError):
+        bb = (0.0, 0.0, 1.0, 1.0)
+    return {"fixtures": fx, "building": bb, "w": w, "h": h}
+
+
+def model_from_shots(shots, house_pts):
+    """shots: [{"name", "level", "fixtures", "building", "w", "h"}] (one per floor, ground first) -> a model like read_ifc gives.
+    The plan is scaled so the building outline on the screenshot is as long as the house on the site plan, with the screenshot's up as north-up of the house's fit."""
+    from shapely.geometry import Polygon
+    H = Polygon(house_pts).buffer(0)
+    _a, Lh, Wh = _long_axis(H)
+    storeys, fixtures = [], []
+    k = None
+    for i, s in enumerate(shots):
+        x0, y0, x1, y1 = s["building"]
+        bw, bh = (x1 - x0) * s["w"], (y1 - y0) * s["h"]
+        kk = Lh / max(bw, bh)
+        if k is None:
+            k = kk
+            fw, fh = bw * kk, bh * kk
+        cx, cy = (x0 + x1) / 2 * s["w"], (y0 + y1) / 2 * s["h"]
+        storeys.append({"id": i, "name": s["name"], "z": float(s["level"]), "elev": float(s["level"])})
+        for f in s["fixtures"]:
+            fixtures.append({"kind": f["kind"], "name": f["kind"], "x": (f["x"] * s["w"] - cx) * kk, "y": -(f["y"] * s["h"] - cy) * kk,
+                             "z": float(s["level"]), "storey": i})
+    if not storeys or k is None:
+        raise ValueError("No screenshots yet.")
+    fp = [(-fw / 2, -fh / 2), (fw / 2, -fh / 2), (fw / 2, fh / 2), (-fw / 2, fh / 2)]
+    order = sorted(range(len(storeys)), key=lambda i: storeys[i]["z"])
+    remap = {old: new for new, old in enumerate(order)}
+    storeys = [storeys[i] for i in order]
+    for f in fixtures:
+        f["storey"] = remap[f["storey"]]
+    return {"storeys": storeys, "fixtures": fixtures, "footprint": fp, "file": "plan screenshots"}
