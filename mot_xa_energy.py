@@ -34,6 +34,7 @@ MIN_LIGHT_M2 = 0.2
 # SANS 10400-O:2011 (Ed 3) 4.3.1.1.3: ventilation = 5% of floor area, but never less than 0.2 m2
 # (0.1 m2 for category 1 rooms: E4, F2, H3, H4, H5). The larger value applies.
 MIN_VENT_M2 = 0.2
+LIGHT_FULL_OPENING = [False]    # True: daylight counted on the whole opening incl. frame (SANS 10400-O 4.2.1.1.3 wording), False: on the glass only
 MIN_VENT_CAT1_M2 = 0.1
 
 
@@ -85,6 +86,13 @@ class Opening:
             # taken straight from the drawing's schedule - the frame is already left out
             return min(self.glazed_area_m2, self.area_m2)
         return self.clear_m2 * self.glazed_pct / 100.0
+
+    @property
+    def light_m2(self):
+        """the area daylight is counted on: the glass, or (when ticked) the whole opening including its frame"""
+        if LIGHT_FULL_OPENING[0] and self.glazed_m2 > 0:
+            return self.clear_m2
+        return self.glazed_m2
 
     @property
     def openable_m2(self):
@@ -1524,6 +1532,7 @@ WC_ARTIFICIAL_RE = re.compile(r"\b(toilets?|wc|w\.c\.?|vc|lavatory|loo|cloakroom
 def check_room(room, schedule, light_pct):
     tags = parse_tags(room.tags)
     glazed = 0.0
+    lit = 0.0
     openable = 0.0
     missing = []
     detail = []
@@ -1537,6 +1546,7 @@ def check_room(room, schedule, light_pct):
         if not op.counts:
             continue
         glazed += op.glazed_m2 * qty
+        lit += op.light_m2 * qty
         openable += op.openable_m2 * qty
         detail.append(f"{tag} x{qty:g} = {op.glazed_m2 * qty:.2f}")
         if op.glazed_m2 > 0:
@@ -1566,13 +1576,14 @@ def check_room(room, schedule, light_pct):
         "area": room.area_m2,
         "glazed": glazed,
         "openable": openable,
-        "light_pct": 0.0 if no_area else glazed / area * 100.0,
+        "light_pct": 0.0 if no_area else lit / area * 100.0,
+        "light_area": lit,
         "vent_pct": 0.0 if no_area else openable / area * 100.0,
         "light_req": light_req,
         "vent_req": vent_req,
         "art_used": (bool(room.artificial_light) or sanitary) and not circulation and not no_area
-                    and glazed < light_req,
-        "light_ok": circulation or ((not no_area) and (glazed >= light_req or bool(room.artificial_light) or sanitary)),
+                    and lit < light_req,
+        "light_ok": circulation or ((not no_area) and (lit >= light_req or bool(room.artificial_light) or sanitary)),
         "vent_ok": circulation or ((not no_area) and (openable >= vent_req or sanitary)),
         "mech_used": sanitary and not circulation and not no_area and openable < vent_req,
         "sanitary": sanitary,
@@ -9097,6 +9108,10 @@ class MainWindow(QMainWindow):
         self.rule_box.addItems(list(RULES.keys()))
         self.rule_box.currentIndexChanged.connect(self._lv_refresh_soon)
         top.addWidget(self.rule_box)
+        self.full_chk = QCheckBox("Light on the whole opening:")
+        self.full_chk.setToolTip("SANS 10400-O 4.2.1.1.3 counts the total opening area including the frame. On: daylight is counted on the whole opening. Off: on the glass only (the safer reading).")
+        self.full_chk.toggled.connect(lambda on: (LIGHT_FULL_OPENING.__setitem__(0, bool(on)), self._lv_refresh_soon()))
+        top.addWidget(self.full_chk)
         self.frame_chk = QCheckBox("Deduct frames:")
         self.frame_chk.toggled.connect(self._lv_refresh_soon)
         self.frame_chk.setToolTip(
@@ -11461,6 +11476,7 @@ class MainWindow(QMainWindow):
         return {
             "rule": self.rule_box.currentText(),
             "deduct_frames": self.frame_chk.isChecked(),
+            "light_full_opening": self.full_chk.isChecked(),
             "skip_unglazed": self.skip_chk.isChecked(),
             "glaze_limit": self.glaze_spin.value(),
             "frame_mm": self.frame_spin.value(),
@@ -12016,6 +12032,7 @@ class MainWindow(QMainWindow):
         if data.get("rule") in RULES:
             self.rule_box.setCurrentText(data["rule"])
         self.frame_chk.setChecked(bool(data.get("deduct_frames", False)))
+        self.full_chk.setChecked(bool(data.get("light_full_opening", False)))
         self.skip_chk.setChecked(bool(data.get("skip_unglazed", True)))
         self.glaze_spin.setValue(float(data.get("glaze_limit", 20.0) or 20.0))
         self.internal_tags = set(data.get("internal_tags", []))
@@ -20057,7 +20074,7 @@ color:{'#1B7F3B' if n_ok == len(self.results) else RED};">{n_ok} / {len(self.res
 <span style="font-size:8pt;">rooms pass both checks</span></td></tr></table>
 <table width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td bgcolor="{RED}" height="3"></td></tr></table>
 {self._project_info_html()}
-<p style="font-size:8pt; color:#555555;">Natural light = glazed area / floor area (minimum {RULES[self.rule_box.currentText()]:g}%,
+<p style="font-size:8pt; color:#555555;">Natural light = {'whole opening including frame' if LIGHT_FULL_OPENING[0] else 'glazed area'} / floor area (minimum {RULES[self.rule_box.currentText()]:g}%,
 at least {MIN_LIGHT_M2:g} m&sup2;). Ventilation = openable area / floor area (minimum {VENT_PERCENT:g}% and not less than {MIN_VENT_M2:g} m&sup2;, or {MIN_VENT_CAT1_M2:g} m&sup2; for category 1 rooms). Rules follow SANS 10400-O:2011 Ed 3; SANS 10400-O:2025 Ed 4 was gazetted 30 May 2025 - confirm against it.
 Passages and circulation spaces need neither.
 Glazing limit: glazing may not exceed {GLAZE_LIMIT[0]:g}% of the net floor area, otherwise a rational design is needed.</p>
