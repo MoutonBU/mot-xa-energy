@@ -1617,6 +1617,20 @@ class SiteServicesPage(ToolBase):
                 row.addWidget(self.lv_spots)
                 ml3.addLayout(row)
                 row = FlowLayout(None, 8, 6)
+                self.lv_drops = QLineEdit()
+                self.lv_drops.setPlaceholderText("12 = 0.35")
+                self.lv_drops.setMinimumWidth(200)
+                self.lv_drops.setToolTip("Extra invert levels where the pipe steps down inside an inspection eye (with a rodding eye): the distance from the house outlet in metres, then the invert level "
+                                         "just after the drop. The pipe then carries on at its fall. Use it when the pipe would arrive above the main.")
+                self.lv_drops.textChanged.connect(self._edited)
+                row.addWidget(QLabel("Drops to the main (distance = invert level after the drop)"))
+                row.addWidget(self.lv_drops)
+                b_ = QPushButton("Add a drop to reach the main")
+                b_.setToolTip("Puts a drop at the last eye before the main, deep enough for the pipe to arrive at the main's invert level.")
+                b_.clicked.connect(lambda _=False: self.add_drop_to_main())
+                row.addWidget(b_)
+                ml3.addLayout(row)
+                row = FlowLayout(None, 8, 6)
                 for txt_, fn_ in (("Preview the sewer section", self.section_preview), ("Save the sewer section as PDF...", self.section_pdf), ("Save the sewer section as DXF...", self.section_dxf)):
                     b_ = QPushButton(txt_)
                     b_.clicked.connect(lambda _=False, f=fn_: f())
@@ -1927,6 +1941,8 @@ class SiteServicesPage(ToolBase):
         if hasattr(self, "lv_spin"):
             st["levels"] = {k_: w_.value() for k_, w_ in self.lv_spin.items()}
             st["levels"]["spots"] = self.lv_spots.text().strip()
+            if hasattr(self, "lv_drops"):
+                st["levels"]["drops"] = self.lv_drops.text().strip()
         st["params"] = {"conn_depth": self.p_depth.value(), "fall": self.p_fall.value(), "max_ie": self.p_ie.value(), "re_ext": self.p_tail.value(), "sewer_pipe": self.p_pipe.currentText(),
                         "sb_street": self.sb_street.value(), "sb_side": self.sb_side.value(), "sb_rear": self.sb_rear.value()}
         self.schedule()
@@ -1983,6 +1999,8 @@ class SiteServicesPage(ToolBase):
                 w_.setValue(float(lvl.get(k_) or 0))
             if hasattr(self, "lv_spots"):
                 self.lv_spots.setText(str(lvl.get("spots", "")))
+            if hasattr(self, "lv_drops"):
+                self.lv_drops.setText(str(lvl.get("drops", "")))
             if hasattr(self, "el_title"):
                 el_ = st.get("elev") or {}
                 self.el_title.setText(str(el_.get("title", "")))
@@ -3921,6 +3939,18 @@ class SiteServicesPage(ToolBase):
             x_ = W * 0.55 if i < 5 else W * 0.78
             y_ = base + (i if i < 5 else i - 5) * step - step * 0.2
             p.drawText(QPointF(x_, y_), t)
+
+    def add_drop_to_main(self):
+        import site_profile
+        d = site_profile.build(self.st, self.res)
+        if d["drop"] <= 0.005:
+            QMessageBox.information(self, "Sewer section", "The pipe already reaches the main (it arrives %d mm above its invert level, which is fine)." % round(d["drop"] * 1000))
+            return
+        eyes = [s_ for s_ in d["stations"] if s_["kind"] != "MAIN" and s_["x"] < d["length"] - 0.5 and not any(abs(s_["x"] - x_) < 0.05 for x_, _a, _b in d["drops"])]
+        x = eyes[-1]["x"] if eyes else max(0.0, d["length"] - 1.0)
+        new_il = d["main_il"] + (d["length"] - x) / d["fall"]
+        txt = (self.lv_drops.text().strip().rstrip(",") + ", " if self.lv_drops.text().strip() else "") + "%.2f = %.3f" % (x, new_il)
+        self.lv_drops.setText(txt)
 
     def section_data(self):
         import site_profile

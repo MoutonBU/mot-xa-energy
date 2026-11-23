@@ -275,25 +275,30 @@ def build(state, res, model, turn=0, flip=False, title=None):
     for s in stacks:
         s["need_head"] = s["il_max"] + s["x"] / fall
     il_head0 = prof["il"](0.0)
-    il_head = min([il_head0] + [s["need_head"] for s in stacks])
-    delta = il_head - il_head0
-    deeper = delta < -1e-6
+    first_drop = min([x_ for x_, _a, _b in prof["drops"]] + [1e9])
+    il_head = min([il_head0] + [s["need_head"] for s in stacks if s["x"] < first_drop - 0.03])     # a stack after a drop cannot move the head
+    deeper = il_head < il_head0 - 1e-6
+    if deeper:
+        prof = sp.build(st2, res, il_head=il_head)
     od = prof["od"]
-
-    def il(x):
-        return prof["il"](x) + delta
+    il, il_in = prof["il"], prof["il_in"]
 
     # ---- stations: from the plan, and one inspection eye under every stack
     sts = []
+    names = {}
     for s in prof["stations"]:
-        sts.append({"kind": s["kind"], "x": s["x"], "u": u_of_x(s["x"]), "desc": s["desc"]})
+        sts.append({"kind": s["kind"], "x": s["x"], "u": u_of_x(s["x"]), "desc": s["desc"], "name": s["name"], "drop": s.get("drop", 0.0), "top": s.get("top")})
+        names[s["kind"]] = names.get(s["kind"], 0) + 1
     for k, s in enumerate(stacks, 1):
         if not any(abs(t["x"] - s["x"]) < 0.4 for t in sts if t["kind"] in ("IE", "RE")):
-            sts.append({"kind": "IE", "x": s["x"], "u": s["u"], "desc": "Inspection eye at stack %d" % k})
+            names["IE"] = names.get("IE", 0) + 1
+            sts.append({"kind": "IE", "x": s["x"], "u": s["u"], "desc": "Inspection eye at stack %d" % k, "name": "IE%d" % names["IE"], "drop": 0.0, "top": None})
     sts.sort(key=lambda t: t["x"])
     for t in sts:
         t["ngl"] = prof["ngl"](t["x"])
         t["il"] = il(t["x"])
+        if t.get("top") is None:
+            t["top"] = t["il"]
         t["depth"] = t["ngl"] - t["il"]
         t["cover"] = t["ngl"] - t["il"] - od
     # ---- checks
@@ -310,13 +315,16 @@ def build(state, res, model, turn=0, flip=False, title=None):
     checks.append(("Soil cover over the pipe is at least %d mm (lowest %d mm)." % (round(mc * 1000), round(mcov * 1000)) if mcov >= mc - 1e-6
                    else "Soil cover is only %d mm (minimum %d mm)." % (round(mcov * 1000), round(mc * 1000)), mcov >= mc - 1e-6))
     drop = il(Hh) - prof["main_il"]
-    checks.append(("The pipe reaches the main %d mm above its invert level." % round(drop * 1000) if drop >= -1e-6
-                   else "The pipe arrives %d mm BELOW the invert of the main: it cannot drain by gravity." % round(-drop * 1000), drop >= -1e-6))
+    checks.append(("The pipe reaches the main %d mm above its invert level." % round(drop * 1000) if drop >= -0.002
+                   else "The pipe arrives %d mm BELOW the invert of the main: it cannot drain by gravity." % round(-drop * 1000), drop >= -0.002))
+    for t, ok in prof["checks"]:
+        if t.startswith("Drop") or t.startswith("The drop"):
+            checks.append((t, ok))
     for t, ok in prof["checks"][:1]:
         checks.append((t, ok))
     nm = (state.get("stand") or {}).get("name", "")
     return {"fixtures": fx, "stacks": stacks, "stations": sts, "storeys": [dict(s, level=s["elev"] + shift) for s in storeys], "ground_i": gi,
-            "ngl": prof["ngl"], "il": il, "x_of_u": x_of_u, "u_of_x": u_of_x, "od": od, "fall": fall, "pipe": prof["pipe"], "length": Hh, "main_il": prof["main_il"],
+            "ngl": prof["ngl"], "il": il, "il_in": il_in, "drops": prof["drops"], "x_of_u": x_of_u, "u_of_x": u_of_x, "od": od, "fall": fall, "pipe": prof["pipe"], "length": Hh, "main_il": prof["main_il"],
             "assumed": assumed, "deeper": deeper, "il_head": il_head, "checks": checks, "side": side, "turn_ok": ov, "overlap": ov, "main_u": u_of_x(Hh),
             "title": title or ("(A) %s %s" % (side, nm)).strip(), "typed_ffl": typed_ffl}
 
@@ -416,11 +424,20 @@ def draw(p, W, H, S, d, title_lines=(), when=None):
         a, b = min(t0, t1), max(t0, t1)
         return (u1 + (u2 - u1) * a, v1 + (v2 - v1) * a, u1 + (u2 - u1) * b, v1 + (v2 - v1) * b)
     layer("SEWER")
+    dxs = [x_ for x_, _a, _b in d["drops"]]
     for (xa, ua), (xb, ub) in zip(pts[:-1], pts[1:]):
+        if xb - xa < 0.03:
+            continue
+        end_il = d["il_in"](xb) if any(abs(xb - x_) < 0.03 for x_ in dxs) else d["il"](xb)
         for off in (0.0, od):
-            c_ = seg_clip(ua, d["il"](xa) + off, ub, d["il"](xb) + off)
+            c_ = seg_clip(ua, d["il"](xa) + off, ub, end_il + off)
             if c_:
                 line(X(c_[0]), Y(c_[1]), X(c_[2]), Y(c_[3]), BROWN, 0.25, DD)
+    for t in sts:                                                       # a drop: the pipe steps down inside the inspection eye
+        if t["kind"] == "IE" and t.get("drop", 0) > 0.002 and ulo - 0.01 <= t["u"] <= uhi + 0.01:
+            for off in (0.0, od):
+                line(X(t["u"]), Y(t["il"] + t["drop"] + off), X(t["u"]), Y(t["il"] + off), BROWN, 0.5)
+            text(X(t["u"]) + 2.0, (Y(t["il"] + t["drop"]) + Y(t["il"])) / 2 + 0.8, "drop %d mm" % round(t["drop"] * 1000), 2.0, False, BROWN)
     cut_l = any(t["u"] < ulo for t in sts)
     cut_r = any(t["u"] > uhi for t in sts)
     # ---- eyes and the manhole
@@ -442,18 +459,20 @@ def draw(p, W, H, S, d, title_lines=(), when=None):
             text(ux + w * 1000.0 / scl / 2 + 2, Y(il_ - 0.15), "MH size to be designed by the Civil Eng. to the local council's criteria.", 2.0)
         elif t["kind"] == "RE":
             dirn = -1.0 if d["u_of_x"](max(0.0, t["x"] - 0.5)) < d["u_of_x"](t["x"]) else 1.0      # leans up the line, the way the pipe comes from
-            run = (Y(il_ + od) - Y(t["ngl"])) * dirn                                              # 45 degrees on the paper
-            line(ux, Y(il_ + od), ux + run, Y(t["ngl"]), BROWN, 0.25, DD)
-            line(ux, Y(il_), ux + run, Y(t["ngl"]), BROWN, 0.25, DD)
-            text(ux + run + (1.5 if dirn > 0 else -1.5), Y(t["ngl"]) + 3.0, "RE", 2.2, True, align="l" if dirn > 0 else "r")
+            run = (Y(t["top"] + od) - Y(t["ngl"])) * dirn                                              # 45 degrees on the paper
+            line(ux, Y(t["top"] + od), ux + run, Y(t["ngl"]), BROWN, 0.25, DD)
+            line(ux, Y(t["top"]), ux + run, Y(t["ngl"]), BROWN, 0.25, DD)
+            text(ux + run + (1.5 if dirn > 0 else -1.5), Y(t["ngl"]) + 3.0, t["name"], 2.2, True, align="l" if dirn > 0 else "r")
             t["_lean"] = run
         else:
-            line(ux, Y(il_ + od), ux, Y(t["ngl"]), BROWN, 0.25, DD)
-            text(ux - 1.5, Y(t["ngl"]) + 4.0, "IE", 2.2, True, align="r")
-        if t["kind"] != "MAIN" and any(abs(o["u"] - t["u"]) < 0.5 and o["kind"] != "IE" for o in tags):
+            line(ux, Y(t["top"] + od), ux, Y(t["ngl"]), BROWN, 0.25, DD)
+            text(ux - 1.5, Y(t["ngl"]) + 4.0, t["name"], 2.2, True, align="r")
+        same = next((o for o in tags if abs(o["u"] - t["u"]) < 0.5 and abs(o["il"] - t["il"]) < 0.12), None)
+        if same is not None:                                           # an eye pair at one place shares one box: RE2 / IE2
+            if t["name"] not in same["names"]:
+                same["names"].append(t["name"])
             continue
-        if any(abs(o["u"] - t["u"]) < 0.5 and abs(o["il"] - t["il"]) < 0.12 for o in tags):
-            continue
+        t["names"] = [t["name"]]
         tags.append(t)
     # ---- stacks, branches and fixtures
     layer("SEWER")
@@ -486,7 +505,7 @@ def draw(p, W, H, S, d, title_lines=(), when=None):
     layer("SEWER")
     tags.sort(key=lambda t: t["u"])
     rows_end = [-1e9, -1e9, -1e9]
-    bw, bh = 21.0, 11.0
+    bw, bh = 21.0, 14.0
     for t in tags:
         ux = X(t["u"])
         r = next((i for i, e in enumerate(rows_end) if e < ux - bw / 2 - 1.0), None)
@@ -497,11 +516,12 @@ def draw(p, W, H, S, d, title_lines=(), when=None):
         bx = ux - bw / 2 + (6.0 if t["kind"] == "RE" else 0)
         p.setPen(pen(BLACK, 0.2))
         p.drawRect(QRectF(P(bx, by), P(bx + bw, by + bh)))
-        text(bx + 1.2, by + 3.3, "CL = %.3f" % t["ngl"], 2.2)
-        text(bx + 1.2, by + 6.3, "IL  = %.3f" % t["il"], 2.2)
-        text(bx + 1.2, by + 9.3, "D  = %dmm" % round(t["depth"] * 1000) if t["depth"] < 1.0 else "D  = %.2fm" % t["depth"], 2.2)
+        text(bx + 1.2, by + 3.0, " / ".join(sorted(t["names"], key=lambda n_: (n_[:2] != "IE", n_))), 2.2, True)
+        text(bx + 1.2, by + 6.0, "CL = %.3f" % t["ngl"], 2.2)
+        text(bx + 1.2, by + 9.0, "IL  = %.3f" % t["il"], 2.2)
+        text(bx + 1.2, by + 12.0, "D  = %dmm" % round(t["depth"] * 1000) if t["depth"] < 1.0 else "D  = %.2fm" % t["depth"], 2.2)
         gx_ = X(t["u"]) + t.get("_lean", 0.0)
-        line(bx + (0 if bx > gx_ else bw), by + 4.0, gx_, Y(t["ngl"]) + 0.4, BLACK, 0.2)
+        line(bx + (0 if bx > gx_ else bw), by + 3.0, gx_, Y(t["ngl"]) + 0.4, BLACK, 0.2)
         p.setBrush(BLACK)
         p.drawEllipse(P(gx_, Y(t["ngl"]) + 0.4), 0.5 * S, 0.5 * S)
         p.setBrush(Qt.BrushStyle.NoBrush)

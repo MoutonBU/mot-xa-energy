@@ -25,4 +25,15 @@ with tempfile.TemporaryDirectory() as t:
     assert all(os.path.getsize(os.path.join(t, f)) > 1000 for f in ("a.pdf", "a.dxf", "a.png"))
 s2 = pg.state(); pg.set_state(s2)
 assert abs(pg.lv_spin["ngl_head"].value() - 98.62) < 1e-9 and pg.lv_spots.text() == "5=98.55"
+# a drop to reach a deep main: eyes at the drop, the pipe arrives at the main's invert, and the length and fall are unchanged
+dd = dict(pg.st, levels={"ngl_head": 98.62, "ngl_main": 98.40, "main_il": 95.0})
+d0 = sp.build(dd, pg.res)
+assert d0["drop"] > 1.0
+x_ = [s_ for s_ in d0["stations"] if s_["kind"] != "MAIN"][-1]["x"]
+dd["levels"]["drops"] = "%.2f = %.3f" % (x_, 95.0 + (d0["length"] - x_) / d0["fall"])
+d1 = sp.build(dd, pg.res)
+assert abs(d1["drop"]) < 0.003 and d1["drops"] and abs(d1["il"](d1["length"]) - 95.0) < 0.003
+assert any(s_["drop"] > 1.0 and s_["kind"] == "IE" for s_ in d1["stations"]) and any("rodding eye at the drop" in s_["desc"].lower() for s_ in d1["stations"])
+assert all(ok for _t, ok in d1["checks"]), d1["checks"]
+sp.render_image(d1, tl, 800).save(os.path.join(t, "b.png")) if False else sp.render_image(d1, tl, 800)
 print("ok")

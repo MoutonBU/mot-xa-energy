@@ -46,7 +46,7 @@ def parse_spots(text):
     return sorted(out)
 
 
-def build(state, res):
+def build(state, res, il_head=None):
     sw = res["sewer"]
     par = res.get("params") or {}
     lv = state.get("levels") or {}
@@ -75,10 +75,24 @@ def build(state, res):
                 return ya + (yb - ya) * ((x - xa) / (xb - xa) if xb > xa else 0.0)
         return ngl1
 
-    il_head = ngl0 - D0
+    il_head = ngl0 - D0 if il_head is None else float(il_head)
+    # drops the designer added (chainage = invert level just after the drop): the pipe steps down inside an inspection eye and carries on at the fall
+    drops_in = [(x, y) for x, y in parse_spots(lv.get("drops")) if 0 < x < Hh]
+    segs = [(0.0, il_head)] + drops_in                          # (chainage where the run starts, invert level there)
 
     def il(x):
-        return il_head - x / fall
+        xs_, ys_ = segs[0]
+        for a_, b_ in segs:
+            if a_ <= x + 0.03:                                  # a station and a drop typed to the centimetre are the same place
+                xs_, ys_ = a_, b_
+        return ys_ - (x - xs_) / fall
+
+    def il_in(x):                                               # the level the pipe arrives at, before a drop at x
+        k = 0
+        for i_, (a_, _b) in enumerate(segs):
+            if a_ < x - 0.03:
+                k = i_
+        return segs[k][1] - (x - segs[k][0]) / fall
 
     conn_depth = float(par.get("conn_depth", 1.5))
     main_il_typed = _set(mil)
@@ -88,6 +102,10 @@ def build(state, res):
         d = n.get("dist")
         x = (Hh - d) if d is not None else (Hh - Lp + n["chainage"])
         nodes.append((max(0.0, min(Hh, x)), n))
+    for xd, _yd in drops_in:                                    # an inspection eye and a rodding eye where the pipe drops
+        for k_ in ("IE", "RE"):
+            if not any(abs(x_ - xd) < 0.05 and n_["kind"] == k_ for x_, n_ in nodes):
+                nodes.append((xd, {"kind": k_, "label": k_, "drop": True}))
     nodes.sort(key=lambda t: (t[0], t[1]["kind"]))
     st, count = [], {}
     for x, n in nodes:
@@ -104,9 +122,13 @@ def build(state, res):
                 desc = "Outlet from the house"
         g = ngl(x)
         i = il(x)
-        st.append({"name": name, "kind": k, "desc": desc, "x": round(x, 2), "ngl": g, "il": i, "depth": g - i, "cover": g - i - od})
+        dr = next((yd for xd, yd in drops_in if abs(xd - x) < 0.05), None)
+        if dr is not None and k != "MAIN":
+            desc = ("Inspection eye with a drop of %d mm" % round((il_in(x) - i) * 1000)) if k == "IE" else "Rodding eye at the drop"
+        st.append({"name": name, "kind": k, "desc": desc, "x": round(x, 2), "ngl": g, "il": i, "depth": g - i, "cover": g - i - od,
+                   "drop": (il_in(x) - i) if dr is not None and k == "IE" else 0.0, "top": il_in(x) if dr is not None else i})
     covers = [ngl(k / 10.0 * Hh) - il(k / 10.0 * Hh) - od for k in range(0, 11)]
-    covers += [s["cover"] for s in st]
+    covers += [s["cover"] for s in st] + [ngl(x_) - il_in(x_) - od for x_, _y in drops_in]
     min_cover = min(covers) if covers else 0.0
     drop = il(Hh) - main_il
     checks = []
@@ -120,16 +142,20 @@ def build(state, res):
     mc = float(par.get("min_cover", 0.3))
     checks.append(("Soil cover over the pipe is at least %d mm everywhere (lowest %d mm)." % (round(mc * 1000), round(min_cover * 1000)) if min_cover >= mc - 1e-6
                    else "Soil cover is less than %d mm (lowest %d mm): lay the pipe deeper." % (round(mc * 1000), round(min_cover * 1000)), min_cover >= mc - 1e-6))
-    if drop >= -1e-6:
+    if drop >= -0.002:
         checks.append(("The pipe reaches the main %d mm above its invert level (%s)." % (round(drop * 1000), "typed" if main_il_typed else "taken as %d mm below the ground at the main" % round(conn_depth * 1000)), True))
     else:
         checks.append(("The pipe arrives %d mm BELOW the invert of the main: it cannot drain to the main by gravity. Lay it shallower or flatter, or check the main's level." % round(-drop * 1000), False))
+    for xd, yd in drops_in:
+        h_ = il_in(xd) - yd
+        checks.append(("Drop of %d mm at chainage %.1f m, in an inspection eye with a rodding eye." % (round(h_ * 1000), xd), h_ >= -1e-6) if h_ >= -1e-6 else
+                      ("The drop at chainage %.1f m would lift the pipe by %d mm: type a lower invert level." % (xd, round(-h_ * 1000)), False))
     gaps = [b["x"] - a["x"] for a, b in zip(st[:-1], st[1:])]
     mx = float(par.get("max_ie", 25.0))
     if gaps:
         checks.append(("Eyes are at most %.1f m apart (limit %.0f m)." % (max(gaps), mx) if max(gaps) <= mx + 1e-6 else "Eyes are %.1f m apart: more than %.0f m." % (max(gaps), mx), max(gaps) <= mx + 1e-6))
     return {"stations": st, "length": Hh, "fall": fall, "od": od, "pipe": str(par.get("sewer_pipe", "110")), "ngl": ngl, "il": il, "ngl0": ngl0, "ngl1": ngl1,
-            "pts": pts, "main_il": main_il, "main_typed": main_il_typed, "drop": drop, "assumed": assumed, "min_cover": min_cover, "checks": checks,
+            "pts": pts, "il_in": il_in, "segs": segs, "drops": [(x_, il_in(x_), y_) for x_, y_ in drops_in], "main_il": main_il, "main_typed": main_il_typed, "drop": drop, "assumed": assumed, "min_cover": min_cover, "checks": checks,
             "ffl": float(lv["ffl"]) if _set(lv.get("ffl")) else None, "note": sw.get("note", "")}
 
 
@@ -273,16 +299,26 @@ def draw(p, W, H, S, d, title_lines=(), when=None):
     # the pipe: invert and crown
     ilh, ile = d["il"](0.0), d["il"](Hh)
     od_mm = max(d["od"] * 1000.0 / vs, 0.8)
-    p.setPen(pen(BROWN, 0.6))
-    p.drawLine(P(X(0.0), Y(ilh)), P(X(Hh), Y(ile)))
+    bounds = [x_ for x_, _y in d["segs"]] + [Hh]
+    for k_ in range(len(bounds) - 1):
+        xa_, xb_ = bounds[k_], bounds[k_ + 1]
+        ya_ = d["il"](xa_)
+        yb_ = d["il_in"](xb_) if k_ + 1 < len(bounds) - 1 else d["il"](xb_)
+        p.setPen(pen(BROWN, 0.6))
+        p.drawLine(P(X(xa_), Y(ya_)), P(X(xb_), Y(yb_)))
+        p.setPen(pen(BROWN, 0.3))
+        p.drawLine(P(X(xa_), Y(ya_) - od_mm), P(X(xb_), Y(yb_) - od_mm))
     p.setPen(pen(BROWN, 0.3))
-    p.drawLine(P(X(0.0), Y(ilh) - od_mm), P(X(Hh), Y(ile) - od_mm))
     p.drawLine(P(X(0.0), Y(ilh)), P(X(0.0), Y(ilh) - od_mm))
+    for xd_, yin_, yout_ in d["drops"]:                           # the drop: the pipe steps down inside the eye
+        for off_ in (0.0, od_mm):
+            line(X(xd_), Y(yin_) - off_, X(xd_), Y(yout_) - off_, BROWN, 0.6 if off_ == 0 else 0.3)
+        text(X(xd_) + 2.0, (Y(yin_) + Y(yout_)) / 2.0 + 0.8, "drop %d mm" % round((yin_ - yout_) * 1000), 2.0, False, BROWN)
     # eyes
     for i, s in enumerate(st):
         if s["kind"] == "MAIN":
             continue
-        xe, yg, yc = X(s["x"]), Y(s["ngl"]), Y(s["il"]) - od_mm
+        xe, yg, yc = X(s["x"]), Y(s["ngl"]), Y(s.get("top", s["il"])) - od_mm
         w = 1.6
         sty = Qt.PenStyle.SolidLine if s["kind"] == "IE" else Qt.PenStyle.DashLine
         lean = (yc - yg) if s["kind"] == "RE" else 0.0              # a rodding eye leans at 45 degrees (on the paper) up the line, back towards the house

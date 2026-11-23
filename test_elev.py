@@ -68,6 +68,15 @@ for f_, fn in (("a.pdf", se.write_pdf), ("a.dxf", se.write_dxf)):
     fn(os.path.join(d_, f_), dat, tl)
 se.render_image(dat, tl, 800).save(os.path.join(d_, "a.png"))
 assert all(os.path.getsize(os.path.join(d_, x)) > 1000 for x in ("a.pdf", "a.dxf", "a.png"))
+pg.st["levels"] = {"ngl_head": 218.45, "ngl_main": 218.45, "ffl": 218.6, "main_il": 216.5}           # the main is deep: the pipe cannot reach it without a drop
+bad = se.build(pg.st, pg.res, pg._elev_model)
+assert any((not ok) and "BELOW" in tx or (not ok) for tx, ok in bad["checks"]) or bad["il"](bad["length"]) >= 216.5
+pg.st["levels"]["drops"] = "%.2f = %.3f" % (bad["stations"][-2]["x"], 216.5 + (bad["length"] - bad["stations"][-2]["x"]) / bad["fall"])
+fixed = se.build(pg.st, pg.res, pg._elev_model)
+assert abs(fixed["il"](fixed["length"]) - 216.5) < 0.003 and any(t_["drop"] > 0.5 for t_ in fixed["stations"]), [(t_["name"], t_["drop"]) for t_ in fixed["stations"]]
+assert all(t_.get("name") for t_ in fixed["stations"]) and len({t_["name"] for t_ in fixed["stations"]}) == len(fixed["stations"])
+se.render_image(fixed, tl, 2000).save("/tmp/elev_drop.png")
+pg.st["levels"] = {"ngl_head": 218.45, "ngl_main": 218.3, "ffl": 218.6}
 pg.st["elev"]["title"] = "(D) South East Block B"
 assert pg.elev_data()[1]["title"] == "(D) South East Block B"
 pg.st["elev"] = {}
