@@ -2039,7 +2039,7 @@ class SiteServicesPage(ToolBase):
                                          ("main_il", "Main sewer invert level", "The invert (bottom inside) level of the municipal main at the connection, from the council's records. Not set: taken as the depth at the main below the ground."),
                                          ("ffl", "Finished floor level", "Optional: drawn on the section at the house.")):
                     sp_ = QDoubleSpinBox()
-                    sp_.setRange(0, 5000)
+                    sp_.setRange(-1000, 5000)                     # levels can be below zero; the bottom of the range is "not set"
                     sp_.setDecimals(3)
                     sp_.setSpecialValueText("not set")
                     sp_.setSuffix(" m")
@@ -2421,6 +2421,7 @@ class SiteServicesPage(ToolBase):
             pass
         if hasattr(self, "lv_spin"):
             st["levels"] = {k_: w_.value() for k_, w_ in self.lv_spin.items()}
+            st["levels"]["neg"] = 1
             st["levels"]["spots"] = self.lv_spots.text().strip()
             if hasattr(self, "lv_drops"):
                 st["levels"]["drops"] = self.lv_drops.text().strip()
@@ -2483,8 +2484,13 @@ class SiteServicesPage(ToolBase):
             self.p_tail.setValue(pr.get("re_ext", 0.35))
             self.p_pipe.setCurrentText(str(pr.get("sewer_pipe", "110")))
             lvl = st.get("levels") or {}
+            if lvl and not lvl.get("neg"):                                # a project from before levels could be negative: 0 meant "not set"
+                for k_ in ("ngl_head", "ngl_main", "main_il", "ffl"):
+                    if not lvl.get(k_):
+                        lvl[k_] = -1000.0
+                lvl["neg"] = 1
             for k_, w_ in getattr(self, "lv_spin", {}).items():
-                w_.setValue(float(lvl.get(k_) or 0))
+                w_.setValue(float(lvl.get(k_) if lvl.get(k_) is not None else -1000.0))
             if hasattr(self, "lv_spots"):
                 self.lv_spots.setText(str(lvl.get("spots", "")))
             if hasattr(self, "lv_drops"):

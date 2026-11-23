@@ -27,8 +27,9 @@ CAP = 0.716
 
 
 def _set(v):
+    """a level that has been typed (levels can be below zero; -1000 or nothing means 'not set')"""
     try:
-        return float(v) > 0
+        return v is not None and float(v) > -999.0
     except (TypeError, ValueError):
         return False
 

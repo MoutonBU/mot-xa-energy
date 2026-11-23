@@ -1128,8 +1128,9 @@ class EmptyCard(QFrame):
         h.setWordWrap(True)
         h.setAlignment(Qt.AlignmentFlag.AlignCenter)
         h.setMinimumWidth(320)
+        h.setMinimumHeight(58)
         h.setStyleSheet("QLabel{color:rgba(128,128,128,230);}")
-        self.setMinimumHeight(190)
+        self.setMinimumHeight(236)
         v.addWidget(h)
         self.btn = None
         if button and action:

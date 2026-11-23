@@ -56,3 +56,18 @@ sec = {s_["name"] for s_ in d1["stations"] if s_.get("name")}
 assert all(nm[id(n)] in sec for n in dn_), (sorted(nm[id(n)] for n in dn_), sec)
 sp.render_image(d1, tl, 800).save(os.path.join(t, "b.png")) if False else sp.render_image(d1, tl, 800)
 print("ok")
+
+# levels below zero are levels too
+import site_profile as _sp
+pg.st["levels"] = {"ngl_head": -2.5, "ngl_main": -2.9, "main_il": -4.5, "ffl": -2.3}
+neg = _sp.build(pg.st, pg.res)
+assert not neg["assumed"] and abs(neg["ngl0"] + 2.5) < 1e-9 and neg["main_typed"] and abs(neg["main_il"] + 4.5) < 1e-9 and abs(neg["ffl"] + 2.3) < 1e-9, neg["ngl0"]
+assert not _sp._set(-1000.0) and not _sp._set(None) and _sp._set(0.0) and _sp._set(-3.2)
+pg.set_state(pg.state())
+assert abs(pg.lv_spin["ngl_head"].value() + 2.5) < 1e-9 and abs(pg.lv_spin["main_il"].value() + 4.5) < 1e-9
+pg.lv_spin["main_il"].setValue(-1000.0); pg.solve_now(False)
+assert not _sp.build(pg.st, pg.res)["main_typed"]
+old_ = pg.state(); old_["levels"] = {"ngl_head": 0, "ngl_main": 0, "main_il": 0, "ffl": 0}            # a project from before: 0 meant "not set"
+pg.set_state(old_)
+assert pg.lv_spin["ngl_head"].value() == -1000.0 and pg.lv_spin["ngl_head"].text() == "not set"
+print("negative ok")
