@@ -614,6 +614,13 @@ class ServicesView(QWidget):
         s_ = self.view[0] if self.view else 10
         if pg.res and pg.res.get("sewer"):
             P_ = pg.res["sewer"]["path"]
+            if P_ and math.hypot(P_[-1][0] - w[0], P_[-1][1] - w[1]) * s_ < 14:            # where the run meets the main sewer
+                m = QMenu(self)
+                cur = pg.st.get("sewer_join", 0)
+                for lab_, v_ in (("Meet the main square (90\u00b0)", 0), ("Meet the main at 45\u00b0 (one way)", 1), ("Meet the main at 45\u00b0 (other way)", -1)):
+                    a_ = m.addAction(lab_ + ("  \u2713" if cur == v_ else ""), lambda v2=v_: pg.set_sewer_join(v2))
+                m.exec(gpos)
+                return
             for k_ in range(1, len(P_) - 1):
                 if math.hypot(P_[k_][0] - w[0], P_[k_][1] - w[1]) * s_ < 12:
                     m = QMenu(self)
@@ -2670,6 +2677,15 @@ class SiteServicesPage(ToolBase):
                 cb_.blockSignals(False)
         self.view.update()
         self.changed()
+
+    def set_sewer_join(self, v):
+        """how the sewer meets the main: 0 square, +1 / -1 at 45 degrees (the inspection and rodding eyes follow the new bend)"""
+        if v:
+            self.st["sewer_join"] = v
+        else:
+            self.st.pop("sewer_join", None)
+        self.solve_now()
+        self.commit(True)
 
     def cutout_rect(self):
         """the closer cut that is exported (the blue frame): the user's, or the stand with the margins of the data set; [x0, y0, x1, y1] in the stand's frame"""

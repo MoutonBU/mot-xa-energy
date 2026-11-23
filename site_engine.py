@@ -585,6 +585,43 @@ def _port_for(state, hp, key, target, t0, others, build, kinds=()):
     return best[1], best[2]
 
 
+def join45(state, path, k=1.2):
+    """state["sewer_join"] = +1 / -1: the run meets the main sewer at 45 degrees instead of square. The last leg is shortened by k, then a leg at 45 degrees to the
+    main (and to that leg) carries on to the connection point; where the leg before it runs along the main, its corner slides along it, so the run stays tidy.
+    Returns the new path (the same one when it does not apply)."""
+    sj = state.get("sewer_join")
+    if not sj or len(path) < 2:
+        return path
+    X, A = path[-1], path[-2]
+    Ll = math.hypot(X[0] - A[0], X[1] - A[1])
+    if Ll < 0.8:
+        return path
+    n = ((X[0] - A[0]) / Ll, (X[1] - A[1]) / Ll)
+    m = (1.0, 0.0)
+    pls = main_poly(state, "sewer") if False else None
+    ml = main_line(state)
+    if ml and len(ml) > 1:
+        best = min(range(len(ml) - 1), key=lambda i: seg_dist(X, ml[i], ml[i + 1]))
+        dx, dy = ml[best + 1][0] - ml[best][0], ml[best + 1][1] - ml[best][1]
+        Lm = math.hypot(dx, dy) or 1.0
+        m = (dx / Lm, dy / Lm)
+    if abs(n[0] * m[0] + n[1] * m[1]) > 0.35:                      # the last leg does not meet the main square: nothing to turn
+        return path
+    sg = 1.0 if sj > 0 else -1.0
+    k = min(k, Ll * 0.6)
+    C = (X[0] - n[0] * k - sg * m[0] * k, X[1] - n[1] * k - sg * m[1] * k)
+    if len(path) >= 3:
+        P = path[-3]
+        dP = (A[0] - P[0], A[1] - P[1])
+        LP = math.hypot(*dP)
+        if LP > 0.2 and abs(dP[0] * m[1] - dP[1] * m[0]) / LP < 0.2:   # the leg before runs along the main: its corner slides along it
+            A2 = (A[0] - sg * m[0] * k, A[1] - sg * m[1] * k)
+            along = ((A2[0] - P[0]) * dP[0] + (A2[1] - P[1]) * dP[1]) / LP
+            if along > 0.3:
+                return dedupe(list(path[:-2]) + [A2, C, X])
+    return dedupe(list(path[:-1]) + [C, X])
+
+
 def sewer(state, hp, cp, params, others=()):
     """Square (90 degree) runs only. The house outlet leaves the wall, turns into the run at an inspection eye, and the run carries on a little
     way past that eye to the rodding eye, which is the highest point of the line: that is where the minimum invert is. From there the pipe
@@ -634,7 +671,8 @@ def sewer(state, hp, cp, params, others=()):
         path = dedupe([t0] + rest)
         return {"path": path, "port": port, "branch": [p0, q1], "q1": q1, "junction": tail, "tail": tail}
     port, r = _port_for(state, hp, "sewer", cands[0], 0.25, others, build, ("SD",))
-    path = r["path"]
+    path = join45(state, r["path"])
+    r["path"] = path
     L = length(path)
     fall = params["fall"]
     cut = crossing(path, stand)
