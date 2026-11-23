@@ -223,12 +223,11 @@ def build_sheet(page, path, scale_text="1:200"):
     """what the screen shows, written as a DXF at true size"""
     st, res = page.st, page.res
     view = page.view
-    x0, y0, x1, y1 = page.cutout_rect()                     # the closer cut (the blue frame) goes to Archicad, not the wide working view
+    (cx, cy), w_m, h_m = page.cutout_extent()                # the closer cut (the blue frame) goes to Archicad, not the wide working view
+    cpoly = page.cutout_poly()
     road = st["sheet"].get("road", "left")
     turn = st["sheet"].get("turn", 0.0)
-    w_m, h_m = site_sheet.page_extent(x0, y0, x1, y1, road, turn)
     W, H = w_m * S_MM, h_m * S_MM
-    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
     opts = page.export_opts()
     # where texts have to move off each other is worked out the way the screen does it, at the zoom on the screen
     scr = view.sh or site_sheet.Sheet(max(min(800.0 / w_m, 600.0 / h_m), 2.0), (cx, cy), (800, 600), road, turn)
@@ -251,7 +250,7 @@ def build_sheet(page, path, scale_text="1:200"):
     r_px = max(S_MM * 1.5, 18)
     site_sheet.north_arrow(p, page.north_centre(W, H, r_px, False), r_px, st["sheet"].get("north", 0), minpx=0)
     _clip_to(doc.modelspace(),
-             [p._pt(sh.pt((cx_, cy_)).x(), sh.pt((cx_, cy_)).y()) for cx_, cy_ in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))])
+             [p._pt(sh.pt(q_).x(), sh.pt(q_).y()) for q_ in cpoly])
     # the title block under the plan, as on the PDF sheet
     name = st["sheet"].get("stand_no") or st["stand"].get("name", "Stand")
     base = H + 3500

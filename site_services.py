@@ -210,6 +210,82 @@ class ServicesView(QWidget):
         self._go_lite()
         self.update()
 
+    # ---- the export frame (blue): handles, move, turn
+    def _cut_geom(self):
+        """screen positions for the frame handles: centre, axes (u along its width, v along its height), the turning ring"""
+        pg = self.page
+        if not self.sh:
+            return None
+        (c, w, h, rot) = pg.cutout_frame()
+        sh = self.sh
+        C = sh.pt(c)
+        a = math.radians(rot)
+        u, v = QPointF(math.cos(a), math.sin(a)), QPointF(-math.sin(a), math.cos(a))
+        top = C - v * (h / 2 * sh.s)
+        return {"C": C, "u": u, "v": v, "w": w, "h": h, "rot": top - v * 38.0}
+
+    def _cut_hit(self, pos):
+        g = self._cut_geom()
+        if not g:
+            return None
+        s = self.sh.s
+        d = lambda a, b: math.hypot(a.x() - b.x(), a.y() - b.y())
+        if d(pos, g["rot"]) < 14:
+            return ("rot",)
+        if d(pos, g["C"]) < 12:
+            return ("move",)
+        rel = pos - g["C"]
+        lx = rel.x() * g["u"].x() + rel.y() * g["u"].y()
+        ly = rel.x() * g["v"].x() + rel.y() * g["v"].y()
+        hw, hh, tol = g["w"] / 2 * s, g["h"] / 2 * s, 9.0
+        hx = 1 if abs(lx - hw) < tol else (-1 if abs(lx + hw) < tol else 0)
+        hy = 1 if abs(ly - hh) < tol else (-1 if abs(ly + hh) < tol else 0)
+        in_x, in_y = abs(lx) <= hw + tol, abs(ly) <= hh + tol
+        if (hx and in_y) or (hy and in_x):
+            return ("edge", hx if in_y else 0, hy if in_x else 0)
+        return None
+
+    def _cut_drag(self, e, d):
+        pg, sh = self.page, self.sh
+        mode = d[1]
+        (c0, w0, h0, r0) = d[2]
+        p0 = d[3]
+        m = e.position()
+        s = sh.s
+        C0 = sh.pt(c0)
+        a = math.radians(r0)
+        u, v = QPointF(math.cos(a), math.sin(a)), QPointF(-math.sin(a), math.cos(a))
+        c, w, h, rot = c0, w0, h0, r0
+        if mode[0] == "move":
+            c = sh.inv(C0 + (m - p0))
+        elif mode[0] == "rot":
+            ang = math.degrees(math.atan2(m.y() - C0.y(), m.x() - C0.x()) - math.atan2(p0.y() - C0.y(), p0.x() - C0.x()))
+            rot = r0 + ang
+            if e.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                rot = round(rot / 15.0) * 15.0                          # Shift: steps of 15 degrees
+            elif abs(((rot + 45.0) % 90.0) - 45.0) < 2.0:
+                rot = round(rot / 90.0) * 90.0                          # a right angle to the paper holds
+            rot = ((rot + 180.0) % 360.0) - 180.0
+        else:
+            rel = m - C0
+            lx = (rel.x() * u.x() + rel.y() * u.y()) / s
+            ly = (rel.x() * v.x() + rel.y() * v.y()) / s
+            l0, r_, t0, b0 = -w0 / 2, w0 / 2, -h0 / 2, h0 / 2
+            if mode[1] > 0:
+                r_ = lx
+            elif mode[1] < 0:
+                l0 = lx
+            if mode[2] > 0:
+                b0 = ly
+            elif mode[2] < 0:
+                t0 = ly
+            if r_ - l0 < 6 or b0 - t0 < 6:
+                return
+            w, h = r_ - l0, b0 - t0
+            cl, cv = (l0 + r_) / 2, (t0 + b0) / 2
+            c = sh.inv(C0 + u * (cl * s) + v * (cv * s))
+        pg.st["cutout"] = {"c": [round(c[0], 3), round(c[1], 3)], "w": round(w, 2), "h": round(h, 2), "rot": round(rot, 2)}
+
     def world(self, pt):
         return self.sh.inv(pt) if self.sh else (0, 0)
 
@@ -239,17 +315,40 @@ class ServicesView(QWidget):
         r_px = max(sh.s * 1.5, 18)
         site_sheet.north_arrow(p, pg.north_centre(sh.W, sh.H, r_px, interactive), r_px, st["sheet"].get("north", 0))
         if interactive and (st.get("look") or {}).get("cutout", True) and not self.lite:
-            fr_ = pg.cutout_rect()
-            cq = [sh.pt((fr_[0], fr_[1])), sh.pt((fr_[2], fr_[1])), sh.pt((fr_[2], fr_[3])), sh.pt((fr_[0], fr_[3]))]
-            p.setPen(QPen(QColor("#0b57e8"), 3, Qt.PenStyle.DashLine))
+            cq = [sh.pt(q_) for q_ in pg.cutout_poly()]
+            blue = QColor("#0b57e8")
+            p.setPen(QPen(blue, 3, Qt.PenStyle.DashLine))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawPolygon(QPolygonF(cq))
-            p.setBrush(QBrush(QColor("#0b57e8")))
+            p.setBrush(QBrush(blue))
+            p.setPen(QPen(QColor("white"), 1))
             for q_ in cq + [(cq[i] + cq[(i + 1) % 4]) / 2 for i in range(4)]:
                 p.drawRect(QRectF(q_.x() - 4, q_.y() - 4, 8, 8))
-            p.setPen(QColor("#0b57e8"))
-            p.setFont(QFont(self.font().family(), 9, QFont.Weight.Bold))
-            p.drawText(QPointF(cq[0].x() + 6, cq[0].y() - 6), "Export cut-out: drag its edges")
+            g_ = self._cut_geom()
+            if g_:
+                C_, u_, v_, rp_, mv_ = g_["C"], g_["u"], g_["v"], g_["rot"], g_["C"]
+                top = (cq[0] + cq[1]) / 2
+                p.setPen(QPen(blue, 2))
+                p.drawLine(top, rp_)                                   # the stem to the turning handle
+                p.setBrush(QBrush(QColor("white")))
+                p.setPen(QPen(blue, 3))
+                p.drawEllipse(rp_, 11, 11)                              # the turning handle: a ring with an arrow
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.setPen(QPen(blue, 2.2))
+                p.drawArc(QRectF(rp_.x() - 6, rp_.y() - 6, 12, 12), 40 * 16, 270 * 16)
+                p.setBrush(QBrush(blue))
+                ah = QPointF(rp_.x() + 6 * math.cos(math.radians(40)), rp_.y() - 6 * math.sin(math.radians(40)))
+                p.drawPolygon(QPolygonF([ah + QPointF(-5, -1), ah + QPointF(3, -6), ah + QPointF(4, 3)]))
+                p.setPen(QPen(blue, 2))
+                p.setBrush(QBrush(QColor("white")))
+                p.drawEllipse(mv_, 9, 9)                                # the centre handle moves the frame
+                p.drawLine(QPointF(mv_.x() - 5, mv_.y()), QPointF(mv_.x() + 5, mv_.y()))
+                p.drawLine(QPointF(mv_.x(), mv_.y() - 5), QPointF(mv_.x(), mv_.y() + 5))
+                rot_ = pg.cutout_frame()[3]
+                p.setPen(blue)
+                p.setFont(QFont(self.font().family(), 9, QFont.Weight.Bold))
+                p.drawText(QPointF(rp_.x() + 16, rp_.y() + 4), "%.1f\u00b0" % rot_ if abs(rot_) > 0.05 else "square")
+                p.drawText(QPointF(cq[0].x() + 6, cq[0].y() - 6), "Export cut-out: drag edges, turn with the ring, move with the centre")
         if interactive and res:
             S = sh.pt
             dr_ = self.drag
@@ -330,14 +429,9 @@ class ServicesView(QWidget):
             self._go_lite()
             return
         if e.button() == Qt.MouseButton.LeftButton and self.mode == "select" and (pg.st.get("look") or {}).get("cutout", True):
-            fr_ = pg.cutout_rect()
-            tol = 9.0 / max(self.sh.s, 1e-6)
-            hx = 0 if abs(w[0] - fr_[0]) < tol else (2 if abs(w[0] - fr_[2]) < tol else None)
-            hy = 1 if abs(w[1] - fr_[1]) < tol else (3 if abs(w[1] - fr_[3]) < tol else None)
-            inside_x = fr_[0] - tol <= w[0] <= fr_[2] + tol
-            inside_y = fr_[1] - tol <= w[1] <= fr_[3] + tol
-            if (hx is not None and inside_y) or (hy is not None and inside_x):
-                self.drag = ("cut", (hx if inside_y else None, hy if inside_x else None), fr_)
+            hit = self._cut_hit(e.position())
+            if hit:
+                self.drag = ("cut", hit, pg.cutout_frame(), e.position())
                 self.auto = False
                 return
         if e.button() == Qt.MouseButton.LeftButton:
@@ -721,15 +815,7 @@ class ServicesView(QWidget):
             self.update()
             return
         if d[0] == "cut":
-            w_ = self.world(e.position())
-            fr_ = list(d[2])
-            hx, hy = d[1]
-            if hx is not None:
-                fr_[hx] = round(w_[0], 2)
-            if hy is not None:
-                fr_[hy] = round(w_[1], 2)
-            if fr_[2] - fr_[0] > 6 and fr_[3] - fr_[1] > 6:
-                pg.st["cutout"] = fr_
+            self._cut_drag(e, d)
             self.update()
             return
         if d[0] == "fh":
@@ -2687,14 +2773,44 @@ class SiteServicesPage(ToolBase):
         self.solve_now()
         self.commit(True)
 
-    def cutout_rect(self):
-        """the closer cut that is exported (the blue frame): the user's, or the stand with the margins of the data set; [x0, y0, x1, y1] in the stand's frame"""
-        c = self.st.get("cutout")
-        if c and len(c) == 4:
-            return [float(v) for v in c]
+    def _cut_default_rect(self):
         cs = self.st["stand"]["corners"]
         m = site_plans_data.EXPORT_FRAME
         return [min(p[0] for p in cs) - m["side"], min(p[1] for p in cs) - m["street"], max(p[0] for p in cs) + m["side"], max(p[1] for p in cs) + m["rear"]]
+
+    def cutout_frame(self):
+        """the export frame (blue) as it sits on the PAPER: ((centre in the stand's frame), width, height in metres, turn in degrees clockwise).
+        It is square to the paper (0 degrees) until the user turns it. A frame saved as a plain rectangle in the stand's frame is turned into this."""
+        c = self.st.get("cutout")
+        if isinstance(c, dict) and c.get("w"):
+            return (float(c["c"][0]), float(c["c"][1])), float(c["w"]), float(c["h"]), float(c.get("rot", 0.0))
+        r = [float(v) for v in c] if (isinstance(c, (list, tuple)) and len(c) == 4) else self._cut_default_rect()
+        road, turn = self.st["sheet"].get("road", "left"), self.st["sheet"].get("turn", 0.0)
+        sh = site_sheet.Sheet(1.0, ((r[0] + r[2]) / 2, (r[1] + r[3]) / 2), (0, 0), road, turn)
+        ps = [sh.pt(q) for q in ((r[0], r[1]), (r[2], r[1]), (r[2], r[3]), (r[0], r[3]))]
+        x0, x1 = min(q.x() for q in ps), max(q.x() for q in ps)
+        y0, y1 = min(q.y() for q in ps), max(q.y() for q in ps)
+        cx, cy = sh.inv(QPointF((x0 + x1) / 2, (y0 + y1) / 2))
+        return (cx, cy), x1 - x0, y1 - y0, 0.0
+
+    def cutout_poly(self):
+        """the four corners of the export frame in the stand's frame (top-left, top-right, bottom-right, bottom-left as seen on the paper)"""
+        (cx, cy), w, h, rot = self.cutout_frame()
+        sh = site_sheet.Sheet(1.0, (cx, cy), (0, 0), self.st["sheet"].get("road", "left"), self.st["sheet"].get("turn", 0.0))
+        co, si = math.cos(math.radians(rot)), math.sin(math.radians(rot))
+        return [sh.inv(QPointF(lx * co - ly * si, lx * si + ly * co)) for lx, ly in ((-w / 2, -h / 2), (w / 2, -h / 2), (w / 2, h / 2), (-w / 2, h / 2))]
+
+    def cutout_extent(self):
+        """(centre in the stand's frame, width, height on the paper in metres) of the box that holds the export frame, turned or not"""
+        (cx, cy), _w, _h, _r = self.cutout_frame()
+        sh = site_sheet.Sheet(1.0, (cx, cy), (0, 0), self.st["sheet"].get("road", "left"), self.st["sheet"].get("turn", 0.0))
+        ps = [sh.pt(q) for q in self.cutout_poly()]
+        return (cx, cy), max(q.x() for q in ps) - min(q.x() for q in ps), max(q.y() for q in ps) - min(q.y() for q in ps)
+
+    def cutout_rect(self):
+        """[x0, y0, x1, y1] in the stand's frame of the box that holds the export frame (used to keep labels inside it)"""
+        q = self.cutout_poly()
+        return [min(p[0] for p in q), min(p[1] for p in q), max(p[0] for p in q), max(p[1] for p in q)]
 
     def reset_cutout(self):
         self.st.pop("cutout", None)
@@ -3492,16 +3608,16 @@ class SiteServicesPage(ToolBase):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
         p.fillRect(0, 0, W, H, QColor("white"))
-        x0, y0, x1, y1 = self.cutout_rect()                       # the closer cut (the blue frame), not the wide working view
+        (ccx, ccy), w_m, h_m = self.cutout_extent()               # the closer cut (the blue frame), not the wide working view
+        cpoly = self.cutout_poly()
         road = self.st["sheet"].get("road", "left")
-        w_m, h_m = site_sheet.page_extent(x0, y0, x1, y1, road, self.st["sheet"].get("turn", 0.0))
         s200 = 5.0 * dpi / 25.4                                  # pixels per metre at 1:200
         fit = min(W * 0.92 / w_m, H * 0.80 / h_m)
         s = min(s200, fit)
         scale_txt = "1:200" if s >= s200 - 1e-6 else "1:%d" % round(200 * s200 / s / 10) * 1 if False else ("1:200" if s >= s200 - 1e-6 else "1:%d" % int(round(200 * s200 / s / 50.0) * 50))
-        sh = site_sheet.Sheet(s, ((x0 + x1) / 2, (y0 + y1) / 2), (W, H * 0.92), road, self.st["sheet"].get("turn", 0.0))
+        sh = site_sheet.Sheet(s, (ccx, ccy), (W, H * 0.92), road, self.st["sheet"].get("turn", 0.0))
         p.save()
-        p.setClipPath(QPainterPath_from(QPolygonF([sh.pt((x0, y0)), sh.pt((x1, y0)), sh.pt((x1, y1)), sh.pt((x0, y1))])))
+        p.setClipPath(QPainterPath_from(QPolygonF([sh.pt(q_) for q_ in cpoly])))
         site_sheet.draw(p, sh, self.st, self.res, self.export_opts(), minpx=5)
         r_px = max(s * 1.5, 18)
         site_sheet.north_arrow(p, self.north_centre(W, H, r_px, False), r_px, self.st["sheet"].get("north", 0))

@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.168**
+Current version: **1.86.169**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **House placing, the blue export frame is always square to the paper and can be turned:** it no longer lies at 45 degrees when the plan is turned. Drag its edges and corners to resize, the round ring above it to turn it (it snaps back to square within 2 degrees, Shift gives steps of 15 degrees; the angle is shown), and the cross in its middle to move it. The DXF and PDF are cut to the frame as turned, and "Reset frame" puts it back square. Projects saved with the old frame open with a square frame that holds it.
 - **Rational design: what to change to pass, and the certification roadmap:** when the design uses more than the reference building, the window now tries 11 changes (hot water system, ceiling and wall insulation, glass, shading, smaller east and west windows, lighting, air tightness, heating efficiency), shows what each saves on its own, and lists the combination that gets the design to or under the reference. The "How to get this certified" button sets out the Agrement South Africa protocol steps and where the built-in model stands against them.
 - **Rational design brought in line with SANS 10400-XA:2021:** the reference building keeps your glass area and takes the table 4 U-value and SHGC for each storey's glass share (clear glass up to 20%); people at 75 W (two per bedroom unless you give the population); lights at table 12 with the table B.2 hours for dwellings; no appliance gain except offices and large shops; hot water per table 10 at 60 C (design system chosen in the window, the reference has half of it from a heat pump); demand is the monthly highest hour averaged over the year. The report now uses the 2021 clause numbers (4.2, 4.3, 4.4) and says plainly that clause 4.3 needs software certified by Agrement South Africa, which this built-in model is not.
 - **Rational design from the left bar, with the site's weather:** a "Rational design" button under Energy (XA) in the left bar runs the simulation. It uses the weather file the project has (the one from "Get weather data for the site online"); when there is none it downloads the site's typical year the same way, keeps it, and uses it. Only if that download fails does it fall back to an estimate, with a red warning.
