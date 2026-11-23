@@ -898,6 +898,13 @@ class ServicesView(QWidget):
                 o.pop("entry_x", None)                                 # the entry follows the carport again
             o["cx"] = round(d[2][0] + w[0] - d[1][0], 2)
             o["cy"] = round(d[2][1] + w[1] - d[1][1], 2)
+            if pg.snap_cb.isChecked() and not (e.modifiers() & Qt.KeyboardModifier.AltModifier):       # a wall near a building line sits on it (Alt = move freely, also past the line)
+                dx_, dy_, nm_ = se.snap_to_building_lines(pg.st, o, min(10.0 / max(self.sh.s, 1e-6), 0.6))
+                if nm_:
+                    o["cx"], o["cy"] = round(o["cx"] + dx_, 2), round(o["cy"] + dy_, 2)
+                    pg.set_hint("On the %s building line%s. Alt moves it freely, past the line (a relaxation)." % (" and ".join(nm_), "s" if len(nm_) > 1 else ""))
+                else:
+                    pg.set_hint("")
         if d[0] in ("house", "carport", "rot") and pg.res:                  # the house follows the mouse at once; the lines catch up as fast as they are worked out
             pg.res["house"] = se.house_poly(pg.st["house"])
             pg.res["carport"] = se.carport_poly(pg.st.get("carport"))
@@ -1315,6 +1322,10 @@ class SiteServicesPage(ToolBase):
         sendb = QPushButton("Send to the energy tools")
         sendb.setToolTip("Hands the stand number, house, compass bearing and the shade of the neighbouring houses to the light, ventilation, XA energy and rational design tools.")
         sendb.clicked.connect(self.send_to_energy)
+        self.snap_cb = QCheckBox("Snap the house to the building lines")
+        self.snap_cb.setChecked(True)
+        self.snap_cb.setToolTip("While you drag, a wall near a building line sits exactly on it. Hold Alt to move freely, for instance past the line when you will ask for a relaxation.")
+        self.snap_cb.toggled.connect(self._edited)
         self.shade_cb = QCheckBox("Show their shade on the plan")
         self.shade_cb.setToolTip("Red wedges round the house: the neighbours' skyline as the energy tools will use it (angle above the horizon, by compass direction). Screen only.")
         self.shade_cb.toggled.connect(lambda *_: self.view.update())
@@ -1322,6 +1333,7 @@ class SiteServicesPage(ToolBase):
             row.addWidget(w)
         row.addStretch(1)
         bv.addLayout(row)
+        bv.addWidget(self.snap_cb)
         self.comp_lbl = QLabel("")
         self.comp_lbl.setWordWrap(True)
         self.comp_lbl.setTextFormat(Qt.TextFormat.RichText)
@@ -1828,7 +1840,7 @@ class SiteServicesPage(ToolBase):
         st = self.st
         st["stand"]["setbacks"] = {"street": self.sb_street.value(), "side": self.sb_side.value(), "rear": self.sb_rear.value()}
         st["stand"]["zoning"] = {"coverage": self.z_cov.value(), "far": self.z_far.value(), "storeys": int(self.z_sto.value()), "height": self.z_hmax.value(),
-                                 "house_height": self.z_h.value(), "nb_height": self.z_nbh.value(), "bays_req": int(self.z_breq.value()), "bays": int(self.z_bays.value())}
+                                 "house_height": self.z_h.value(), "nb_height": self.z_nbh.value(), "snap": self.snap_cb.isChecked(), "bays_req": int(self.z_breq.value()), "bays": int(self.z_bays.value())}
         st["house"].update({"w": self.h_w.value(), "d": self.h_d.value(), "rot": self.h_rot.value(), "cx": self.h_x.value(), "cy": self.h_y.value()})
         if self.c_on.isChecked():
             st["carport"] = {"w": self.c_w.value(), "d": self.c_d.value(), "cx": self.c_x.value(), "cy": self.c_y.value(), "rot": (st.get("carport") or {}).get("rot", 0)}
@@ -1875,6 +1887,7 @@ class SiteServicesPage(ToolBase):
             z_ = st["stand"].get("zoning") or {}
             for w, k in ((self.z_cov, "coverage"), (self.z_far, "far"), (self.z_sto, "storeys"), (self.z_hmax, "height"), (self.z_h, "house_height"), (self.z_nbh, "nb_height"), (self.z_breq, "bays_req"), (self.z_bays, "bays")):
                 w.setValue(z_.get(k, 1 if k == "storeys" else 3.5 if k == "nb_height" else 0))
+            self.snap_cb.setChecked(bool(z_.get("snap", True)))
             h = st["house"]
             for w, k in ((self.h_w, "w"), (self.h_d, "d"), (self.h_rot, "rot"), (self.h_x, "cx"), (self.h_y, "cy")):
                 w.setValue(h.get(k, 0))

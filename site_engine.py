@@ -1126,7 +1126,8 @@ def compliance(state, res):
             continue
         d = min(ds)
         rows.append({"key": "bl_" + kind, "label": lab, "value": "%.2f m" % d, "limit": "at least %.2f m" % sb[kind], "ok": d >= sb[kind] - 0.01,
-                     "text": "%.2f m from the %s boundary (building line %.2f m)" % (d, kind, sb[kind])})
+                     "text": ("%.2f m from the %s boundary, %.2f m over the building line of %.2f m: a relaxation is needed" % (d, kind, sb[kind] - d, sb[kind])) if d < sb[kind] - 0.01
+                     else "%.2f m from the %s boundary (building line %.2f m)" % (d, kind, sb[kind])})
     out_ = any(not inside(q, stand) for poly in (hp, cp) if poly for q in poly)
     rows.append({"key": "inside", "label": "Inside the stand", "value": "no" if out_ else "yes", "limit": "", "ok": not out_, "text": "the house or carport sticks out of the stand" if out_ else "all corners inside"})
     foot = abs(area(hp)) + (abs(area(cp)) if cp else 0)
@@ -1149,6 +1150,42 @@ def compliance(state, res):
     rows.append({"key": "parking", "label": "Parking bays", "value": "%d" % have, "limit": ("at least %d" % req) if req else "no limit set",
                  "ok": (have >= req) if req else None, "text": ("%d bay%s short" % (req - have, "" if req - have == 1 else "s")) if req and have < req else ""})
     return rows
+
+
+def snap_to_building_lines(state, obj, tol):
+    """The house or carport `obj` (a dict with cx, cy, w, d, rot) is moved so that a wall lying within `tol` metres of a building line lies on it. The building line is the
+    boundary pulled in by its setback. Up to two lines of different directions are used, so a corner snaps to both. Returns (dx, dy, [names of the lines snapped to]);
+    it never refuses to cross a line: that is for the user to decide (relaxation)."""
+    stand = [tuple(p) for p in state["stand"]["corners"]]
+    n = len(stand)
+    kinds = edge_kinds(stand)
+    sb = {"street": DEFAULTS["sb_street"], "side": DEFAULTS["sb_side"], "rear": DEFAULTS["sb_rear"]}
+    sb.update({k: v for k, v in ((state["stand"].get("setbacks") or {}).items()) if v is not None})
+    sign = 1.0 if area(stand) > 0 else -1.0
+    tot = [0.0, 0.0]
+    names = []
+    used = []
+    for _ in range(2):
+        poly = house_poly(dict(obj, cx=obj["cx"] + tot[0], cy=obj["cy"] + tot[1]))
+        best = None
+        for i in range(n):
+            a, b = stand[i], stand[(i + 1) % n]
+            L = math.hypot(b[0] - a[0], b[1] - a[1]) or 1.0
+            nx, ny = sign * -(b[1] - a[1]) / L, sign * (b[0] - a[0]) / L          # the inward normal
+            if any(abs(nx * u[0] + ny * u[1]) > 0.9 for u in used):
+                continue
+            dmin = min((q[0] - a[0]) * nx + (q[1] - a[1]) * ny for q in poly)
+            gap = dmin - sb[kinds[i]]
+            if abs(gap) <= tol and (best is None or abs(gap) < abs(best[0])):
+                best = (gap, nx, ny, kinds[i], i)
+        if best is None:
+            break
+        gap, nx, ny, kind, i = best
+        tot[0] -= nx * gap
+        tot[1] -= ny * gap
+        used.append((nx, ny))
+        names.append(kind)
+    return tot[0], tot[1], names
 
 
 def seg_overlap(a, b):
