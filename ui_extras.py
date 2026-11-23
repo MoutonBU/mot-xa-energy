@@ -598,7 +598,7 @@ def icon_group(title):
 class WelcomeTour(QDialog):
     """A short first-run tour: what the four squares are, how the step bars work, and the keyboard shortcuts."""
     PAGES = [
-        ("Welcome", "This program has four squares on the home screen: Drawing register, Detail Notes, Costing and SANS "
+        ("Welcome", "This program has four squares on the home screen: Drawing register, Detail tool, Costing and SANS "
                     "(Light & ventilation, Energy XA and Coverage & FAR). Click a square to open that tool. The left bar then shows "
                     "only that tool, and Home takes you back."),
         ("Work one step at a time", "Each tool has numbered step buttons along the top, with a short hint under them. Do step 1, "

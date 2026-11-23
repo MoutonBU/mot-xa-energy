@@ -1,0 +1,37 @@
+import os, tempfile, json
+import detail_generator as g
+
+def main():
+    spec, probs = g.clean_spec(g.SAMPLE_SPEC)
+    assert not probs and len(spec["shapes"]) == 8
+    d = tempfile.mkdtemp()
+    dxf, png = os.path.join(d, "a.dxf"), os.path.join(d, "a.png")
+    n = g.make_detail(spec, dxf, png)
+    assert n == 5, n
+    assert os.path.getsize(dxf) > 5000 and os.path.getsize(png) > 1000
+    import ezdxf
+    doc = ezdxf.readfile(dxf)
+    lay = {e.dxf.layer for e in doc.modelspace()}
+    assert "MOT_NOTES" in lay and "MOT_BRICKWORK" in lay, lay
+    # parse + clean of messy replies
+    raw = "Here you go:\n```json\n" + json.dumps({"shapes": [
+        {"material": "Brick", "pts": [[0, 0], [110, 0], [110, 500], [0, 500], [0, 0]]},
+        {"material": "weird", "pts": [[0, 0], [1, 1]]},
+        {"material": "concrete", "pts": [[0, 0], [1e9, 0], [0, 5]]},
+        {"material": "concrete", "pts": [[0, 0], [10, 0], [20, 0]]}],
+        "notes": {"brick": "110 mm brick", "nonsense": "x"}}) + "\n```"
+    s2, p2 = g.clean_spec(g.parse_reply(raw))
+    assert len(s2["shapes"]) == 1 and len(p2) == 3 and list(s2["notes"]) == ["brick"], (s2, p2)
+    for bad in ("no json here", "{broken"):
+        try:
+            g.parse_reply(bad); assert False
+        except g.GenError:
+            pass
+    try:
+        g.clean_spec({"shapes": []}); assert False
+    except g.GenError:
+        pass
+    print("generator ok")
+
+if __name__ == "__main__":
+    main()

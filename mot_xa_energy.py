@@ -13731,7 +13731,7 @@ class MainWindow(QMainWindow):
                 ("Drawing register", "Issue drawings by email, with the sheet index and what is still to come.", "clipboard", "Drawing register"),
                 ("Orders", "The client's orders and changes, house by house. Watches your Gmail for new orders and flags the urgent ones.", "tag", "Orders"),
                 ("Invoicing", "Numbered invoices with VAT as a PDF. Only the people you allow can open it.", "calc", "Invoicing"),
-                ("Detail Notes", "Add construction detail notes to an Archicad detail.", "ruler", "Detail Notes"),
+                ("Detail tool", "Add notes to an Archicad detail, or describe a detail in words (typed or spoken) and have it drawn.", "ruler", "Detail tool"),
                 ("Costing", "Fixtures, materials and the budget for a job.", "calc", "Costing"),
                 ("SANS", "Light and ventilation, energy and coverage checks for the building regulations.", "sun", "SANS"),
                 ("Site and areas", "Building lines on the stand, the sewer, water and electrical lines to the house, and the area schedule with unit mix and floor area ratio.", "land", "Site and"),
@@ -14298,7 +14298,7 @@ class MainWindow(QMainWindow):
         self._det_lay = QVBoxLayout(page)
         self._det_lay.setContentsMargins(0, 0, 0, 0)
         self._det_win = None
-        self.main_tabs.addTab(page, "Detail Notes (WIP)")
+        self.main_tabs.addTab(page, "Detail tool")
         self.main_tabs.currentChanged.connect(lambda i: self._detail_open() if self.main_tabs.widget(i) is page else None)
 
     def _detail_open(self):
@@ -14331,14 +14331,24 @@ class MainWindow(QMainWindow):
             w.xa_towns = sorted(XA_TOWNS)
             self.xa_zone.currentTextChanged.connect(lambda _z: w.xa_resync())   # zone changed on the Energy tab: notes follow
             w.xa_sync_ui()
-            self._det_lay.addWidget(w)
+            inner = QTabWidget()
+            inner.addTab(w, "Detail notes")
+            try:
+                from detail_generator_ui import GeneratorPage
+                gp = GeneratorPage(w, lambda: inner.setCurrentIndex(0))
+                inner.addTab(gp, "Detail generator")
+            except Exception as gex:
+                lb2 = QLabel("The Detail generator could not start:\n%s" % gex)
+                lb2.setWordWrap(True)
+                inner.addTab(lb2, "Detail generator")
+            self._det_lay.addWidget(inner)
             self._det_win = w
             try:
                 w.update_theme()
             except Exception:
                 pass
         except Exception as ex:
-            lb = QLabel("The Detail Notes tool could not start:\n%s\n\nIt needs the ezdxf and matplotlib packages." % ex)
+            lb = QLabel("The Detail tool could not start:\n%s\n\nIt needs the ezdxf and matplotlib packages." % ex)
             lb.setWordWrap(True)
             self._det_lay.addWidget(lb)
             self._det_win = lb
