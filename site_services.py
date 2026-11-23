@@ -3998,18 +3998,18 @@ class SiteServicesPage(ToolBase):
         return (f[0] * x + f[1] * y, -f[1] * x + f[0] * y)
 
     def import_contours(self, path=None):
-        import site_contours
+        import site_dxf as site_contours
         if not path:
             path, _ = QFileDialog.getOpenFileName(self, "Import the contours", "", "Drawings (*.dxf *.dwg)")
         if not path:
             return
         try:
-            data = site_contours.read(path)
+            data = site_contours.read_contours(path)
         except Exception as e:
             QMessageBox.warning(self, "Contours", str(e))
             return
         poly = [self._world_of(p) for p in self.st["stand"]["corners"]]
-        cl = site_contours.clip(data, poly)
+        cl = site_contours.clip_contours(data, poly)
         if not cl["lines"] and not cl["spots"]:
             QMessageBox.warning(self, "Contours", "These contours are not near the stand. They must be drawn in the same coordinates as the stand (the same drawing, or the survey the stand came from).")
             return

@@ -2,7 +2,7 @@
 import os, tempfile
 import ezdxf
 from PySide6.QtWidgets import QApplication
-import site_contours as sc
+import site_dxf as sc
 import site_services as ss
 import site_profile as sp
 
@@ -16,7 +16,7 @@ for k in range(0, 5):
     z = 100.0 - k
     msp.add_lwpolyline([(-20, 10.0 * k), (60, 10.0 * k)], dxfattribs={"elevation": z, "layer": "CONT"})
 doc.saveas(path)
-data = sc.read(path)
+data = sc.read_contours(path)
 assert len(data["lines"]) == 5 and abs(max(z for z, _ in data["lines"]) - 100.0) < 1e-9, data
 t = sc.Terrain(data["lines"])
 assert abs(t.z_at(5, 5) - 99.5) < 1e-6 and abs(t.z_at(5, 25) - 97.5) < 1e-6 and abs(t.z_at(5, 10) - 99.0) < 1e-6, (t.z_at(5, 5), t.z_at(5, 25))
@@ -29,7 +29,7 @@ for k in range(3):
     msp.add_lwpolyline([(0, 10.0 * k), (50, 10.0 * k)])
     msp.add_text("%d.0" % (100 - k), dxfattribs={"insert": (20, 10.0 * k + 0.4), "height": 0.5})
 doc.saveas(p2)
-assert sorted(round(z) for z, _ in sc.read(p2)["lines"]) == [98, 99, 100]
+assert sorted(round(z) for z, _ in sc.read_contours(p2)["lines"]) == [98, 99, 100]
 # millimetre drawing, levels in mm
 p3 = os.path.join(d_, "m.dxf")
 doc = ezdxf.new("R2010", setup=True)
@@ -37,10 +37,10 @@ doc.header["$INSUNITS"] = 4
 msp = doc.modelspace()
 msp.add_lwpolyline([(0, 0), (50000, 0)], dxfattribs={"elevation": 98500.0})
 doc.saveas(p3)
-r3 = sc.read(p3)
+r3 = sc.read_contours(p3)
 assert abs(r3["lines"][0][0] - 98.5) < 1e-9 and abs(r3["lines"][0][1][1][0] - 50.0) < 1e-9
 try:
-    sc.read(os.path.join(d_, "none.dxf"))
+    sc.read_contours(os.path.join(d_, "none.dxf"))
     assert False
 except Exception:
     pass

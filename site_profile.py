@@ -56,7 +56,7 @@ def terrain_for(state):
         return None
     if not (state.get("levels") or {}).get("use_contours", 1):
         return None
-    import site_contours
+    import site_dxf as site_contours
     import site_engine as se_
     fr = state.get("frame")
     key = (id(cd), len(cd.get("lines") or []), len(cd.get("spots") or []), tuple(fr) if fr else None)
