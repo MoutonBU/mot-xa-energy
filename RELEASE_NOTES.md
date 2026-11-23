@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.213**
+Current version: **1.86.214**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Several drops in the sewer:** a new "Number of drops" box (1 to 5) next to the drop choice. With "the program places it" the drops are spread along the pipe (on an eye where one is near); with "I choose where" each drop has its own box for its place. All the drops are the same height and the pipe still arrives exactly at the main's invert level. Each drop gets its own rodding eye and its own steep part on the long section, the plan, the table and the elevation. If you put two drops too close together the program moves them apart and says so.
 - **Levels can be below zero:** the ground level at the house, the ground level at the main, the main sewer invert level and the finished floor level now accept negative values (for example -2.500 m). "Not set" is now the very bottom of the box, so 0.000 is a real level. Older projects open as before (a 0 in an old project still means "not set"). The "No contours yet" card text is no longer cut off.
 - **Every tab has its own icon and colour (muted, on the same dark look):** the start tiles, the left bar items and the numbered step buttons inside each tool (for example "1 Stand and house") each have their own icon and their own soft colour instead of all being red; Invoicing, Costing, Guidelines review and Building lines no longer share an icon with another tool. The "No contours yet" card is no longer cut off.
 - **Site plan: setbacks, ground, dimensions, ruler (screen; the ground colours also on the PDF, not the DXF):** while a house or carport is selected the setback lines glow amber when it is close and red when it is over; when you put it down it settles with a shadow and a small bounce and the setback lines flash green or red; its distances to the boundaries slide out as dimension lines and fold away again; with contours imported the stand is coloured by height (blue low, brown high) with a red glow where it is steeper than 1 in 10 (a tick box turns it off); hold R and a ruler follows the pointer with the distance and angle; stretches of sewer with too little soil cover flash red on the plan and are a red band marked "cover too low" on the long section.

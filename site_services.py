@@ -8,7 +8,7 @@ import sys
 
 from PySide6.QtCore import QPointF, QRectF, QTimer, Qt, QSizeF, QVariantAnimation, QEasingCurve
 from PySide6.QtGui import QCursor, QPixmap, QKeySequence, QShortcut, QBrush, QColor, QFont, QPainter, QPen, QPolygonF, QPageSize, QPageLayout, QPdfWriter, QImage
-from PySide6.QtWidgets import (QApplication, QFrame, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QInputDialog, QListWidget, QMenu, QDoubleSpinBox, QFileDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton,
+from PySide6.QtWidgets import (QApplication, QFrame, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QInputDialog, QListWidget, QMenu, QDoubleSpinBox, QSpinBox, QFileDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton,
                                QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget, QAbstractItemView)
 
 import site_dxf
@@ -2094,9 +2094,33 @@ class SiteServicesPage(ToolBase):
                 self.lv_dropx.setKeyboardTracking(False)
                 self.lv_dropx.setToolTip("Where the drop is, measured along the sewer from the house outlet (0 m is the first rodding eye at the house). The main sewer is at the far end.")
                 self.lv_dropx.valueChanged.connect(self._edited)
-                row.addWidget(QLabel("Drop is"))
+                self.lv_nd = QSpinBox()
+                self.lv_nd.setRange(1, 5)
+                self.lv_nd.setKeyboardTracking(False)
+                self.lv_nd.setToolTip("How many drops the pipe is brought down in. Each drop is the same height. More drops are used when one would be too tall, or when the main is much deeper than the house.")
+                self.lv_nd.valueChanged.connect(self._edited)
+                self.lv_ndlab = QLabel("Number of drops")
+                row.addWidget(self.lv_ndlab)
+                row.addWidget(self.lv_nd)
+                self.lv_dlab = [QLabel("Drop is")]
+                self.lv_dxs = [self.lv_dropx]
+                row.addWidget(self.lv_dlab[0])
                 row.addWidget(self.lv_dropx)
-                row.addWidget(QLabel("from the house outlet"))
+                for k_ in range(1, 5):                                    # up to five drops, each with its own place
+                    lb_ = QLabel("Drop %d is" % (k_ + 1))
+                    sp_ = QDoubleSpinBox()
+                    sp_.setRange(0.5, 500.0)
+                    sp_.setDecimals(1)
+                    sp_.setSuffix(" m")
+                    sp_.setKeyboardTracking(False)
+                    sp_.setToolTip("Where this drop is, measured along the sewer from the house outlet.")
+                    sp_.valueChanged.connect(self._edited)
+                    self.lv_dlab.append(lb_)
+                    self.lv_dxs.append(sp_)
+                    row.addWidget(lb_)
+                    row.addWidget(sp_)
+                self.lv_dfrom = QLabel("from the house outlet")
+                row.addWidget(self.lv_dfrom)
                 ml3.addLayout(row)
                 self.lv_dropinfo = QLabel("")
                 self.lv_dropinfo.setWordWrap(True)
@@ -2432,6 +2456,8 @@ class SiteServicesPage(ToolBase):
             if hasattr(self, "lv_mode"):
                 st["levels"]["drop_mode"] = self.lv_mode.currentIndex()
                 st["levels"]["drop_x"] = self.lv_dropx.value()
+                st["levels"]["drop_n"] = self.lv_nd.value()
+                st["levels"]["drop_xs"] = [round(w_.value(), 1) for w_ in self.lv_dxs]
         st["params"] = {"conn_depth": self.p_depth.value(), "fall": self.p_fall.value(), "max_ie": self.p_ie.value(), "re_ext": self.p_tail.value(), "sewer_pipe": self.p_pipe.currentText(),
                         "sb_street": self.sb_street.value(), "sb_side": self.sb_side.value(), "sb_rear": self.sb_rear.value()}
         self.schedule()
@@ -2509,6 +2535,10 @@ class SiteServicesPage(ToolBase):
                         x_, mode_ = 10.0, 0
                 self.lv_mode.setCurrentIndex(int(mode_))
                 self.lv_dropx.setValue(float(x_ if x_ else 10.0))
+                self.lv_nd.setValue(int(lvl.get("drop_n") or 1))
+                for k_, v_ in enumerate(lvl.get("drop_xs") or []):
+                    if 0 < k_ < len(self.lv_dxs):
+                        self.lv_dxs[k_].setValue(float(v_))
             if hasattr(self, "el_title"):
                 el_ = st.get("elev") or {}
                 self.el_title.setText(str(el_.get("title", "")))
@@ -4539,53 +4569,93 @@ class SiteServicesPage(ToolBase):
         lv = dict(self.st.get("levels") or {}, drops="")
         return site_profile.build(dict(self.st, levels=lv), self.res)
 
-    def _compute_drop(self, x=None):
-        """'distance = invert level' for a drop that makes the pipe arrive at the main's invert level, or '' when none is needed.
-        The pipe falls to the drop, steps down at 45 degrees on the sheet and falls on to the main."""
+    def _compute_drop(self, x=None, n=1, xs=None):
+        """'distance = invert level, ...' for n drops (equal in height) that make the pipe arrive at the main's invert level, or '' when none is needed.
+        The pipe falls to each drop, steps down at 45 degrees on the sheet and falls on. xs = the places typed (else the program places them)."""
         import site_profile
         d = self._drop_base()
         D, H, f = d["drop"], d["length"], d["fall"]
+        self._drop_xs, self._drop_warn = [], ""
         if D <= 0.005:
             return ""
+        n = max(1, int(n))
+        il_head = d["il"](0.0)
         run = max(1.5, 0.25 * H)
+        eyes = sorted(s_["x"] for s_ in d["stations"] if s_["kind"] != "MAIN" and 0.4 < s_["x"])
 
-        def pick(lean_):                                        # the last eye that still leaves the lower pipe a run of its own
-            ok = [s_["x"] for s_ in d["stations"] if s_["kind"] != "MAIN" and 0.4 < s_["x"] and s_["x"] + lean_ + run <= H]
-            return max(ok) if ok else max(0.5, H - lean_ - run)
-        given, ratio, x_prev, new_il, txt = x, 0.5, None, None, ""
-        for _k in range(14):    # the 45 degree part's length depends on the sheet's scales, which depend on the levels: settle its place and the lower level
-            x = given if given is not None else pick(ratio * D / (1.0 - ratio / f))
-            x = max(0.3, min(x, H - 0.5))
-            il_x = d["il"](x)
-            if new_il is None or x != x_prev:
-                new_il = il_x - D / (1.0 - ratio / f)
-            x_prev = x
-            txt = "%.2f = %.3f" % (x, new_il)
+        def place(lean_):
+            if xs:
+                want = [float(v) for v in list(xs)[:n]]
+            elif n == 1:                                          # the last eye that still leaves the lower pipe a run of its own
+                ok = [e_ for e_ in eyes if e_ + lean_ + run <= H]
+                want = [max(ok) if ok else max(0.5, H - lean_ - run)]
+            else:                                                 # spread along the pipe, on an eye where one is near
+                want = []
+                for k_ in range(n):
+                    t_ = H * (k_ + 1) / (n + 1)
+                    near = min(eyes, key=lambda e_: abs(e_ - t_)) if eyes else t_
+                    want.append(near if abs(near - t_) <= 3.0 else round(t_, 1))
+            out, lo_ = [], 0.3
+            for v_ in want:
+                v2 = max(lo_, min(v_, H - 0.5 - max(0.0, (n - 1 - len(out))) * (lean_ + 0.6)))
+                if abs(v2 - v_) > 0.05:
+                    self._drop_warn = "The drops are too close together or too close to the main: they need at least %.1f m between them, so they were moved." % (lean_ + 0.6)
+                out.append(v2)
+                lo_ = v2 + lean_ + 0.6
+            return out
+        ratio, Dt, txt, xs_out = 0.5, D, "", []
+        for _k in range(18):    # the 45 degree part's length depends on the sheet's scales, which depend on the levels: settle the places and the lower levels
+            self._drop_warn = ""
+            h = Dt / (1.0 - ratio / f) / n
+            lean = ratio * h
+            xs_out = place(lean)
+            cx, cy, parts = 0.0, il_head, []
+            for x_ in xs_out:
+                il_in = cy - (x_ - cx) / f
+                y_ = il_in - h
+                parts.append("%.2f = %.3f" % (x_, y_))
+                cx, cy = x_ + lean, y_
+            txt = ", ".join(parts)
             r = site_profile.build(dict(self.st, levels=dict(self.st.get("levels") or {}, drops=txt)), self.res)
-            ratio = r["lean_ratio"]
-            if abs(r["drop"]) < 0.0008 and (given is not None or x == pick(ratio * (il_x - new_il))):
+            if abs(r["drop"]) < 0.0008:
                 break
-            new_il -= r["drop"]
+            if _k < 10:
+                ratio = r["lean_ratio"]                       # the total height is the drop to lose over (1 - ratio / fall): settle the ratio
+            else:
+                Dt += r["drop"]                               # still not exact: nudge the height by what is left over
+        self._drop_xs = xs_out
         return txt
 
     def _sync_drop(self):
-        """keeps the drop in step with the choices (none / the program places it / I choose where) and the levels"""
+        """keeps the drops in step with the choices (none / the program places them / I choose where) and the levels"""
         if not hasattr(self, "lv_mode") or self.res is None or getattr(self, "_syncing", False):
             return
         self._syncing = True
         try:
             mode = self.lv_mode.currentIndex()
+            n = self.lv_nd.value()
             if mode == 0:
                 txt = ""
             elif mode == 1:
-                txt = self._compute_drop()
+                txt = self._compute_drop(n=n)
             else:
-                txt = self._compute_drop(self.lv_dropx.value())
+                txt = self._compute_drop(n=n, xs=[w_.value() for w_ in self.lv_dxs[:n]])
             self._busy = True
             try:
-                self.lv_dropx.setEnabled(mode == 2)
+                self.lv_nd.setEnabled(mode != 0)
+                self.lv_ndlab.setVisible(mode != 0)
+                self.lv_nd.setVisible(mode != 0)
+                for k_, (lb_, sp_) in enumerate(zip(self.lv_dlab, self.lv_dxs)):
+                    show = mode != 0 and k_ < n
+                    lb_.setVisible(show)
+                    sp_.setVisible(show)
+                    sp_.setEnabled(mode == 2)
+                    if k_ == 0:
+                        lb_.setText("Drop is" if n == 1 else "Drop 1 is")
+                self.lv_dfrom.setVisible(mode != 0)
                 if txt and mode == 1:
-                    self.lv_dropx.setValue(float(txt.split("=")[0]))
+                    for k_, v_ in enumerate(getattr(self, "_drop_xs", [])):
+                        self.lv_dxs[k_].setValue(float(v_))
                 self.lv_drops.setText(txt)
             finally:
                 self._busy = False
@@ -4604,11 +4674,17 @@ class SiteServicesPage(ToolBase):
         H = d["length"]
         head = "Distances are measured along the sewer from the house outlet (0 m, the first rodding eye) towards the main sewer, which is at %.1f m. " % H
         if txt:
-            x = float(txt.split("=")[0])
-            ds = d["drops"][0] if d["drops"] else None
-            dep = round((ds[1] - ds[2]) * 1000) if ds else 0
-            tail = ("The pipe falls at 1:%d from the house to the drop at %.1f m (%.1f m before the main), steps down %d mm at 45 degrees, then falls on to the main's invert "
-                    "level. A rodding eye is put at the top of the drop so it can be rodded down the steep part." % (round(d["fall"]), x, H - x, dep))
+            ds = d["drops"]
+            xs_ = [x_ for x_, _a, _b in ds]
+            dep = round((ds[0][1] - ds[0][2]) * 1000) if ds else 0
+            if len(ds) == 1:
+                tail = ("The pipe falls at 1:%d from the house to the drop at %.1f m (%.1f m before the main), steps down %d mm at 45 degrees, then falls on to the main's invert "
+                        "level. A rodding eye is put at the top of the drop so it can be rodded down the steep part." % (round(d["fall"]), xs_[0], H - xs_[0], dep))
+            else:
+                tail = ("%d drops, at %s m from the house outlet, each stepping down %d mm at 45 degrees. The pipe falls at 1:%d between them and on to the main's invert level. "
+                        "A rodding eye is put at the top of each drop." % (len(ds), ", ".join("%.1f" % x_ for x_ in xs_), dep, round(d["fall"])))
+            if getattr(self, "_drop_warn", ""):
+                tail += " " + self._drop_warn
         elif d["drop"] > 0.005 and mode == 0:
             tail = "With no drop the pipe arrives %d mm ABOVE the main's invert level: choose a drop." % round(d["drop"] * 1000)
         elif d["drop"] < -0.002:

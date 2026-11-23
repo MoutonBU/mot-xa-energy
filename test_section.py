@@ -71,3 +71,22 @@ old_ = pg.state(); old_["levels"] = {"ngl_head": 0, "ngl_main": 0, "main_il": 0,
 pg.set_state(old_)
 assert pg.lv_spin["ngl_head"].value() == -1000.0 and pg.lv_spin["ngl_head"].text() == "not set"
 print("negative ok")
+
+# several drops: the program places them, or you choose where; the pipe still arrives at the main's invert level
+pg.set_state(ss.blank_state() if hasattr(ss, "blank_state") else pg.state())
+pg.lv_spin["ngl_head"].setValue(100.0); pg.lv_spin["ngl_main"].setValue(100.0); pg.lv_spin["main_il"].setValue(95.0); pg.solve_now(False)
+pg.lv_mode.setCurrentIndex(1); pg.lv_nd.setValue(3); pg.solve_now(False)
+dm = sp.build(pg.st, pg.res)
+assert len(dm["drops"]) == 3 and abs(dm["drop"]) < 0.002 and all(ok for _t, ok in dm["checks"]), (dm["drops"], dm["drop"])
+assert "3 drops" in pg.lv_dropinfo.text() and pg.lv_dxs[2].isVisibleTo(pg) is not None
+img = sp.render_image(dm, pg.title_block_lines(), 900)                                       # all three drops draw
+assert img.width() > 100
+assert sum(1 for n_ in pg.res["sewer"]["nodes"] if n_.get("drop")) >= 2
+pg.lv_mode.setCurrentIndex(2); pg.lv_nd.setValue(2); pg.lv_dxs[0].setValue(3.0); pg.lv_dxs[1].setValue(6.5); pg.solve_now(False)
+dm2 = sp.build(pg.st, pg.res)
+assert [round(x_[0], 1) for x_ in dm2["drops"]] == [3.0, 6.5] and abs(dm2["drop"]) < 0.002
+pg.lv_dxs[1].setValue(3.5); pg.solve_now(False)
+assert "too close" in pg.lv_dropinfo.text() and abs(sp.build(pg.st, pg.res)["drop"]) < 0.002
+s_ = pg.state(); pg.set_state(s_)
+assert pg.lv_nd.value() == 2 and abs(pg.lv_dxs[0].value() - 3.0) < 1e-9
+print("multi drops ok")
