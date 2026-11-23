@@ -6118,8 +6118,18 @@ def ifc_merge_variants(items):
     out = []
     for k in order:
         g = groups[k]
+        dropped = []
+        if k[0] == "Door" and any(i.get("external") is True for i in g) and any(i.get("external") is False for i in g):
+            # the same tag on an outside door and on an inside door (a door of the same mark, or an object exported as a proxy, in an inside wall):
+            # only the outside ones belong in the fenestration calculation
+            dropped = [i for i in g if i.get("external") is False]
+            g = [i for i in g if i.get("external") is not False]
         if len(g) == 1:
-            g[0]["tag"] = k[1]; out.append(g[0]); continue
+            g[0]["tag"] = k[1]
+            if dropped:
+                g[0]["note"] = (g[0].get("note", "") + " Not counted: %d inside door(s) with the same tag (%s)." % (
+                    sum(i.get("qty", 1) for i in dropped), ", ".join("%d x %d (x%g)" % (round(i["width"]), round(i["height"]), i.get("qty", 1)) for i in dropped))).strip()
+            out.append(g[0]); continue
         prim = max(g, key=lambda i: i.get("qty", 1))
         tot = sum(i.get("qty", 1) for i in g) or 1
         m = dict(prim)
@@ -6129,6 +6139,8 @@ def ifc_merge_variants(items):
         m["flag"] = sorted({x for i in g for x in (i.get("flag") or [])})
         sizes = ", ".join("%d x %d (x%g)" % (round(i["width"]), round(i["height"]), i.get("qty", 1)) for i in g)
         m["note"] = (m.get("note", "") + " Sizes in the model: " + sizes + ". The most common size is shown.").strip()
+        if dropped:
+            m["note"] += " Not counted: %d inside door(s) with the same tag." % sum(i.get("qty", 1) for i in dropped)
         wh = {}
         for i in g:
             for part in (i.get("where") or "").split(", "):

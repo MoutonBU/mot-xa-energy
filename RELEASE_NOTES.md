@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.159**
+Current version: **1.86.160**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **IFC doors, inside doors no longer inflate an outside door:** when the same door tag is used on an outside door and on an inside door of another size (for example D1 1800 x 2100 on two outside doors and a D1 1500 x 2100 object in an inside wall), only the outside ones are counted in the fenestration calculation (Stand 2066: D1 was 3, now 2). The note on the row says what was left out.
 - **House placing, 45 degree connection to the main sewer:** right-click where the sewer run meets the main sewer line and choose "Meet the main at 45 degrees (one way / other way)" (or back to square 90). The last leg is shortened and a 45 degree leg carries on to the connection point; where the leg before it runs along the main, its corner slides along it. The inspection and rodding eyes follow the new bend. The choice is saved with the placing.
 - **House placing, two cut-outs and a text minimum:** the working view still reads a wide area round the stand (road, bends, the far side of the street, every main). A blue dashed **export frame** is now drawn on the plan; drag its edges and corners to make the closer cut that is written to the DXF for Archicad (and the PDF): only what is inside the frame is exported, the neighbours' numbers are moved in to sit inside it, the main line labels stay inside, and the setting-out dimensions run closer to the boundaries (1.4 m instead of 2.4 m). "Reset frame" puts it back round the stand (margins are in the reference data); the tick "Export frame (blue)" hides it. No text is smaller than 2 mm at 1:200 (0.4 m at true size): building lines, electrical, water, setting out.
 - **House placing, stand search is fast and complete:** (1) going from one stand to the next no longer drags the last stand's main sewer along, which made the search take several seconds to minutes; a stand now opens in about a second. (2) A stand of the built-in Blue Hills Ext 120 plan now comes with its road (both kerbs, the bend), sewer, water, electrical and stormwater lines kept with the program (site_township_lines.py), so it looks like the DXF import even with no DXF open. (3) The electrical connection is the yellow triangle symbol (solid or outline) whose point touches the stand boundary; it is now searched on every side of the stand (up to 14 m, rule in the reference data), not only the street side, and the symbol is no longer drawn as a triangle on the plan. (4) Stand numbers on the plan are a little smaller.
