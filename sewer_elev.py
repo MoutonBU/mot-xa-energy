@@ -1,11 +1,12 @@
-"""Sewer elevation for the council, from the IFC model and the sewer placed on the site plan.
+"""Sewer elevation for the council, from floor plan and elevation screenshots and the sewer placed on the site plan.
 
-read_ifc(path)                       -> the sanitary fixtures (WC, basin, shower, bath, sink, washing machine ...) with their floor, the storeys and the footprint
+read_screenshot / read_levels        -> Claude reads a floor plan screenshot (the fixtures) and an elevation screenshot (the floor levels)
+model_from_shots(shots, house)       -> the fixtures and floors as one model, scaled to the house on the site plan
 build(state, res, model, ...)        -> the model turned onto the stand to match the house on the site plan, a view along the sewer, the stacks, and the sewer levels
 draw(p, W, H, S, data, title_lines)  -> the A3 sheet (paper mm; S = drawing units per paper mm), for a QPainter or the DxfPainter of site_export
 write_pdf / write_dxf / render_image -> the outputs
 
-How the model is turned: the outline of the IFC model seen from above is laid over the house on the site plan (same shape, same middle). A rectangle has
+How the plan is turned: the outline of the building on the plan screenshot is laid over the house on the site plan (same shape, same middle). A rectangle has
 two fits (the way round and the other way round), a square four; the program takes the fit that puts the wet fixtures nearest the sewer, and the page
 can turn it by 180 or 90 degrees if that is not the way the house really faces.
 How the levels follow the fixtures: every stack (a vertical pipe collecting the fixtures along the same stretch of wall) must leave its lowest fixture with
@@ -60,81 +61,6 @@ def classify(text, predefined=""):
     return None
 
 
-# ---------------------------------------------------------------- reading the IFC model
-def read_ifc(path, progress=None):
-    import ifcopenshell
-    import ifcopenshell.util.element as UE
-    import ifcopenshell.util.placement as UP
-    import ifcopenshell.util.unit as UU
-    ifc = ifcopenshell.open(path)
-    sc = float(UU.calculate_unit_scale(ifc))
-
-    def pos(el):
-        try:
-            m = UP.get_local_placement(el.ObjectPlacement)
-            return float(m[0][3]) * sc, float(m[1][3]) * sc, float(m[2][3]) * sc
-        except Exception:
-            return None
-    storeys = []
-    for s in ifc.by_type("IfcBuildingStorey"):
-        p = pos(s)
-        el = getattr(s, "Elevation", None)
-        z = p[2] if p else (float(el) * sc if el is not None else 0.0)
-        storeys.append({"id": s.id(), "name": (s.Name or s.LongName or "Level").strip(), "z": z, "elev": z})
-    storeys.sort(key=lambda s: s["z"])
-    seen, els = set(), []
-    for c in CLASSES:
-        try:
-            for e in ifc.by_type(c):
-                if e.id() not in seen:
-                    seen.add(e.id())
-                    els.append(e)
-        except Exception:
-            pass
-    fixtures = []
-    for e in els:
-        names = [getattr(e, "Name", None), getattr(e, "ObjectType", None), getattr(e, "Description", None)]
-        try:
-            ty = UE.get_type(e)
-            if ty is not None:
-                names.append(getattr(ty, "Name", None))
-        except Exception:
-            pass
-        kind = classify(" ".join(str(n) for n in names if n), getattr(e, "PredefinedType", None))
-        if not kind:
-            continue
-        p = pos(e)
-        if not p:
-            continue
-        st_ = None
-        try:
-            c = UE.get_container(e)
-            while c is not None and not c.is_a("IfcBuildingStorey"):
-                c = UE.get_container(c)
-            st_ = c
-        except Exception:
-            st_ = None
-        si = None
-        if st_ is not None:
-            si = next((i for i, s in enumerate(storeys) if s["id"] == st_.id()), None)
-        if si is None and storeys:
-            si = max((i for i, s in enumerate(storeys) if s["z"] <= p[2] + 0.5), default=0)
-        fixtures.append({"kind": kind, "name": str(getattr(e, "Name", "") or ""), "x": p[0], "y": p[1], "z": p[2], "storey": si})
-    out, seen_pts = [], []                 # a toilet is often a pan and a cistern: one fixture per kind per spot
-    for f in fixtures:
-        if any(f["kind"] == g["kind"] and f["storey"] == g["storey"] and math.hypot(f["x"] - g["x"], f["y"] - g["y"]) < 0.6 for g in out):
-            continue
-        out.append(f)
-    fp = None
-    try:
-        import site_import
-        polys = site_import.ifc_footprint(path, True, True, progress)
-        fp = polys[0] if polys else None
-    except Exception:
-        fp = None
-    return {"storeys": storeys, "fixtures": out, "footprint": fp, "file": str(path)}
-
-
 # ---------------------------------------------------------------- turning the model onto the stand
 def _poly(pts):
     from shapely.geometry import Polygon
@@ -161,7 +87,7 @@ def fits(model, house_pts):
     """the turns (radians) that lay the model's outline over the house, best first: [(theta, overlap 0..1)]"""
     fp = model.get("footprint")
     if not fp:
-        raise ValueError("The IFC model has no walls or slabs to take an outline from.")
+        raise ValueError("The plan has no building outline to take.")
     P, Hh = _poly(fp), _poly(house_pts)
     a_i, L_i, W_i = _long_axis(P)
     a_h, L_h, W_h = _long_axis(Hh)
@@ -218,7 +144,7 @@ def build(state, res, model, turn=0, flip=False, title=None):
     if not sw or not sw.get("path"):
         raise ValueError("There is no sewer on the site plan yet.")
     if not model["fixtures"]:
-        raise ValueError("No WC, basin, shower, bath, sink or washing machine was found in the IFC model (looked at sanitary terminals, flow terminals, appliances and furniture by name).")
+        raise ValueError("No WC, basin, shower, bath, sink or washing machine was found on the screenshots.")
     house = se.house_poly(state["house"])
     cands, ci, ch = fits(model, house)
     path = [tuple(q) for q in sw["path"]]
@@ -270,7 +196,7 @@ def build(state, res, model, turn=0, flip=False, title=None):
     # ---- levels: the site levels, with the storeys of the model on the same datum
     storeys = model["storeys"]
     if not storeys:
-        raise ValueError("The IFC model has no building storeys.")
+        raise ValueError("There are no floors: add a floor plan screenshot.")
     gi = next((i for i, s in enumerate(storeys) if re.search(r"ground|\b0\b|gf|grond|^g$", s["name"].lower())), None)
     if gi is None:
         gi = min((i for i, s in enumerate(storeys) if any(f["storey"] == i for f in fx)), key=lambda i: storeys[i]["z"], default=0)
@@ -615,7 +541,7 @@ def draw(p, W, H, S, d, title_lines=(), when=None):
         notes.append("GROUND LEVELS ARE ASSUMED: ground taken as 150 mm under the finished floor. Type the surveyed levels before submitting.")
     if d["deeper"]:
         notes.append("The pipe is laid deeper than the site minimum so that it clears the lowest fixtures.")
-    notes.append("Fixtures from the IFC model; outlet heights assumed (WC 150, basins and sinks 550, washing machine 900 mm above the floor). Pipe sizes, falls and levels to be confirmed by the Engineer.")
+    notes.append("Fixtures read from floor plan screenshots by AI; outlet heights assumed (WC 150, basins and sinks 550, washing machine 900 mm above the floor). Pipe sizes, falls and levels to be confirmed by the Engineer.")
     yy = 258.0
     xn = 256.0
     text(xn, yy - 5.0, "NOTES", 2.4, True)
@@ -681,8 +607,8 @@ SHOT_TOOL = {"name": "list_fixtures", "description": "The plumbing fixtures on t
                  "required": ["fixtures", "building"]}}
 
 
-def read_screenshot(path, key=None, model=None, timeout=120):
-    """a plan screenshot -> {"fixtures": [{kind, x, y}], "building": (x0, y0, x1, y1), "w": px, "h": px}. Needs an API key; raises RuntimeError with a plain message."""
+def _vision(path, system, tool, text, key=None, model=None, timeout=120):
+    """a picture + a tool the answer must come through -> the tool's input (dict). Raises RuntimeError with a plain message."""
     import base64
     import json
     import urllib.error
@@ -696,17 +622,17 @@ def read_screenshot(path, key=None, model=None, timeout=120):
     img = QImage(str(path))
     if img.isNull():
         raise RuntimeError("That picture could not be opened.")
-    w, h = img.width(), img.height()
-    if max(w, h) > 1600:
+    size = (img.width(), img.height())
+    if max(size) > 1600:
         img = img.scaled(1600, 1600, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
     ba = QByteArray()
     buf = QBuffer(ba)
     buf.open(QIODevice.OpenModeFlag.WriteOnly)
     img.save(buf, "PNG")
-    body = {"model": model or gen.api_model(), "max_tokens": 4000, "system": SHOT_SYSTEM, "tools": [SHOT_TOOL], "tool_choice": {"type": "auto"},
+    body = {"model": model or gen.api_model(), "max_tokens": 4000, "system": system, "tools": [tool], "tool_choice": {"type": "auto"},
             "messages": [{"role": "user", "content": [
                 {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": base64.b64encode(bytes(ba)).decode()}},
-                {"type": "text", "text": "List the plumbing fixtures on this plan and the building outline."}]}]}
+                {"type": "text", "text": text}]}]}
     req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=json.dumps(body).encode(),
                                  headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"}, method="POST")
     try:
@@ -722,7 +648,13 @@ def read_screenshot(path, key=None, model=None, timeout=120):
         raise RuntimeError("No internet connection (%s)" % e.reason)
     inp = next((p["input"] for p in data.get("content", []) if p.get("type") == "tool_use" and isinstance(p.get("input"), dict)), None)
     if inp is None:
-        raise RuntimeError("Claude did not list any fixtures. Try a clearer or larger screenshot of one floor.")
+        raise RuntimeError("Claude could not read anything from that picture. Try a clearer or larger screenshot.")
+    return inp, size
+
+
+def read_screenshot(path, key=None, model=None, timeout=120):
+    """a plan screenshot -> {"fixtures": [{kind, x, y}], "building": (x0, y0, x1, y1), "w": px, "h": px}"""
+    inp, (w, h) = _vision(path, SHOT_SYSTEM, SHOT_TOOL, "List the plumbing fixtures on this plan and the building outline.", key, model, timeout)
     fx = []
     for f in inp.get("fixtures") or []:
         try:
@@ -741,8 +673,31 @@ def read_screenshot(path, key=None, model=None, timeout=120):
     return {"fixtures": fx, "building": bb, "w": w, "h": h}
 
 
+LEVELS_SYSTEM = (
+    "You read an architectural elevation or section screenshot and list the floor levels written on it (level markers such as '+221 490  1 First Floor', "
+    "'0 Ground Floor', 'Roof'). Answer ONLY by calling the list_levels tool. level is in METRES as a number (+221 490 means 221.49; a plain 2.89 stays 2.89). "
+    "name is the name written beside it (Ground Floor, First Floor, Roof ...). List only levels you can read, lowest first. Do not list ground or natural ground lines.")
+LEVELS_TOOL = {"name": "list_levels", "description": "The floor levels written on the elevation.",
+               "input_schema": {"type": "object", "properties": {"levels": {"type": "array", "items": {"type": "object", "properties": {
+                   "name": {"type": "string"}, "level": {"type": "number"}}, "required": ["name", "level"]}}}, "required": ["levels"]}}
+
+
+def read_levels(path, key=None, model=None, timeout=120):
+    """an elevation screenshot -> [{"name", "level"}] lowest first"""
+    inp, _size = _vision(path, LEVELS_SYSTEM, LEVELS_TOOL, "List the floor levels on this elevation.", key, model, timeout)
+    out = []
+    for x in inp.get("levels") or []:
+        try:
+            out.append({"name": str(x["name"]).strip()[:40] or "Level", "level": float(x["level"])})
+        except (KeyError, TypeError, ValueError):
+            pass
+    if not out:
+        raise RuntimeError("No floor levels could be read from that elevation.")
+    return sorted(out, key=lambda x: x["level"])
+
+
 def model_from_shots(shots, house_pts):
-    """shots: [{"name", "level", "fixtures", "building", "w", "h"}] (one per floor, ground first) -> a model like read_ifc gives.
+    """shots: [{"name", "level", "fixtures", "building", "w", "h"}] (one per floor, ground first) -> the model build() takes.
     The plan is scaled so the building outline on the screenshot is as long as the house on the site plan, with the screenshot's up as north-up of the house's fit."""
     from shapely.geometry import Polygon
     H = Polygon(house_pts).buffer(0)

@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.192**
+Current version: **1.86.193**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Sewer elevation now comes from screenshots only (the IFC route is removed):** in the sewer elevation settings, "Add a floor plan screenshot (AI)" (one per floor: Claude reads where the WCs, basins, showers, baths, sinks and washing machines are) and "Add an elevation screenshot (AI)" (Claude reads the floor levels written on it, such as +218 600 Ground Floor, and the floor plans then take their levels from it). The plan is laid onto the house on the site plan using the stand's orientation and the sheet is drawn as before; "Turn the plan" and "View from the other side" fix a wrong facing. Checked with simulated AI replies only (no live request run here), so look over what it read before trusting the sheet: fixtures, floor names and levels.
 - **Detail generator has the whole Detail notes workspace:** the generator tab is now a request box on top and, below it, a full Detail notes workspace (click a part to choose its spec, the catalog and My specs, templates, auto note, brickwork and colours, the notes schedule, outputs). The detail Claude draws is opened in it with Claude's notes already in the list, so you can change any note from the catalog or add the rest with Auto note. The separate Save DXF and Add notes buttons are gone: save from the workspace as in Detail notes.
 - **Sewer elevation from floor plan screenshots (no IFC needed):** next to "Choose the IFC model", "Or add a floor plan screenshot (AI)" takes a screenshot of one floor plan, asks which floor it is and its level, and Claude (using your API key from Settings) lists the WCs, basins, showers, baths, sinks and washing machines and where they are. Add one screenshot per floor. The plan is scaled so the building outline on the screenshot is as long as the house on the site plan, and then the same turning, stacks, levels and sheet as the IFC route are used. The positions come from an AI reading of a picture: check that the fixtures on the sheet are where they are on the plan (an unclear screenshot gives wrong or missing fixtures). Tested with a simulated reply and a blank picture only; no live request has been run (no key in the build environment).
 - **Rodding eyes drawn at 45 degrees:** on the sewer long section and the sewer elevation every rodding eye (RE) now leans at 45 degrees up the line, back towards the house, instead of standing straight up. Inspection eyes (IE) stay vertical. The direction is my reading of your marked-up drawing: if you want them to lean the other way, say so.

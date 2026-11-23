@@ -1623,13 +1623,14 @@ class SiteServicesPage(ToolBase):
                     row.addWidget(b_)
                 row.addStretch(1)
                 ml3.addLayout(row)
-                ml4 = self.more(bv, "Sewer elevation from the IFC model (WCs, basins, council sheet)")
-                lt4 = QLabel("Reads the WCs, basins, showers, baths, sinks and washing machines and the storeys from the building's IFC model, turns the model onto the house on the "
-                             "site plan, and draws the sewer elevation: the stacks, the sewer under them and the invert levels that clear the lowest fixtures.")
+                ml4 = self.more(bv, "Sewer elevation from floor plan and elevation screenshots (WCs, basins, council sheet)")
+                lt4 = QLabel("Add a screenshot of each floor plan (Claude reads where the WCs, basins, showers, baths, sinks and washing machines are) and, if you have one, a "
+                             "screenshot of an elevation (Claude reads the floor levels). The plan is laid onto the house on the site plan using the stand's orientation, and "
+                             "the sewer elevation is drawn from it: the stacks, the sewer under them and the invert levels that clear the lowest fixtures.")
                 lt4.setWordWrap(True)
                 ml4.addWidget(lt4)
                 row = FlowLayout(None, 8, 6)
-                self.el_lbl = QLabel("No IFC model chosen.")
+                self.el_lbl = QLabel("No screenshots yet.")
                 self.el_title = QLineEdit()
                 self.el_title.setPlaceholderText("Title under the sheet, e.g. (A) South East Block B")
                 self.el_title.setMinimumWidth(260)
@@ -1640,7 +1641,8 @@ class SiteServicesPage(ToolBase):
                     row.addWidget(w_)
                 ml4.addLayout(row)
                 row = FlowLayout(None, 8, 6)
-                for txt_, fn_ in (("Choose the IFC model...", self.elev_choose), ("Or add a floor plan screenshot (AI)...", self.elev_shot), ("Clear the screenshots", self.elev_clear_shots), ("Turn the model", self.elev_turn), ("Preview the elevation", self.elev_preview),
+                for txt_, fn_ in (("Add a floor plan screenshot (AI)...", self.elev_shot), ("Add an elevation screenshot (AI)...", self.elev_levels_shot),
+                                  ("Clear the screenshots", self.elev_clear_shots), ("Turn the plan", self.elev_turn), ("Preview the elevation", self.elev_preview),
                                   ("Save elevation PDF...", self.elev_pdf), ("Save elevation DXF...", self.elev_dxf)):
                     b_ = QPushButton(txt_)
                     b_.clicked.connect(lambda _=False, f=fn_: f())
@@ -3939,84 +3941,93 @@ class SiteServicesPage(ToolBase):
         dlg.resize(1100, 760)
         dlg.exec()
 
-    # ---- sewer elevation from the IFC model
+    # ---- sewer elevation from floor plan and elevation screenshots
     def _elev_set(self, k, v):
         if getattr(self, "_busy", False):
             return
         self.st.setdefault("elev", {})[k] = v
 
-    def elev_choose(self):
-        path, _ = QFileDialog.getOpenFileName(self, "IFC model", "", "IFC model (*.ifc *.ifczip)")
-        if not path:
-            return
-        import sewer_elev
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        try:
-            self._elev_model = sewer_elev.read_ifc(path)
-        except Exception as e:
-            QApplication.restoreOverrideCursor()
-            QMessageBox.warning(self, "Sewer elevation", "The IFC model could not be read: %s" % e)
-            return
-        QApplication.restoreOverrideCursor()
-        el = self.st.setdefault("elev", {})
-        el.update({"path": path, "turn": 0})
-        self.elev_status()
-
     def elev_status(self):
-        m = getattr(self, "_elev_model", None)
-        shots = (self.st.get("elev") or {}).get("shots") or []
-        if m is None and shots:
-            from collections import Counter
-            c = Counter(f["kind"] for sh in shots for f in sh["fixtures"])
-            self.el_lbl.setText("%d floor plan screenshot%s: %s." % (len(shots), "" if len(shots) == 1 else "s", ", ".join("%d %s" % (n, k) for k, n in sorted(c.items())) or "no fixtures found"))
-            return
-        if m is None:
-            self.el_lbl.setText("No IFC model chosen." if not (self.st.get("elev") or {}).get("path") else "Model: %s (press Preview to read it again)." % self.st["elev"]["path"])
+        el = self.st.get("elev") or {}
+        shots, lv = el.get("shots") or [], el.get("levels") or []
+        if not shots and not lv:
+            self.el_lbl.setText("No screenshots yet.")
             return
         from collections import Counter
-        c = Counter(f["kind"] for f in m["fixtures"])
-        self.el_lbl.setText("%s: %d storeys, fixtures found: %s." % (m["file"].replace("\\", "/").split("/")[-1], len(m["storeys"]),
-                                                              ", ".join("%d %s" % (n, k) for k, n in sorted(c.items())) or "none"))
+        c = Counter(f["kind"] for sh in shots for f in sh["fixtures"])
+        t = "%d floor plan screenshot%s: %s." % (len(shots), "" if len(shots) == 1 else "s", ", ".join("%d %s" % (n, k) for k, n in sorted(c.items())) or "no fixtures found") if shots else "No floor plan yet."
+        if lv:
+            t += "  Levels from the elevation: " + ", ".join("%s %.3f" % (x["name"], x["level"]) for x in lv) + "."
+        self.el_lbl.setText(t)
+
+    def _run_ai(self, fn, busy):
+        """runs a slow call on a thread while the window stays alive; returns (result, error)"""
+        from PySide6.QtCore import QEventLoop
+        from detail_generator_ui import _Job
+        job = _Job(fn)
+        box = {}
+        loop = QEventLoop()
+        job.done.connect(lambda r: (box.update(r=r), loop.quit()))
+        job.fail.connect(lambda m: (box.update(err=m), loop.quit()))
+        self.el_lbl.setText(busy)
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        job.start()
+        loop.exec()
+        QApplication.restoreOverrideCursor()
+        return box.get("r"), box.get("err")
+
+    def elev_levels_shot(self):
+        """a screenshot of an elevation: Claude reads the floor levels written on it"""
+        import sewer_elev
+        path, _ = QFileDialog.getOpenFileName(self, "Elevation screenshot", "", "Pictures (*.png *.jpg *.jpeg *.bmp *.webp)")
+        if not path:
+            return
+        r, err = self._run_ai(lambda: sewer_elev.read_levels(path), "Reading the elevation...")
+        if err:
+            self.el_lbl.setText(err)
+            QMessageBox.warning(self, "Sewer elevation", err)
+            return
+        el = self.st.setdefault("elev", {})
+        el["levels"] = r
+        self._elev_model = None
+        self.elev_status()
 
     def elev_shot(self):
         """a screenshot of one floor plan: Claude (the API key from Settings) lists the WCs, basins, showers, baths ... and where they are"""
-        from PySide6.QtCore import QEventLoop
         from PySide6.QtWidgets import QInputDialog
         import sewer_elev
-        from detail_generator_ui import _Job
         path, _ = QFileDialog.getOpenFileName(self, "Floor plan screenshot", "", "Pictures (*.png *.jpg *.jpeg *.bmp *.webp)")
         if not path:
             return
         el = self.st.setdefault("elev", {})
         shots = el.setdefault("shots", [])
-        name, ok = QInputDialog.getText(self, "Floor plan screenshot", "Which floor is this?", text=["Ground Floor", "First Floor", "Second Floor"][min(len(shots), 2)])
-        if not ok or not name.strip():
+        lv = el.get("levels") or []
+        if lv:
+            names = [x["name"] for x in lv]
+            name, ok = QInputDialog.getItem(self, "Floor plan screenshot", "Which floor is this (from the elevation)?", names, min(len(shots), len(names) - 1), False)
+            if not ok:
+                return
+            lvl = next(x["level"] for x in lv if x["name"] == name)
+        else:
+            name, ok = QInputDialog.getText(self, "Floor plan screenshot", "Which floor is this?", text=["Ground Floor", "First Floor", "Second Floor"][min(len(shots), 2)])
+            if not ok or not name.strip():
+                return
+            lvl, ok = QInputDialog.getDouble(self, "Floor plan screenshot", "Floor level above the ground floor (m), or its level if you know it:", 0.0 if not shots else round(2.9 * len(shots), 2), -10, 400, 3)
+            if not ok:
+                return
+        r, err = self._run_ai(lambda: sewer_elev.read_screenshot(path), "Reading the screenshot...")
+        if err:
+            self.el_lbl.setText(err)
+            QMessageBox.warning(self, "Sewer elevation", err)
             return
-        lvl, ok = QInputDialog.getDouble(self, "Floor plan screenshot", "Floor level above the ground floor (m):", 0.0 if not shots else round(2.9 * len(shots), 2), -10, 60, 3)
-        if not ok:
-            return
-        job = _Job(lambda: sewer_elev.read_screenshot(path))
-        box = {}
-        loop = QEventLoop()
-        job.done.connect(lambda r: (box.update(r=r), loop.quit()))
-        job.fail.connect(lambda m: (box.update(err=m), loop.quit()))
-        self.el_lbl.setText("Reading the screenshot...")
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        job.start()
-        loop.exec()
-        QApplication.restoreOverrideCursor()
-        if "err" in box:
-            self.el_lbl.setText(box["err"])
-            QMessageBox.warning(self, "Sewer elevation", box["err"])
-            return
-        r = box["r"]
         shots.append(dict(r, name=name.strip(), level=lvl))
-        el["path"] = ""
         self._elev_model = None
         self.elev_status()
 
     def elev_clear_shots(self):
-        (self.st.setdefault("elev", {})).pop("shots", None)
+        el = self.st.setdefault("elev", {})
+        el.pop("shots", None)
+        el.pop("levels", None)
         self._elev_model = None
         self.elev_status()
 
@@ -4027,15 +4038,12 @@ class SiteServicesPage(ToolBase):
 
     def elev_data(self):
         import sewer_elev
+        import site_engine
         el = self.st.get("elev") or {}
-        if getattr(self, "_elev_model", None) is None and el.get("shots"):
-            import site_engine
-            self._elev_model = sewer_elev.model_from_shots(el["shots"], site_engine.house_poly(self.st["house"]))
+        if not el.get("shots"):
+            raise ValueError("Add a floor plan screenshot first.")
         if getattr(self, "_elev_model", None) is None:
-            if not el.get("path"):
-                raise ValueError("Choose the IFC model or add a floor plan screenshot first.")
-            self._elev_model = sewer_elev.read_ifc(el["path"])
-            self.elev_status()
+            self._elev_model = sewer_elev.model_from_shots(el["shots"], site_engine.house_poly(self.st["house"]))
         return sewer_elev, sewer_elev.build(self.st, self.res, self._elev_model, el.get("turn", 0), el.get("flip", False), el.get("title") or None)
 
     def _elev_try(self):
