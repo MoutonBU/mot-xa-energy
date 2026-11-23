@@ -9512,6 +9512,13 @@ class MainWindow(QMainWindow):
         self._steps_timer.start(2000)
         self.main_tabs.currentChanged.connect(lambda *_: self._update_steps())
         QTimer.singleShot(400, self._update_steps)
+        try:                                                   # pages fade in, buttons glow and tool tips are cards
+            ux_m2 = __import__("ui_extras")
+            ux_m2.install_icon_motion()
+            ux_m2.fade_all(self)
+            QTimer.singleShot(1500, lambda: ux_m2.fade_all(self))      # the tabs inside the tools that are built later
+        except Exception:
+            pass
         # keyboard
         for i in range(9):
             QShortcut(QKeySequence("Ctrl+%d" % (i + 1)), self, activated=lambda i=i: self.main_tabs.setCurrentIndex(i) if i < self.main_tabs.count() else None)
@@ -13689,7 +13696,7 @@ class MainWindow(QMainWindow):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
             b.setMinimumSize(220, 150)
-            b.setToolTip("Open " + title.replace("&&", "&"))
+            b.setToolTip("Open " + title.replace("&&", "&") + "\n" + re.sub(r"<[^>]+>", " ", sub).replace("&&", "&").strip())
             lab = QLabel("<div align='center'><b style='font-size:20px'>%s</b><br><br>%s</div>" % (title.replace("&&", "&"), sub), b)
             lab.setWordWrap(True)
             lab.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
@@ -20100,7 +20107,8 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
         if not path.lower().endswith(".pdf"):
             path += ".pdf"
         self._remember_pdf_dir(path)
-        self._write_report_pdf(path)
+        with __import__("ui_extras").busy("Making the PDF report..."):
+            self._write_report_pdf(path)
         QMessageBox.information(self, APP_NAME,
                                 f"PDF saved:\n{path}\n\nIn ArchiCAD: File > Content > Place External Content "
                                 "(or drag the PDF onto a layout) to place it on a sheet.")
@@ -21650,8 +21658,18 @@ def main():
                     win.raise_()
                     win.activateWindow()
                 finally:
+                    pass
+                try:                                    # the new look fades in (theme or reload) instead of flashing
+                    from PySide6.QtCore import QVariantAnimation as _QVA
+                    _fa = _QVA(win)
+                    _fa.setStartValue(0.0); _fa.setEndValue(1.0); _fa.setDuration(320)
+                    _fa.valueChanged.connect(lambda v: win.setWindowOpacity(float(v)))
+                    _fa.finished.connect(lambda: win.setWindowOpacity(1.0))
+                    win._fade_in = _fa
+                    _fa.start()
+                except Exception:
                     win.setWindowOpacity(1.0)
-                QTimer.singleShot(120, lambda: open(flagp, "w").close())   # only now does the old window close
+                QTimer.singleShot(420, lambda: open(flagp, "w").close())   # only now does the old window close
             QTimer.singleShot(250, _reveal)
         except Exception:
             win.setWindowOpacity(1.0)

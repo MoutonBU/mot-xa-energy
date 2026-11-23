@@ -207,7 +207,7 @@ def build(state, res, il_head=None, lean_ratio=None):
         checks.append(("Eyes are at most %.1f m apart (limit %.0f m)." % (max(gaps), mx) if max(gaps) <= mx + 1e-6 else "Eyes are %.1f m apart: more than %.0f m." % (max(gaps), mx), max(gaps) <= mx + 1e-6))
     out = {"stations": st, "length": Hh, "fall": fall, "od": od, "pipe": str(par.get("sewer_pipe", "110")), "ngl": ngl, "il": il, "ngl0": ngl0, "ngl1": ngl1,
             "pts": pts, "il_in": il_in, "segs": segs, "drops": [(x_, il_in(x_), y_) for x_, y_ in drops_in], "drop_lean": drop_lean, "terrain": terr is not None, "main_il": main_il, "main_typed": main_il_typed, "drop": drop, "assumed": assumed, "min_cover": min_cover, "checks": checks,
-            "ffl": float(lv["ffl"]) if _set(lv.get("ffl")) else None, "note": sw.get("note", "")}
+            "ffl": float(lv["ffl"]) if _set(lv.get("ffl")) else None, "note": sw.get("note", ""), "lines_only": bool(lv.get("lines_only"))}
     out["lean_ratio"] = 0.5 if lean_ratio is None else lean_ratio
     if drops_in and lean_ratio is None:                         # the steep part is 45 degrees on the sheet: its run is its height times (horizontal scale / vertical scale)
         r_ = 0.5
@@ -440,7 +440,8 @@ def draw(p, W, H, S, d, title_lines=(), when=None):
         text(x0 - 21.0, Y(d["ffl"]) - 1.0, "FFL %.3f" % d["ffl"], 2.0)
     # the pipe: invert and crown
     ilh, ile = d["il"](0.0), d["il"](Hh)
-    od_mm = max(d["od"] * 1000.0 / vs, 0.8)
+    lo_ = bool(d.get("lines_only"))                              # brown lines only: no pipe width
+    od_mm = 0.0 if lo_ else max(d["od"] * 1000.0 / vs, 0.8)
     bounds = [x_ for x_, _y in d["segs"]] + [Hh]
     for k_ in range(len(bounds) - 1):
         xa_, xb_ = bounds[k_], bounds[k_ + 1]
@@ -450,14 +451,15 @@ def draw(p, W, H, S, d, title_lines=(), when=None):
             yb_ = d["il_in"](xb_)
         else:
             yb_ = d["il"](xb_)
-        for off_, w_ in ((0.0, 0.6), (od_mm, 0.3)):
+        for off_, w_ in (((0.0, 0.8),) if lo_ else ((0.0, 0.6), (od_mm, 0.3))):
             line(X(xa_), Y(ya_) - off_, X(xb_), Y(yb_) - off_, BROWN, w_)
     p.setPen(pen(BROWN, 0.3))
-    p.drawLine(P(X(0.0), Y(ilh)), P(X(0.0), Y(ilh) - od_mm))
+    if not lo_:
+        p.drawLine(P(X(0.0), Y(ilh)), P(X(0.0), Y(ilh) - od_mm))
     for xd_, yin_, yout_ in d["drops"]:                           # the drop: a steep part from the upper pipe down to the lower pipe
         xf_ = xd_ + d["drop_lean"].get(xd_, 0.0)
-        for off_ in (0.0, od_mm):
-            line(X(xd_), Y(yin_) - off_, X(xf_), Y(yout_) - off_, BROWN, 0.6 if off_ == 0 else 0.3)
+        for off_ in ((0.0,) if lo_ else (0.0, od_mm)):
+            line(X(xd_), Y(yin_) - off_, X(xf_), Y(yout_) - off_, BROWN, (0.8 if lo_ else 0.6) if off_ == 0 else 0.3)
         text((X(xd_) + X(xf_)) / 2.0 + 3.0, (Y(yin_) + Y(yout_)) / 2.0 + 0.8, "drop %d mm" % round((yin_ - yout_) * 1000), 2.2, True, BROWN)
     # eyes
     for i, s in enumerate(st):
@@ -467,9 +469,13 @@ def draw(p, W, H, S, d, title_lines=(), when=None):
         w = 1.6
         sty = Qt.PenStyle.SolidLine if s["kind"] == "IE" else Qt.PenStyle.DashLine
         lean = (yc - yg) if s["kind"] == "RE" else 0.0              # a rodding eye leans at 45 degrees (on the paper) up the line, back towards the house
-        line(xe - w, yc, xe - w - lean, yg, BROWN, 0.35, sty)
-        line(xe + w, yc, xe + w - lean, yg, BROWN, 0.35, sty)
-        line(xe - w - lean - 0.8, yg, xe + w - lean + 0.8, yg, BROWN, 0.5)
+        if lo_:                                                     # one line for the eye
+            line(xe, yc, xe - lean, yg, BROWN, 0.5, sty)
+            line(xe - lean - 1.2, yg, xe - lean + 1.2, yg, BROWN, 0.5)
+        else:
+            line(xe - w, yc, xe - w - lean, yg, BROWN, 0.35, sty)
+            line(xe + w, yc, xe + w - lean, yg, BROWN, 0.35, sty)
+            line(xe - w - lean - 0.8, yg, xe + w - lean + 0.8, yg, BROWN, 0.5)
         ly = yg - 5.0 - (i % 4) * 4.6
         line(xe - lean, yg - 0.5, xe - lean, ly + 0.6, GREY, 0.12)
         text(xe - lean, ly, s["name"], 2.3, True, BROWN, "c")

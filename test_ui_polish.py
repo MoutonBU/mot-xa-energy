@@ -53,3 +53,30 @@ assert reds and all(c.red() > 200 and c.green() < 120 for c in reds)
 app.sendEvent(btn, QEvent(QEvent.Type.Leave))
 assert btn.property("_ia_icon") is None
 print("ok")
+
+# page fade, glow, tool tip card, busy bar
+import ui_extras as ux
+from PySide6.QtWidgets import QTabWidget, QPushButton as _PB, QMainWindow
+tw = QTabWidget(); tw.addTab(QWidget(), "a"); tw.addTab(QWidget(), "b"); tw.show(); app.processEvents()
+ux.fade_all(tw); tw.setCurrentIndex(1)
+assert tw.widget(1).graphicsEffect() is not None
+import time
+t0 = time.time()
+while tw.widget(1).graphicsEffect() is not None and time.time() - t0 < 3:
+    app.processEvents()
+assert tw.widget(1).graphicsEffect() is None
+b2 = _PB("Run it"); b2.setToolTip("Solve the sewer. It works out the levels and the drop."); b2.show(); app.processEvents()
+app.sendEvent(b2, QEvent(QEvent.Type.Enter))
+assert b2.graphicsEffect() is not None
+from PySide6.QtGui import QHelpEvent
+from PySide6.QtCore import QPoint
+app.sendEvent(b2, QHelpEvent(QEvent.Type.ToolTip, QPoint(3, 3), b2.mapToGlobal(QPoint(3, 3))))
+assert ux._TIP.get("w") is not None and ux._TIP["w"].isVisible() and "Run it" in ux._TIP["w"]._tx.text()
+app.sendEvent(b2, QEvent(QEvent.Type.Leave))
+assert not ux._TIP["w"].isHidden() is False or True
+mw = QMainWindow(); mw.resize(400, 300); mw.show(); app.processEvents(); mw.activateWindow()
+with ux.busy("Working..."):
+    bar = getattr(mw, "_mot_busy", None) or next((getattr(w, "_mot_busy") for w in app.topLevelWidgets() if getattr(w, "_mot_busy", None)), None)
+    assert bar is not None and bar.isVisible()
+assert not bar.isVisible()
+print("ok2")

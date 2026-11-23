@@ -69,6 +69,11 @@ def QPainterPath_from(poly):
     return pa
 
 
+def _busy(text):
+    import ui_extras
+    return ui_extras.busy(text)
+
+
 class _FootprintPreview(QWidget):
     def __init__(self):
         super().__init__()
@@ -1202,10 +1207,13 @@ class SiteServicesPage(ToolBase):
         btn = QToolButton()
         btn.setText("\u25b8 " + text)
         btn.setCheckable(True)
-        btn.setStyleSheet("QToolButton{border:none;text-align:left;padding:2px 0;}")
-        w = QWidget()
+        btn.setStyleSheet("QToolButton{border:none;text-align:left;padding:4px 2px;font-weight:600;} QToolButton:hover{color:#ff4056;}")
+        w = QFrame()                                    # a soft rounded card that works on the light and the dark theme
+        w.setObjectName("svcCard")
+        w.setStyleSheet("QFrame#svcCard{background:rgba(128,128,128,18);border:1px solid rgba(128,128,128,70);border-radius:10px;}")
         lay = QVBoxLayout(w)
-        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setContentsMargins(12, 10, 12, 12)
+        lay.setSpacing(8)
         w.setVisible(False)
         btn.toggled.connect(lambda on: (w.setVisible(on), btn.setText(("\u25be " if on else "\u25b8 ") + text)))
         bv.addWidget(btn)
@@ -1655,6 +1663,10 @@ class SiteServicesPage(ToolBase):
                 self.lv_dropinfo = QLabel("")
                 self.lv_dropinfo.setWordWrap(True)
                 ml3.addWidget(self.lv_dropinfo)
+                self.lv_lines = QCheckBox("Sewer as brown lines only (no pipe width)")
+                self.lv_lines.setToolTip("Off: the pipe is drawn with its outside diameter. On: the sewer is one brown line at the invert level, with single lines for the eyes.")
+                self.lv_lines.toggled.connect(self._edited)
+                ml3.addWidget(self.lv_lines)
                 row = FlowLayout(None, 8, 6)
                 for txt_, fn_ in (("Preview the sewer section", self.section_preview), ("Save the sewer section as PDF...", self.section_pdf), ("Save the sewer section as DXF...", self.section_dxf)):
                     b_ = QPushButton(txt_)
@@ -1971,6 +1983,8 @@ class SiteServicesPage(ToolBase):
             st["levels"]["spots"] = self.lv_spots.text().strip()
             if hasattr(self, "lv_drops"):
                 st["levels"]["drops"] = self.lv_drops.text().strip()
+            if hasattr(self, "lv_lines"):
+                st["levels"]["lines_only"] = 1 if self.lv_lines.isChecked() else 0
             if hasattr(self, "lv_usecont"):
                 st["levels"]["use_contours"] = 1 if self.lv_usecont.isChecked() else 0
             if hasattr(self, "lv_mode"):
@@ -2036,6 +2050,7 @@ class SiteServicesPage(ToolBase):
                 self.lv_drops.setText(str(lvl.get("drops", "")))
             if hasattr(self, "lv_usecont"):
                 self.lv_usecont.setChecked(bool(lvl.get("use_contours", 1)))
+                self.lv_lines.setChecked(bool(lvl.get("lines_only", 0)))
             if hasattr(self, "lv_mode"):
                 mode_ = lvl.get("drop_mode")
                 x_ = lvl.get("drop_x")
@@ -4004,7 +4019,8 @@ class SiteServicesPage(ToolBase):
         if not path:
             return
         try:
-            data = site_contours.read_contours(path)
+            with _busy("Reading the contours..."):
+                data = site_contours.read_contours(path)
         except Exception as e:
             QMessageBox.warning(self, "Contours", str(e))
             return
@@ -4300,20 +4316,23 @@ class SiteServicesPage(ToolBase):
     def section_pdf(self):
         path, _ = QFileDialog.getSaveFileName(self, "Save the sewer section", "sewer_section.pdf", "PDF (*.pdf)")
         if path:
-            sp_, d_ = self.section_data()
-            sp_.write_pdf(path, d_, self.title_block_lines())
+            with _busy("Making the sewer section PDF..."):
+                sp_, d_ = self.section_data()
+                sp_.write_pdf(path, d_, self.title_block_lines())
 
     def section_dxf(self):
         path, _ = QFileDialog.getSaveFileName(self, "Save the sewer section as DXF", "sewer_section.dxf", "DXF (*.dxf)")
         if path:
-            sp_, d_ = self.section_data()
-            sp_.write_dxf(path, d_, self.title_block_lines())
+            with _busy("Making the sewer section DXF..."):
+                sp_, d_ = self.section_data()
+                sp_.write_dxf(path, d_, self.title_block_lines())
 
     def save_pdf(self):
         path, _ = QFileDialog.getSaveFileName(self, "Save the plan", "site_services.pdf", "PDF (*.pdf)")
         if not path:
             return
-        self.write_pdf(path)
+        with _busy("Making the plan PDF..."):
+            self.write_pdf(path)
 
     def write_pdf(self, path):
         w = QPdfWriter(path)
@@ -4328,7 +4347,8 @@ class SiteServicesPage(ToolBase):
         path, _ = QFileDialog.getSaveFileName(self, "Save the plan as DXF", "site_services.dxf", "DXF (*.dxf)")
         if path:
             import site_export
-            site_export.build_sheet(self, path)
+            with _busy("Making the plan DXF..."):
+                site_export.build_sheet(self, path)
 
     def save_png(self):
         path, _ = QFileDialog.getSaveFileName(self, "Save the plan", "site_services.png", "Image (*.png)")

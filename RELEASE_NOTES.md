@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.206**
+Current version: **1.86.207**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Visual polish:** pages fade in when you switch tabs; buttons get a soft red glow when pointed at (tighter when pressed, and when tabbed to); the grey tool tips are now small cards with the icon, the name and what it does; the light/dark switch fades instead of flashing; a thin red bar with a spinner shows while a PDF, DXF or contour import is made; the folded sections on the Site services screen are soft rounded cards. Imported contours are drawn faintly on the site plan with their levels, and the long section has the same "Sewer as brown lines only" tick box as the elevation.
 - **Icons no longer jiggle, and every icon turns red:** the wobble on the big tile icons and the bounce on the small button icons are gone; they now just grow smoothly. Every button icon (top icons, bar, all other buttons) turns red while you point at it or press it, and goes back to its own colour afterwards.
 - **A drop has a rodding eye only:** the program no longer draws an inspection eye at a drop. The rodding eye at the top of the steep part is what is needed to rod down it (SANS 10252-2, 6.5.2.2). An eye that is already on the pipe at that spot stays. The long section, the site plan, the table, the checks and the sewer elevation all follow. (Whether your council wants more access there is for you to confirm.)
 - **Left bar icons turn red** while you point at them, and grow a little (they are sharper now when they grow).

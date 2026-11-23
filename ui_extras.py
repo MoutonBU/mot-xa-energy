@@ -5,8 +5,8 @@ import re
 import math
 
 from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPoint, QPointF, QRectF, QSize, QTimer, Qt, QUrl, QVariantAnimation
-from PySide6.QtGui import QColor, QDesktopServices, QIcon, QPainter, QPen, QRadialGradient
-from PySide6.QtWidgets import (QAbstractButton, QApplication, QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QTextBrowser, QVBoxLayout, QWidget)
+from PySide6.QtGui import QColor, QDesktopServices, QIcon, QCursor, QPalette, QPainter, QPen, QRadialGradient
+from PySide6.QtWidgets import (QAbstractButton, QApplication, QGraphicsDropShadowEffect, QGraphicsOpacityEffect, QTabWidget, QToolTip, QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QTextBrowser, QVBoxLayout, QWidget)
 
 GREEN, AMBER, GREY, RED = "#2e9e5b", "#d9a21b", "#8a8f98", "#C8102E"
 
@@ -729,6 +729,133 @@ class AnimIcon(QLabel):
         p.end()
 
 
+def _glow(b, on, blur=16.0):
+    """a soft red glow round a button while it is pointed at, pressed (tighter) or tabbed to"""
+    try:
+        eff = b.graphicsEffect()
+        if on:
+            if eff is not None and not getattr(eff, "_mot_glow", False):
+                return                                                  # the button already has an effect of its own
+            if eff is None:
+                eff = QGraphicsDropShadowEffect(b)
+                eff._mot_glow = True
+                eff.setOffset(0, 0)
+                eff.setColor(QColor(255, 64, 86, 170))
+                eff.setBlurRadius(0.0)
+                b.setGraphicsEffect(eff)
+            an = getattr(eff, "_mot_an", None)
+            if an is not None:
+                an.stop()
+            an = QVariantAnimation(eff)
+            an.setStartValue(float(eff.blurRadius()))
+            an.setEndValue(float(blur))
+            an.setDuration(160)
+            an.valueChanged.connect(lambda v, e=eff: e.setBlurRadius(float(v)))
+            eff._mot_an = an
+            an.start()
+        elif eff is not None and getattr(eff, "_mot_glow", False):
+            an = getattr(eff, "_mot_an", None)
+            if an is not None:
+                an.stop()
+            an = QVariantAnimation(eff)
+            an.setStartValue(float(eff.blurRadius()))
+            an.setEndValue(0.0)
+            an.setDuration(180)
+            an.valueChanged.connect(lambda v, e=eff: e.setBlurRadius(float(v)))
+
+            def fin(b=b, eff=eff):
+                if b.graphicsEffect() is eff and eff.blurRadius() < 0.5:
+                    b.setGraphicsEffect(None)
+            an.finished.connect(fin)
+            eff._mot_an = an
+            an.start()
+    except Exception:
+        pass
+
+
+_TIP = {}
+
+
+def _tip_hide():
+    w = _TIP.get("w")
+    if w is not None:
+        w.hide()
+
+
+def _tip_split(b):
+    t = b.toolTip().strip()
+    if "<" in t and ">" in t:
+        return None                                                     # rich tool tips keep their own look
+    txt = (b.text() or "").replace("&&", "&").replace("&", "").strip()
+    if "\n" in t:
+        head, body = t.split("\n", 1)
+    elif txt and txt.lower() not in t.lower()[:len(txt) + 2]:
+        head, body = txt, t
+    else:
+        i = min([k for k in (t.find(". "), t.find(" - ")) if k > 0] or [len(t)])
+        head, body = t[:i], t[i + 2:] if i < len(t) else ""
+    return head.strip().rstrip("."), body.strip()
+
+
+def _tip_show(b, ev):
+    """a small card instead of the grey tool tip: the icon, the name in bold and what it does"""
+    try:
+        parts = _tip_split(b)
+        if parts is None:
+            return False
+        head, body = parts
+        w = _TIP.get("w")
+        if w is None:
+            w = QFrame(None, Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
+            w.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+            w.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            lay = QHBoxLayout(w)
+            lay.setContentsMargins(12, 9, 14, 10)
+            lay.setSpacing(10)
+            w._ic = QLabel()
+            w._tx = QLabel()
+            w._tx.setWordWrap(True)
+            w._tx.setMaximumWidth(300)
+            lay.addWidget(w._ic, 0, Qt.AlignmentFlag.AlignTop)
+            lay.addWidget(w._tx, 1)
+            w._an = QVariantAnimation(w)
+            w._an.setDuration(140)
+            w._an.setStartValue(0.0)
+            w._an.setEndValue(1.0)
+            w._an.valueChanged.connect(lambda v, w=w: w.setWindowOpacity(float(v)))
+            w._tm = QTimer(w)
+            w._tm.setSingleShot(True)
+            w._tm.timeout.connect(w.hide)
+            _TIP["w"] = w
+        pal = QApplication.palette()
+        dark = pal.color(QPalette.ColorRole.Window).lightness() < 128
+        bg, fg, sub, bd = ("#1f2125", "#eceef0", "#9aa0a8", "#3a3f46") if dark else ("#ffffff", "#1c1f24", "#5b626b", "#d4d8de")
+        w.setStyleSheet("QFrame{background:%s;border:1px solid %s;border-left:3px solid #ff4056;border-radius:9px;} QLabel{border:none;background:transparent;}" % (bg, bd))
+        ic = b.property("_ia_icon") or b.icon()
+        if ic is not None and not ic.isNull():
+            w._ic.setPixmap(ic.pixmap(QSize(24, 24)))
+            w._ic.show()
+        else:
+            w._ic.hide()
+        esc = lambda x: x.replace("&", "&amp;").replace("<", "&lt;")
+        w._tx.setText("<div style='color:%s'><b>%s</b></div>%s" % (fg, esc(head), ("<div style='color:%s'>%s</div>" % (sub, esc(body))) if body else ""))
+        w.adjustSize()
+        g = b.mapToGlobal(QPoint(0, b.height() + 6))
+        scr = QApplication.screenAt(g) or QApplication.primaryScreen()
+        r = scr.availableGeometry()
+        x = min(max(r.left() + 4, g.x()), r.right() - w.width() - 4)
+        y = g.y() if g.y() + w.height() < r.bottom() else b.mapToGlobal(QPoint(0, 0)).y() - w.height() - 6
+        w.move(x, y)
+        if not w.isVisible():
+            w.setWindowOpacity(0.0)
+            w.show()
+            w._an.start()
+        w._tm.start(7000)
+        return True
+    except Exception:
+        return False
+
+
 class IconMotion(QObject):
     """Installed once on the application: the big tile icons (AnimIcon) and the small icons on buttons all move when you point at them or press them."""
 
@@ -808,6 +935,23 @@ class IconMotion(QObject):
     def eventFilter(self, obj, ev):
         try:
             t = ev.type()
+            if t == QEvent.Type.ToolTip and isinstance(obj, QAbstractButton) and obj.toolTip():
+                return _tip_show(obj, ev)
+            if t in (QEvent.Type.Leave, QEvent.Type.MouseButtonPress, QEvent.Type.Hide, QEvent.Type.Wheel, QEvent.Type.KeyPress):
+                _tip_hide()
+            if isinstance(obj, QPushButton) and getattr(obj, "_anim_icon", None) is None and obj.isEnabled():
+                if t == QEvent.Type.Enter:
+                    _glow(obj, True)
+                elif t == QEvent.Type.Leave:
+                    _glow(obj, False)
+                elif t == QEvent.Type.MouseButtonPress:
+                    _glow(obj, True, 7.0)
+                elif t == QEvent.Type.MouseButtonRelease:
+                    _glow(obj, True)
+                elif t == QEvent.Type.FocusIn and ev.reason() in (Qt.FocusReason.TabFocusReason, Qt.FocusReason.BacktabFocusReason, Qt.FocusReason.ShortcutFocusReason):
+                    _glow(obj, True)
+                elif t == QEvent.Type.FocusOut:
+                    _glow(obj, False)
             if t not in (QEvent.Type.Enter, QEvent.Type.Leave, QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease):
                 return False
             big = getattr(obj, "_anim_icon", None)
@@ -846,3 +990,130 @@ def install_icon_motion():
         return
     app._icon_motion = IconMotion(app)
     app.installEventFilter(app._icon_motion)
+
+
+def fade_pages(tw):
+    """a tab widget: the page you switch to fades in instead of snapping"""
+    if tw is None or getattr(tw, "_mot_fade", False):
+        return
+    tw._mot_fade = True
+
+    def go(i):
+        try:
+            w = tw.widget(i)
+            if w is None or not tw.isVisible() or w.graphicsEffect() is not None:
+                return
+            eff = QGraphicsOpacityEffect(w)
+            eff.setOpacity(0.0)
+            w.setGraphicsEffect(eff)
+            an = QVariantAnimation(eff)
+            an.setStartValue(0.0)
+            an.setEndValue(1.0)
+            an.setDuration(190)
+            an.setEasingCurve(QEasingCurve.Type.OutCubic)
+            an.valueChanged.connect(lambda v, e=eff: e.setOpacity(float(v)))
+
+            def fin(w=w, eff=eff):
+                if w.graphicsEffect() is eff:
+                    w.setGraphicsEffect(None)
+            an.finished.connect(fin)
+            eff._an = an
+            an.start()
+        except Exception:
+            pass
+    tw.currentChanged.connect(go)
+
+
+def fade_all(root):
+    """every tab widget under root fades its pages (the main tabs and the tabs inside the tools)"""
+    for tw in [root] + root.findChildren(QTabWidget) if isinstance(root, QTabWidget) else root.findChildren(QTabWidget):
+        fade_pages(tw)
+
+
+class _Busy(QWidget):
+    """a thin red bar across the top of the window and a small 'working' pill, shown while a long job runs"""
+
+    def __init__(self, win):
+        super().__init__(win)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._t = 0.0
+        self._txt = ""
+        self.tm = QTimer(self)
+        self.tm.timeout.connect(self._tick)
+        self.hide()
+
+    def _tick(self):
+        self._t = (self._t + 0.035) % 1.0
+        self.update()
+
+    def start(self, txt):
+        w = self.parentWidget()
+        self._txt = txt
+        self.setGeometry(0, 0, w.width(), 60)
+        self.raise_()
+        self.show()
+        self.tm.start(25)
+
+    def stop(self):
+        self.tm.stop()
+        self.hide()
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        W = self.width()
+        a = -0.3 + 1.6 * self._t
+        x0, x1 = W * a, W * (a + 0.3)
+        p.fillRect(QRectF(0, 0, W, 3), QColor(255, 64, 86, 40))
+        p.fillRect(QRectF(max(0.0, x0), 0, min(W, x1) - max(0.0, x0), 3), QColor("#ff4056"))
+        f = p.font()
+        f.setPointSizeF(9.5)
+        p.setFont(f)
+        tw = p.fontMetrics().horizontalAdvance(self._txt)
+        r = QRectF(W - tw - 62, 10, tw + 50, 28)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(31, 33, 37, 235))
+        p.drawRoundedRect(r, 14, 14)
+        c = QPointF(r.left() + 16, r.center().y())
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        pen = QPen(QColor("#ff4056"), 2.4)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.drawArc(QRectF(c.x() - 7, c.y() - 7, 14, 14), int(-self._t * 360 * 16 * 3) % (360 * 16), 100 * 16)
+        p.setPen(QColor("#eceef0"))
+        p.drawText(QRectF(r.left() + 30, r.top(), tw + 18, r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self._txt)
+
+
+class busy:
+    """with busy("Making the PDF..."): ... the bar shows while the block runs. It moves whenever the program lets the window redraw."""
+    _depth = 0
+
+    def __init__(self, text="Working..."):
+        self.text = text
+        self.b = None
+
+    def __enter__(self):
+        try:
+            win = QApplication.activeWindow() or next((w for w in QApplication.topLevelWidgets() if w.isVisible()), None)
+            if win is not None and busy._depth == 0:
+                bar = getattr(win, "_mot_busy", None)
+                if bar is None:
+                    bar = win._mot_busy = _Busy(win)
+                bar.start(self.text)
+                self.b = bar
+                QApplication.setOverrideCursor(QCursor(Qt.CursorShape.BusyCursor))
+                QApplication.processEvents()
+            busy._depth += 1
+        except Exception:
+            pass
+        return self
+
+    def __exit__(self, *a):
+        try:
+            busy._depth = max(0, busy._depth - 1)
+            if self.b is not None:
+                self.b.stop()
+                QApplication.restoreOverrideCursor()
+        except Exception:
+            pass
+        return False

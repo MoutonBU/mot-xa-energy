@@ -75,6 +75,17 @@ pg.solve_now(False)
 d3 = sp.build(pg.st, pg.res)
 bad = [tx for tx, ok in d3["checks"] if not ok and "Soil cover" in tx]
 assert d3["terrain"] and d3["min_cover"] < 0.3 and bad and "from the house" in bad[0], (d3["min_cover"], d3["checks"])
+# the contours are drawn on the plan (with levels) and the long section can be lines only
+import site_sheet as _sh
+from PySide6.QtGui import QPicture, QPainter as _QP
+pic = QPicture(); qp = _QP(pic)
+D_ = _sh.Drawer(qp, pg.view.sheet(800, 600), 7, False)
+_sh._contours(D_, pg.st, pg.st["stand"]["corners"])
+assert any(str(t[0]).startswith("contour_") for t in D_.hits), "no contour labels"
+qp.end()
+pg.lv_lines.setChecked(True); pg.solve_now(False)
+assert sp.build(pg.st, pg.res)["lines_only"]
+pg.lv_lines.setChecked(False)
 pg.remove_contours()
 assert not sp.build(pg.st, pg.res)["terrain"] and "No contours" in pg.lv_continfo.text()
 print("ok")

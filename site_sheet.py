@@ -321,6 +321,40 @@ def _numbered_stands(st, cpoly=None):
     return out
 
 
+def _contours(D, st, stand):
+    """the imported contours, faint, with the level written on each (only when they are switched on in the levels)"""
+    cd = st.get("contours")
+    if not cd or not (cd.get("lines") or cd.get("spots")) or not (st.get("levels") or {}).get("use_contours", 1):
+        return
+    fr = st.get("frame")
+    mp = (lambda q: se.apply_frame(fr, q)) if fr else (lambda q: tuple(q))
+    xs, ys = [q[0] for q in stand], [q[1] for q in stand]
+    x0, x1, y0, y1 = min(xs) - 25, max(xs) + 25, min(ys) - 25, max(ys) + 25
+    col = QColor(176, 146, 104)
+    D.L("CONTOURS")
+    best = {}
+    for z, pts in cd.get("lines") or []:
+        q = [mp(a) for a in pts]
+        for a, b in zip(q[:-1], q[1:]):
+            if (a[0] < x0 and b[0] < x0) or (a[0] > x1 and b[0] > x1) or (a[1] < y0 and b[1] < y0) or (a[1] > y1 and b[1] > y1):
+                continue
+            D.line(a, b, col, 0.03)
+        inside = [a for a in q if x0 <= a[0] <= x1 and y0 <= a[1] <= y1]
+        if len(inside) >= 2 and len(inside) > best.get(round(z, 3), (0,))[0]:
+            best[round(z, 3)] = (len(inside), inside[len(inside) // 2], inside[len(inside) // 2 - 1])
+    for k, (z, (_n, a, b)) in enumerate(sorted(best.items())):
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        L = math.hypot(dx, dy) or 1.0
+        D.text(a, "%.2f" % z, 0.55, (dx / L, dy / L), False, col, key="contour_%d" % k, fixed=True)
+    for k, s in enumerate(cd.get("spots") or []):
+        q = mp(s[:2])
+        if x0 <= q[0] <= x1 and y0 <= q[1] <= y1:
+            D.line((q[0] - 0.3, q[1]), (q[0] + 0.3, q[1]), col, 0.03)
+            D.line((q[0], q[1] - 0.3), (q[0], q[1] + 0.3), col, 0.03)
+            D.text((q[0] + 0.3, q[1] + 0.5), "%.2f" % s[2], 0.5, (1, 0), False, col, key="spot_%d" % k, fixed=True)
+    D.L(None)
+
+
 def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=False):
     """the whole plan. st = engine state, res = engine result, opts = sheet details (names, north, scale text)"""
     D = Drawer(p, sh, minpx, lite)
@@ -352,6 +386,7 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
         D.line((xa, ROAD_K), (xb, ROAD_K), BLACK, 0.04)
         D.line((xa, ROAD_K2), (xb, ROAD_K2), BLACK, 0.04)
     D.L(None)
+    _contours(D, st, stand)
     mn = se.mains(st)
     street = opts.get("street", "")
     if street:
