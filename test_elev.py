@@ -71,8 +71,13 @@ assert all(os.path.getsize(os.path.join(d_, x)) > 1000 for x in ("a.pdf", "a.dxf
 pg.st["levels"] = {"ngl_head": 218.45, "ngl_main": 218.45, "ffl": 218.6, "main_il": 216.5}           # the main is deep: the pipe cannot reach it without a drop
 bad = se.build(pg.st, pg.res, pg._elev_model)
 assert any((not ok) and "BELOW" in tx or (not ok) for tx, ok in bad["checks"]) or bad["il"](bad["length"]) >= 216.5
-x_d = bad["stations"][-2]["x"]; dy_d = (bad["il"](bad["length"]) - 216.5) / (1.0 - 1.0 / (2.0 * bad["fall"]))          # the steep part takes half its height in chainage
-pg.st["levels"]["drops"] = "%.2f = %.3f" % (x_d, bad["il"](x_d) - dy_d)
+x_d = bad["stations"][-2]["x"]; lv_ = pg.st["levels"]; new_ = bad["il"](x_d) - (bad["il"](bad["length"]) - 216.5)
+for _k in range(10):                                           # the steep part is 45 degrees on the sheet, so its length follows the scales: settle the lower level
+    lv_["drops"] = "%.2f = %.3f" % (x_d, new_)
+    r_ = se.build(pg.st, pg.res, pg._elev_model)
+    if abs(r_["il"](r_["length"]) - 216.5) < 0.0008:
+        break
+    new_ -= r_["il"](r_["length"]) - 216.5
 fixed = se.build(pg.st, pg.res, pg._elev_model)
 assert abs(fixed["il"](fixed["length"]) - 216.5) < 0.003 and any(t_["drop"] > 0.5 for t_ in fixed["stations"]), [(t_["name"], t_["drop"]) for t_ in fixed["stations"]]
 assert all(t_.get("name") for t_ in fixed["stations"]) and len({t_["name"] for t_ in fixed["stations"]}) == len(fixed["stations"])

@@ -3948,15 +3948,26 @@ class SiteServicesPage(ToolBase):
             QMessageBox.information(self, "Sewer section", "The pipe already reaches the main (it arrives %d mm above its invert level, which is fine)." % round(d["drop"] * 1000))
             return
         H, f = d["length"], d["fall"]
-        dy = d["drop"] / (1.0 - 1.0 / (2.0 * f))                 # the steep part takes half its height in chainage
-        lean = dy / 2.0
-        if x is None:                                           # the last eye that still leaves the lower pipe a run of its own
-            run = max(1.5, 0.25 * H)
-            ok = [s_["x"] for s_ in d["stations"] if s_["kind"] != "MAIN" and 0.4 < s_["x"] and s_["x"] + lean + run <= H]
-            x = max(ok) if ok else max(0.5, H - lean - run)
-        il_x = d["il"](x)
-        new_il = il_x - dy
-        txt = (self.lv_drops.text().strip().rstrip(",") + ", " if self.lv_drops.text().strip() else "") + "%.2f = %.3f" % (x, new_il)
+        run = max(1.5, 0.25 * H)
+        base = self.lv_drops.text().strip().rstrip(",")
+        D = d["drop"]
+
+        def pick(lean_):                                        # the last eye that still leaves the lower pipe a run of its own
+            ok = [s_["x"] for s_ in d["stations"] if s_["kind"] != "MAIN" and 0.4 < s_["x"] and s_["x"] + lean_ + run <= H]
+            return max(ok) if ok else max(0.5, H - lean_ - run)
+        given, ratio, x_prev, new_il, txt = x, 0.5, None, None, ""
+        for _k in range(14):    # the 45 degree part's length depends on the sheet's scales, which depend on the levels: settle its place and the lower level
+            x = given if given is not None else pick(ratio * D / (1.0 - ratio / f))
+            il_x = d["il"](x)
+            if new_il is None or x != x_prev:
+                new_il = il_x - D / (1.0 - ratio / f)
+            x_prev = x
+            txt = (base + ", " if base else "") + "%.2f = %.3f" % (x, new_il)
+            r = site_profile.build(dict(self.st, levels=dict(self.st.get("levels") or {}, drops=txt)), self.res)
+            ratio = r["lean_ratio"]
+            if abs(r["drop"]) < 0.0008 and (given is not None or x == pick(ratio * (il_x - new_il))):
+                break
+            new_il -= r["drop"]
         self.lv_drops.setText(txt)
 
     def section_data(self):

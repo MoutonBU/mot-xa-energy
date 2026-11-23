@@ -46,7 +46,7 @@ def parse_spots(text):
     return sorted(out)
 
 
-def build(state, res, il_head=None):
+def build(state, res, il_head=None, lean_ratio=None):
     sw = res["sewer"]
     par = res.get("params") or {}
     lv = state.get("levels") or {}
@@ -83,7 +83,7 @@ def build(state, res, il_head=None):
     segs, drop_lean = [(0.0, il_head)], {}
     for xd_, yd_ in drops_in:
         yin_ = segs[-1][1] - (xd_ - segs[-1][0]) / fall
-        lean_ = max(0.0, 0.5 * (yin_ - yd_))
+        lean_ = max(0.0, (0.5 if lean_ratio is None else lean_ratio) * (yin_ - yd_))
         lean_ = min(lean_, max(Hh - xd_ - 0.05, 0.0))
         drop_lean[xd_] = lean_
         segs.append((xd_ + lean_, yd_))                         # (chainage where the run starts, invert level there)
@@ -164,9 +164,16 @@ def build(state, res, il_head=None):
     mx = float(par.get("max_ie", 25.0))
     if gaps:
         checks.append(("Eyes are at most %.1f m apart (limit %.0f m)." % (max(gaps), mx) if max(gaps) <= mx + 1e-6 else "Eyes are %.1f m apart: more than %.0f m." % (max(gaps), mx), max(gaps) <= mx + 1e-6))
-    return {"stations": st, "length": Hh, "fall": fall, "od": od, "pipe": str(par.get("sewer_pipe", "110")), "ngl": ngl, "il": il, "ngl0": ngl0, "ngl1": ngl1,
+    out = {"stations": st, "length": Hh, "fall": fall, "od": od, "pipe": str(par.get("sewer_pipe", "110")), "ngl": ngl, "il": il, "ngl0": ngl0, "ngl1": ngl1,
             "pts": pts, "il_in": il_in, "segs": segs, "drops": [(x_, il_in(x_), y_) for x_, y_ in drops_in], "drop_lean": drop_lean, "main_il": main_il, "main_typed": main_il_typed, "drop": drop, "assumed": assumed, "min_cover": min_cover, "checks": checks,
             "ffl": float(lv["ffl"]) if _set(lv.get("ffl")) else None, "note": sw.get("note", "")}
+    out["lean_ratio"] = 0.5 if lean_ratio is None else lean_ratio
+    if drops_in and lean_ratio is None:                         # the steep part is 45 degrees on the sheet: its run is its height times (horizontal scale / vertical scale)
+        hs_, vs_, _dt, _mo = scales(out)
+        r_ = hs_ / float(vs_)
+        if abs(r_ - 0.5) > 1e-6:
+            return build(state, res, il_head, r_)
+    return out
 
 
 # ---------------------------------------------------------------- drawing
@@ -197,6 +204,27 @@ def _nice(v, options):
         if v <= o:
             return o
     return options[-1]
+
+
+GX0, GX1, GY0, GY1 = 62.0, 402.0, 36.0, 140.0
+
+
+def scales(d):
+    """(horizontal scale, vertical scale, datum, main_off) of the section as laid out on the 420 x 297 sheet; printed on A1 they are half of these numbers"""
+    st, Hh = d["stations"], d["length"]
+    x0 = GX0 + 26.0
+    hs = _nice(Hh * 1000.0 / (GX1 - x0 - 30.0), [100, 150, 200, 300, 400, 500, 1000, 2000, 4000])
+    levels = [s["ngl"] for s in st] + [d["ngl0"], d["ngl1"]] + [y for _x, y in d["pts"]]
+    top = max(levels + ([d["ffl"]] if d["ffl"] is not None else [])) + 0.9
+    low_p = min(min(s["il"] for s in st), d["il"](Hh)) if st else d["main_il"]
+    datum_f = math.floor((min(low_p, d["main_il"]) - 0.45) / 0.5) * 0.5          # with the main in the picture
+    datum_p = math.floor((low_p - 0.45) / 0.5) * 0.5                             # the pipe and the ground only
+    room = GY1 - GY0 - 6.0
+    opts = [10, 20, 30, 40, 50, 60, 80, 100, 200, 400]
+    vs_f = _nice((top - datum_f) * 1000.0 / room, opts)
+    vs_p = _nice((top - datum_p) * 1000.0 / room, opts)
+    main_off = vs_p < vs_f and d["main_il"] < datum_p + 0.15                      # the main is far below: keep the detail and show it with an arrow
+    return hs, (vs_p if main_off else vs_f), (datum_p if main_off else datum_f), main_off
 
 
 def draw(p, W, H, S, d, title_lines=(), when=None):
@@ -240,19 +268,9 @@ def draw(p, W, H, S, d, title_lines=(), when=None):
     text(14, 19, "SEWER LONGITUDINAL SECTION", 5.0, True)
     text(14, 26, ("%s  -  %sØ SWP sewer at 1:%d, %.1f m long" % (nm, d["pipe"], round(d["fall"]), Hh)).strip(" -"), 3.0)
     # ---- the graph
-    gx0, gx1, gy0, gy1 = 62.0, 402.0, 40.0, 128.0
+    gx0, gx1, gy0, gy1 = GX0, GX1, GY0, GY1
     x0 = gx0 + 26.0
-    hs = _nice(Hh * 1000.0 / (gx1 - x0 - 30.0), [100, 200, 400, 500, 1000, 2000, 4000])      # the sheet is laid out as 420 x 297 and printed twice that size (A1), so a scale here is half the printed one
-    levels = [s["ngl"] for s in st] + [d["ngl0"], d["ngl1"]] + [y for _x, y in d["pts"]]
-    top = max(levels + ([d["ffl"]] if d["ffl"] is not None else [])) + 0.9
-    low_p = min(s["il"] for s in st) if st else d["main_il"]
-    datum_f = math.floor((min(low_p, d["main_il"]) - 0.45) / 0.5) * 0.5          # with the main in the picture
-    datum_p = math.floor((low_p - 0.45) / 0.5) * 0.5                             # the pipe and the ground only
-    room = gy1 - gy0 - 6.0
-    vs_f = _nice((top - datum_f) * 1000.0 / room, [10, 20, 40, 50, 60, 80, 100, 200, 400])
-    vs_p = _nice((top - datum_p) * 1000.0 / room, [10, 20, 40, 50, 60, 80, 100, 200, 400])
-    main_off = vs_p < vs_f and d["main_il"] < datum_p + 0.15                      # the main is far below: keep the detail and show it with an arrow
-    datum, vs = (datum_p, vs_p) if main_off else (datum_f, vs_f)
+    hs, vs, datum, main_off = scales(d)
 
     def X(xm):
         return x0 + xm * 1000.0 / hs
@@ -329,7 +347,7 @@ def draw(p, W, H, S, d, title_lines=(), when=None):
         xf_ = xd_ + d["drop_lean"].get(xd_, 0.0)
         for off_ in (0.0, od_mm):
             line(X(xd_), Y(yin_) - off_, X(xf_), Y(yout_) - off_, BROWN, 0.6 if off_ == 0 else 0.3)
-        text(X(xf_) + 2.0, Y(yout_) + 4.5, "drop %d mm" % round((yin_ - yout_) * 1000), 2.0, False, BROWN)
+        text((X(xd_) + X(xf_)) / 2.0 + 3.0, (Y(yin_) + Y(yout_)) / 2.0 + 0.8, "drop %d mm" % round((yin_ - yout_) * 1000), 2.2, True, BROWN)
     # eyes
     for i, s in enumerate(st):
         if s["kind"] == "MAIN":
@@ -368,10 +386,10 @@ def draw(p, W, H, S, d, title_lines=(), when=None):
     text(X(Hh) - 1.5, Y(ile) + 3.6, "IL %.3f" % ile, 2.2, False, BROWN, "r")
     # ---- the table of stations
     layer("SECTION TABLE")
-    ty = 142.0
+    ty = GY1 + 16.0
     cols = [("Eye", 16), ("What", 68), ("Chainage m", 28), ("Ground level", 34), ("Invert level", 34), ("Depth mm", 28), ("Cover mm", 28), ("Fall to the next", 46)]
     n = len(st)
-    rh = min(6.0, 66.0 / (n + 1))
+    rh = min(6.0, 60.0 / (n + 1))
     xx = 14.0
     xs = []
     for _t, w in cols:

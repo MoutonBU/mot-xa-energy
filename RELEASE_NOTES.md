@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.198**
+Current version: **1.86.199**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Long section spread out, and a true 45 degree drop:** the section uses more of the A1 sheet (taller graph, scales 1:50, 1:75, 1:100, 1:150 ... for the length) and the table moved down so nothing is cramped. The drop is now exactly 45 degrees on the printed sheet, in line with the rodding eye at the drop, so the eye and the drop read as one diagonal from the ground down to the lower pipe. The program works the length of that diagonal out from the sheet's scales, and "Add a drop to reach the main" adjusts the lower level until the pipe arrives exactly at the main. The "drop N mm" label is beside the diagonal. Check it on your own site.
 - **Sewer long section on an A1 sheet:** the PDF is now A1 landscape (the DXF is drawn at the same size) and the horizontal scale is chosen from 1:50, 1:100, 1:200 ... so a normal stand gets 1:100; the sheet states the real printed scales. The eye names are spread over four heights and the "NATURAL GROUND LEVEL" label sits beside the end of the ground line, so less overlaps. Check the sheet on your own site.
 - **The program now places the drop itself:** the pipe runs from the minimum invert (450 mm) at its fall, drops steeply at an eye, and the lower pipe runs on at the same fall and arrives exactly at the main's invert. "Add a drop to reach the main" works out the drop height and puts the drop on the last eye that still leaves the lower pipe a run of its own (no question asked; you can still type or change the drop in the settings box). The steep part is drawn at 45 degrees on the sheet and takes half its height in metres of chainage. Check the placement on your own site.
 - **Drop drawn as in your blue sketch:** on the long section the drop is now one straight 45 degree line, the rodding eye's line carried on from the upper pipe down to the lower pipe, which then carries on at the fall to the main. Check it against your sketch on your own site.
