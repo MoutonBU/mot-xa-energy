@@ -565,11 +565,12 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
             D.poly(ex["path"], BROWN, 0.09, None, dash=[8, 4], closed=False)
         for sb in sw.get("stubs") or []:
             D.poly(sb, BROWN, 0.09, None, dash=[8, 4], closed=False)
+        names = se.eye_names(sw)
         for nd in sw["nodes"]:
             q = nd["pt"]
             if nd["kind"] in ("IE", "RE"):
                 D.dot(q, 0.17, BROWN, filled=nd["kind"] == "RE")
-                D.text(_off(sh, q, 0.7, 0.55 if nd["label"] == "RE" else -0.55), nd["kind"], 0.5, sh.hdir(), spacing=130, key="EYE:" + str(nd.get("key", nd["kind"])))
+                D.text(_off(sh, q, 0.7, 0.55 if nd["kind"] == "RE" else -0.55), names.get(id(nd), nd["kind"]), 0.5, sh.hdir(), spacing=130, key="EYE:" + str(nd.get("key", nd["kind"])))
             if nd["kind"] == "RE" and str(nd.get("label", "")).startswith("RE Min"):
                 D.text(_off(sh, q, 3.2, 0.0), "Min IL", 0.5, sh.hdir(), spacing=130)
                 D.text(_off(sh, q, 3.2, 0.9), "%d" % round(res["params"]["min_depth"] * 1000), 0.5, sh.hdir(), spacing=130)

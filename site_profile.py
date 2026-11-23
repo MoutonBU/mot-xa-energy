@@ -311,8 +311,9 @@ def draw(p, W, H, S, d, title_lines=(), when=None):
     p.setPen(pen(BROWN, 0.3))
     p.drawLine(P(X(0.0), Y(ilh)), P(X(0.0), Y(ilh) - od_mm))
     for xd_, yin_, yout_ in d["drops"]:                           # the drop: the pipe steps down inside the eye
+        lean_ = min(abs(Y(yout_) - Y(yin_)), max(X(xd_) - X(0.0), 0.0))   # leans 45 degrees up toward the house, like the rodding eye, as in the designer's sketch
         for off_ in (0.0, od_mm):
-            line(X(xd_), Y(yin_) - off_, X(xd_), Y(yout_) - off_, BROWN, 0.6 if off_ == 0 else 0.3)
+            line(X(xd_) - lean_, Y(yin_) - off_, X(xd_), Y(yout_) - off_, BROWN, 0.6 if off_ == 0 else 0.3)
         text(X(xd_) + 2.0, (Y(yin_) + Y(yout_)) / 2.0 + 0.8, "drop %d mm" % round((yin_ - yout_) * 1000), 2.0, False, BROWN)
     # eyes
     for i, s in enumerate(st):

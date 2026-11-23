@@ -27,8 +27,9 @@ def test_export():
     doc = ezdxf.readfile(path)
     msp = doc.modelspace()
     texts = [e.dxf.text for e in msp if e.dxftype() == "TEXT"]
-    for want in ("NEW HOUSE", "Main Sewer Line", "Main Water Line", "IE", "RE", "BURGER ST", "Site Plan"):
+    for want in ("NEW HOUSE", "Main Sewer Line", "Main Water Line", "BURGER ST", "Site Plan"):
         assert want in texts, want
+    assert any(t.startswith("IE") for t in texts) and any(t.startswith("RE") for t in texts), "eyes named IE1, RE1 ..."
     assert any(t.endswith("B/L") for t in texts), "building lines labelled"
     assert any("," in t and t.replace(",", "").isdigit() for t in texts), "dimension figures in mm"
     layers = {e.dxf.layer for e in msp}

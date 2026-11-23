@@ -1626,7 +1626,7 @@ class SiteServicesPage(ToolBase):
                 row.addWidget(QLabel("Drops to the main (distance = invert level after the drop)"))
                 row.addWidget(self.lv_drops)
                 b_ = QPushButton("Add a drop to reach the main")
-                b_.setToolTip("Puts a drop at the last eye before the main, deep enough for the pipe to arrive at the main's invert level.")
+                b_.setToolTip("Asks where the pipe drops, then sets the invert level after the drop so the pipe arrives at the main's invert level. The eyes are drawn on the site plan as well.")
                 b_.clicked.connect(lambda _=False: self.add_drop_to_main())
                 row.addWidget(b_)
                 ml3.addLayout(row)
@@ -3940,14 +3940,18 @@ class SiteServicesPage(ToolBase):
             y_ = base + (i if i < 5 else i - 5) * step - step * 0.2
             p.drawText(QPointF(x_, y_), t)
 
-    def add_drop_to_main(self):
+    def add_drop_to_main(self, x=None):
         import site_profile
         d = site_profile.build(self.st, self.res)
         if d["drop"] <= 0.005:
             QMessageBox.information(self, "Sewer section", "The pipe already reaches the main (it arrives %d mm above its invert level, which is fine)." % round(d["drop"] * 1000))
             return
-        eyes = [s_ for s_ in d["stations"] if s_["kind"] != "MAIN" and s_["x"] < d["length"] - 0.5 and not any(abs(s_["x"] - x_) < 0.05 for x_, _a, _b in d["drops"])]
-        x = eyes[-1]["x"] if eyes else max(0.0, d["length"] - 1.0)
+        if x is None:
+            from PySide6.QtWidgets import QInputDialog
+            x0 = round(d["length"] * 0.55 * 2) / 2
+            x, ok = QInputDialog.getDouble(self, "Drop to the main", "Where does the pipe drop? Distance from the house outlet (m).\nAn inspection eye and a rodding eye are put there.", x0, 0.5, max(0.6, d["length"] - 0.3), 2)
+            if not ok:
+                return
         new_il = d["main_il"] + (d["length"] - x) / d["fall"]
         txt = (self.lv_drops.text().strip().rstrip(",") + ", " if self.lv_drops.text().strip() else "") + "%.2f = %.3f" % (x, new_il)
         self.lv_drops.setText(txt)

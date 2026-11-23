@@ -35,5 +35,14 @@ d1 = sp.build(dd, pg.res)
 assert abs(d1["drop"]) < 0.003 and d1["drops"] and abs(d1["il"](d1["length"]) - 95.0) < 0.003
 assert any(s_["drop"] > 1.0 and s_["kind"] == "IE" for s_ in d1["stations"]) and any("rodding eye at the drop" in s_["desc"].lower() for s_ in d1["stations"])
 assert all(ok for _t, ok in d1["checks"]), d1["checks"]
+# the same drop shows on the site plan: an inspection eye and a rodding eye at the drop, named as on the section
+import site_engine as se
+dd2 = dict(pg.st, levels=dict(dd["levels"]))
+r2 = se.solve(dd2)
+dn_ = [n for n in r2["sewer"]["nodes"] if n.get("drop")]
+assert {n["kind"] for n in dn_} == {"IE", "RE"}, [n for n in r2["sewer"]["nodes"]]
+nm = se.eye_names(r2["sewer"])
+sec = {s_["name"] for s_ in d1["stations"] if s_.get("name")}
+assert all(nm[id(n)] in sec for n in dn_), (sorted(nm[id(n)] for n in dn_), sec)
 sp.render_image(d1, tl, 800).save(os.path.join(t, "b.png")) if False else sp.render_image(d1, tl, 800)
 print("ok")

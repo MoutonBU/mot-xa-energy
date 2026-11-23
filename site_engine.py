@@ -1201,12 +1201,79 @@ def seg_overlap(a, b):
     return [True]
 
 
+def _point_at(path, c):
+    """the point `c` metres along a polyline (from its first point)"""
+    run = 0.0
+    for a, b in zip(path[:-1], path[1:]):
+        L = math.hypot(b[0] - a[0], b[1] - a[1])
+        if L > 0 and run + L >= c - 1e-9:
+            t = max(0.0, min(1.0, (c - run) / L))
+            return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+        run += L
+    return tuple(path[-1])
+
+
+def drop_chainages(state):
+    """the chainages (metres from the house outlet) of the drops typed in the sewer section settings: 'x = invert level, ...'"""
+    out = []
+    for part in str(((state.get("levels") or {}).get("drops")) or "").replace(";", ",").split(","):
+        if "=" in part:
+            try:
+                out.append(float(part.split("=", 1)[0]))
+            except ValueError:
+                pass
+    return sorted(out)
+
+
+def add_drop_eyes(state, sw, params):
+    """each drop is an inspection eye with a rodding eye: they are put on the sewer where the drop is, so the plan shows what the section shows"""
+    path, H = sw["path"], float(sw["length"])
+    Lp = sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(path[:-1], path[1:]))
+    fall, D0 = float(params.get("fall", 50.0)), float(params.get("min_depth", 0.45))
+    for k, x in enumerate(drop_chainages(state), 1):
+        c = x - (H - Lp)
+        if not (0.0 < x < H) or c < 0 or c > Lp:
+            continue
+        pt = _point_at(path, c)
+        for kind in ("IE", "RE"):
+            same = [n for n in sw["nodes"] if n["kind"] == kind and math.hypot(n["pt"][0] - pt[0], n["pt"][1] - pt[1]) < 0.3]
+            if same:
+                same[0]["drop"] = True
+                continue
+            sw["nodes"].append({"kind": kind, "pt": pt, "chainage": round(c, 2), "depth": round(D0 + x / fall, 3), "label": kind, "drop": True, "key": "drop%d_%s" % (k, kind)})
+
+
+def eye_names(sw):
+    """RE1, IE1, RE2 ...: the same names the long section gives its eyes (numbered along the run from the house, per kind)"""
+    H, path = float(sw["length"]), sw["path"]
+    Lp = sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(path[:-1], path[1:]))
+    rows = []
+    for n in sw["nodes"]:
+        d = n.get("dist")
+        x = (H - d) if d is not None else (H - Lp + n["chainage"])
+        rows.append((max(0.0, min(H, x)), n))
+    rows.sort(key=lambda t: (t[0], t[1]["kind"]))
+    out, last, count = {}, None, {}
+    for x, n in rows:
+        if n["kind"] == "MAIN":
+            last = (x, "MAIN", None)
+            continue
+        if last and abs(last[0] - x) < 0.05 and last[1] == n["kind"] and last[2] is not None:
+            out[id(n)] = out[id(last[2])]
+            continue
+        count[n["kind"]] = count.get(n["kind"], 0) + 1
+        out[id(n)] = "%s%d" % (n["kind"], count[n["kind"]])
+        last = (x, n["kind"], n)
+    return out
+
+
 def solve(state):
     params = dict(DEFAULTS)
     params.update(state.get("params") or {})
     hp = house_poly(state["house"])
     cp = carport_poly(state.get("carport"))
     sw = sewer(state, hp, cp, params)
+    add_drop_eyes(state, sw, params)
     wt = water(state, hp, cp, params, [sw["path"]])
     el = electrical(state, hp, cp, params, [sw["path"], wt["path"]])
     res = {"sewer": sw, "water": wt, "elec": el}
