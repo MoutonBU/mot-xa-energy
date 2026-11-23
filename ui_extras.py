@@ -2,9 +2,11 @@
 import os
 import re
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QTimer, Qt, QUrl
-from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import (QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QTextBrowser, QVBoxLayout, QWidget)
+import math
+
+from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPoint, QPointF, QRectF, QSize, QTimer, Qt, QUrl, QVariantAnimation
+from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPen, QRadialGradient
+from PySide6.QtWidgets import (QAbstractButton, QApplication, QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QTextBrowser, QVBoxLayout, QWidget)
 
 GREEN, AMBER, GREY, RED = "#2e9e5b", "#d9a21b", "#8a8f98", "#C8102E"
 
@@ -649,3 +651,174 @@ class WelcomeTour(QDialog):
         self.back.setVisible(self.i > 0)
         self.next.setText("Done" if self.i == len(self.PAGES) - 1 else "Next  ›")
         self.skip.setVisible(self.i < len(self.PAGES) - 1)
+
+
+# ---------------------------------------------------------------- icon motion
+class AnimIcon(QLabel):
+    """A big icon that comes alive: on hover it lifts, grows, wobbles once and glows; on a press it squeezes and pops back with a ring."""
+
+    def __init__(self, pixmap, accent="#ff4056", box=104, parent=None):
+        super().__init__(parent)
+        self._pm = pixmap
+        self._accent = QColor(accent)
+        self._h = 0.0                                            # hover 0..1
+        self._p = 0.0                                            # press 0..1
+        self._w = 1.0                                            # wobble 0..1 (1 = at rest)
+        self._r = 1.0                                            # ring 0..1 (1 = gone)
+        self.setFixedSize(box, box)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._anims = {}
+
+    def _run(self, name, a, b, ms, curve):
+        old = self._anims.get(name)
+        if old is not None:
+            old.stop()
+        an = QVariantAnimation(self)
+        an.setStartValue(float(a))
+        an.setEndValue(float(b))
+        an.setDuration(ms)
+        an.setEasingCurve(curve)
+        an.valueChanged.connect(lambda v, n=name: self._set(n, float(v)))
+        self._anims[name] = an
+        an.start()
+
+    def _set(self, name, v):
+        setattr(self, "_" + name, v)
+        self.update()
+
+    def hover(self, on):
+        self._run("h", self._h, 1.0 if on else 0.0, 380 if on else 260, QEasingCurve.Type.OutBack if on else QEasingCurve.Type.OutCubic)
+        if on:
+            self._run("w", 0.0, 1.0, 650, QEasingCurve.Type.Linear)
+
+    def press(self, down):
+        if down:
+            self._run("p", self._p, 1.0, 90, QEasingCurve.Type.OutCubic)
+            self._run("r", 0.0, 1.0, 520, QEasingCurve.Type.OutCubic)
+        else:
+            self._run("p", self._p, 0.0, 380, QEasingCurve.Type.OutBack)
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        c = QPointF(self.width() / 2.0, self.height() / 2.0)
+        h, pr = max(0.0, self._h), self._p
+        if h > 0.01:                                             # a soft glow behind
+            g = QRadialGradient(c, self.width() * 0.5)
+            col = QColor(self._accent)
+            col.setAlpha(int(90 * min(h, 1.0)))
+            g.setColorAt(0.0, col)
+            col.setAlpha(0)
+            g.setColorAt(1.0, col)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(g)
+            p.drawEllipse(c, self.width() * 0.5 * (0.7 + 0.3 * h), self.height() * 0.5 * (0.7 + 0.3 * h))
+        if self._r < 0.999:                                      # a ring that spreads out from a press
+            ring = QColor(self._accent)
+            ring.setAlpha(int(200 * (1.0 - self._r)))
+            p.setPen(QPen(ring, 2.5 * (1.0 - self._r) + 0.5))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            rad = self.width() * (0.28 + 0.24 * self._r)
+            p.drawEllipse(c, rad, rad)
+        wob = math.sin(self._w * math.pi * 3.0) * (1.0 - self._w) * 14.0 if self._w < 1.0 else 0.0
+        scale = 1.0 + 0.2 * h - 0.14 * pr
+        p.translate(c.x(), c.y() - 5.0 * h + 2.0 * pr)
+        p.rotate(wob)
+        p.scale(scale, scale)
+        w, hh = self._pm.width() / max(1.0, self._pm.devicePixelRatio()), self._pm.height() / max(1.0, self._pm.devicePixelRatio())
+        p.drawPixmap(QRectF(-w / 2.0, -hh / 2.0, w, hh), self._pm, QRectF(self._pm.rect()))
+        p.end()
+
+
+class IconMotion(QObject):
+    """Installed once on the application: the big tile icons (AnimIcon) and the small icons on buttons all move when you point at them or press them."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+    @staticmethod
+    def _lock(b):
+        if b.property("_ia_locked") is None:
+            b.setProperty("_ia_locked", [b.minimumSize(), b.maximumSize()])
+            b.setMinimumSize(b.size())
+            b.setMaximumSize(b.size())
+
+    @staticmethod
+    def _unlock(b):
+        old = b.property("_ia_locked")
+        if old is not None:
+            b.setMinimumSize(old[0])
+            b.setMaximumSize(old[1])
+            b.setProperty("_ia_locked", None)
+
+    def _to(self, b, target, ms=170):
+        base = b.property("_ia_base")
+        if base is None:
+            base = b.iconSize()
+            b.setProperty("_ia_base", base)
+        cur = b.property("_ia_scale")
+        cur = 1.0 if cur is None else float(cur)
+        an = b.property("_ia_anim")
+        if an is not None:
+            an.stop()
+        an = QVariantAnimation(b)
+        an.setStartValue(cur)
+        an.setEndValue(float(target))
+        an.setDuration(ms)
+        an.setEasingCurve(QEasingCurve.Type.OutBack if target >= 1.0 else QEasingCurve.Type.OutCubic)
+
+        def step(v, b=b, base=base):
+            b.setProperty("_ia_scale", float(v))
+            b.setIconSize(QSize(max(1, int(base.width() * float(v))), max(1, int(base.height() * float(v)))))
+
+        def done(b=b, base=base, target=target):
+            if abs(target - 1.0) < 1e-6:
+                b.setIconSize(base)
+                b.setProperty("_ia_base", None)
+                b.setProperty("_ia_scale", None)
+                self._unlock(b)
+        an.valueChanged.connect(step)
+        an.finished.connect(done)
+        b.setProperty("_ia_anim", an)
+        an.start()
+
+    def eventFilter(self, obj, ev):
+        try:
+            t = ev.type()
+            if t not in (QEvent.Type.Enter, QEvent.Type.Leave, QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease):
+                return False
+            big = getattr(obj, "_anim_icon", None)
+            if big is not None:
+                if t == QEvent.Type.Enter:
+                    big.hover(True)
+                elif t == QEvent.Type.Leave:
+                    big.hover(False)
+                    big.press(False)
+                elif t == QEvent.Type.MouseButtonPress:
+                    big.press(True)
+                else:
+                    big.press(False)
+                return False
+            if isinstance(obj, QAbstractButton) and obj.isEnabled() and not obj.icon().isNull() and obj.isVisible():
+                if t == QEvent.Type.Enter:
+                    self._lock(obj)
+                    self._to(obj, 1.2)
+                elif t == QEvent.Type.Leave:
+                    self._to(obj, 1.0, 220)
+                elif t == QEvent.Type.MouseButtonPress:
+                    self._to(obj, 0.86, 90)
+                else:
+                    self._to(obj, 1.2, 260)
+        except Exception:
+            pass
+        return False
+
+
+def install_icon_motion():
+    """once per program"""
+    app = QApplication.instance()
+    if app is None or getattr(app, "_icon_motion", None) is not None:
+        return
+    app._icon_motion = IconMotion(app)
+    app.installEventFilter(app._icon_motion)

@@ -13694,11 +13694,10 @@ class MainWindow(QMainWindow):
             lab.setWordWrap(True)
             lab.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
             lab.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-            icl = QLabel()
-            icl.setPixmap(icon_pixmap(ico, "#ff4056", 72))
-            icl.setFixedSize(84, 84)
-            icl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            icl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            import ui_extras as ux_m
+            ux_m.install_icon_motion()
+            icl = ux_m.AnimIcon(icon_pixmap(ico, "#ff4056", 72), "#ff4056", 108)        # lifts, wobbles and glows when pointed at, squeezes and rings when pressed
+            b._anim_icon = icl
             bl = QVBoxLayout(b)
             bl.setContentsMargins(18, 18, 18, 18)
             bl.setSpacing(6)

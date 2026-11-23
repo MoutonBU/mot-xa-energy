@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.203**
+Current version: **1.86.204**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Animated icons:** on the start screens the big tile icons now come alive: pointing at a tile lifts the icon, grows it, wobbles it once and lights a soft red glow behind it; pressing squeezes it and sends a ring spreading out, then it pops back. The small icons on every button in the program (Preview, Save, Add ...) grow a little while you point at them, squeeze when pressed and settle back, without changing the size of the button. Buttons without an icon are left alone. (The icons in the left bar's list are not animated yet.)
 - **Contoured sites:** in the sewer section settings, "Import contours (DXF)..." reads the contours of a site plan or survey (polylines with an elevation or Z, flat polylines with the level written on them, and spot heights; millimetre drawings are understood). The contours must be in the same coordinates as the stand. The ground along the sewer is then read off the contours every half metre (between the two nearest contour levels), so the long section, the eyes' ground levels, the covers and the sewer elevation follow the real ground. The cover is checked every half metre: if the ground falls faster than the pipe and the pipe would come out of the ground, the check names the chainage where it happens and suggests starting deeper or using a steeper fall. "Take the ground levels from the contours" switches them off again (the typed levels are used) and "Remove the contours" deletes them. Tested on made-up contours only: check it on a real survey.
 - **Sewer elevation: pipes or brown lines:** the tick box "Sewer as brown lines only (no pipe width)" draws the sewer as one brown line at the invert level, with single lines for the eyes, instead of the pipes with their outside diameter.
 - **Drops are easier to set:** the "Drops to the main (distance = invert level)" box is gone. In the sewer section settings choose "Drop to reach the main": No drop / the program places it / I choose where. For "I choose where" type one distance: metres along the sewer from the house outlet (0 m is the first rodding eye at the house; the main sewer is at the far end). The program works out the invert level after the drop itself so the pipe arrives exactly at the main, and a line of text under the choices says in words where the drop is, how deep it is and how far it is before the main (or that the pipe arrives above or below the main). Projects saved with a typed drop open as "I choose where" at that distance.
