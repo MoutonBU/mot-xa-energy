@@ -166,7 +166,9 @@ class ServicesView(QWidget):
             if c and math.hypot(c[0] - cen[0], c[1] - cen[1]) < 24:
                 pts += [(c[0] - 7, c[1] - 11), (c[0] + 7, c[1] + 11)]
         xs, ys = [p[0] for p in pts], [p[1] for p in pts]
-        # the road, the street name and the dimension lines round the stand
+        # the road, the street name and the dimension lines round the stand; a township stand shows the road round it (the bend and the far kerb)
+        if st.get("road_lines"):
+            return min(xs) - 32, min(ys) - 32, max(xs) + 32, max(ys) + 26
         return min(xs) - 15, min(ys) - 10, max(xs) + 15, max(ys) + 4
 
     def sheet(self, W, H, s=None, centre=None, road=None):
@@ -2834,6 +2836,8 @@ class SiteServicesPage(ToolBase):
             return [round(p[0], 2), round(p[1], 2), round(q[0], 2), round(q[1], 2), thick]
         for cat, key in (("sewer", "sewer"), ("water", "water"), ("elec", "elec"), ("storm", "storm"), ("road", "other")):                    # (lines on layers that are none of these, such as house drawings, stay out)
             for seg in r["lines"].get(cat, []):
+                if cat == "road":
+                    continue                                  # (the road is drawn in full as road_lines)
                 m = mv(seg)
                 if m:
                     cats[key].append(m)
@@ -2853,7 +2857,8 @@ class SiteServicesPage(ToolBase):
         for g in r["lines"].get("road", []):
             p_, q_ = se.apply_frame(fr, (g[0], g[1])), se.apply_frame(fr, (g[2], g[3]))
             rl.append([p_[0], p_[1], q_[0], q_[1]])
-        self.st["road_lines"] = self._clip_all(rl, x0, x1, y0, y1)
+        R = site_township.ROAD_REACH
+        self.st["road_lines"] = self._clip_all(rl, min(xs) - R, max(xs) + R, min(ys) - R, max(ys) + R)
         self._township_mains(r, fr)
         self.st["underlay"] = own                                       # the boundaries beside the stand (the house placing reads these)
         self.st["underlay_cat"] = cats

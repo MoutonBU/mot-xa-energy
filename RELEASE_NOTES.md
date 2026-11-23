@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.151**
+Current version: **1.86.152**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **House placing, the whole road:** a stand from a township drawing now reads the road 130 m round the stand (it was 45 m), so the bend round a corner stand, the kerbs on both sides of the street and the next streets are all there, and the plan opens wide enough to show them. The road is drawn in full as drawn in the DXF (also in the exported DXF).
 - **House placing, turn the plan, draw the mains, freeform sewer:** (1) hold Alt and drag in the plan to turn it to any angle (Shift snaps to 5 degrees); there are also turn buttons next to "Plan turned". Everything turns with it, the north arrow follows, and the names and numbers (stand numbers, NEW HOUSE, street name) stay level on the page; untick "Names and numbers stay level when the plan is turned" to let them turn with the plan. (2) "Draw the main water line" and "Draw the main electrical line" (as the sewer already had): click along where the main runs and the house connection goes to the nearest point on it; "Main as in the drawing" takes back the one from the imported drawing. (3) Drawing the sewer has a Freeform mode next to Square / Skew / Horizontal / Vertical: hold the mouse down and draw the pipe freehand; the stroke is kept as a few straight legs at any angle.
 - **House placing, corner stands and the real water lines:** (1) stands whose outline had a hairline gap (two lines meeting a few millimetres apart), many of them corner stands such as 2228, 2236 and 2237 of Blue Hills Ext 120, were reported as not found; the reader now joins lines that meet within 3 cm, and 208 of the 212 stand numbers in that drawing open (before, many corner stands did not). (2) The water and electrical mains are now the whole line network in the drawing with its branches, run along the road and round the bends exactly as drawn, and the house connection lands on the nearest point of it. (3) When a house cannot fit square to the street (a stand with a diagonal corner frontage), it is turned to run along the stand's own sides, inside the building lines, instead of being left outside the stand.
 - **House placing, plan turned square:** a stand from a township drawing is now turned on the page so its edges run square along the page (a right-angle corner sits as a right angle, not as a diamond), and the north arrow turns with it. "Plan turned" (and a "Square up" button) under "Road side and north arrow" turn the plan to any angle; the PDF, image and DXF follow. New test: test_turn.py.

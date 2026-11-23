@@ -45,6 +45,9 @@ def bulged(vs, closed=False):
     return out
 
 
+ROAD_REACH = 130.0          # metres: how far round the stand the road is read (the bend, the other side of the street, the next streets)
+
+
 def main_chain(segs, ref, reach=40.0, min_len=12.0):
     """the main service line near a point: the lines (x1, y1, x2, y2) are joined end to end into runs, and the longest run that comes within `reach` of `ref`
     (closest first, then longest) is returned as a list of points, or None. Short bits (symbols, house connections) are ignored by min_len."""
@@ -737,6 +740,7 @@ class Township:
                 if len(Q) >= 3 and math.hypot(centroid(Q)[0] - pc[0], centroid(Q)[1] - pc[1]) > 0.5 and not any(math.hypot(centroid(Q)[0] - centroid(o["poly"])[0], centroid(Q)[1] - centroid(o["poly"])[1]) < 0.5 for o in nb):
                     if bx[0] <= centroid(Q)[0] <= bx[2] and bx[1] <= centroid(Q)[1] <= bx[3]:
                         nb.append({"poly": Q, "no": self._number_in(Q), "area": abs(_area(Q))})
+        bxr = (min(p[0] for p in P) - ROAD_REACH, min(p[1] for p in P) - ROAD_REACH, max(p[0] for p in P) + ROAD_REACH, max(p[1] for p in P) + ROAD_REACH)
         # the lines around it, by what they are
         lines = {c: [] for c in CATS}
         for lay, v in self.layers.items():
@@ -746,7 +750,8 @@ class Township:
                 continue
             for i in range(0, len(arr), 4):
                 x1, y1, x2, y2 = arr[i] * k, arr[i + 1] * k, arr[i + 2] * k, arr[i + 3] * k
-                if min(x1, x2) > bx[2] or max(x1, x2) < bx[0] or min(y1, y2) > bx[3] or max(y1, y2) < bx[1]:
+                b_ = bxr if cat == "road" else bx                 # the road is looked for much wider: round the corner and both kerbs of the street
+                if min(x1, x2) > b_[2] or max(x1, x2) < b_[0] or min(y1, y2) > b_[3] or max(y1, y2) < b_[1]:
                     continue
                 lines[cat].append((x1, y1, x2, y2))
                 if len(lines[cat]) > 40000:
