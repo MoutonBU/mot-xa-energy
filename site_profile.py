@@ -12,7 +12,7 @@ import datetime
 import math
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFontMetricsF, QPen, QPolygonF
+from PySide6.QtGui import QBrush, QColor, QFontMetricsF, QImage, QPen, QPolygonF
 
 import site_sheet
 
@@ -169,10 +169,13 @@ def build(state, res, il_head=None, lean_ratio=None):
             "ffl": float(lv["ffl"]) if _set(lv.get("ffl")) else None, "note": sw.get("note", "")}
     out["lean_ratio"] = 0.5 if lean_ratio is None else lean_ratio
     if drops_in and lean_ratio is None:                         # the steep part is 45 degrees on the sheet: its run is its height times (horizontal scale / vertical scale)
-        hs_, vs_, _dt, _mo = scales(out)
-        r_ = hs_ / float(vs_)
-        if abs(r_ - 0.5) > 1e-6:
-            return build(state, res, il_head, r_)
+        r_ = 0.5
+        for _k in range(6):                                     # the scales depend on the levels the drop gives: settle them
+            out = build(state, res, il_head, r_)
+            hs_, vs_, _dt, _mo = scales(out)
+            if abs(hs_ / float(vs_) - r_) < 1e-9:
+                break
+            r_ = hs_ / float(vs_)
     return out
 
 
@@ -206,7 +209,7 @@ def _nice(v, options):
     return options[-1]
 
 
-GX0, GX1, GY0, GY1 = 62.0, 402.0, 36.0, 140.0
+GX0, GX1, GY0, GY1 = 62.0, 402.0, 70.0, 164.0
 
 
 def scales(d):
@@ -225,6 +228,49 @@ def scales(d):
     vs_p = _nice((top - datum_p) * 1000.0 / room, opts)
     main_off = vs_p < vs_f and d["main_il"] < datum_p + 0.15                      # the main is far below: keep the detail and show it with an arrow
     return hs, (vs_p if main_off else vs_f), (datum_p if main_off else datum_f), main_off
+
+
+PANEL = QColor(220, 220, 220)
+CARD_LINE = QColor(190, 190, 190)
+LABEL = QColor(95, 95, 95)
+BRAND_RED = QColor(200, 16, 46)
+_LOGO = {}
+
+
+def _logo_image():
+    """the MCP logo (black and red, transparent) from the running program; None when it cannot be found"""
+    if "img" in _LOGO:
+        return _LOGO["img"]
+    img = None
+    try:
+        import base64
+        import sys
+        for nm_ in ("mot_xa_energy", "__main__"):
+            m_ = sys.modules.get(nm_)
+            if m_ is not None and hasattr(m_, "LOGO_B64"):
+                im_ = QImage.fromData(base64.b64decode(m_.LOGO_B64), "PNG").convertToFormat(QImage.Format.Format_ARGB32)
+                for yy in range(im_.height()):
+                    for xx in range(im_.width()):
+                        c = im_.pixelColor(xx, yy)
+                        if c.alpha() and c.red() > 200 and c.green() > 200 and c.blue() > 200:
+                            im_.setPixelColor(xx, yy, QColor(28, 31, 35, c.alpha()))
+                img = im_
+                break
+    except Exception:
+        img = None
+    _LOGO["img"] = img
+    return img
+
+
+def _rr_points(x, y, w, h, r, n=6):
+    """the outline of a rectangle with rounded corners"""
+    r = max(0.0, min(r, w / 2.0, h / 2.0))
+    pts = []
+    for cx, cy, a0 in ((x + w - r, y + r, -90.0), (x + w - r, y + h - r, 0.0), (x + r, y + h - r, 90.0), (x + r, y + r, 180.0)):
+        for k in range(n + 1):
+            a = math.radians(a0 + 90.0 * k / n)
+            pts.append((cx + r * math.cos(a), cy + r * math.sin(a)))
+    return pts
 
 
 def draw(p, W, H, S, d, title_lines=(), when=None):
@@ -255,18 +301,44 @@ def draw(p, W, H, S, d, title_lines=(), when=None):
     p.fillRect(0, 0, int(W), int(H), QColor("white"))
     st = d["stations"]
     Hh = d["length"]
-    # ---- frame and heading
+    # ---- frame and heading: the same look as the coverage report (grey panel with the logo, red bar, rounded information card)
     layer("TITLE BLOCK")
-    line(8, 8, 412, 8, BLACK, 0.5)
-    line(412, 8, 412, 289, BLACK, 0.5)
-    line(412, 289, 8, 289, BLACK, 0.5)
-    line(8, 289, 8, 8, BLACK, 0.5)
+
+    def rr(x, y, w, h, r=2.5, stroke=CARD_LINE, fill=None, lw=0.3):
+        p.setPen(pen(stroke, lw) if stroke is not None else QPen(Qt.PenStyle.NoPen))
+        p.setBrush(QBrush(fill) if fill is not None else QBrush())
+        p.drawPolygon(QPolygonF([P(a_, b_) for a_, b_ in _rr_points(x, y, w, h, r)]))
+        p.setBrush(QBrush())
+
+    hs0, vs0, datum0, _mo = scales(d)
+    rr(8, 8, 404, 281, 4.0, BLACK, None, 0.5)
     nm = ""
     for a, b in title_lines:
         if a == "Stand":
             nm = b
-    text(14, 19, "SEWER LONGITUDINAL SECTION", 5.0, True)
-    text(14, 26, ("%s  -  %sØ SWP sewer at 1:%d, %.1f m long" % (nm, d["pipe"], round(d["fall"]), Hh)).strip(" -"), 3.0)
+    rr(12, 12, 396, 24, 4.0, CARD_LINE, PANEL, 0.3)
+    lg = _logo_image()
+    if lg is not None and not hasattr(p, "set_layer"):
+        ph = 17.0
+        p.drawImage(QRectF(P(17, 15.5), P(17 + ph * lg.width() / float(lg.height()), 15.5 + ph)), lg)
+        tx = 17 + ph * lg.width() / float(lg.height()) + 6.0
+    else:
+        tx = 18.0
+    text(tx, 25.0, "Sewer Longitudinal Section", 6.5, True, QColor(17, 17, 17))
+    text(tx, 31.5, ("%s  |  %sØ SWP sewer at 1:%d, %.1f m long" % (nm, d["pipe"], round(d["fall"]), Hh)).strip(" |"), 3.1, False, QColor(68, 68, 68))
+    text(404, 24.0, "Horizontal 1:%g    Vertical 1:%g" % (hs0 / 2.0, vs0 / 2.0), 3.0, True, QColor(17, 17, 17), "r")
+    text(404, 30.5, "Levels in metres.  Datum level %.3f" % datum0, 3.0, False, QColor(68, 68, 68), "r")
+    rr(12, 38.5, 396, 2.6, 1.3, None, BRAND_RED)
+    info = [(a, b) for a, b in list(title_lines) + [("Sheet", "Sewer long section"), ("Date", (when or datetime.date.today()).strftime("%d/%m/%Y"))]]
+    info = [r_ for i_, r_ in enumerate(info) if r_[0] not in [q[0] for q in info[:i_]]]
+    half = (len(info) + 1) // 2
+    ih = half * 6.2 + 3.0
+    rr(12, 44, 396, ih, 4.0, CARD_LINE, None, 0.3)
+    for i_, (a, b) in enumerate(info):
+        cx_ = 17.0 if i_ < half else 214.0
+        cy_ = 50.0 + (i_ % half) * 6.2
+        text(cx_, cy_, a, 2.9, False, LABEL)
+        text(cx_ + 34.0, cy_, str(b)[:48], 2.9, True)
     # ---- the graph
     gx0, gx1, gy0, gy1 = GX0, GX1, GY0, GY1
     x0 = gx0 + 26.0
@@ -278,8 +350,6 @@ def draw(p, W, H, S, d, title_lines=(), when=None):
     def Y(lvl):
         return gy1 - (lvl - datum) * 1000.0 / vs
 
-    text(412 - 6, 19, "Horizontal 1:%g    Vertical 1:%g" % (hs / 2.0, vs / 2.0), 3.0, True, align="r")
-    text(412 - 6, 26, "Levels in metres.  Datum level %.3f" % datum, 3.0, align="r")
     layer("SECTION GROUND")
     # level scale on the left and light level lines
     step = 0.5 if (gy1 - gy0) * vs / 1000.0 < 6 else 1.0
@@ -386,20 +456,22 @@ def draw(p, W, H, S, d, title_lines=(), when=None):
     text(X(Hh) - 1.5, Y(ile) + 3.6, "IL %.3f" % ile, 2.2, False, BROWN, "r")
     # ---- the table of stations
     layer("SECTION TABLE")
-    ty = GY1 + 16.0
+    ty = GY1 + 17.0
     cols = [("Eye", 16), ("What", 68), ("Chainage m", 28), ("Ground level", 34), ("Invert level", 34), ("Depth mm", 28), ("Cover mm", 28), ("Fall to the next", 46)]
     n = len(st)
-    rh = min(6.0, 60.0 / (n + 1))
+    rh = min(6.0, 54.0 / (n + 1))
     xx = 14.0
     xs = []
     for _t, w in cols:
         xs.append(xx)
         xx += w
     xend = xx
-    line(14, ty, xend, ty, BLACK, 0.4)
+    p.setPen(QPen(Qt.PenStyle.NoPen))
+    p.setBrush(QBrush(QColor(236, 236, 236)))
+    p.drawPolygon(QPolygonF([P(a_, b_) for a_, b_ in _rr_points(14, ty, xend - 14, rh, 2.5)]))
+    p.setBrush(QBrush())
     for (t, w), x in zip(cols, xs):
         text(x + 1.5, ty + rh - 1.7, t, 2.4, True)
-    line(14, ty + rh, xend, ty + rh, BLACK, 0.3)
     for i, s in enumerate(st):
         y = ty + rh * (i + 1)
         nxt = st[i + 1] if i + 1 < n else None
@@ -408,26 +480,30 @@ def draw(p, W, H, S, d, title_lines=(), when=None):
         for (t, w), x, v in zip(cols, xs, row):
             low_cover = t == "Cover mm" and s["cover"] < 0.3 - 1e-6
             text(x + 1.5, y + rh - 1.7, v, 2.4, False, RED if low_cover else BLACK)
-        line(14, y + rh, xend, y + rh, QColor(200, 200, 200), 0.15)
-    for x in xs + [xend]:
-        line(x, ty, x, ty + rh * (n + 1), QColor(120, 120, 120), 0.15)
-    # ---- checks, notes and the title block
+        if i + 1 < n:
+            line(14.5, y + rh, xend - 0.5, y + rh, QColor(215, 215, 215), 0.12)
+    for x in xs[1:]:
+        line(x, ty + 1.0, x, ty + rh * (n + 1) - 1.0, QColor(215, 215, 215), 0.12)
+    rr(14, ty, xend - 14, rh * (n + 1), 2.5, CARD_LINE, None, 0.3)
+    # ---- checks and notes, side by side in their own rounded cards
     layer("TITLE BLOCK")
-    by = ty + rh * (n + 1) + 8.0
-    text(14, by, "CHECKS", 2.8, True)
+    by = ty + rh * (n + 1) + 6.0
     f = _f(S, 2.4)
-    y = by + 5.0
+    cx0, cw = 14.0, 196.0
+    text(cx0 + 3, by + 4.5, "CHECKS", 2.8, True)
+    y = by + 10.0
     for t, ok in d["checks"]:
         tag = "OK" if ok else "CHECK" if ok is None else "NOT MET"
         col = BLACK if ok else RED
-        text(14, y, tag, 2.4, True, col)
-        for ln in _wrap(f, t, (238 - 36) * S)[:2]:
-            text(36, y, ln, 2.4, False, col)
+        text(cx0 + 3, y, tag, 2.4, True, col)
+        for ln in _wrap(f, t, (cw - 36) * S)[:2]:
+            text(cx0 + 22, y, ln, 2.4, False, col)
             y += 4.0
         y += 0.6
-    y += 3.0
-    text(14, y, "NOTES", 2.8, True)
-    y += 5.0
+    y1 = y
+    nx0, nw = 216.0, 192.0
+    text(nx0 + 3, by + 4.5, "NOTES", 2.8, True)
+    y = by + 10.0
     notes = []
     if d["assumed"]:
         notes.append("GROUND LEVELS ARE ASSUMED (the ground at the house is taken as %.3f). Type the surveyed levels in the sewer section settings before submitting." % d["ngl0"])
@@ -437,27 +513,16 @@ def draw(p, W, H, S, d, title_lines=(), when=None):
               "Bedding, backfill, testing and the manholes or eyes as required by the local authority and SANS 10252-2. Inspection eyes at every change of direction and at the limits shown above.",
               "A1 sheet. Horizontal scale 1:%g, vertical scale 1:%g (the vertical is drawn larger so the fall can be read)." % (hs / 2.0, vs / 2.0)]
     for i, t in enumerate(notes):
-        lines = _wrap(f, t, (238 - 28) * S)
+        lines = _wrap(f, t, (nw - 14) * S)
         for j, ln in enumerate(lines):
             if j == 0:
-                text(14, y, "%d." % (i + 1), 2.4)
-            text(21, y, ln, 2.4, False, RED if (i == 0 and d["assumed"]) else BLACK)
+                text(nx0 + 3, y, "%d." % (i + 1), 2.4)
+            text(nx0 + 9, y, ln, 2.4, False, RED if (i == 0 and d["assumed"]) else BLACK)
             y += 4.0
         y += 0.6
-    # title block
-    tx0, ty1 = 252.0, 285.0
-    tx1 = 406.0
-    rows = list(title_lines) + [("Sheet", "Sewer long section"), ("Date", (when or datetime.date.today()).strftime("%d/%m/%Y"))]
-    rows = [r for i, r in enumerate(rows) if r[0] not in [q[0] for q in rows[:i]]]
-    step = 6.5
-    ty0 = ty1 - (len(rows) * step + 5.0)
-    p.setPen(pen(BLACK, 0.4))
-    p.drawRect(QRectF(P(tx0, ty0), P(tx1, ty1)))
-    for i, (a, b) in enumerate(rows):
-        yy = ty0 + 5.0 + i * step
-        text(tx0 + 3.0, yy, a + ":", 2.4, True)
-        text(tx0 + 30.0, yy, str(b)[:46], 2.4)
-        line(tx0, yy + 1.6, tx1, yy + 1.6, QColor(210, 210, 210), 0.12)
+    bot = max(y1, y) + 1.5
+    rr(cx0, by, cw, bot - by, 3.0, CARD_LINE, None, 0.3)
+    rr(nx0, by, nw, bot - by, 3.0, CARD_LINE, None, 0.3)
     layer(None)
 
 
