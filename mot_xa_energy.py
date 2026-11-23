@@ -1581,8 +1581,10 @@ def check_room(room, schedule, light_pct):
     sanitary = bool(WC_ARTIFICIAL_RE.search(room.name or ""))
     circulation = bool(re.search(r"\b(passage|corridor|hall|hallway|lobby|landing|stair)", room.name, re.I))
     area = room.area_m2 if not no_area else 1.0
-    light_req = max(area * light_pct / 100.0, MIN_LIGHT_M2)
-    vent_req = max(area * VENT_PERCENT / 100.0, MIN_VENT_CAT1_M2 if light_pct <= min(RULES.values()) + 1e-9 else MIN_VENT_M2)
+    cat1 = light_pct <= min(RULES.values()) + 1e-9
+    # 4.2.1.1.3: the 0,2 m2 floor goes with the 10 % route (b); the 5 % route (a, category 1) has none
+    light_req = area * light_pct / 100.0 if cat1 else max(area * light_pct / 100.0, MIN_LIGHT_M2)
+    vent_req = max(area * VENT_PERCENT / 100.0, MIN_VENT_CAT1_M2 if cat1 else MIN_VENT_M2)
     glaze_pct = 0.0 if no_area else glazed / area * 100.0
     glaze_max = area * GLAZE_LIMIT[0] / 100.0
     return {
@@ -20281,7 +20283,7 @@ color:{'#1B7F3B' if n_ok == len(self.results) else RED};">{n_ok} / {len(self.res
 <table width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td bgcolor="{RED}" height="3"></td></tr></table>
 {self._project_info_html()}
 <p style="font-size:8pt; color:#555555;">Natural light = {'whole opening including frame' if LIGHT_FULL_OPENING[0] else 'glazed area'} / floor area (minimum {RULES[self.rule_box.currentText()]:g}%,
-at least {MIN_LIGHT_M2:g} m&sup2;). Ventilation = openable area / floor area (minimum {VENT_PERCENT:g}% and not less than {MIN_VENT_M2:g} m&sup2;, or {MIN_VENT_CAT1_M2:g} m&sup2; for category 1 rooms). Rules follow {RULES_EDITION[0]}. SANS 10400-O Edition 4 was gazetted on 30 May 2025: confirm the numbers against the edition in force.
+at least {MIN_LIGHT_M2:g} m&sup2; on the 10% rule). Ventilation = openable area / floor area (minimum {VENT_PERCENT:g}% and not less than {MIN_VENT_M2:g} m&sup2;, or {MIN_VENT_CAT1_M2:g} m&sup2; for category 1 rooms). Rules follow {RULES_EDITION[0]}. SANS 10400-O Edition 4 was gazetted on 30 May 2025: confirm the numbers against the edition in force.
 Passages and circulation spaces need neither.
 Glazing limit: glazing may not exceed {GLAZE_LIMIT[0]:g}% of the net floor area, otherwise a rational design is needed.</p>
 <p style="font-size:9pt; font-weight:bold;">{e(glazing_summary(self.results))}</p>"""]

@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.183**
+Current version: **1.86.184**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Light and ventilation, checked against the SANS 10400-O:2011 (Edition 3) text:** the 10 % / 5 % light, 5 % ventilation, 0,2 m2 and 0,1 m2 minimums all match clauses 4.2.1.1.3 and 4.3.1.1.3. One fix: the 0,2 m2 light minimum belongs to the 10 % rule only, so the 5 % category 1 rule no longer has it (it was making very small category 1 rooms need slightly more light than the standard asks). Edition 4 (2025) numbers are still unread, so the rules stay on Edition 3.
 - **Look and fit, whole-program pass:** Building lines and House placing no longer scroll sideways (their button and number rows now wrap), the Costing fixtures page scrolls instead of squashing its tables, the schedule columns and rows are wide and tall enough to read, and the "lines have no product yet" warning has its own line instead of being cut off. The cost-by-level list now runs Basement, Ground, First, Second ... Roof instead of alphabetically. Buttons, group boxes, table headers and drop-downs have red accents and hover highlights in both the dark and the light theme. Checked against the published SANS 10400-XA:2021 text: Table 3 (shading) and Table 4 (fenestration) match the built-in numbers. SANS 10400-O Edition 4 (2025) is gazetted but its numbers are still not checked, so the rules stay on Edition 3.
 - **Look and tidy-up:** number boxes now have proper up / down arrows in the dark and light themes, the Windows and Doors tables keep the Type and Opening style boxes wide enough to read (they scroll sideways instead of squeezing), and the House placing toolbar is shorter, with the less-used tools under "Tools" and "Show" menus.
 - **House placing, snap to the building lines (and past them):** while you drag the house or carport, a wall within about 10 pixels of a building line (the boundary pulled in by its street, side or rear space) sits exactly on it, a corner snaps to two lines at once, and the hint line says which. Hold Alt to move freely, for instance past the line when you will ask for a relaxation; the tick "Snap the house to the building lines" in the zoning box turns the snap off altogether. Nothing ever stops the house at a line. When a line is crossed, the compliance list says how many metres over it is and that a relaxation is needed.
