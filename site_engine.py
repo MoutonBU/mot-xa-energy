@@ -942,6 +942,14 @@ def edge_kinds(stand):
     return ["street" if i == 0 else "side" if i in (1, n - 1) else "rear" for i in range(n)]
 
 
+def wall_on(state, i, kind):
+    """is there a 1.2 m boundary wall on edge i? the user's choice if they made one, else along the sides and the rear"""
+    ov = (state.get("wall_edges") or {}).get(str(i))
+    if ov is not None:
+        return bool(ov)
+    return kind in ("side", "rear")
+
+
 def line_dist(p, a, b):
     dx, dy = b[0] - a[0], b[1] - a[1]
     L = math.hypot(dx, dy) or 1
@@ -1274,3 +1282,45 @@ def default_points(d):
                 if wat is None or abs(y) < abs(wat[1]):
                     wat = [round(x, 2), 0.0]
     return {"sewer": sew, "water": wat or [round(min(1.5, fr / 2), 2), 0.0], "elec": [round(fr / 2, 2), 0.0]}
+
+
+def ref_angles(stand, min_len=3.0):
+    """the directions a drawn main may follow: along each boundary of the stand (and square to it), and 45 degrees either side of those.
+    Returns a list of (angle in radians 0..pi, label)"""
+    out = []
+    n = len(stand)
+    for i in range(n):
+        a, b = stand[i], stand[(i + 1) % n]
+        L = math.hypot(b[0] - a[0], b[1] - a[1])
+        if L < min_len:
+            continue
+        base = math.atan2(b[1] - a[1], b[0] - a[0])
+        for k, lab in ((0, "parallel to the boundary"), (2, "square to the boundary"), (1, "45 deg to the boundary"), (3, "45 deg to the boundary")):
+            ang = (base + k * math.pi / 4) % math.pi
+            out.append((ang, lab))
+    if not out:
+        out = [(0.0, "level"), (math.pi / 2, "upright"), (math.pi / 4, "45 deg"), (3 * math.pi / 4, "45 deg")]
+    return out
+
+
+def snap_dir(stand, prev, w, mode="45"):
+    """a drawn main's next point: 'par' snaps only to directions parallel / square to the stand's boundaries (when within 12 degrees),
+    '45' always takes the nearest boundary-parallel, square or 45 degree direction, 'free' leaves the point alone.
+    Returns (point, label, angle_deg, length)"""
+    dx, dy = w[0] - prev[0], w[1] - prev[1]
+    L = math.hypot(dx, dy)
+    if mode == "free" or L < 1e-6:
+        return (w[0], w[1]), "free", math.degrees(math.atan2(dy, dx)) % 180, L
+    ang = math.atan2(dy, dx)
+    best, bl, bd = None, "free", 1e9
+    for a, lab in ref_angles(stand):
+        if mode == "par" and lab.startswith("45"):
+            continue
+        d = abs(((ang - a + math.pi / 2) % math.pi) - math.pi / 2)
+        if d < bd:
+            best, bl, bd = a, lab, d
+    if best is None or (mode == "par" and bd > math.radians(12)):
+        return (w[0], w[1]), "free", math.degrees(ang) % 180, L
+    u = (math.cos(best), math.sin(best))
+    t = dx * u[0] + dy * u[1]
+    return (prev[0] + u[0] * t, prev[1] + u[1] * t), bl, math.degrees(best), abs(t)

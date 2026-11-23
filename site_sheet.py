@@ -284,7 +284,7 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
     D.poly(stand, BLACK, 0.05, GREEN if look.get("fill", True) else None)       # the stand in green, as on the finished sheets
     if look.get("walls", True):                                                 # the boundary walls (1.2 m high pre-cast concrete) along the side and rear boundaries
         for i in range(n):
-            if kinds[i] in ("side", "rear"):
+            if se.wall_on(st, i, kinds[i]):
                 a, b = stand[i], stand[(i + 1) % n]
                 L = edge_len(a, b) or 1
                 nx, ny = -(b[1] - a[1]) / L, (b[0] - a[0]) / L

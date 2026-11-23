@@ -49,6 +49,7 @@ CONVENTIONS = {
     "carport_gap": 1.0, "street_building_line": 1.0, "carport_size": 5.0,
     # Street 7071 stands: B/L 3 m to the street and the no-access road, 2 m to a neighbour, 1 m to a 1 m servitude; the carport 0.5 m off the street boundary
     "b7071": {"street": 3.0, "no_access": 3.0, "side": 2.0, "servitude": 1.0}, "carport_street_gap_7071": 0.5, "carport_house_gap_7071": 2.25,
+    "water_pair": "the water connection of two adjacent stands is shared: one pair of water meters sits on the common side boundary at the street, split on that boundary (finished plans, Blue Hills Ext 120). A stand's water point goes on the street end of the side boundary it shares with the neighbour, 0.1 m inside",
     "storm_arrow": "a blue Stormwater Flow arrow on every plan, pointing down the fall of the stand (usually towards the street)",
 }
 
@@ -68,11 +69,31 @@ RULES = [
     "The house is 1.0 m clear of the carport, and 1.0 to 2.5 m behind the street boundary.",
     "The house long side runs parallel to the street, or square to the nearest boundary on a corner or skew stand.",
     "Sewer: 110 mm at fall 1:50, Min IL 450 at the gully, an IE at every joint and bend, an RE at the end of every run.",
+    "Water: two adjacent stands share one water connection, split on their common side boundary at the street (the point is the street end of the shared side boundary).",
+    "Mains you draw snap parallel to the stand's boundaries, square to them or at 45 degrees to them; the 1.2 m boundary wall can be switched on or off per boundary (none at the front when it is not wanted).",
     "Side and rear boundaries carry a 1.2 m pre-cast concrete wall; stormwater falls to the street.",
     "Street 7071 stands: building lines 3 m to the street and to the no-access road, 2 m to a neighbour, 1 m to a servitude; the carport 5.0 x 5.0 sits 0.5 m off the street boundary and about 2.25 m from the house; the house runs along the side boundary (outlet at the far end, sewer in the servitude side), never across the stand against the road.",
     "Blue Hills Ext 120 (the MCP site plan, 204 stands, 39 houses placed): stands about 14 x 22 m (280 to 390 m2); the carport is a 5.0 x 5.0 m box with its front edge 1.0 m behind the street boundary, in the left or the right corner 1.0 m off the side boundary; the house (about 10 m wide, 12.7 to 15 m long with its patio / braai) starts 2.8 to 6.0 m from the street (beside or behind the carport) and runs back to the rear boundary; mains and connections are in the road.",
     "On the finished plans the footprint with the carport covers 84 to 105 m2 on stands of 260 to 375 m2 (FAR 0.32 to 0.44).",
 ]
+
+
+def water_pair_x(L, x, nb_xs=()):
+    """the street-line position of a stand's water connection under the shared-boundary rule. L = stand frontage, x = where the drawing puts the water mark
+    (or None), nb_xs = the plan x of the centres of the neighbouring stands. The point goes on the side boundary that is shared with a neighbour and nearest to x;
+    with no neighbour known it goes on the side nearest to x (the left side when x is None). Returns (x, side) with side 'left' or 'right'."""
+    left_ok = any(n < 0 for n in nb_xs) if nb_xs else True
+    right_ok = any(n > L for n in nb_xs) if nb_xs else True
+    ref = L / 2 if x is None else x
+    cand = []
+    if left_ok:
+        cand.append((abs(ref - 0.0), "left"))
+    if right_ok:
+        cand.append((abs(ref - L), "right"))
+    if not cand:
+        cand = [(abs(ref), "left"), (abs(ref - L), "right")]
+    side = min(cand)[1]
+    return (0.1, side) if side == "left" else (round(L - 0.1, 2), side)
 
 
 def house_type(w, d, tol=0.45):

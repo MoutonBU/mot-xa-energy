@@ -349,6 +349,11 @@ class ServicesView(QWidget):
                 pg.sewer_draw_click(w, bool(e.modifiers() & Qt.KeyboardModifier.ShiftModifier))
                 self.update()
                 return
+            if self.mode == "wall_pick":
+                i_ = pg.wall_edge_at(w)
+                if i_ is not None:
+                    pg.toggle_wall(i_)
+                return
             if self.mode == "mline_add":
                 pg.add_mline(w)
                 return
@@ -657,7 +662,7 @@ class ServicesView(QWidget):
         m.exec(gpos)
 
     def mouseMoveEvent(self, e):
-        if self._mode == "sewer_draw" and self.sh:
+        if self._mode in ("sewer_draw", "mline_add", "wmain_add", "emain_add", "wall_pick") and self.sh:
             self.hover = self.world(e.position())
             self.update()
         d = self.drag
@@ -796,9 +801,99 @@ class ServicesView(QWidget):
             if lab:
                 self.page.edit_text(lab)
 
+    def draw_main_gizmo(self, p):
+        """while a main is being drawn: the stand's directions as faint guides, the line so far, the snapped next leg and a readout of angle and length"""
+        pg, S = self.page, self.sh.pt
+        st = pg.st
+        pk = QColor("#d6209a")
+        if self._mode == "mline_add":
+            pts = list(st.get("main_line") or []) if getattr(pg, "_ml_on", False) else []
+        else:
+            k = "water" if self._mode == "wmain_add" else "elec"
+            mp = (st.get("main_poly") or {}).get(k) or []
+            pts = list(mp[0]) if getattr(pg, "_mn_on", {}).get(k) and mp else []
+        # the stand's boundary directions through every corner, faint
+        cs = st["stand"]["corners"]
+        p.setPen(QPen(QColor(214, 32, 154, 70), 1, Qt.PenStyle.DotLine))
+        for i in range(len(cs)):
+            a, b = cs[i], cs[(i + 1) % len(cs)]
+            L = math.hypot(b[0] - a[0], b[1] - a[1])
+            if L < 3:
+                continue
+            u = ((b[0] - a[0]) / L, (b[1] - a[1]) / L)
+            p.drawLine(S((a[0] - u[0] * 40, a[1] - u[1] * 40)), S((a[0] + u[0] * 40, a[1] + u[1] * 40)))
+        p.setPen(QPen(pk, 2.4))
+        for a_, b_ in zip(pts[:-1], pts[1:]):
+            p.drawLine(S(a_), S(b_))
+        p.setBrush(QBrush(QColor("white")))
+        for c in pts:
+            p.drawEllipse(S(c), 5, 5)
+        hv = getattr(self, "hover", None)
+        if not hv:
+            return
+        free = bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier)
+        if pts:
+            q, lab, ang, ln = pg.snap_main(hv, pts[-1], free)
+            p.setPen(QPen(pk, 2.2, Qt.PenStyle.DashLine))
+            p.drawLine(S(pts[-1]), S(q))
+            p.setBrush(QBrush(pk))
+            p.drawEllipse(S(q), 5, 5)
+            txt = "%.2f m   %.0f deg   %s" % (ln, ang, lab)
+        else:
+            q = hv
+            p.setBrush(QBrush(pk))
+            p.drawEllipse(S(q), 5, 5)
+            txt = "start of the main (x %.2f, y %.2f)" % (hv[0], hv[1])
+        sp = S(q)
+        f = QFont(self.font().family(), 9)
+        f.setBold(True)
+        p.setFont(f)
+        rw_ = 14 + 7.2 * len(txt)
+        r = QRectF(max(4, min(sp.x() + 12, self.width() - rw_ - 4)), max(4, sp.y() - 30), rw_, 22)
+        p.setPen(QPen(pk, 1))
+        p.setBrush(QBrush(QColor(255, 255, 255, 235)))
+        p.drawRoundedRect(r, 4, 4)
+        p.setPen(QColor("#222222"))
+        p.drawText(r, Qt.AlignmentFlag.AlignCenter, txt)
+
+    def draw_wall_gizmo(self, p):
+        """wall mode: each boundary shown with its number; a red thick line = wall, a grey dashed one = no wall; click an edge to switch it"""
+        pg, S = self.page, self.sh.pt
+        st = pg.st
+        cs = st["stand"]["corners"]
+        kinds = se.edge_kinds(cs)
+        hv = getattr(self, "hover", None)
+        near = pg.wall_edge_at(hv) if hv else None
+        f = QFont(self.font().family(), 9)
+        f.setBold(True)
+        p.setFont(f)
+        names = {"street": "front", "side": "side", "rear": "rear"}
+        for i in range(len(cs)):
+            a, b = cs[i], cs[(i + 1) % len(cs)]
+            on = se.wall_on(st, i, kinds[i])
+            col = QColor("#c01919") if on else QColor("#8a8a8a")
+            p.setPen(QPen(col, 6 if on else 3, Qt.PenStyle.SolidLine if on else Qt.PenStyle.DashLine))
+            p.drawLine(S(a), S(b))
+            if i == near:
+                p.setPen(QPen(QColor("#d6209a"), 2))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawLine(S(a), S(b))
+            m = S(((a[0] + b[0]) / 2, (a[1] + b[1]) / 2))
+            txt = "%s %d: %s" % (names[kinds[i]], i + 1, "WALL" if on else "no wall")
+            r = QRectF(m.x() - 4 * len(txt) - 6, m.y() - 11, 8 * len(txt) + 12, 22)
+            p.setPen(QPen(col, 1))
+            p.setBrush(QBrush(QColor(255, 255, 255, 235)))
+            p.drawRoundedRect(r, 4, 4)
+            p.setPen(QColor("#222222"))
+            p.drawText(r, Qt.AlignmentFlag.AlignCenter, txt)
+
     def draw_gizmo(self, p):
         """what you can do with the selected thing: a ring to turn a building, corner handles on the sewer run, a frame round a text"""
         pg, sel = self.page, self.sel
+        if self._mode in ("mline_add", "wmain_add", "emain_add") and self.sh:
+            self.draw_main_gizmo(p)
+        if self._mode == "wall_pick" and self.sh:
+            self.draw_wall_gizmo(p)
         if self._mode == "sewer_draw" and self.sh and pg.res and getattr(pg, "_sd_on", False):
             pk = QColor("#d6209a")
             S = self.sh.pt
@@ -1362,6 +1457,10 @@ class SiteServicesPage(ToolBase):
         wc_.toggled.connect(lambda on: self.set_look("walls", on))
         self.tb_walls = wc_
         fl.addWidget(wc_)
+        wp_ = QPushButton("Place walls")
+        wp_.setToolTip("Choose which boundaries get the 1.2 m pre-cast wall: click a boundary on the plan to switch its wall on or off (for example no wall at the front).")
+        wp_.clicked.connect(lambda: self.arm("wall_pick"))
+        fl.addWidget(wp_)
         nb_ = QPushButton("New placing")
         nb_.setToolTip("Start again: a blank stand, house and carport, nothing left from the last one. Undo brings the old one back.")
         nb_.clicked.connect(self.new_placing)
@@ -1696,7 +1795,7 @@ class SiteServicesPage(ToolBase):
         self.set_hint({"pt_sewer": "Click in the plan where the main sewer connection is.", "pt_water": "Click in the plan where the water connection is.",
                        "pt_elec": "Click in the plan where the electrical supply is.", "port_sewer": "Click on the house outline where the sewer leaves the house.",
                        "port_water": "Click on the house outline where the water enters.", "port_db": "Click on the house outline where the DB is.",
-                       "wport_add": "Click on the house outline where another water point enters. Press Esc when done.", "sport_add": "Click on the house wall where another sewer outlet leaves the house. Press Esc when done.", "sewer_draw": "Click where the sewer starts.", "text_add": "Click in the plan where the text goes.", "dim_add": "Click the first point of the dimension (corners snap), then the second. Drag its figure to slide it. Press Esc when done.", "road": "Click on the side of the stand where the road is.", "north_dir": "Click in the direction north points. You can also drag the arrow to move it.", "via_add": "Click in the plan where the sewer must pass. Click again for the next point, in order from the house to the main. Press Esc when done.", "street": "Click the boundary that faces the street.", "wmain_add": "Click along where the main water line runs, point by point. Press Done when it is drawn.", "emain_add": "Click along where the main electrical line runs, point by point. Press Done when it is drawn.", "mline_add": "Click along where the main sewer runs, point by point (it can cross the stand). Press Done when it is drawn.", "mh_add": "Click on the main sewer where a manhole is. Press Esc when done.", "cust_add": "Click in the plan where your point goes."}.get(mode, ""))
+                       "wport_add": "Click on the house outline where another water point enters. Press Esc when done.", "sport_add": "Click on the house wall where another sewer outlet leaves the house. Press Esc when done.", "sewer_draw": "Click where the sewer starts.", "text_add": "Click in the plan where the text goes.", "dim_add": "Click the first point of the dimension (corners snap), then the second. Drag its figure to slide it. Press Esc when done.", "road": "Click on the side of the stand where the road is.", "north_dir": "Click in the direction north points. You can also drag the arrow to move it.", "via_add": "Click in the plan where the sewer must pass. Click again for the next point, in order from the house to the main. Press Esc when done.", "street": "Click the boundary that faces the street.", "wmain_add": "Click along where the main water line runs, point by point. It snaps parallel to the stand boundaries and at 45 degrees to them (Shift = free). Press Done when it is drawn.", "emain_add": "Click along where the main electrical line runs, point by point. It snaps parallel to the stand boundaries and at 45 degrees to them (Shift = free). Press Done when it is drawn.", "mline_add": "Click along where the main sewer runs, point by point (it can cross the stand). It snaps parallel to the stand boundaries and at 45 degrees to them (Shift = free). Press Done when it is drawn.", "wall_pick": "Click a boundary of the stand to switch its 1.2 m pre-cast wall on or off (red = wall, grey = none). Press Done when finished.", "mh_add": "Click on the main sewer where a manhole is. Press Esc when done.", "cust_add": "Click in the plan where your point goes."}.get(mode, ""))
         self.view.update()
 
     def set_point(self, k, w):
@@ -1890,6 +1989,43 @@ class SiteServicesPage(ToolBase):
                 bt.clicked.connect(lambda _=False, k=key: self.set_sd_mode(k))
                 hl.addWidget(bt)
                 self.mode_btns[key] = bt
+        sp_ = getattr(self, "snap_panel", None)
+        if sp_ is None:
+            sp_ = self.snap_panel = QFrame(v)
+            sp_.setStyleSheet("QFrame{background:rgba(30,30,34,225);border:1px solid #d6209a;border-radius:8px;} QLabel{color:white;border:0;} QPushButton{padding:3px 9px;min-width:0;} QPushButton:checked{background:#d6209a;color:white;}")
+            sl = QHBoxLayout(sp_)
+            sl.setContentsMargins(6, 4, 6, 4)
+            self.snap_lbl = QLabel("Snap:")
+            sl.addWidget(self.snap_lbl)
+            self.snap_btns = {}
+            for key, text, tip in (("45", "Parallel + 45\u00b0", "Every leg runs parallel, square or 45 degrees to a boundary of the stand"), ("par", "Parallel only", "Snaps only when within 12 degrees of parallel / square to a boundary"), ("free", "Free", "No snapping (also: hold Shift)")):
+                bt = QPushButton(text)
+                bt.setCheckable(True)
+                bt.setToolTip(tip)
+                bt.clicked.connect(lambda _=False, k=key: self.set_snap_mode(k))
+                sl.addWidget(bt)
+                self.snap_btns[key] = bt
+            for key, text, tip in (("all", "All walls", "Wall on every boundary"), ("default", "Sides + rear", "The usual: walls along the sides and the rear"), ("nofront", "No front", "Walls on all but the street boundary"), ("none", "No walls", "No walls")):
+                bt = QPushButton(text)
+                bt.setToolTip(tip)
+                bt.clicked.connect(lambda _=False, k=key: self.set_walls(k))
+                sl.addWidget(bt)
+                bt.setProperty("wallbtn", True)
+        if v.mode in ("mline_add", "wmain_add", "emain_add", "wall_pick"):
+            walls_ = v.mode == "wall_pick"
+            self.snap_lbl.setText("Walls:" if walls_ else "Snap:")
+            for i_ in range(sp_.layout().count()):
+                w_ = sp_.layout().itemAt(i_).widget()
+                if isinstance(w_, QPushButton):
+                    w_.setVisible(bool(w_.property("wallbtn")) == walls_)
+            for k, bt in self.snap_btns.items():
+                bt.setChecked(k == getattr(self, "_snap_mode", "45"))
+            sp_.adjustSize()
+            sp_.move(max(10, v.width() - sp_.width() - 10), b.height() + 14)
+            sp_.show()
+            sp_.raise_()
+        else:
+            sp_.hide()
         if v.mode == "select":
             b.hide()
             mp.hide()
@@ -2412,10 +2548,53 @@ class SiteServicesPage(ToolBase):
         self.view.update()
         self.changed()
 
+    def wall_edge_at(self, w, tol=2.5):
+        """the stand boundary nearest to a plan point (within tol metres), or None"""
+        cs = self.st["stand"]["corners"]
+        best, bd = None, tol
+        for i in range(len(cs)):
+            d = se.seg_dist(w, cs[i], cs[(i + 1) % len(cs)])
+            if d < bd:
+                best, bd = i, d
+        return best
+
+    def toggle_wall(self, i):
+        kinds = se.edge_kinds(self.st["stand"]["corners"])
+        we = self.st.setdefault("wall_edges", {})
+        we[str(i)] = not se.wall_on(self.st, i, kinds[i])
+        self.view.update()
+        self.changed()
+
+    def set_walls(self, which):
+        """which: 'all', 'none', 'default' (sides and rear), 'nofront' """
+        cs = self.st["stand"]["corners"]
+        kinds = se.edge_kinds(cs)
+        if which == "default":
+            self.st.pop("wall_edges", None)
+        else:
+            self.st["wall_edges"] = {str(i): (which == "all" or (which == "nofront" and kinds[i] != "street")) for i in range(len(cs))}
+        self.view.update()
+        self.changed()
+
+    def set_snap_mode(self, m):
+        self._snap_mode = m
+        self.view.update()
+        self.sync_done()
+
+    def snap_main(self, w, last, free=False):
+        """the point of a drawn main after snapping to the stand's boundary directions (Shift = free)"""
+        mode = "free" if free else getattr(self, "_snap_mode", "45")
+        if not last:
+            return (w[0], w[1]), "start", 0.0, 0.0
+        return se.snap_dir(self.st["stand"]["corners"], tuple(last), w, mode)
+
     def add_mline(self, w):
         if not getattr(self, "_ml_on", False):
             self._ml_on = True
             self.st["main_line"] = []
+        ml_ = self.st.get("main_line") or []
+        if ml_:
+            w = self.snap_main(w, ml_[-1], bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier))[0]
         self.st.setdefault("main_line", []).append([round(w[0], 2), round(w[1], 2)])
         if len(self.st["main_line"]) >= 2:
             self.st["pts_manual"] = False
@@ -2432,6 +2611,8 @@ class SiteServicesPage(ToolBase):
         if not on.get(k):
             on[k] = True
             mp[k] = [[]]
+        if mp[k][0]:
+            w = self.snap_main(w, mp[k][0][-1], bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier))[0]
         mp[k][0].append([round(w[0], 2), round(w[1], 2)])
         if len(mp[k][0]) >= 2:
             self.solve_now(False)
@@ -2802,17 +2983,30 @@ class SiteServicesPage(ToolBase):
         self.st["sheet"]["north"] = round(se.north_world_to_screen(v, road, turn), 1)
 
     def _township_connections(self, r):
-        """the electrical and water connection symbols on the street boundary become the connection points; -> a sentence for the status line"""
+        """the electrical and water connection symbols on the street boundary become the connection points (the water one by the shared-boundary rule
+        of the data set); -> a sentence for the status line"""
         fr = self.st.get("frame")
-        if not fr or not r.get("connections"):
+        if not fr:
             return ""
+        cons = dict(r.get("connections") or {})
         L = abs(self.st["stand"]["corners"][1][0] - self.st["stand"]["corners"][0][0])
         said = []
-        for kind, c in r["connections"].items():
+        nbx = [(nb_.get("c") or (0, 0))[0] for nb_ in self.st.get("neighbours") or []]
+        for kind, c in cons.items():
             q = se.apply_frame(fr, c["pt"])
             x = max(0.3, min(L - 0.3, q[0]))
+            if kind == "water":                                  # two adjacent stands share one water connection, split on their common boundary
+                x, side_ = site_plans_data.water_pair_x(L, x, nbx)
+                self.st["water_pair"] = side_
             self.st["points"][kind] = [round(x, 2), 0.0]
             said.append("%s connection%s at %.1f m along the street" % ("electrical" if kind == "elec" else "water", (" " + c["label"]) if c.get("label") else "", x))
+        if "water" not in cons and nbx:                          # no water mark in the drawing: the rule still puts it on the shared boundary
+            x, side_ = site_plans_data.water_pair_x(L, None, nbx)
+            self.st["water_pair"] = side_
+            self.st["points"]["water"] = [x, 0.0]
+            said.append("water connection on the boundary shared with the %s neighbour" % side_)
+        if not said:
+            return ""
         self.st["ports"] = {}
         self.solve_now(False)
         self._to_fields()
