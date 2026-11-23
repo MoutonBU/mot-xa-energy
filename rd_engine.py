@@ -137,6 +137,20 @@ def zones_from_model(model, cons, glass, shade=None, glass_default=(5.6, 0.77)):
 
 
 # ---------------------------------------------------------------------------------------------- sun on a plane
+def block_horizon(bearing, dist, height, width, eye=1.5, base=None):
+    """the skyline of one building next door: 36 altitudes (degrees) per 10 degrees of compass bearing. The building is `width` m wide, `dist` m away
+    (nearest face) in the direction `bearing` (0 = north, clockwise), and `height` m high at the eaves; the window's middle is `eye` m up. `base` = a skyline to add it to."""
+    hz = [float(x) for x in (base or [0.0] * 36)]
+    dist = max(float(dist), 0.5)
+    alt = math.degrees(math.atan2(max(float(height) - eye, 0.0), dist))
+    half = math.degrees(math.atan2(max(float(width), 0.1) / 2.0, dist))
+    for k in range(36):
+        d = abs((k * 10.0 - bearing + 180.0) % 360.0 - 180.0)
+        if d <= half + 5.0:
+            hz[k] = max(hz[k], round(alt, 1))
+    return hz
+
+
 def horizon_mask(sun, horizon):
     """True where the sun is above the skyline of the neighbouring buildings. horizon = 36 altitudes in degrees, one per 10 degrees of compass bearing (0 = north)."""
     if not horizon:
@@ -439,6 +453,8 @@ def run_rational(zones, cons, w, sun, required_r, table4, clear_glass, lpd, opts
     act = simulate(zones, cons, w, sun, od, "Actual building")
     rz, rc, notes = make_reference(zones, cons, required_r, table4, clear_glass, lpd, o["light_hours"])
     orf = dict(o)
+    if not o.get("horizon_ref", True):
+        orf["horizon"] = None
     orf["dhw_kind"] = "ref"
     ref = simulate(rz, rc, w, sun, orf, "Reference building")
     ca, cr = consumption(act), consumption(ref)

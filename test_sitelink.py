@@ -30,3 +30,7 @@ assert h[k]>0 and h[(k+18)%36]==0,(bx,h)
 l=pg.energy_link(); assert len(l["horizon"])==36 and l["stand_area"]>0
 pg.send_to_energy.__func__  # exists
 print("ok site", round(bx), h[k])
+hz=E.block_horizon(180,5,7.5,10)
+assert hz[18]>0 and hz[0]==0 and abs(hz[18]-round(__import__("math").degrees(__import__("math").atan2(6.0,5)),1))<0.2
+assert hz[17]>0 and hz[19]>0 and hz[12]==0
+print("ok block")

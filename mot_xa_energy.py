@@ -18405,12 +18405,33 @@ class MainWindow(QMainWindow):
         grid.addWidget(QLabel("Hot water in the design"), 3, 0)
         grid.addWidget(hwb, 3, 1)
         spin(3, 1, "Heat pump COP / solar share (0-1)", "hw_x", 3.0 if hwb.currentIndex() == 1 else 0.6, 0.0, 8.0, 2, 0.05, "Heat pump: its COP. Solar water heater: the share of the hot water heat it supplies over the year (0 to 1).")
-        hz_cb = QCheckBox("Shade from the neighbouring houses (from House placing; the same for the reference building)")
+        hz_cb = QCheckBox("Shade from the neighbouring houses of the site plan (from House placing)")
         hz_list = self.site_horizon_list()
         hz_cb.setEnabled(bool(hz_list) and max(hz_list or [0]) > 0)
         hz_cb.setChecked(hz_cb.isEnabled())
         hz_cb.setToolTip("Needs 'Send to the energy tools' in the House placing tool. The neighbours' eaves are taken at the height typed there.")
         grid.addWidget(hz_cb, 4, 0, 1, 4)
+        man_cb = QCheckBox("A building next to this one throws shade on it (type it in)")
+        man_cb.setToolTip("Tick it when another building, a wall or a tall boundary object blocks the sun. Untick it for no shade at all.")
+        grid.addWidget(man_cb, 5, 0, 1, 4)
+        spin(6, 0, "It lies towards compass bearing (0 = N, 90 = E, 180 = S)", "sh_bear", 0.0, 0.0, 359.0, 0, 5.0)
+        spin(6, 1, "Distance to its nearest wall (m)", "sh_dist", 4.0, 0.5, 100.0, 1, 0.5)
+        spin(7, 0, "Its height at the eaves or top (m)", "sh_h", 6.0, 0.5, 100.0, 1, 0.5)
+        spin(7, 1, "Its width facing us (m)", "sh_w", 12.0, 0.5, 200.0, 1, 0.5)
+        ref_cb = QCheckBox("The reference building gets the same shade")
+        ref_cb.setChecked(True)
+        ref_cb.setToolTip("Both buildings stand on the same site, so the reference is shaded too. Untick it to shade only the design.")
+        grid.addWidget(ref_cb, 8, 0, 1, 4)
+        for w_ in [spins[k] for k in ("sh_bear", "sh_dist", "sh_h", "sh_w")] + [ref_cb]:
+            w_.setEnabled(False)
+        def _shade_on(*_a):
+            on = man_cb.isChecked()
+            for k_ in ("sh_bear", "sh_dist", "sh_h", "sh_w"):
+                spins[k_].setEnabled(on)
+            ref_cb.setEnabled(on or hz_cb.isChecked())
+        man_cb.toggled.connect(_shade_on)
+        hz_cb.toggled.connect(_shade_on)
+        ref_cb.setEnabled(hz_cb.isChecked())
         v.addLayout(grid)
         from PySide6.QtWidgets import QTextBrowser as _TB
         out = _TB()
@@ -18431,6 +18452,7 @@ class MainWindow(QMainWindow):
             try:
                 E = ri["E"]
                 o = {k: sp.value() for k, sp in spins.items() if k in ("ach", "heat_sp", "cool_sp", "cop_heat", "cop_cool", "dhw_l_pd", "pop")}
+                o.pop("horizon", None)
                 o["occ"] = ri["occ"]
                 o["equip_w_m2"] = E.APPLIANCE_W_M2.get(ri["occ"], 0.0)
                 try:
@@ -18438,8 +18460,12 @@ class MainWindow(QMainWindow):
                     o["days"] = int(float(str(self.rd.get("days", "")).replace(",", ".") or 7))
                 except ValueError:
                     o["hours"], o["days"] = 0.0, 7
-                if hz_cb.isChecked():
-                    o["horizon"] = hz_list
+                hz_ = list(hz_list) if hz_cb.isChecked() else None
+                if man_cb.isChecked():
+                    hz_ = E.block_horizon(spins["sh_bear"].value(), spins["sh_dist"].value(), spins["sh_h"].value(), spins["sh_w"].value(), base=hz_)
+                if hz_:
+                    o["horizon"] = hz_
+                    o["horizon_ref"] = ref_cb.isChecked()
                 kind = hwb.currentData()
                 x = spins["hw_x"].value()
                 o["dhw_cop"] = x if kind == "heatpump" else 3.0
@@ -18459,7 +18485,7 @@ class MainWindow(QMainWindow):
                 adv = None
             QApplication.restoreOverrideCursor()
             state["res"] = res
-            out.setHtml(self._rd_result_html(res, ri, adv) + ("<p style='color:#666'>The shade of the neighbouring houses from the House placing tool was used, in the design and in the reference building.</p>" if o.get("horizon") else ""))
+            out.setHtml(self._rd_result_html(res, ri, adv) + (("<p style='color:#666'>Shade from a neighbouring building was used in the design%s.</p>" % (" and in the reference building" if o.get("horizon_ref", True) else " only")) if o.get("horizon") else ""))
             use.setEnabled(True)
 
         def put():

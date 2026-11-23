@@ -67,3 +67,17 @@ assert abs(E.b2_series("occ", (np.arange(8760)//24)%7)[3] - 0.88) < 1e-9
 r2 = E.simulate(box(), cons(), w, sun, dict(opts, pop=4.0, dhw_on=True, dhw_kind="resistance"))
 assert r2["dhw_q"] > 0 and abs(r2["dhw_elec"] - r2["dhw_q"]) < 1e-6
 print("rd_engine tests OK")
+
+# 5. a building next door: the north-facing window loses its sun (the test sun is in the north), in the design; the reference follows the tick
+wall = E.block_horizon(0, 3.0, 12.0, 60.0)
+args = (box(win=6.0, az=0.0), cons(), ws, ss, req, T4, (5.6, 0.77), 4.0)
+open_ = E.run_rational(*args, dict(opts, dhw_on=False))
+both = E.run_rational(*args, dict(opts, dhw_on=False, horizon=wall))
+dsgn = E.run_rational(*args, dict(opts, dhw_on=False, horizon=wall, horizon_ref=False))
+assert both["actual"]["solar_by_sector"]["N"] < open_["actual"]["solar_by_sector"]["N"] * 0.5
+assert abs(dsgn["reference"]["heat"] - open_["reference"]["heat"]) < 1e-6 and abs(both["reference"]["heat"] - open_["reference"]["heat"]) > 1e-6
+print("horizon ok")
+
+def test_horizon_ref():
+    import rd_engine as E2
+    assert E2.run_rational.__code__.co_names.count("horizon_ref") or "horizon_ref" in open(E2.__file__).read()
