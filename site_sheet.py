@@ -5,7 +5,7 @@ Everything is placed in metres and drawn at the scale of `s` pixels per metre, s
 import math
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPicture, QPolygonF
+from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen, QPicture, QPolygonF
 
 import site_engine as se
 import site_plans_data
@@ -321,11 +321,63 @@ def _numbered_stands(st, cpoly=None):
     return out
 
 
+def _ground(D, st, stand):
+    """the stand coloured by height (low blue, high brown) with a red glow where it is steep: only on the screen and the PDF, not the DXF"""
+    if hasattr(D.p, "set_layer") or D.lite or not (st.get("look") or {}).get("ground", True):
+        return
+    import site_profile
+    terr = site_profile.terrain_for(st)
+    if terr is None:
+        return
+    xs, ys = [q[0] for q in stand], [q[1] for q in stand]
+    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    key = (round(x0, 2), round(x1, 2), round(y0, 2), round(y1, 2), len(stand))
+    g = getattr(terr, "_grid", None)
+    if g is None or g[0] != key:
+        n = max(8.0, math.sqrt((x1 - x0) * (y1 - y0) / 300.0))
+        cs = max(1.0, n)
+        nx, ny = max(2, int(math.ceil((x1 - x0) / cs))), max(2, int(math.ceil((y1 - y0) / cs)))
+        dx, dy = (x1 - x0) / nx, (y1 - y0) / ny
+        z = [[terr.z_at(x0 + i * dx, y0 + j * dy) for i in range(nx + 1)] for j in range(ny + 1)]
+        g = (key, nx, ny, dx, dy, z)
+        terr._grid = g
+    _k, nx, ny, dx, dy, z = g
+    flat = [v for row in z for v in row if v is not None]
+    if not flat or max(flat) - min(flat) < 0.05:
+        return
+    lo, hi = min(flat), max(flat)
+    poly_path = QPainterPath()
+    poly_path.addPolygon(QPolygonF([D.sh.pt(q) for q in stand]))
+    poly_path.closeSubpath()
+    p = D.p
+    p.save()
+    p.setClipPath(poly_path)
+    p.setPen(Qt.PenStyle.NoPen)
+    for j in range(ny):
+        for i in range(nx):
+            c = [z[j][i], z[j][i + 1], z[j + 1][i + 1], z[j + 1][i]]
+            if any(v is None for v in c):
+                continue
+            m = sum(c) / 4.0
+            t = (m - lo) / (hi - lo)
+            col = QColor(int(70 + 90 * t), int(130 - 20 * t), int(220 - 150 * t), 80)          # blue (low) to brown (high)
+            slope = max(abs(c[1] - c[0]), abs(c[2] - c[3])) / dx if dx else 0.0
+            slope = max(slope, max(abs(c[3] - c[0]), abs(c[2] - c[1])) / dy if dy else 0.0)
+            p.setBrush(col)
+            q = [D.sh.pt((stand_x, stand_y)) for stand_x, stand_y in ((x0 + i * dx, y0 + j * dy), (x0 + (i + 1) * dx, y0 + j * dy), (x0 + (i + 1) * dx, y0 + (j + 1) * dy), (x0 + i * dx, y0 + (j + 1) * dy))]
+            p.drawPolygon(QPolygonF(q))
+            if slope > 0.1:                                               # steeper than 1 in 10: a red glow
+                p.setBrush(QColor(216, 19, 43, int(min(110, 40 + 600 * (slope - 0.1)))))
+                p.drawPolygon(QPolygonF(q))
+    p.restore()
+
+
 def _contours(D, st, stand):
     """the imported contours, faint, with the level written on each (only when they are switched on in the levels)"""
     cd = st.get("contours")
     if not cd or not (cd.get("lines") or cd.get("spots")) or not (st.get("levels") or {}).get("use_contours", 1):
         return
+    _ground(D, st, stand)
     fr = st.get("frame")
     mp = (lambda q: se.apply_frame(fr, q)) if fr else (lambda q: tuple(q))
     xs, ys = [q[0] for q in stand], [q[1] for q in stand]

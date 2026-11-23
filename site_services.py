@@ -7,7 +7,7 @@ import math
 import sys
 
 from PySide6.QtCore import QPointF, QRectF, QTimer, Qt, QSizeF, QVariantAnimation, QEasingCurve
-from PySide6.QtGui import QPixmap, QKeySequence, QShortcut, QBrush, QColor, QFont, QPainter, QPen, QPolygonF, QPageSize, QPageLayout, QPdfWriter, QImage
+from PySide6.QtGui import QCursor, QPixmap, QKeySequence, QShortcut, QBrush, QColor, QFont, QPainter, QPen, QPolygonF, QPageSize, QPageLayout, QPdfWriter, QImage
 from PySide6.QtWidgets import (QApplication, QFrame, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QInputDialog, QListWidget, QMenu, QDoubleSpinBox, QFileDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton,
                                QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget, QAbstractItemView)
 
@@ -333,9 +333,20 @@ class ServicesView(QWidget):
 
     def _tick(self):
         pg = self.page
-        want = bool(self.sel) and self.sel[0] in ("house", "carport", "sewer", "eye") or (bool(pg.res) and (pg.st.get("look") or {}).get("flow", True) and bool((pg.res.get("sewer") or {}).get("path")))
+        hs = bool(self.sel) and self.sel[0] in ("house", "carport")
+        tgt = 1.0 if hs else 0.0
+        dm = getattr(self, "_dim", 0.0)
+        if hs:
+            self._dim_role = self.sel[0]
+        want = bool(self.sel) and self.sel[0] in ("house", "carport", "sewer", "eye") or (bool(pg.res) and (pg.st.get("look") or {}).get("flow", True) and bool((pg.res.get("sewer") or {}).get("path"))) \
+            or abs(dm - tgt) > 1e-3 or getattr(self, "_settle", None) is not None or getattr(self, "_ruler", None) is not None or bool(getattr(pg, "_bad", None))
         if not want or not self.isVisible() or self.drag is not None:
             return
+        self._dim = dm + max(-0.16, min(0.16, tgt - dm))                  # the dimension lines slide out and fold away
+        if getattr(self, "_settle", None) is not None:
+            self._settle += 1
+            if self._settle > 9:
+                self._settle = None
         self._ph = (getattr(self, "_ph", 0.0) + 0.045) % 1.0
         QWidget.update(self)                                       # only the moving parts: the plan is shown from its picture
 
@@ -368,8 +379,209 @@ class ServicesView(QWidget):
                 self._anim_t.start(60)
         if not self.lite:
             self.draw_select(p)
+            self.draw_setbacks(p)
+            self.draw_dims(p)
             self.draw_flow(p)
+            self.draw_cover(p)
+            self.draw_ruler(p)
             self.draw_gizmo(p)
+
+    def _setbacks(self):
+        """for each side of the stand: the setback line (a, b), how close the house or carport is to it in metres (negative = over it) and which side it is"""
+        pg = self.page
+        stand = pg.st["stand"]["corners"]
+        sb = {"street": 1.0, "side": 1.0, "rear": 2.0}
+        sb.update({k: v for k, v in (pg.st["stand"].get("setbacks") or {}).items() if v is not None})
+        kinds = se.edge_kinds(stand)
+        ccw = se.area(stand) > 0
+        verts = [q for role in ("house", "carport") for q in (pg.res.get(role) or [])]
+        out = []
+        n = len(stand)
+        for i in range(n):
+            a, b = stand[i], stand[(i + 1) % n]
+            L = math.hypot(b[0] - a[0], b[1] - a[1])
+            if L < 1e-6 or not verts:
+                continue
+            ux, uy = (b[0] - a[0]) / L, (b[1] - a[1]) / L
+            ix, iy = (-uy, ux) if ccw else (uy, -ux)                      # towards the inside
+            s = float(sb.get(kinds[i], 1.0))
+            dist = min((q[0] - a[0]) * ix + (q[1] - a[1]) * iy for q in verts)
+            out.append(((a[0] + ix * s, a[1] + iy * s), (b[0] + ix * s, b[1] + iy * s), dist - s, kinds[i], s))
+        return out
+
+    def draw_setbacks(self, p):
+        """while a house or carport is selected (or just put down) the setback lines glow: amber when it is close, red when it is over, green for a second after you put it down"""
+        pg = self.page
+        settle = getattr(self, "_settle", None)
+        if not pg.res or not self.sh or not ((self.sel and self.sel[0] in ("house", "carport")) or settle is not None):
+            return
+        try:
+            rows = self._setbacks()
+        except Exception:
+            return
+        S = self.sh.pt
+        pulse = 0.5 + 0.5 * math.sin(getattr(self, "_ph", 0.0) * 2 * math.pi)
+        p.save()
+        for a, b, margin, _k, _s in rows:
+            if settle is not None:
+                col = QColor(31, 157, 85) if margin >= 0 else QColor(216, 19, 43)
+                al = int(200 * (1.0 - settle / 10.0))
+            elif margin < 0:
+                col, al = QColor(216, 19, 43), int(150 + 80 * pulse)
+            elif margin < 0.6:
+                col, al = QColor(240, 150, 20), int(90 + 110 * (1.0 - margin / 0.6))
+            else:
+                continue
+            c = QColor(col)
+            c.setAlpha(max(0, al) // 3)
+            p.setPen(QPen(c, 9, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawLine(S(a), S(b))
+            c.setAlpha(max(0, al))
+            p.setPen(QPen(c, 2.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawLine(S(a), S(b))
+        settle_poly = None
+        if settle is not None and self.sel and self.sel[0] in ("house", "carport"):
+            settle_poly = pg.res.get(self.sel[0])
+        if settle_poly:                                               # the shadow and a small bounce when the house settles
+            from PySide6.QtGui import QPainterPath
+            t = settle / 10.0
+            pts = [S(q) for q in settle_poly]
+            cx = sum(q.x() for q in pts) / len(pts)
+            cy = sum(q.y() for q in pts) / len(pts)
+            house = QPainterPath()
+            house.addPolygon(QPolygonF(pts))
+            house.closeSubpath()
+            sh_ = QPainterPath()
+            sh_.addPolygon(QPolygonF([QPointF(q.x() + 5 * (1 - t), q.y() + 8 * (1 - t)) for q in pts]))
+            sh_.closeSubpath()
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(0, 0, 0, int(90 * (1 - t))))
+            p.drawPath(sh_.subtracted(house))
+            k = 1.0 + 0.05 * math.sin(t * math.pi * 3) * (1 - t)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(QColor(255, 64, 86, int(220 * (1 - t))), 3))
+            p.drawPolygon(QPolygonF([QPointF(cx + (q.x() - cx) * k, cy + (q.y() - cy) * k) for q in pts]))
+        p.restore()
+
+    def draw_dims(self, p):
+        """the distances from the selected house or carport to the boundaries slide out as dimension lines and fold away again"""
+        pg = self.page
+        f = getattr(self, "_dim", 0.0)
+        role = getattr(self, "_dim_role", None)
+        if f < 0.02 or not role or not pg.res or not self.sh:
+            return
+        poly = pg.res.get(role) or []
+        stand = pg.st["stand"]["corners"]
+        if not poly:
+            return
+        S = self.sh.pt
+        n = len(stand)
+        ccw = se.area(stand) > 0
+        blue = QColor(20, 120, 200)
+        p.save()
+        fm = p.font()
+        fm.setPointSizeF(9.0)
+        fm.setBold(True)
+        p.setFont(fm)
+        for i in range(n):
+            a, b = stand[i], stand[(i + 1) % n]
+            L = math.hypot(b[0] - a[0], b[1] - a[1])
+            if L < 1e-6:
+                continue
+            ux, uy = (b[0] - a[0]) / L, (b[1] - a[1]) / L
+            ix, iy = (-uy, ux) if ccw else (uy, -ux)
+            best = None
+            for q in poly:
+                t = (q[0] - a[0]) * ux + (q[1] - a[1]) * uy
+                if not 0.0 <= t <= L:
+                    continue
+                d = (q[0] - a[0]) * ix + (q[1] - a[1]) * iy
+                if d > 0 and (best is None or d < best[0]):
+                    best = (d, q, (a[0] + ux * t, a[1] + uy * t))
+            if best is None:
+                continue
+            d, q, foot = best
+            e = 1.0 - (1.0 - f) ** 3
+            tip = (q[0] + (foot[0] - q[0]) * e, q[1] + (foot[1] - q[1]) * e)           # grows from the house to the boundary
+            al = int(235 * f)
+            c = QColor(blue)
+            c.setAlpha(al)
+            p.setPen(QPen(c, 1.6))
+            p.drawLine(S(q), S(tip))
+            p.drawEllipse(S(q), 2.5, 2.5)
+            if e > 0.9:
+                m = S(((q[0] + foot[0]) / 2, (q[1] + foot[1]) / 2))
+                txt = "%.2f m" % d
+                w = p.fontMetrics().horizontalAdvance(txt)
+                r = QRectF(m.x() - w / 2 - 5, m.y() - 10, w + 10, 20)
+                p.setPen(Qt.PenStyle.NoPen)
+                bg = QColor(255, 255, 255, int(235 * f))
+                p.setBrush(bg)
+                p.drawRoundedRect(r, 6, 6)
+                p.setPen(c)
+                p.drawText(r, Qt.AlignmentFlag.AlignCenter, txt)
+        p.restore()
+
+    def draw_cover(self, p):
+        """the stretches of sewer where the soil cover is too low flash red on the plan (the same stretches are red on the section)"""
+        pg = self.page
+        bad = getattr(pg, "_bad", None)
+        path = ((pg.res or {}).get("sewer") or {}).get("path")
+        if not bad or not path or not self.sh:
+            return
+        S = self.sh.pt
+        pulse = 0.5 + 0.5 * math.sin(getattr(self, "_ph", 0.0) * 2 * math.pi)
+        p.save()
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        for x0, x1 in bad:
+            n = max(2, int((x1 - x0) / 0.25) + 1)
+            try:
+                pts = [S(se._point_at(path, x0 + (x1 - x0) * k / n)) for k in range(n + 1)]
+            except Exception:
+                continue
+            for w, al in ((10, 50), (3.2, int(150 + 90 * pulse))):
+                p.setPen(QPen(QColor(216, 19, 43, al), w, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+                p.drawPolyline(QPolygonF(pts))
+        p.restore()
+
+    def draw_ruler(self, p):
+        """hold R: a ruler from where the pointer was when you pressed R to where it is now, with the distance and angle"""
+        r = getattr(self, "_ruler", None)
+        if r is None or not self.sh:
+            return
+        a = self.sh.pt(r)
+        b = QPointF(self.mapFromGlobal(QCursor.pos()))
+        w0, w1 = r, self.world(b)
+        dx, dy = w1[0] - w0[0], w1[1] - w0[1]
+        txt = "%.2f m   %d\u00b0" % (math.hypot(dx, dy), round(math.degrees(math.atan2(dy, dx))) % 360)
+        p.save()
+        col = QColor("#0b57e8")
+        p.setPen(QPen(col, 1.8, Qt.PenStyle.DashLine))
+        p.drawLine(a, b)
+        p.setBrush(QColor("white"))
+        p.setPen(QPen(col, 2))
+        p.drawEllipse(a, 4, 4)
+        p.drawEllipse(b, 4, 4)
+        f = p.font()
+        f.setPointSizeF(10.0)
+        f.setBold(True)
+        p.setFont(f)
+        w = p.fontMetrics().horizontalAdvance(txt)
+        m = QPointF((a.x() + b.x()) / 2, (a.y() + b.y()) / 2 - 16)
+        rr = QRectF(m.x() - w / 2 - 7, m.y() - 11, w + 14, 22)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(255, 255, 255, 240))
+        p.drawRoundedRect(rr, 8, 8)
+        p.setPen(col)
+        p.drawText(rr, Qt.AlignmentFlag.AlignCenter, txt)
+        p.restore()
+
+    def keyReleaseEvent(self, e):
+        if e.key() == Qt.Key.Key_R and not e.isAutoRepeat() and getattr(self, "_ruler", None) is not None:
+            self._ruler = None
+            QWidget.update(self)
+            return
+        super().keyReleaseEvent(e)
 
     def draw_select(self, p):
         """the selected house, carport, sewer or eye gets a soft red outline and the rest of the plan dims a little"""
@@ -840,6 +1052,10 @@ class ServicesView(QWidget):
         return None
 
     def keyPressEvent(self, e):
+        if e.key() == Qt.Key.Key_R and not e.isAutoRepeat() and not e.modifiers() and self.sh is not None and self._mode == "select":
+            self._ruler = self.world(QPointF(self.mapFromGlobal(QCursor.pos())))
+            QWidget.update(self)
+            return
         if e.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and self.sel and self.sel[0] == "sewer" and getattr(self, "sv_last", None):
             self.page.delete_sewer_corner(self.sv_last)
             self.sv_last = None
@@ -1100,6 +1316,8 @@ class ServicesView(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, e):
+        if self.sel and self.sel[0] in ("house", "carport") and self.drag and self.drag[0] not in ("pan",):
+            self._settle = 0                                          # the house settles: shadow, a small bounce, the setback lines flash
         if self.drag and self.drag[0] == "fh":
             stroke = self.drag[1]
             self.drag = None
@@ -1605,7 +1823,7 @@ class SiteServicesPage(ToolBase):
         ml.addLayout(row)
         row = FlowLayout(None, 8, 6)
         self.look_cb = {}
-        for key, text in (("fill", "Green stand"), ("walls", "Boundary walls"), ("cutout", "Export frame (blue)"), ("storm", "Stormwater arrow"), ("wp_box", "WP / VV box and marks"), ("upright", "Names and numbers stay level when the plan is turned"), ("flow", "Moving things on the screen: flow of the sewer, water and electrical, pulses at the eyes (not on the PDF)")):
+        for key, text in (("fill", "Green stand"), ("walls", "Boundary walls"), ("cutout", "Export frame (blue)"), ("storm", "Stormwater arrow"), ("wp_box", "WP / VV box and marks"), ("upright", "Names and numbers stay level when the plan is turned"), ("ground", "Colour the stand by height and show steep ground (needs contours)"), ("flow", "Moving things on the screen: flow of the sewer, water and electrical, pulses at the eyes (not on the PDF)")):
             cb_ = QCheckBox(text)
             cb_.setChecked(True)
             cb_.toggled.connect(lambda on, k=key: self.set_look(k, on))
@@ -4272,6 +4490,7 @@ class SiteServicesPage(ToolBase):
             d = site_profile.build(self.st, self.res)
         except Exception:
             return
+        self._bad = list(d.get("bad") or [])
         lay = self.lv_chips_l
         while lay.count():
             it = lay.takeAt(0)

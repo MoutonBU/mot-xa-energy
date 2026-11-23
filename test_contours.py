@@ -86,6 +86,19 @@ qp.end()
 pg.lv_lines.setChecked(True); pg.solve_now(False)
 assert sp.build(pg.st, pg.res)["lines_only"]
 pg.lv_lines.setChecked(False)
+assert d3["bad"] and all(b_ > a_ for a_, b_ in d3["bad"]), d3["bad"]          # the stretches with too little cover
+pg.st["contours"] = pyr; pg.solve_now(False)
+pg.resize(900, 700); pg.show()
+import time as _t
+_t0 = _t.time()
+while _t.time() - _t0 < 0.4:
+    app.processEvents()
+pg.view.lite = False; pg.view._dirty = True
+im_a = pg.view.grab().toImage()                        # the ground colours and steep glow draw without error
+pg.set_look("ground", False); pg.view._dirty = True
+im_b = pg.view.grab().toImage()
+assert im_a != im_b, "ground shading did not show"
+pg.set_look("ground", True)
 pg.remove_contours()
 assert not sp.build(pg.st, pg.res)["terrain"] and "No contours" in pg.lv_continfo.text()
 print("ok")

@@ -179,6 +179,18 @@ def build(state, res, il_head=None, lean_ratio=None):
     worst = min(range(0, 41), key=lambda k: ngl(k / 40.0 * Hh) - il(k / 40.0 * Hh) - od) / 40.0 * Hh
     covers += [s["cover"] for s in st] + [ngl(x_) - il_in(x_) - od for x_, _y in drops_in]
     min_cover = min(covers) if covers else 0.0
+    mc_ = float(par.get("min_cover", 0.3))
+    bad, run_ = [], None                                         # the stretches where the soil cover is too low (every 0.25 m)
+    for k_ in range(0, int(Hh / 0.25) + 2):
+        x_ = min(k_ * 0.25, Hh)
+        low_ = ngl(x_) - il(x_) - od < mc_ - 1e-6
+        if low_ and run_ is None:
+            run_ = x_
+        if not low_ and run_ is not None:
+            bad.append((run_, x_))
+            run_ = None
+    if run_ is not None:
+        bad.append((run_, Hh))
     drop = il(Hh) - main_il
     checks = []
     f_flat, f_sp = float(par.get("fall_flat", 60.0)), float(par.get("fall_special", 120.0))
@@ -207,7 +219,7 @@ def build(state, res, il_head=None, lean_ratio=None):
         checks.append(("Eyes are at most %.1f m apart (limit %.0f m)." % (max(gaps), mx) if max(gaps) <= mx + 1e-6 else "Eyes are %.1f m apart: more than %.0f m." % (max(gaps), mx), max(gaps) <= mx + 1e-6))
     out = {"stations": st, "length": Hh, "fall": fall, "od": od, "pipe": str(par.get("sewer_pipe", "110")), "ngl": ngl, "il": il, "ngl0": ngl0, "ngl1": ngl1,
             "pts": pts, "il_in": il_in, "segs": segs, "drops": [(x_, il_in(x_), y_) for x_, y_ in drops_in], "drop_lean": drop_lean, "terrain": terr is not None, "main_il": main_il, "main_typed": main_il_typed, "drop": drop, "assumed": assumed, "min_cover": min_cover, "checks": checks,
-            "ffl": float(lv["ffl"]) if _set(lv.get("ffl")) else None, "note": sw.get("note", ""), "lines_only": bool(lv.get("lines_only"))}
+            "ffl": float(lv["ffl"]) if _set(lv.get("ffl")) else None, "note": sw.get("note", ""), "bad": bad, "lines_only": bool(lv.get("lines_only"))}
     out["lean_ratio"] = 0.5 if lean_ratio is None else lean_ratio
     if drops_in and lean_ratio is None:                         # the steep part is 45 degrees on the sheet: its run is its height times (horizontal scale / vertical scale)
         r_ = 0.5
@@ -453,6 +465,12 @@ def draw(p, W, H, S, d, title_lines=(), when=None):
             yb_ = d["il"](xb_)
         for off_, w_ in (((0.0, 0.8),) if lo_ else ((0.0, 0.6), (od_mm, 0.3))):
             line(X(xa_), Y(ya_) - off_, X(xb_), Y(yb_) - off_, BROWN, w_)
+    for xa_, xb_ in d.get("bad") or []:                          # where the cover is too low: a red band along the pipe
+        n_ = max(2, int((xb_ - xa_) / 0.5) + 1)
+        for k_ in range(n_):
+            x1_, x2_ = xa_ + (xb_ - xa_) * k_ / n_, xa_ + (xb_ - xa_) * (k_ + 1) / n_
+            line(X(x1_), Y(d["il"](x1_)) - od_mm / 2.0, X(x2_), Y(d["il"](x2_)) - od_mm / 2.0, QColor(216, 19, 43, 150), 2.4)
+        text((X(xa_) + X(xb_)) / 2.0, Y(d["il"]((xa_ + xb_) / 2.0)) + 4.0, "cover too low", 2.0, True, QColor(216, 19, 43), "c")
     p.setPen(pen(BROWN, 0.3))
     if not lo_:
         p.drawLine(P(X(0.0), Y(ilh)), P(X(0.0), Y(ilh) - od_mm))
