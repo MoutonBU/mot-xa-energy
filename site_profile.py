@@ -1,7 +1,7 @@
 """Sewer long section (longitudinal section) for the council, worked out from the sewer placed on the site plan.
 
 build(state, res)   -> the numbers: a station every eye and the connection, with chainage, natural ground level, invert level, depth, cover and fall
-draw(p, W, H, S, data, title_lines)  -> the sheet (A3 landscape, 420 x 297 mm), drawn with a QPainter or the DxfPainter of site_export
+draw(p, W, H, S, data, title_lines)  -> the sheet (A1 landscape: laid out as 420 x 297 and printed at twice that size), drawn with a QPainter or the DxfPainter of site_export
 write_pdf / write_dxf / render_image -> the three outputs
 
 Levels: the engine only knows depths below the ground. The ground levels (at the house, at the main, optional spot levels along the run) and the main's
@@ -242,15 +242,15 @@ def draw(p, W, H, S, d, title_lines=(), when=None):
     # ---- the graph
     gx0, gx1, gy0, gy1 = 62.0, 402.0, 40.0, 128.0
     x0 = gx0 + 26.0
-    hs = _nice(Hh * 1000.0 / (gx1 - x0 - 30.0), [50, 100, 200, 250, 500, 1000, 2000])
+    hs = _nice(Hh * 1000.0 / (gx1 - x0 - 30.0), [100, 200, 400, 500, 1000, 2000, 4000])      # the sheet is laid out as 420 x 297 and printed twice that size (A1), so a scale here is half the printed one
     levels = [s["ngl"] for s in st] + [d["ngl0"], d["ngl1"]] + [y for _x, y in d["pts"]]
     top = max(levels + ([d["ffl"]] if d["ffl"] is not None else [])) + 0.9
     low_p = min(s["il"] for s in st) if st else d["main_il"]
     datum_f = math.floor((min(low_p, d["main_il"]) - 0.45) / 0.5) * 0.5          # with the main in the picture
     datum_p = math.floor((low_p - 0.45) / 0.5) * 0.5                             # the pipe and the ground only
     room = gy1 - gy0 - 6.0
-    vs_f = _nice((top - datum_f) * 1000.0 / room, [5, 10, 20, 25, 30, 40, 50, 100, 200])
-    vs_p = _nice((top - datum_p) * 1000.0 / room, [5, 10, 20, 25, 30, 40, 50, 100, 200])
+    vs_f = _nice((top - datum_f) * 1000.0 / room, [10, 20, 40, 50, 60, 80, 100, 200, 400])
+    vs_p = _nice((top - datum_p) * 1000.0 / room, [10, 20, 40, 50, 60, 80, 100, 200, 400])
     main_off = vs_p < vs_f and d["main_il"] < datum_p + 0.15                      # the main is far below: keep the detail and show it with an arrow
     datum, vs = (datum_p, vs_p) if main_off else (datum_f, vs_f)
 
@@ -260,7 +260,7 @@ def draw(p, W, H, S, d, title_lines=(), when=None):
     def Y(lvl):
         return gy1 - (lvl - datum) * 1000.0 / vs
 
-    text(412 - 6, 19, "Horizontal 1:%d    Vertical 1:%d" % (hs, vs), 3.0, True, align="r")
+    text(412 - 6, 19, "Horizontal 1:%g    Vertical 1:%g" % (hs / 2.0, vs / 2.0), 3.0, True, align="r")
     text(412 - 6, 26, "Levels in metres.  Datum level %.3f" % datum, 3.0, align="r")
     layer("SECTION GROUND")
     # level scale on the left and light level lines
@@ -295,7 +295,10 @@ def draw(p, W, H, S, d, title_lines=(), when=None):
         if yy is not None:
             line(k, yy, k - 1.2, yy + 1.8, GREEN, 0.15)
         k += 3.0
-    text(pts_mm[-1][0], pts_mm[-1][1] - 9.0, "NATURAL GROUND LEVEL", 2.2, False, GREEN, "r")
+    if pts_mm[-1][0] + 2.0 + 38.0 <= gx1:                           # beside the end of the ground line, clear of the eye names
+        text(pts_mm[-1][0] + 2.0, pts_mm[-1][1] + 0.8, "NATURAL GROUND LEVEL", 2.2, False, GREEN)
+    else:
+        text(pts_mm[-1][0], pts_mm[-1][1] + 6.0, "NATURAL GROUND LEVEL", 2.2, False, GREEN, "r")
     # the house at the left
     layer("SECTION PIPE")
     top = Y(d["ffl"] if d["ffl"] is not None else d["ngl0"] + 0.5) - (2.0 if d["ffl"] is None else 0.0)
@@ -338,7 +341,7 @@ def draw(p, W, H, S, d, title_lines=(), when=None):
         line(xe - w, yc, xe - w - lean, yg, BROWN, 0.35, sty)
         line(xe + w, yc, xe + w - lean, yg, BROWN, 0.35, sty)
         line(xe - w - lean - 0.8, yg, xe + w - lean + 0.8, yg, BROWN, 0.5)
-        ly = yg - 5.0 - (i % 3) * 3.8
+        ly = yg - 5.0 - (i % 4) * 4.6
         line(xe - lean, yg - 0.5, xe - lean, ly + 0.6, GREY, 0.12)
         text(xe - lean, ly, s["name"], 2.3, True, BROWN, "c")
     # the main sewer at the right
@@ -414,7 +417,7 @@ def draw(p, W, H, S, d, title_lines=(), when=None):
         notes.append("Natural ground levels are as given by the designer: confirm them against the land surveyor's levels before the section is submitted.")
     notes += ["The invert level at the house is the ground level there minus the minimum depth, falling at 1:%d to the main. The level of the main and the connection are to be confirmed against the council's records and on site." % round(d["fall"]),
               "Bedding, backfill, testing and the manholes or eyes as required by the local authority and SANS 10252-2. Inspection eyes at every change of direction and at the limits shown above.",
-              "Horizontal scale 1:%d, vertical scale 1:%d (the vertical is drawn larger so the fall can be read)." % (hs, vs)]
+              "A1 sheet. Horizontal scale 1:%g, vertical scale 1:%g (the vertical is drawn larger so the fall can be read)." % (hs / 2.0, vs / 2.0)]
     for i, t in enumerate(notes):
         lines = _wrap(f, t, (238 - 28) * S)
         for j, ln in enumerate(lines):
@@ -444,9 +447,9 @@ def draw(p, W, H, S, d, title_lines=(), when=None):
 def write_pdf(path, d, title_lines=(), when=None):
     from PySide6.QtGui import QPageLayout, QPageSize, QPainter, QPdfWriter
     w = QPdfWriter(path)
-    w.setPageSize(QPageSize(QPageSize.PageSizeId.A3))
+    w.setPageSize(QPageSize(QPageSize.PageSizeId.A1))
     w.setPageOrientation(QPageLayout.Orientation.Landscape)
-    w.setResolution(300)
+    w.setResolution(150)
     p = QPainter(w)
     S = w.width() / 420.0
     draw(p, w.width(), w.height(), S, d, title_lines, when)
@@ -471,7 +474,7 @@ def write_dxf(path, d, title_lines=(), when=None):
     import site_export
     doc = site_export.new_doc()
     p = site_export.DxfPainter(doc, doc.modelspace())
-    S = 200.0                                    # drawn at 1:200 of paper, like the site plan: 1 drawing unit = 1 mm
+    S = 200.0                                    # the sheet is A1 (twice the 420 x 297 layout) drawn at 1:100: 1 drawing unit = 1 mm
     draw(p, 420.0 * S, 297.0 * S, S, d, title_lines, when)
     doc.saveas(path)
     return path

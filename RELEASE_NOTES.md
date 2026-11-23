@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.197**
+Current version: **1.86.198**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Sewer long section on an A1 sheet:** the PDF is now A1 landscape (the DXF is drawn at the same size) and the horizontal scale is chosen from 1:50, 1:100, 1:200 ... so a normal stand gets 1:100; the sheet states the real printed scales. The eye names are spread over four heights and the "NATURAL GROUND LEVEL" label sits beside the end of the ground line, so less overlaps. Check the sheet on your own site.
 - **The program now places the drop itself:** the pipe runs from the minimum invert (450 mm) at its fall, drops steeply at an eye, and the lower pipe runs on at the same fall and arrives exactly at the main's invert. "Add a drop to reach the main" works out the drop height and puts the drop on the last eye that still leaves the lower pipe a run of its own (no question asked; you can still type or change the drop in the settings box). The steep part is drawn at 45 degrees on the sheet and takes half its height in metres of chainage. Check the placement on your own site.
 - **Drop drawn as in your blue sketch:** on the long section the drop is now one straight 45 degree line, the rodding eye's line carried on from the upper pipe down to the lower pipe, which then carries on at the fall to the main. Check it against your sketch on your own site.
 - **Drops now show on the site plan, and lean like your sketch:** every drop typed in the sewer section settings puts an inspection eye and a rodding eye on the sewer line of the site plan at that distance, labelled with the same names as the long section (IE1, RE1 ...). On the long section the drop leans at 45 degrees up toward the house, like a rodding eye, and the pipe carries on lower to the main. "Add a drop to reach the main" now asks where the pipe drops. Tested on the test site; check the positions on your own site. I took "gut placement" to mean the sewer line on the site plan.
