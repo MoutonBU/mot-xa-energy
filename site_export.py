@@ -223,13 +223,13 @@ def build_sheet(page, path, scale_text="1:200"):
     """what the screen shows, written as a DXF at true size"""
     st, res = page.st, page.res
     view = page.view
-    x0, y0, x1, y1 = view.bounds()
+    x0, y0, x1, y1 = page.cutout_rect()                     # the closer cut (the blue frame) goes to Archicad, not the wide working view
     road = st["sheet"].get("road", "left")
     turn = st["sheet"].get("turn", 0.0)
     w_m, h_m = site_sheet.page_extent(x0, y0, x1, y1, road, turn)
     W, H = w_m * S_MM, h_m * S_MM
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-    opts = page.sheet_opts()
+    opts = page.export_opts()
     # where texts have to move off each other is worked out the way the screen does it, at the zoom on the screen
     scr = view.sh or site_sheet.Sheet(max(min(800.0 / w_m, 600.0 / h_m), 2.0), (cx, cy), (800, 600), road, turn)
     pic = QPicture()
@@ -250,6 +250,8 @@ def build_sheet(page, path, scale_text="1:200"):
     d = site_sheet._draw(p, sh, st, res, o2, minpx=0)
     r_px = max(S_MM * 1.5, 18)
     site_sheet.north_arrow(p, page.north_centre(W, H, r_px, False), r_px, st["sheet"].get("north", 0), minpx=0)
+    _clip_to(doc.modelspace(),
+             [p._pt(sh.pt((cx_, cy_)).x(), sh.pt((cx_, cy_)).y()) for cx_, cy_ in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))])
     # the title block under the plan, as on the PDF sheet
     name = st["sheet"].get("stand_no") or st["stand"].get("name", "Stand")
     base = H + 3500
@@ -269,3 +271,67 @@ def build_sheet(page, path, scale_text="1:200"):
         p.drawText(QPointF(W * 0.55, base + i * S_MM * 0.9), t)
     doc.saveas(path)
     return path
+
+
+def _clip_to(msp, poly):
+    """keep only what is inside the frame (a convex polygon in DXF coordinates): lines and polylines are cut at the frame, texts, circles and fills outside it are dropped"""
+    xs, ys = [q[0] for q in poly], [q[1] for q in poly]
+    area = sum(poly[i][0] * poly[(i + 1) % 4][1] - poly[(i + 1) % 4][0] * poly[i][1] for i in range(4))
+    sg = 1.0 if area > 0 else -1.0
+    edges = [(poly[i], poly[(i + 1) % 4]) for i in range(4)]
+
+    def side(q, e):
+        return sg * ((e[1][0] - e[0][0]) * (q[1] - e[0][1]) - (e[1][1] - e[0][1]) * (q[0] - e[0][0]))
+
+    def inside(q, tol=1e-6):
+        return all(side(q, e) >= -tol * 1000 for e in edges)
+
+    def clip(a, b):
+        t0, t1 = 0.0, 1.0
+        for e in edges:
+            da, db = side(a, e), side(b, e)
+            if da < 0 and db < 0:
+                return None
+            if da < 0:
+                t0 = max(t0, da / (da - db))
+            elif db < 0:
+                t1 = min(t1, da / (da - db))
+        if t0 >= t1:
+            return None
+        return (a[0] + (b[0] - a[0]) * t0, a[1] + (b[1] - a[1]) * t0), (a[0] + (b[0] - a[0]) * t1, a[1] + (b[1] - a[1]) * t1)
+    for e in list(msp):
+        t = e.dxftype()
+        if t == "LINE":
+            c = clip((e.dxf.start.x, e.dxf.start.y), (e.dxf.end.x, e.dxf.end.y))
+            if c is None:
+                msp.delete_entity(e)
+            else:
+                e.dxf.start, e.dxf.end = (c[0][0], c[0][1], 0), (c[1][0], c[1][1], 0)
+        elif t == "LWPOLYLINE":
+            pts = [(q[0], q[1]) for q in e.get_points("xy")]
+            if all(inside(q) for q in pts):
+                continue
+            closed = e.closed
+            if closed:
+                if not any(inside(q) for q in pts):
+                    msp.delete_entity(e)
+                continue
+            at = {k: getattr(e.dxf, k) for k in ("layer", "color", "lineweight", "linetype") if e.dxf.hasattr(k)}
+            for a, b in zip(pts[:-1], pts[1:]):
+                c = clip(a, b)
+                if c:
+                    msp.add_line(c[0], c[1], dxfattribs=at)
+            msp.delete_entity(e)
+        elif t == "TEXT":
+            if not inside((e.dxf.insert.x, e.dxf.insert.y)):
+                msp.delete_entity(e)
+        elif t == "CIRCLE":
+            if not inside((e.dxf.center.x, e.dxf.center.y)):
+                msp.delete_entity(e)
+        elif t == "HATCH":
+            try:
+                vs = [(v[0], v[1]) for path in e.paths for v in getattr(path, "vertices", [])]
+                if vs and not any(inside(q) for q in vs):
+                    msp.delete_entity(e)
+            except Exception:
+                pass

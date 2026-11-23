@@ -61,6 +61,14 @@ SHEET_DEFAULTS = {"2068": ("right", "THIMBLE STREET", -8.7), "2091": ("right", "
                   "2144": ("left", "CATSTAIL STREET", -8.7), "2155": ("left", "BLUESTEM STREET", -8.7)}
 
 
+def QPainterPath_from(poly):
+    from PySide6.QtGui import QPainterPath
+    pa = QPainterPath()
+    pa.addPolygon(poly)
+    pa.closeSubpath()
+    return pa
+
+
 class _FootprintPreview(QWidget):
     def __init__(self):
         super().__init__()
@@ -230,6 +238,18 @@ class ServicesView(QWidget):
         # north arrow above the plan, turned to the chosen direction
         r_px = max(sh.s * 1.5, 18)
         site_sheet.north_arrow(p, pg.north_centre(sh.W, sh.H, r_px, interactive), r_px, st["sheet"].get("north", 0))
+        if interactive and (st.get("look") or {}).get("cutout", True) and not self.lite:
+            fr_ = pg.cutout_rect()
+            cq = [sh.pt((fr_[0], fr_[1])), sh.pt((fr_[2], fr_[1])), sh.pt((fr_[2], fr_[3])), sh.pt((fr_[0], fr_[3]))]
+            p.setPen(QPen(QColor("#0b57e8"), 3, Qt.PenStyle.DashLine))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPolygon(QPolygonF(cq))
+            p.setBrush(QBrush(QColor("#0b57e8")))
+            for q_ in cq + [(cq[i] + cq[(i + 1) % 4]) / 2 for i in range(4)]:
+                p.drawRect(QRectF(q_.x() - 4, q_.y() - 4, 8, 8))
+            p.setPen(QColor("#0b57e8"))
+            p.setFont(QFont(self.font().family(), 9, QFont.Weight.Bold))
+            p.drawText(QPointF(cq[0].x() + 6, cq[0].y() - 6), "Export cut-out: drag its edges")
         if interactive and res:
             S = sh.pt
             dr_ = self.drag
@@ -309,6 +329,17 @@ class ServicesView(QWidget):
             self.auto = False
             self._go_lite()
             return
+        if e.button() == Qt.MouseButton.LeftButton and self.mode == "select" and (pg.st.get("look") or {}).get("cutout", True):
+            fr_ = pg.cutout_rect()
+            tol = 9.0 / max(self.sh.s, 1e-6)
+            hx = 0 if abs(w[0] - fr_[0]) < tol else (2 if abs(w[0] - fr_[2]) < tol else None)
+            hy = 1 if abs(w[1] - fr_[1]) < tol else (3 if abs(w[1] - fr_[3]) < tol else None)
+            inside_x = fr_[0] - tol <= w[0] <= fr_[2] + tol
+            inside_y = fr_[1] - tol <= w[1] <= fr_[3] + tol
+            if (hx is not None and inside_y) or (hy is not None and inside_x):
+                self.drag = ("cut", (hx if inside_y else None, hy if inside_x else None), fr_)
+                self.auto = False
+                return
         if e.button() == Qt.MouseButton.LeftButton:
             if self.mode == "street":
                 pg.set_street_edge(w)
@@ -682,6 +713,18 @@ class ServicesView(QWidget):
             self.view = (s, cx + p1[0] - p0[0], cy + p1[1] - p0[1])
             self.update()
             return
+        if d[0] == "cut":
+            w_ = self.world(e.position())
+            fr_ = list(d[2])
+            hx, hy = d[1]
+            if hx is not None:
+                fr_[hx] = round(w_[0], 2)
+            if hy is not None:
+                fr_[hy] = round(w_[1], 2)
+            if fr_[2] - fr_[0] > 6 and fr_[3] - fr_[1] > 6:
+                pg.st["cutout"] = fr_
+            self.update()
+            return
         if d[0] == "fh":
             w_ = self.world(e.position())
             if math.hypot(w_[0] - d[1][-1][0], w_[1] - d[1][-1][1]) > 0.12:
@@ -780,6 +823,11 @@ class ServicesView(QWidget):
             self.drag = None
             self.auto = True
             self.update()
+        elif self.drag and self.drag[0] == "cut":
+            self.page.changed()
+            self.page.commit(True)
+            self.drag = None
+            self.auto = True
         elif self.drag and self.drag[0] in ("label", "north"):
             self.page.changed()
             self.page.commit(True)
@@ -1188,7 +1236,7 @@ class SiteServicesPage(ToolBase):
         ml.addLayout(row)
         row = QHBoxLayout()
         self.look_cb = {}
-        for key, text in (("fill", "Green stand"), ("walls", "Boundary walls"), ("storm", "Stormwater arrow"), ("wp_box", "WP / VV box and marks"), ("upright", "Names and numbers stay level when the plan is turned")):
+        for key, text in (("fill", "Green stand"), ("walls", "Boundary walls"), ("cutout", "Export frame (blue)"), ("storm", "Stormwater arrow"), ("wp_box", "WP / VV box and marks"), ("upright", "Names and numbers stay level when the plan is turned")):
             cb_ = QCheckBox(text)
             cb_.setChecked(True)
             cb_.toggled.connect(lambda on, k=key: self.set_look(k, on))
@@ -1502,6 +1550,10 @@ class SiteServicesPage(ToolBase):
         wp_ = QPushButton("Place walls")
         wp_.setToolTip("Choose which boundaries get the 1.2 m pre-cast wall: click a boundary on the plan to switch its wall on or off (for example no wall at the front).")
         wp_.clicked.connect(lambda: self.arm("wall_pick"))
+        cr_ = QPushButton("Reset frame")
+        cr_.setToolTip("Put the blue export frame back round the stand (the margins of the reference data).")
+        cr_.clicked.connect(lambda: self.reset_cutout())
+        fl.addWidget(cr_)
         wr_ = QPushButton("Wall run")
         wr_.setToolTip("A wall of your own length: click where it starts and where it ends on a boundary (snaps to the boundary and to corners).")
         wr_.clicked.connect(lambda: self.arm("wall_run"))
@@ -1581,6 +1633,13 @@ class SiteServicesPage(ToolBase):
         except ValueError:
             sh["neigh"] = []
         return sh
+
+    def export_opts(self):
+        """the options of the exported sheet: the closer cut-out, neighbour numbers inside it, the setting-out dimensions nearer the boundaries"""
+        o = self.sheet_opts()
+        o["cutout"] = self.cutout_rect()
+        o["setout_off"] = site_plans_data.SETOUT_OFFSET_TIGHT
+        return o
 
     @staticmethod
     def _seg_dist(p, a, b):
@@ -2612,6 +2671,20 @@ class SiteServicesPage(ToolBase):
         self.view.update()
         self.changed()
 
+    def cutout_rect(self):
+        """the closer cut that is exported (the blue frame): the user's, or the stand with the margins of the data set; [x0, y0, x1, y1] in the stand's frame"""
+        c = self.st.get("cutout")
+        if c and len(c) == 4:
+            return [float(v) for v in c]
+        cs = self.st["stand"]["corners"]
+        m = site_plans_data.EXPORT_FRAME
+        return [min(p[0] for p in cs) - m["side"], min(p[1] for p in cs) - m["street"], max(p[0] for p in cs) + m["side"], max(p[1] for p in cs) + m["rear"]]
+
+    def reset_cutout(self):
+        self.st.pop("cutout", None)
+        self.view.update()
+        self.changed()
+
     def wall_edge_at(self, w, tol=2.5):
         """the stand boundary nearest to a plan point (within tol metres), or None"""
         cs = self.st["stand"]["corners"]
@@ -3403,7 +3476,7 @@ class SiteServicesPage(ToolBase):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
         p.fillRect(0, 0, W, H, QColor("white"))
-        x0, y0, x1, y1 = self.view.bounds()
+        x0, y0, x1, y1 = self.cutout_rect()                       # the closer cut (the blue frame), not the wide working view
         road = self.st["sheet"].get("road", "left")
         w_m, h_m = site_sheet.page_extent(x0, y0, x1, y1, road, self.st["sheet"].get("turn", 0.0))
         s200 = 5.0 * dpi / 25.4                                  # pixels per metre at 1:200
@@ -3412,7 +3485,8 @@ class SiteServicesPage(ToolBase):
         scale_txt = "1:200" if s >= s200 - 1e-6 else "1:%d" % round(200 * s200 / s / 10) * 1 if False else ("1:200" if s >= s200 - 1e-6 else "1:%d" % int(round(200 * s200 / s / 50.0) * 50))
         sh = site_sheet.Sheet(s, ((x0 + x1) / 2, (y0 + y1) / 2), (W, H * 0.92), road, self.st["sheet"].get("turn", 0.0))
         p.save()
-        site_sheet.draw(p, sh, self.st, self.res, self.sheet_opts(), minpx=5)
+        p.setClipPath(QPainterPath_from(QPolygonF([sh.pt((x0, y0)), sh.pt((x1, y0)), sh.pt((x1, y1)), sh.pt((x0, y1))])))
+        site_sheet.draw(p, sh, self.st, self.res, self.export_opts(), minpx=5)
         r_px = max(s * 1.5, 18)
         site_sheet.north_arrow(p, self.north_centre(W, H, r_px, False), r_px, self.st["sheet"].get("north", 0))
         p.restore()

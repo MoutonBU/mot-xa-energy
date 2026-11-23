@@ -50,6 +50,8 @@ CONVENTIONS = {
     # Street 7071 stands: B/L 3 m to the street and the no-access road, 2 m to a neighbour, 1 m to a 1 m servitude; the carport 0.5 m off the street boundary
     "b7071": {"street": 3.0, "no_access": 3.0, "side": 2.0, "servitude": 1.0}, "carport_street_gap_7071": 0.5, "carport_house_gap_7071": 2.25,
     "elec_symbol": "the electrical connection of a stand is the triangle symbol (solid or an outline, yellow) on the electrical layers: its point touches the stand boundary, where thin lines fan out from it, with a label such as EC or E3.1 beside it. It is read from the drawing on whichever side of the stand it is, within TOWNSHIP_SEARCH['connection'], and is not drawn on the plan again",
+    "text_min_mm": "no text on the plan is smaller than 2 mm at the print scale 1:200 (0.4 m capital height at true size): building lines, setting out, electrical and water labels, stand numbers",
+    "cutout": "two cut-outs: the working view reads everything round the stand (road, bends, the far side of the street, the mains: TOWNSHIP_SEARCH), and the export frame (blue) is the closer cut that is written to the DXF for Archicad; the neighbours' numbers sit inside it and the setting-out dimensions run close to the boundaries",
     "water_pair": "the water connection of two adjacent stands is shared: one pair of water meters sits on the common side boundary at the street, split on that boundary (finished plans, Blue Hills Ext 120). A stand's water point goes on the street end of the side boundary it shares with the neighbour, 0.1 m inside",
     "storm_arrow": "a blue Stormwater Flow arrow on every plan, pointing down the fall of the stand (usually towards the street)",
 }
@@ -66,6 +68,11 @@ TOWNSHIP_SEARCH = {
     "main": 40.0,          # a main line is taken from the nearest run of lines that comes this close to the stand's street boundary
 }
 
+# the cut-out that is exported (the blue frame): metres beyond the stand, in the stand's frame (x along the street, y into the stand; the street is y = 0)
+EXPORT_FRAME = {"side": 10.0, "street": 11.0, "rear": 6.0}
+TEXT_MIN_M = 0.4           # capital height in metres at true size = 2 mm on paper at 1:200
+SETOUT_OFFSET_TIGHT = 1.4  # the setting-out dimension chain, metres outside the boundary, on the exported plan (2.4 on the screen)
+
 RULES = [
     "The carport sits against the street boundary (the entry), 5.0 x 5.0 m, or 7.1 x 7.1 m when it is a double.",
     "The house is 1.0 m clear of the carport, and 1.0 to 2.5 m behind the street boundary.",
@@ -74,6 +81,7 @@ RULES = [
     "Electrical: the connection is the yellow triangle symbol (solid or outline) whose point touches the stand boundary; it is searched on every side of the stand, not only the street side.",
     "Water: two adjacent stands share one water connection, split on their common side boundary at the street (the point is the street end of the shared side boundary).",
     "Mains you draw snap parallel to the stand's boundaries, square to them or at 45 degrees to them; the 1.2 m boundary wall can be switched on or off per boundary (none at the front when it is not wanted).",
+    "Cut-outs: the working view reads a wide area round the stand; the blue export frame is the closer cut written to the DXF (neighbour numbers and setting-out dimensions inside it). Text is never smaller than 2 mm at 1:200.",
     "Side and rear boundaries carry a 1.2 m pre-cast concrete wall; stormwater falls to the street.",
     "Street 7071 stands: building lines 3 m to the street and to the no-access road, 2 m to a neighbour, 1 m to a servitude; the carport 5.0 x 5.0 sits 0.5 m off the street boundary and about 2.25 m from the house; the house runs along the side boundary (outlet at the far end, sewer in the servitude side), never across the stand against the road.",
     "Blue Hills Ext 120 (the MCP site plan, 204 stands, 39 houses placed): stands about 14 x 22 m (280 to 390 m2); the carport is a 5.0 x 5.0 m box with its front edge 1.0 m behind the street boundary, in the left or the right corner 1.0 m off the side boundary; the house (about 10 m wide, 12.7 to 15 m long with its patio / braai) starts 2.8 to 6.0 m from the street (beside or behind the carport) and runs back to the rear boundary; mains and connections are in the road.",

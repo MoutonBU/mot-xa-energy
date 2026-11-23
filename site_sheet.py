@@ -8,6 +8,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPicture, QPolygonF
 
 import site_engine as se
+import site_plans_data
 
 BROWN = QColor(173, 71, 10)
 BLUE = QColor(15, 130, 255)
@@ -149,6 +150,7 @@ class Drawer:
             txt = ed.get("t") or txt
             h = h * ed.get("s", 1.0)
             extra_rot = ed.get("r", 0.0)
+        h = max(h, site_plans_data.TEXT_MIN_M)                    # nothing smaller than 2 mm at 1:200
         px = max(h * self.s * 1.4, self.minpx)
         off = None if fixed else self.offsets.get(key)
         if off:
@@ -308,7 +310,11 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
     cp = res.get("carport") if res else None
     for i_, nb_ in enumerate(st.get("neighbours") or []):          # the stands beside it, from the township drawing
         if nb_.get("no"):
-            D.text(tuple(nb_["c"]), str(nb_["no"]), 1.3, (1, 0), bold=True, color=QColor(120, 120, 120), key="NB:%d" % i_, upright=True)
+            cn_ = tuple(nb_["c"])
+            cut_ = opts.get("cutout")
+            if cut_:                                                   # the exported cut-out: the number is moved in to sit inside the frame
+                cn_ = (min(max(cn_[0], cut_[0] + 1.4), cut_[2] - 1.4), min(max(cn_[1], cut_[1] + 1.0), cut_[3] - 1.0))
+            D.text(cn_, str(nb_["no"]), 1.3, (1, 0), bold=True, color=QColor(120, 120, 120), key="NB:%d" % i_, upright=True)
     if cp:
         en = entry_shape(st, cp)
         D.poly(en["poly"], GREY, 0.03, ENTRY)
@@ -328,7 +334,7 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
         return True
     if not real_main("water", BLUE, 0.04, None, "Main Water Line", 110):
         D.line((xa, mn["water"]), (xb, mn["water"]), BLUE, 0.04)
-        D.text((xmin - 6.0, mn["water"]), "Main Water Line", 0.5, (1, 0), spacing=110, align="r")
+        D.text((max(xmin - 6.0, (opts["cutout"][0] + 9.0) if opts.get("cutout") else -1e9), mn["water"]), "Main Water Line", 0.5, (1, 0), spacing=110, align="r")
     mline = se.main_line(st)
     if mline:                                                    # the main runs through the stand, as drawn
         D.poly(mline, BROWN, 0.08, None, dash=[9, 5], closed=False)
@@ -337,14 +343,14 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
         D.text(((a_[0] + b_[0]) / 2, (a_[1] + b_[1]) / 2), "Main Sewer Line", 0.5, (b_[0] - a_[0], b_[1] - a_[1]), spacing=125, bg=True)
     else:
         D.line((xa, mn["sewer"]), (xb, mn["sewer"]), BROWN, 0.08, dash=[9, 5])
-        D.text((xmax + 10.5, mn["sewer"]), "Main Sewer Line", 0.5, (1, 0), spacing=125, align="r")
+        D.text((min(xmax + 10.5, (opts["cutout"][2] - 0.5) if opts.get("cutout") else 1e9), mn["sewer"]), "Main Sewer Line", 0.5, (1, 0), spacing=125, align="r")
     for mh_ in st.get("manholes") or []:                         # manholes on the main, with their numbers
         q_ = tuple(mh_["pt"])
         D.dot(q_, 0.9, BROWN, filled=True)
         D.text((q_[0] + 1.2, q_[1] - 1.2), mh_.get("name", ""), 0.5, (1, 0), color=BROWN, spacing=110)
     if not real_main("elec", YELLOW, 0.05, [5, 4], "Main Electrical Line", 125):
         D.line((xa, mn["elec"]), (xmin - 7, mn["elec"]), YELLOW, 0.05, dash=[5, 4])
-        D.text((xmin - 11.5, mn["elec"]), "Main Electrical Line", 0.5, (1, 0), spacing=125)
+        D.text((max(xmin - 11.5, (opts["cutout"][0] + 0.5) if opts.get("cutout") else -1e9), mn["elec"]), "Main Electrical Line", 0.5, (1, 0), spacing=125)
     for i in range(n):                                 # side lines run on past the street boundary to the kerb, as on the plans
         if kinds[i] == "side":
             a, b = stand[i], stand[(i + 1) % n]
@@ -528,7 +534,7 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
         square = all(min(abs(house[(i + 1) % len(house)][0] - house[i][0]), abs(house[(i + 1) % len(house)][1] - house[i][1])) <= 0.02 * max(edge_len(house[i], house[(i + 1) % len(house)]), 1e-6)
                      for i in range(len(house)))
         if opts.get("setting_out", True):
-            _setting_out(D, stand, house, kinds, label=True)
+            _setting_out(D, stand, house, kinds, label=True, off=opts.get("setout_off", 2.4))
     if house and square and not opts.get("setting_out", True):   # (with setting-out on, the chains outside the boundaries give these distances)
         hx0, hx1 = min(q[0] for q in house), max(q[0] for q in house)
         hy0, hy1 = min(q[1] for q in house), max(q[1] for q in house)
@@ -745,7 +751,7 @@ def draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=False
     return _draw(p, sh, st, res, opts, minpx, under, show_under, lite)
 
 
-def _setting_out(D, stand, house, kinds, label):
+def _setting_out(D, stand, house, kinds, label, off=2.4):
     """setting out: from each boundary to the nearest corner of the house, square to the boundary, in light blue dashes. Follows the house when it is rotated.
     When the house is not square to the boundary, the corners it reaches out to (the nearest one and the two at the ends) are also carried out past the
     boundary in light blue, and a dimension chain outside the boundary gives the distances between the stand's corners and those lines."""
@@ -775,7 +781,6 @@ def _setting_out(D, stand, house, kinds, label):
             D.text(((v[0] + f[0]) / 2, (v[1] + f[1]) / 2), mm(d), 0.4, (v[0] - f[0], v[1] - f[1]), spacing=110, color=BLACK)
         if label:
             pick = {id(c): c for c in (min(cands), min(cands, key=lambda c: c[1]), max(cands, key=lambda c: c[1]))}.values()
-            off = 2.4
             ts = []
             for d2, t2, v2, f2 in pick:
                 if all(abs(t2 - q) > 0.05 for q in ts):
