@@ -20,7 +20,7 @@ LAYER_OF = {
     (255, 128, 128): ("CARPORT", 6), (255, 235, 214): ("ENTRY", 51), (110, 190, 245): ("SETTING OUT", 4), (120, 120, 120): ("ENTRY", 8),
 }
 UNDER_COLOURS = {(207, 214, 228), (183, 220, 183), (198, 222, 250), (236, 208, 182)}
-EXTRA_LAYERS = [("SITE PLAN", 7), ("TEXT", 7), ("UNDERLAY", 9)]
+EXTRA_LAYERS = [("SITE PLAN", 7), ("TEXT", 7), ("UNDERLAY", 9), ("BOUNDARY", 7), ("NEIGHBOURS", 8), ("ROAD", 8), ("WALLS", 1), ("DIMENSIONS", 3), ("STAND NUMBERS", 8)]
 STYLES = {("Arial", False): ("ARIAL", "arial.ttf"), ("Arial", True): ("ARIAL_BOLD", "arialbd.ttf"),
           ("Arial Black", True): ("ARIAL_BLACK", "ariblk.ttf"), ("Arial Black", False): ("ARIAL_BLACK", "ariblk.ttf")}
 VALID_LW = [0, 5, 9, 13, 15, 18, 20, 25, 30, 35, 40, 50, 53, 60, 70, 80, 90, 100, 106, 120, 140, 158, 200, 211]   # the line weights DXF allows (1/100 mm)
@@ -93,7 +93,12 @@ class DxfPainter:
         return (m[0] * x + m[2] * y + m[4], -(m[1] * x + m[3] * y + m[5]))          # paper pixels (y down) -> DXF (y up)
 
     # ---- entities
+    def set_layer(self, name):
+        self.layer_hint = name
+
     def _layer(self, rgb, text=False):
+        if getattr(self, "layer_hint", None):
+            return self.layer_hint
         if rgb in LAYER_OF:
             return LAYER_OF[rgb][0]
         if rgb in UNDER_COLOURS:

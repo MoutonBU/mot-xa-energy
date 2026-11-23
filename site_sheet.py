@@ -130,6 +130,12 @@ class Drawer:
         self.p, self.sh, self.s, self.minpx, self.lite = p, sh, sh.s, minpx, lite
         self.offsets, self.hits, self.seen, self.dseen, self.edits, self.hidden = {}, [], {}, {}, {}, set()
 
+    def L(self, name=None):
+        """the DXF layer the next things go to (the screen ignores it)"""
+        f = getattr(self.p, "set_layer", None)
+        if f:
+            f(name)
+
     # ---- helpers
     def lw(self, m):                                    # a line weight in metres of paper-at-1:200 -> pixels
         return max(0.8, m * self.s)
@@ -211,6 +217,13 @@ class Drawer:
         Drag its figure and the whole dimension slides up or down across its line."""
         if self.lite:
             return
+        self.L("DIMENSIONS")
+        try:
+            return self._dim(a, b, off, txt, h, side, dkey)
+        finally:
+            self.L(None)
+
+    def _dim(self, a, b, off, txt, h, side, dkey):
         dx, dy = b[0] - a[0], b[1] - a[1]
         L = math.hypot(dx, dy)
         if L < 1e-6:
@@ -272,6 +285,24 @@ def _into_poly(p, poly, margin=1.4):
     return (p[0] + (cen[0] - p[0]) * hi, p[1] + (cen[1] - p[1]) * hi)
 
 
+def _fit_x(pt, opts, left=0.0, right=0.0):
+    """a label that must lie inside the export frame (turned or not): slide it along x until its ends are inside; the frame polygon, or the box round it when there is none"""
+    cp = opts.get("cutpoly")
+    if cp:
+        cx = sum(q[0] for q in cp) / len(cp)
+        x, y = pt
+        step = 0.25 if cx >= x else -0.25
+        for _ in range(800):
+            if _in_poly((x - left, y), cp) and _in_poly((x + right, y), cp) and _in_poly((x, y), cp):
+                break
+            x += step
+        return (x, y)
+    cut = opts.get("cutout")
+    if cut:
+        return (min(max(pt[0], cut[0] + left + 0.5), cut[2] - right - 0.5), pt[1])
+    return pt
+
+
 def _numbered_stands(st, cpoly=None):
     """the stands whose numbers are written on the plan: the neighbours, and (for the export frame) every further stand that lies in or reaches into the frame"""
     out = [n for n in (st.get("neighbours") or []) if n.get("no")]
@@ -313,12 +344,14 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
     xa, xb = xmin - 14, xmax + 14
     # ---- road: kerb lines, the mains, the street name
     real_road = st.get("road_lines") or []
+    D.L("ROAD")
     if real_road:                                      # a township drawing: the road as it really is (kerbs, bends, bell-mouths), not two straight lines
         for a_, b_, c_, d_ in real_road:
             D.line((a_, b_), (c_, d_), BLACK, 0.04)
     else:
         D.line((xa, ROAD_K), (xb, ROAD_K), BLACK, 0.04)
         D.line((xa, ROAD_K2), (xb, ROAD_K2), BLACK, 0.04)
+    D.L(None)
     mn = se.mains(st)
     street = opts.get("street", "")
     if street:
@@ -326,12 +359,16 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
         sub = "%s  %s" % (opts.get("road_w", ""), opts.get("street_erf", ""))
         D.text(((xmin + xmax) / 2 + 3.0, -8.0), sub.strip(), 1.05, (1, 0), upright=True)
     # ---- the stand, and the neighbours' boundaries running on from its corners (read from the imported drawing)
+    D.L("NEIGHBOURS")
     for a_, b_ in opts.get("nb_lines") or []:
         D.line(a_, b_, BLACK, 0.04)
+    D.L("BOUNDARY")
     look = st.get("look") or {}
     GREEN, WALLC = QColor(183, 221, 167), QColor(170, 25, 25)
     D.poly(stand, BLACK, 0.05, GREEN if look.get("fill", True) else None)       # the stand in green, as on the finished sheets
+    D.L(None)
     def _wall_strip(a, b):
+        D.L("WALLS")
         L = edge_len(a, b) or 1
         nx, ny = -(b[1] - a[1]) / L, (b[0] - a[0]) / L
         if se.area(stand) < 0:
@@ -353,6 +390,7 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
             pb = (a[0] + (b[0] - a[0]) * r_["t1"], a[1] + (b[1] - a[1]) * r_["t1"])
             if edge_len(pa, pb) > 0.05:
                 _wall_strip(pa, pb)
+    D.L(None)
     # ---- entry block (kerb to the carport front)
     cp = res.get("carport") if res else None
     cpoly_ = opts.get("cutpoly")
@@ -363,13 +401,21 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
         elif opts.get("cutout"):
             cut_ = opts["cutout"]
             cn_ = (min(max(cn_[0], cut_[0] + 1.4), cut_[2] - 1.4), min(max(cn_[1], cut_[1] + 1.0), cut_[3] - 1.0))
+        D.L("STAND NUMBERS")
         D.text(cn_, str(nb_["no"]), 1.3, (1, 0), bold=True, color=QColor(120, 120, 120), key="NB:%d" % i_, upright=True)
+        D.L(None)
+    if minpx > 0 and res:                                                # on the screen only: a red ring where a service line leaves the stand
+        for f_ in res.get("flags") or []:
+            D.dot(tuple(f_["pt"]), 0.9, QColor(200, 15, 32), filled=False)
+            D.text((f_["pt"][0], f_["pt"][1] - 1.6), f_["text"], 0.5, (1, 0), bold=True, color=QColor(200, 15, 32), upright=True)
     if cp:
         en = entry_shape(st, cp)
         D.poly(en["poly"], GREY, 0.03, ENTRY)
         D.text(en["mid"], "Entry", 0.5, (1, 0), rot=None)
     if cp:
+        D.L("BOUNDARY")
         D.poly(stand, BLACK, 0.05, None)                  # the street boundary line stays on top of the entry
+        D.L(None)
     # the mains and manholes go over the entry and the green
     def real_main(k_, col, w_, dash, label, sp):
         pls = se.main_poly(st, k_)
@@ -383,7 +429,7 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
         return True
     if not real_main("water", BLUE, 0.04, None, "Main Water Line", 110):
         D.line((xa, mn["water"]), (xb, mn["water"]), BLUE, 0.04)
-        D.text((max(xmin - 6.0, (opts["cutout"][0] + 9.0) if opts.get("cutout") else -1e9), mn["water"]), "Main Water Line", 0.5, (1, 0), spacing=110, align="r")
+        D.text(_fit_x((xmin - 6.0, mn["water"]), opts, left=9.0), "Main Water Line", 0.5, (1, 0), spacing=110, align="r")
     mline = se.main_line(st)
     if mline:                                                    # the main runs through the stand, as drawn
         D.poly(mline, BROWN, 0.08, None, dash=[9, 5], closed=False)
@@ -392,14 +438,14 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
         D.text(((a_[0] + b_[0]) / 2, (a_[1] + b_[1]) / 2), "Main Sewer Line", 0.5, (b_[0] - a_[0], b_[1] - a_[1]), spacing=125, bg=True)
     else:
         D.line((xa, mn["sewer"]), (xb, mn["sewer"]), BROWN, 0.08, dash=[9, 5])
-        D.text((min(xmax + 10.5, (opts["cutout"][2] - 0.5) if opts.get("cutout") else 1e9), mn["sewer"]), "Main Sewer Line", 0.5, (1, 0), spacing=125, align="r")
+        D.text(_fit_x((xmax + 10.5, mn["sewer"]), opts, left=9.0), "Main Sewer Line", 0.5, (1, 0), spacing=125, align="r")
     for mh_ in st.get("manholes") or []:                         # manholes on the main, with their numbers
         q_ = tuple(mh_["pt"])
         D.dot(q_, 0.9, BROWN, filled=True)
         D.text((q_[0] + 1.2, q_[1] - 1.2), mh_.get("name", ""), 0.5, (1, 0), color=BROWN, spacing=110)
     if not real_main("elec", YELLOW, 0.05, [5, 4], "Main Electrical Line", 125):
         D.line((xa, mn["elec"]), (xmin - 7, mn["elec"]), YELLOW, 0.05, dash=[5, 4])
-        D.text((max(xmin - 11.5, (opts["cutout"][0] + 0.5) if opts.get("cutout") else -1e9), mn["elec"]), "Main Electrical Line", 0.5, (1, 0), spacing=125)
+        D.text(_fit_x((xmin - 11.5, mn["elec"]), opts, left=0.5, right=10.0), "Main Electrical Line", 0.5, (1, 0), spacing=125)
     for i in range(n):                                 # side lines run on past the street boundary to the kerb, as on the plans
         if kinds[i] == "side":
             a, b = stand[i], stand[(i + 1) % n]
@@ -764,14 +810,15 @@ def _avoid(sh, hits, manual):
     for i in order:
         b = boxes[i]
         x, y = b[1], b[2]
-        movable = b[0] not in manual and not b[0].startswith("DIM:") and not b[0].startswith("NOTE:")
+        is_dim = b[0].startswith("DIM:")
+        movable = b[0] not in manual and not b[0].startswith("NOTE:")
         if movable and hit(b, x, y):
             a = math.radians(b[5])
             ax, ay = math.cos(a), math.sin(a)
             step = b[7] * 1.05
             best = None
             for k in range(1, 7):
-                for dx, dy in ((ay, -ax), (-ay, ax), (ax, ay), (-ax, -ay)):    # up, down across the text, then along it
+                for dx, dy in (((ay, -ax), (-ay, ax)) if is_dim else ((ay, -ax), (-ay, ax), (ax, ay), (-ax, -ay))):    # up, down across the text, then along it (a dimension only slides across its line)
                     d = step * k
                     if not hit(b, x + dx * d, y + dy * d):
                         best = (dx * d, dy * d)

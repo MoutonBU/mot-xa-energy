@@ -1290,6 +1290,27 @@ class SiteServicesPage(ToolBase):
         self.stand_lbl.setWordWrap(True)
         bv.addWidget(self.stand_lbl)
         v1.addWidget(bx)
+        bx, bv = self.box("Zoning limits and compliance", "Type the limits from the zoning scheme (0 = none). The ticks update while you drag the house.")
+        row = QHBoxLayout()
+        self.z_cov, self.z_far = spin(0, 100, 0, 1, " %"), spin(0, 10, 0, 2)
+        self.z_sto, self.z_hmax, self.z_h = spin(1, 10, 1, 0), spin(0, 60, 0, 2, " m"), spin(0, 60, 0, 2, " m")
+        self.z_breq, self.z_bays = spin(0, 20, 0, 0), spin(0, 20, 0, 0)
+        for lab, w in (("Max coverage", self.z_cov), ("Max floor area ratio", self.z_far), ("Storeys", self.z_sto)):
+            row.addWidget(QLabel(lab))
+            row.addWidget(w)
+        row.addStretch(1)
+        bv.addLayout(row)
+        row = QHBoxLayout()
+        for lab, w in (("Max height", self.z_hmax), ("Building height", self.z_h), ("Bays needed", self.z_breq), ("Bays provided", self.z_bays)):
+            row.addWidget(QLabel(lab))
+            row.addWidget(w)
+        row.addStretch(1)
+        bv.addLayout(row)
+        self.comp_lbl = QLabel("")
+        self.comp_lbl.setWordWrap(True)
+        self.comp_lbl.setTextFormat(Qt.TextFormat.RichText)
+        bv.addWidget(self.comp_lbl)
+        v1.addWidget(bx)
         bx, bv = self.box("2. Plan labels", "The stand number and street name that print on the plan.")
         row = QHBoxLayout()
         self.sh_no, self.sh_street, self.sh_rw, self.sh_se = QLineEdit(), QLineEdit(), QLineEdit(), QLineEdit()
@@ -1592,7 +1613,8 @@ class SiteServicesPage(ToolBase):
         v3.addStretch(1)
         self.build_frame([p1, p2, p3], side=self._panel())
         for w in (self.sb_street, self.sb_side, self.sb_rear, self.h_w, self.h_d, self.h_rot, self.h_x, self.h_y, self.c_w, self.c_d, self.c_x, self.c_y,
-                  self.p_depth, self.p_fall, self.p_ie, self.p_tail):
+                  self.p_depth, self.p_fall, self.p_ie, self.p_tail,
+                  self.z_cov, self.z_far, self.z_sto, self.z_hmax, self.z_h, self.z_breq, self.z_bays):
             w.valueChanged.connect(self._edited)
         self.c_on.toggled.connect(self._edited)
         for w_ in (self.sh_no, self.sh_street, self.sh_rw, self.sh_se):
@@ -1787,6 +1809,8 @@ class SiteServicesPage(ToolBase):
             return
         st = self.st
         st["stand"]["setbacks"] = {"street": self.sb_street.value(), "side": self.sb_side.value(), "rear": self.sb_rear.value()}
+        st["stand"]["zoning"] = {"coverage": self.z_cov.value(), "far": self.z_far.value(), "storeys": int(self.z_sto.value()), "height": self.z_hmax.value(),
+                                 "house_height": self.z_h.value(), "bays_req": int(self.z_breq.value()), "bays": int(self.z_bays.value())}
         st["house"].update({"w": self.h_w.value(), "d": self.h_d.value(), "rot": self.h_rot.value(), "cx": self.h_x.value(), "cy": self.h_y.value()})
         if self.c_on.isChecked():
             st["carport"] = {"w": self.c_w.value(), "d": self.c_d.value(), "cx": self.c_x.value(), "cy": self.c_y.value(), "rot": (st.get("carport") or {}).get("rot", 0)}
@@ -1830,6 +1854,9 @@ class SiteServicesPage(ToolBase):
                 self.so_cb.setChecked(bool((st.get("sheet") or {}).get("setting_out", True)))
             for w, k in ((self.sb_street, "street"), (self.sb_side, "side"), (self.sb_rear, "rear")):
                 w.setValue(sb.get(k, w.value()))
+            z_ = st["stand"].get("zoning") or {}
+            for w, k in ((self.z_cov, "coverage"), (self.z_far, "far"), (self.z_sto, "storeys"), (self.z_hmax, "height"), (self.z_h, "house_height"), (self.z_breq, "bays_req"), (self.z_bays, "bays")):
+                w.setValue(z_.get(k, 1 if k == "storeys" else 0))
             h = st["house"]
             for w, k in ((self.h_w, "w"), (self.h_d, "d"), (self.h_rot, "rot"), (self.h_x, "cx"), (self.h_y, "cy")):
                 w.setValue(h.get(k, 0))
@@ -1934,10 +1961,25 @@ class SiteServicesPage(ToolBase):
             self.res = None
             self.warn_lbl.setText("Could not work out the lines: %s" % e)
             return
+        self.show_compliance()
         if not light:
             self.fill_results()
             self.changed()
         self.view.update()
+
+    def show_compliance(self):
+        """the pass / fail rows of the zoning limits, redrawn on every move"""
+        rows = (self.res or {}).get("compliance") or []
+        if not rows:
+            self.comp_lbl.setText("")
+            return
+        out = ["<table cellspacing='0' cellpadding='2'>"]
+        for r_ in rows:
+            ic, col = ("&#10003;", "#1a7f37") if r_["ok"] else ("&#10007;", "#b3261e") if r_["ok"] is False else ("&ndash;", "#777")
+            out.append("<tr><td style='color:%s'><b>%s</b></td><td>%s</td><td><b>%s</b></td><td style='color:#666'>%s</td></tr>" % (col, ic, r_["label"], r_["value"], r_["limit"] + (" &nbsp;" + r_["text"] if r_["ok"] is False and r_["text"] else "")))
+        out.append("</table>")
+        bad = sum(1 for r_ in rows if r_["ok"] is False)
+        self.comp_lbl.setText(("<b style='color:#b3261e'>%d limit%s not met</b>" % (bad, "" if bad == 1 else "s") if bad else "<b style='color:#1a7f37'>All limits that are set are met</b>") + "".join(out))
 
     def port_of(self, pk):
         st = self.st

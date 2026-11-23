@@ -1,11 +1,15 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.171**
+Current version: **1.86.172**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **House placing, zoning compliance panel:** type the limits from the zoning scheme (coverage, floor area ratio, storeys, height, parking bays; 0 = none) and a tick / cross list under the stand sizes shows the three building lines, inside-the-stand, coverage, floor area ratio, height and parking, updating while you drag the house.
+- **House placing, service checks:** the sewer fall is checked against SANS 10252-2 table 13 (flatter than 1:60 needs the municipality's special permission, flatter than 1:120 is not allowed, steeper than 1:10 needs anchor blocks); water, sewer and electrical lines that run out over a neighbouring stand now get a red ring on the plan and a warning. Cover (300 mm) and the water / sewer / electrical clearances were already checked.
+- **House placing, DXF layers:** the export now puts the stand boundary (BOUNDARY), neighbours (NEIGHBOURS), road (ROAD), 1.2 m walls (WALLS), dimensions (DIMENSIONS) and the stand numbers (STAND NUMBERS) on their own layers, next to SEWER, WATER, ELECTRICAL, HOUSE, CARPORT and SETTING OUT.
+- **House placing, dimensions tidied:** a dimension whose figure lands on another text or dimension now slides out across its line until it is clear (dimensions you moved by hand stay where you put them). The main water, sewer and electrical labels now fit the turned export frame instead of its bounding box.
 - **House placing, the export frame carries every stand number inside it:** the numbers of all stands within 150 m are now read from the township plan (before, only the stands touching yours), and any stand that lies in or reaches into the blue frame gets its number written inside it on the DXF and PDF, also when the frame is turned. A number whose stand sticks out of the frame is moved in to sit just inside the edge. Load the stand again once so an older project picks the numbers up.
 - **Light and ventilation rules checked against SANS 10400-O:2011 (Edition 3):** ventilation now also has the minimum opening area, 0.2 m2 per room (0.1 m2 for category 1 rooms), the larger of that and 5% of the floor area. The report names the edition. SANS 10400-O Edition 4 was gazetted on 30 May 2025; its text is sold by SABS and was not available to check, so confirm it against the new edition.
 - **House placing, the blue export frame is always square to the paper and can be turned:** it no longer lies at 45 degrees when the plan is turned. Drag its edges and corners to resize, the round ring above it to turn it (it snaps back to square within 2 degrees, Shift gives steps of 15 degrees; the angle is shown), and the cross in its middle to move it. The DXF and PDF are cut to the frame as turned, and "Reset frame" puts it back square. Projects saved with the old frame open with a square frame that holds it.

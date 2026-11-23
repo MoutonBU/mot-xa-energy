@@ -32,10 +32,10 @@ def test_export():
     assert any(t.endswith("B/L") for t in texts), "building lines labelled"
     assert any("," in t and t.replace(",", "").isdigit() for t in texts), "dimension figures in mm"
     layers = {e.dxf.layer for e in msp}
-    assert {"SEWER", "WATER", "ELECTRICAL", "HOUSE", "SETTING OUT", "SITE PLAN", "TEXT"} <= layers, layers
+    assert {"SEWER", "WATER", "ELECTRICAL", "HOUSE", "SETTING OUT", "BOUNDARY", "DIMENSIONS", "TEXT"} <= layers, layers
     assert doc.header["$INSUNITS"] == 4
     # true size: the stand's 18 m wide frontage is 18000 units wherever it lies
-    pl = [e for e in msp if e.dxftype() == "LWPOLYLINE" and e.dxf.layer == "SITE PLAN"]
+    pl = [e for e in msp if e.dxftype() == "LWPOLYLINE" and e.dxf.layer in ("SITE PLAN", "BOUNDARY")]
     spans = []
     for e in pl:
         pts = list(e.get_points("xy"))

@@ -10,7 +10,7 @@ import math
 GRID = 0.25
 FAST = False                 # while the plan is being dragged: a coarser routing grid, so the lines follow at once; the exact ones come when you let go
 DEFAULTS = {"fall": 50.0, "conn_depth": 1.5, "max_ie": 25.0, "min_depth": 0.45, "sewer_pipe": "110", "water_pipe": "20",
-            "clear": 0.3, "re_ext": 0.35, "ie_first": 1.5, "sep_water": 0.5, "sep_service": 0.1, "min_cover": 0.3, "stub": 1.0, "sb_street": 1.0, "sb_side": 1.0, "sb_rear": 2.0}
+            "clear": 0.3, "re_ext": 0.35, "ie_first": 1.5, "sep_water": 0.5, "sep_service": 0.1, "min_cover": 0.3, "stub": 1.0, "sb_street": 1.0, "sb_side": 1.0, "sb_rear": 2.0, "fall_flat": 60.0, "fall_special": 120.0, "anchor_fall": 10.0}
 
 
 # ------------------------------------------------------------------ geometry
@@ -1060,7 +1060,92 @@ def checks(state, hp, cp, params, res):
         for j in range(i + 1, 3):
             if overlap_len(lines[i][1], lines[j][1]) > 0.5:
                 w.append("The %s and %s lines run on top of each other. Move one of the house connections." % (lines[i][0], lines[j][0]))
+    # the fall of the drain (SANS 10252-2, table 13: 100 / 110 mm drains, 1 in 60 is the flattest without special permission, 1 in 120 the flattest at all; clause 6.7.6.6: anchor blocks steeper than 1 in 10)
+    fl = params["fall"]
+    if fl > params["fall_special"] + 1e-6:
+        w.append("The sewer fall of 1:%g is flatter than 1:%g, which SANS 10252-2 (table 13) does not allow for a 110 mm drain." % (fl, params["fall_special"]))
+    elif fl > params["fall_flat"] + 1e-6:
+        w.append("The sewer fall of 1:%g is flatter than 1:%g: the municipality must give special permission (SANS 10252-2, table 13)." % (fl, params["fall_flat"]))
+    elif fl < params["anchor_fall"] - 1e-6:
+        w.append("The sewer fall of 1:%g is steeper than 1:%g: anchor blocks are needed (SANS 10252-2, 6.7.6.6)." % (fl, params["anchor_fall"]))
+    # a service line that leaves the stand anywhere but at the street runs over the neighbour's stand
+    res["flags"] = []
+    st0, st1 = stand[0], stand[1 % len(stand)]
+    cen_ = (sum(q[0] for q in stand) / len(stand), sum(q[1] for q in stand) / len(stand))
+    side_ = lambda q: (st1[0] - st0[0]) * (q[1] - st0[1]) - (st1[1] - st0[1]) * (q[0] - st0[0])
+
+    def street_side(q):                                              # on the far side of the street boundary from the stand: the road reserve, where the mains are
+        return side_(q) * side_(cen_) < 0
+    for name, key in (("sewer", "sewer"), ("water", "water"), ("electrical", "elec")):
+        path = res[key]["path"]
+        hit = None
+        for a, b in zip(path[:-1], path[1:]):
+            n_ = max(int(math.hypot(b[0] - a[0], b[1] - a[1]) / 0.25), 1)
+            for t in range(n_ + 1):
+                q = (a[0] + (b[0] - a[0]) * t / n_, a[1] + (b[1] - a[1]) * t / n_)
+                if not inside(q, stand) and poly_dist(q, stand) > 0.3 and not street_side(q):
+                    hit = q
+                    break
+            if hit:
+                break
+        if hit and not (state.get("main_line") and key == "sewer"):
+            w.append("The %s line runs over a neighbouring stand (at the red mark). Keep service lines inside your own stand." % name)
+            res["flags"].append({"pt": [round(hit[0], 2), round(hit[1], 2)], "text": "%s line leaves the stand" % name})
     return w
+
+
+# ------------------------------------------------------------------ zoning compliance (limits the user enters from the zoning scheme)
+ZONING_DEFAULTS = {"coverage": 0.0, "far": 0.0, "height": 0.0, "storeys": 1, "house_height": 0.0, "bays_req": 0, "bays": 0, "gfa": 0.0}
+
+
+def compliance(state, res):
+    """pass / fail rows for the building lines, coverage, floor area ratio, height and parking. The limits come from the municipality's zoning scheme and are
+    typed in by the user (0 = no limit entered, shown as 'no limit set'). -> [{"key", "label", "value", "limit", "ok" (True / False / None), "text"}]"""
+    z = dict(ZONING_DEFAULTS)
+    z.update((state["stand"].get("zoning") or {}))
+    stand = [tuple(p) for p in state["stand"]["corners"]]
+    sa = max(abs(area(stand)), 1e-6)
+    hp, cp = res["house"], res.get("carport")
+    kinds = edge_kinds(stand)
+    sb = {"street": DEFAULTS["sb_street"], "side": DEFAULTS["sb_side"], "rear": DEFAULTS["sb_rear"]}
+    sb.update({k: v for k, v in ((state["stand"].get("setbacks") or {}).items()) if v is not None})
+    rows = []
+    for kind, lab in (("street", "Street building line"), ("side", "Side building line"), ("rear", "Rear building line")):
+        ds = []
+        for poly in (hp, cp):
+            if not poly:
+                continue
+            for i, k in enumerate(kinds):
+                if k == kind:
+                    a, b = stand[i], stand[(i + 1) % len(stand)]
+                    ds.append(min(line_dist(q, a, b) for q in poly))
+        if not ds:
+            continue
+        d = min(ds)
+        rows.append({"key": "bl_" + kind, "label": lab, "value": "%.2f m" % d, "limit": "at least %.2f m" % sb[kind], "ok": d >= sb[kind] - 0.01,
+                     "text": "%.2f m from the %s boundary (building line %.2f m)" % (d, kind, sb[kind])})
+    out_ = any(not inside(q, stand) for poly in (hp, cp) if poly for q in poly)
+    rows.append({"key": "inside", "label": "Inside the stand", "value": "no" if out_ else "yes", "limit": "", "ok": not out_, "text": "the house or carport sticks out of the stand" if out_ else "all corners inside"})
+    foot = abs(area(hp)) + (abs(area(cp)) if cp else 0)
+    cov = foot / sa * 100
+    lim = z["coverage"]
+    rows.append({"key": "coverage", "label": "Coverage", "value": "%.1f %%" % cov, "limit": ("at most %.1f %%" % lim) if lim else "no limit set",
+                 "ok": (cov <= lim + 1e-9) if lim else None,
+                 "text": "%.1f m2 built on %.0f m2%s" % (foot, sa, (" - %.1f m2 over" % (foot - lim * sa / 100)) if lim and cov > lim else "")})
+    gfa = z["gfa"] or abs(area(hp)) * max(int(z["storeys"] or 1), 1) + (abs(area(cp)) if (cp and z.get("carport_in_far")) else 0)
+    far = gfa / sa
+    lim = z["far"]
+    rows.append({"key": "far", "label": "Floor area ratio", "value": "%.2f" % far, "limit": ("at most %.2f" % lim) if lim else "no limit set",
+                 "ok": (far <= lim + 1e-9) if lim else None,
+                 "text": "%.1f m2 floor area on %.0f m2%s" % (gfa, sa, (" - %.1f m2 over" % (gfa - lim * sa)) if lim and far > lim else "")})
+    lim, hh = z["height"], z["house_height"]
+    rows.append({"key": "height", "label": "Height", "value": ("%.2f m" % hh) if hh else "not entered", "limit": ("at most %.2f m" % lim) if lim else "no limit set",
+                 "ok": ((hh <= lim + 1e-9) if (lim and hh) else None),
+                 "text": "type the building height above natural ground to check it" if (lim and not hh) else ""})
+    req, have = int(z["bays_req"] or 0), int(z["bays"] or 0)
+    rows.append({"key": "parking", "label": "Parking bays", "value": "%d" % have, "limit": ("at least %d" % req) if req else "no limit set",
+                 "ok": (have >= req) if req else None, "text": ("%d bay%s short" % (req - have, "" if req - have == 1 else "s")) if req and have < req else ""})
+    return rows
 
 
 def seg_overlap(a, b):
@@ -1099,6 +1184,7 @@ def solve(state):
     res["coverage_pct"] = round(cov, 1)
     res["stand_area"] = round(abs(area(stand)), 1)
     res["params"] = params
+    res["compliance"] = compliance(state, res)
     return res
 
 
