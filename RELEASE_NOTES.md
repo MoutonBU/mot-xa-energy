@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.154**
+Current version: **1.86.155**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **House placing, connection symbols:** the electrical and water connection symbols drawn as triangle outlines in the site drawing (with their EC / water label) are no longer copied onto the plan as yellow / blue lines; the program still reads them to find the electrical and water connection points.
 - **House placing, drawn mains snap to the stand, wall placing, shared water connection:** (1) when you draw the main sewer, water or electrical line it now snaps parallel to the stand's boundaries, square to them or at 45 degrees to them (Parallel + 45 / Parallel only / Free buttons over the plan; Shift = free), with the stand's directions shown as faint guides, the line so far, the next leg as a dashed preview and a live readout of length, angle and what it snapped to. (2) "Place walls" button: click a boundary of the stand to switch its 1.2 m pre-cast wall on or off (red = wall, grey = none, each edge labelled front / side / rear), or use All walls / Sides + rear / No front / No walls; the plan and the exported DXF follow. (3) The water connection of a township stand now goes on the boundary shared with the neighbouring stand, as on the finished plans (the pair of water meters splits on the common boundary); this is a rule in the reference data (site_plans_data.py, water_pair_x).
 - **House placing, search radius is now a rule in the reference data:** how far round a stand the township reader looks lives in site_plans_data.py (TOWNSHIP_SEARCH): road 130 m (the bend, the far kerb, the next streets), services 90 m (sewer, water, electrical, stormwater), neighbouring stands 45 m, main lines 40 m. Every stand cut out of a site drawing uses these, so the double road and all the services come in.
 - **House placing, the whole road:** a stand from a township drawing now reads the road 130 m round the stand (it was 45 m), so the bend round a corner stand, the kerbs on both sides of the street and the next streets are all there, and the plan opens wide enough to show them. The road is drawn in full as drawn in the DXF (also in the exported DXF).

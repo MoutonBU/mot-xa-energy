@@ -762,7 +762,8 @@ class Township:
                 if len(lines[cat]) > 40000:
                     break
         edge, known = self.street_edge(P, nb, lines)
-        conn = self.connections(P, edge, reach=8.0)
+        lines, tris = self.strip_symbols(lines)
+        conn = self.connections(P, edge, reach=8.0, tris=tris)
         corner = [i for i in self.side_streets(P, edge, lines) if not any(
             _seg_dist(((P[i][0] + P[(i + 1) % len(P)][0]) / 2, (P[i][1] + P[(i + 1) % len(P)][1]) / 2), o["poly"][j], o["poly"][(j + 1) % len(o["poly"])]) < 0.4
             for o in nb for j in range(len(o["poly"])))]
@@ -777,7 +778,60 @@ class Township:
         return {"no": str(number).strip(), "poly": P, "connections": conn, "neighbours": nb, "lines": lines, "street_edge": edge, "road_known": known, "corner": corner,
                 "label": label, "matches": len(hits)}
 
-    def connections(self, P, edge, reach=8.0):
+    @staticmethod
+    def strip_symbols(lines, max_ext=4.0, min_ext=0.3):
+        """the connection symbols drawn as little triangle outlines on the electrical and water layers (three short lines that close on themselves) are taken
+        out of the lines, so they are not drawn on the plan, and handed back as (kind, [3 points]) so the connection point can still be read from them"""
+        tris = []
+        for cat in ("elec", "water"):
+            segs = [sg for sg in lines.get(cat, []) if math.hypot(sg[2] - sg[0], sg[3] - sg[1]) <= max_ext]
+            if len(segs) < 3:
+                continue
+            key = lambda x, y: (round(x / 0.03), round(y / 0.03))
+            at = {}
+            for i, sg in enumerate(segs):
+                at.setdefault(key(sg[0], sg[1]), []).append((i, 0))
+                at.setdefault(key(sg[2], sg[3]), []).append((i, 1))
+
+            def near(x, y):
+                kx, ky = key(x, y)
+                return [t for dx in (-1, 0, 1) for dy in (-1, 0, 1) for t in at.get((kx + dx, ky + dy), [])]
+            used = set()
+            for i, sg in enumerate(segs):
+                if i in used:
+                    continue
+                for ea in (0, 1):
+                    a = (sg[0], sg[1]) if ea == 0 else (sg[2], sg[3])
+                    b = (sg[2], sg[3]) if ea == 0 else (sg[0], sg[1])
+                    found = None
+                    for j, ej in near(b[0], b[1]):
+                        if j == i or j in used:
+                            continue
+                        sj = segs[j]
+                        c = (sj[2], sj[3]) if ej == 0 else (sj[0], sj[1])
+                        for k_, ek in near(c[0], c[1]):
+                            if k_ in (i, j) or k_ in used:
+                                continue
+                            sk = segs[k_]
+                            d = (sk[2], sk[3]) if ek == 0 else (sk[0], sk[1])
+                            if math.hypot(d[0] - a[0], d[1] - a[1]) < 0.05:
+                                found = (j, k_, c)
+                                break
+                        if found:
+                            break
+                    if found:
+                        pts = [a, b, found[2]]
+                        ext = max(max(q[0] for q in pts) - min(q[0] for q in pts), max(q[1] for q in pts) - min(q[1] for q in pts))
+                        if min_ext <= ext <= max_ext:
+                            used.update((i, found[0], found[1]))
+                            tris.append((cat, pts))
+                        break
+            if used:
+                lines[cat] = [sg for sg in lines[cat] if not (math.hypot(sg[2] - sg[0], sg[3] - sg[1]) <= max_ext and any(
+                    sg is segs[u] for u in used))]
+        return lines, tris
+
+    def connections(self, P, edge, reach=8.0, tris=()):
         """the connection symbols (a small filled triangle or box) on or near the stand's street boundary: {"elec": {...}, "water": {...}}. Each has "pt" (the point of
         the triangle that touches the boundary, in metres) and "label" (the text beside it, such as C5.1 2p)."""
         k = self.k
@@ -799,6 +853,11 @@ class Township:
             if d > reach:
                 continue
             if kind not in out or d < out[kind]["d"]:
+                out[kind] = {"pt": tip, "d": d, "kind": kind}
+        for kind, Q in tris:                                  # symbols drawn as triangle outlines
+            tip = min(Q, key=lambda q: _seg_dist(q, a, b))
+            d = _seg_dist(tip, a, b)
+            if d <= reach and (kind not in out or d < out[kind]["d"]):
                 out[kind] = {"pt": tip, "d": d, "kind": kind}
         for kind, c in out.items():
             best = None
