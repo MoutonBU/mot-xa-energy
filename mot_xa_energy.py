@@ -6657,6 +6657,29 @@ def read_ifc_model(path):
                         el_ext[el_.id()] = bool(ex_)
     except Exception:
         face_of = {}
+    # inside doors that carry the tag of an outside door (the same mark on a passage door, or an object exported as a proxy in an inside wall) are not outside
+    # openings: they leave the counts, the room links and the schedule, so D1 x 2 outside is not reported as 3
+    try:
+        ext_tags = {it["tag"] for it in items if it["kind"] == "Door" and any(el_ext.get(e_.id()) for e_ in it["_els"])}
+        left_out = {}
+        for it in list(items):
+            if it["kind"] != "Door" or it["tag"] not in ext_tags:
+                continue
+            keep = [i for i, e_ in enumerate(it["_els"]) if el_ext.get(e_.id()) is not False]
+            if len(keep) == len(it["_els"]):
+                continue
+            left_out[it["tag"]] = left_out.get(it["tag"], 0) + len(it["_els"]) - len(keep)
+            for f_ in ("_els", "_pos", "_fl"):
+                it[f_] = [it[f_][i] for i in keep]
+            it["qty"] = len(keep)
+            it["_ext"] = [True for i in keep if el_ext.get(it["_els"][keep.index(i)].id())] if False else [bool(el_ext.get(e_.id())) for e_ in it["_els"] if e_.id() in el_ext]
+            if not keep:
+                items.remove(it)
+        for it in items:
+            if it["kind"] == "Door" and left_out.get(it["tag"]):
+                it["note"] = (it.get("note", "") + " Not counted: %d inside door(s) with the same tag." % left_out[it["tag"]]).strip()
+    except Exception:
+        pass
     # link openings to rooms through space boundaries
     gid2room = {r["_gid"]: r for r in rooms}
     sb_room = {}                   # opening id -> room it was linked to by a space boundary
