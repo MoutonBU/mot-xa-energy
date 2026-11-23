@@ -265,3 +265,34 @@ SAMPLE_SPEC = {
     },
     "assumptions": ["Sizes are an example only and must be checked by the Engineer."],
 }
+
+
+def geometry_for_notes(spec, dxf_path):
+    """Draws only the parts (coloured fills and outlines, no notes) so the Detail notes workspace can take the drawing over, and
+    returns the notes Claude wrote as that workspace's own saved specs: {hatch handle: {note, x, y, cat}}."""
+    import ezdxf
+    from shapely.geometry import Polygon
+    doc = ezdxf.new("R2010", setup=True)
+    doc.units = 4
+    msp = doc.modelspace()
+    doc.layers.add("DET_OUTLINE", color=7)
+    for lay in LAYERS.values():
+        doc.layers.add(lay, color=7)
+    best = {}                                          # material -> (area, handle, point): the biggest piece carries the note
+    for s in spec["shapes"]:
+        poly = Polygon(s["pts"])
+        if not poly.is_valid:
+            poly = poly.buffer(0)
+        polys = [poly] if poly.geom_type == "Polygon" else [g for g in poly.geoms if g.geom_type == "Polygon"]
+        if not polys:
+            continue
+        lay = LAYERS[s["material"]]
+        rgb = core.classify(lay, "SOLID")[1] or (217, 217, 217)
+        h = core._add_fill(msp, polys, rgb, lay)
+        msp.add_lwpolyline(s["pts"], close=True, dxfattribs={"layer": "DET_OUTLINE", "lineweight": 25})
+        big = max(polys, key=lambda g: g.area)
+        if s["material"] not in best or big.area > best[s["material"]][0]:
+            rp = big.representative_point()
+            best[s["material"]] = (big.area, h.dxf.handle, (rp.x, rp.y))
+    core.save_doc(doc, dxf_path)
+    return {hd: {"note": spec["notes"][m], "x": pt[0], "y": pt[1], "cat": ""} for m, (_a, hd, pt) in best.items() if spec["notes"].get(m)}

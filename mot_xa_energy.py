@@ -12451,6 +12451,8 @@ class MainWindow(QMainWindow):
                 self.plan_page.refresh()
             if getattr(self, "_det_win", None) is not None:
                 self._det_win.update_theme()
+            if getattr(self, "_det_win2", None) is not None:
+                self._det_win2.update_theme()
         except Exception:
             pass
         self.setUpdatesEnabled(True)
@@ -14308,10 +14310,6 @@ class MainWindow(QMainWindow):
         try:
             import mot_detail_notes_app as dn
             dn.LIGHT[0] = bool(light())
-            w = dn.Win(embedded=True)
-            w.setWindowFlags(Qt.WindowType.Widget)
-            w.make_icon, w.is_light = make_icon, light
-            w.setStyleSheet(dn.QSS)
             def _xa_info():
                 z = self.xa_zone.currentText()
                 t = self.xa_town.currentText()
@@ -14326,16 +14324,25 @@ class MainWindow(QMainWindow):
                     self.xa_prov.setCurrentText(pv)
                 self.xa_town.setCurrentText(t)          # also sets the energy zone, same as picking it on the Energy tab
                 return True
-            w.xa_provider = _xa_info
-            w.xa_set_town = _xa_set_town
-            w.xa_towns = sorted(XA_TOWNS)
-            self.xa_zone.currentTextChanged.connect(lambda _z: w.xa_resync())   # zone changed on the Energy tab: notes follow
-            w.xa_sync_ui()
+            def _mk():
+                """one full Detail notes workspace; the generator tab gets a second one so it has the same tools and catalog"""
+                w_ = dn.Win(embedded=True)
+                w_.setWindowFlags(Qt.WindowType.Widget)
+                w_.make_icon, w_.is_light = make_icon, light
+                w_.setStyleSheet(dn.QSS)
+                w_.xa_provider = _xa_info
+                w_.xa_set_town = _xa_set_town
+                w_.xa_towns = sorted(XA_TOWNS)
+                self.xa_zone.currentTextChanged.connect(lambda _z, w_=w_: w_.xa_resync())   # zone changed on the Energy tab: notes follow
+                w_.xa_sync_ui()
+                return w_
+            w = _mk()
             inner = QTabWidget()
             inner.addTab(w, "Detail notes")
             try:
                 from detail_generator_ui import GeneratorPage
-                gp = GeneratorPage(w, lambda: inner.setCurrentIndex(0))
+                gp = GeneratorPage(_mk())
+                self._det_win2 = gp.win
                 inner.addTab(gp, "Detail generator")
             except Exception as gex:
                 lb2 = QLabel("The Detail generator could not start:\n%s" % gex)

@@ -31,6 +31,12 @@ def main():
         g.clean_spec({"shapes": []}); assert False
     except g.GenError:
         pass
+    sp3, _p = g.clean_spec(g.SAMPLE_SPEC)
+    specs = g.geometry_for_notes(sp3, os.path.join(d, "g.dxf"))
+    assert len(specs) == 5 and all(v["note"] and "x" in v for v in specs.values())
+    import ezdxf
+    gd = ezdxf.readfile(os.path.join(d, "g.dxf"))
+    assert all(gd.entitydb.get(h) is not None and gd.entitydb.get(h).dxftype() == "HATCH" for h in specs)
     assert g.parse_reply({"shapes": []}) == {"shapes": []}          # a tool reply is already an object
     import io, json as _j, urllib.request as ur
     calls = []

@@ -44,24 +44,28 @@ def start_dictation():
 
 
 class GeneratorPage(QWidget):
-    def __init__(self, notes_win=None, goto_notes=None):
+    """Request box on top, and below it the whole Detail notes workspace (same tools, catalog, templates, auto note, outputs):
+    the generated detail is opened in it with Claude's notes already in the list."""
+
+    def __init__(self, notes_win):
         super().__init__()
-        self.notes_win, self.goto_notes = notes_win, goto_notes
-        self.spec = None
+        self.win = notes_win
         self._job = None
-        self._png = os.path.join(tempfile.gettempdir(), "mot_detail_generator.png")
         v = QVBoxLayout(self)
-        v.setContentsMargins(18, 14, 18, 14)
-        v.setSpacing(8)
-        head = QLabel("Describe the detail you need. Claude draws it in the house style (true size, brickwork in red, "
-                      "concrete in green, notes in a column) and you save it as a DXF for Archicad.")
+        v.setContentsMargins(0, 6, 0, 0)
+        v.setSpacing(6)
+        top = QWidget()
+        tl = QVBoxLayout(top)
+        tl.setContentsMargins(18, 6, 18, 0)
+        tl.setSpacing(6)
+        head = QLabel("Describe the detail you need. Claude draws it below and writes its notes; then use the same tools as in Detail notes "
+                      "(click a part to change its spec, the catalog, templates, auto note, outputs).")
         head.setWordWrap(True)
-        v.addWidget(head)
+        tl.addWidget(head)
         self.box = QPlainTextEdit()
         self.box.setPlaceholderText(HINT)
-        self.box.setMinimumHeight(96)
-        self.box.setMaximumHeight(150)
-        v.addWidget(self.box)
+        self.box.setFixedHeight(84)
+        tl.addWidget(self.box)
         row = FlowLayout(None, 8, 6)
         self.b_dict = QPushButton("Dictate (voice)")
         self.b_dict.setToolTip("Opens Windows voice typing. Speak, and the words appear in the box above.")
@@ -69,28 +73,17 @@ class GeneratorPage(QWidget):
         self.b_go.setObjectName("accent")
         self.b_sample = QPushButton("Show a sample")
         self.b_sample.setToolTip("A cavity wall on a strip footing, drawn without the internet or a key.")
-        self.b_save = QPushButton("Save DXF...")
-        self.b_open = QPushButton("Add notes in Detail notes")
-        for b in (self.b_dict, self.b_go, self.b_sample, self.b_save, self.b_open):
+        for b in (self.b_dict, self.b_go, self.b_sample):
             row.addWidget(b)
-        v.addLayout(row)
+        tl.addLayout(row)
         self.status = QLabel("")
         self.status.setWordWrap(True)
-        v.addWidget(self.status)
-        self.pic = QLabel("The drawing shows here.")
-        self.pic.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        sc = QScrollArea()
-        sc.setWidgetResizable(True)
-        sc.setWidget(self.pic)
-        v.addWidget(sc, 1)
+        tl.addWidget(self.status)
+        v.addWidget(top)
+        v.addWidget(notes_win, 1)
         self.b_dict.clicked.connect(self.dictate)
         self.b_go.clicked.connect(self.draw)
         self.b_sample.clicked.connect(self.sample)
-        self.b_save.clicked.connect(self.save)
-        self.b_open.clicked.connect(self.to_notes)
-        self.b_save.setEnabled(False)
-        self.b_open.setEnabled(False)
-        self.b_open.setVisible(notes_win is not None)
 
     # ---- actions
     def dictate(self):
@@ -131,49 +124,27 @@ class GeneratorPage(QWidget):
         self.say(msg)
 
     def _drawn(self, res):
+        import re
+        import time
+        import json
+        import mot_detail_notes_app as dn
         self.b_go.setEnabled(True)
         spec, problems = res
+        slug = re.sub(r"[^A-Za-z0-9]+", "_", spec["title"]).strip("_")[:40] or "detail"
+        dxf = Path(dn.OUT_DIR) / ("generated_%s_%s.dxf" % (slug, time.strftime("%H%M%S")))
         try:
-            n = gen.make_detail(spec, os.path.join(tempfile.gettempdir(), "mot_detail_generator.dxf"), self._png)
+            dn.OUT_DIR.mkdir(parents=True, exist_ok=True)
+            specs = gen.geometry_for_notes(spec, str(dxf))
+            self.win.src = dxf
+            Path(self.win.edits_path()).write_text(json.dumps({"elements": [], "overrides": {}, "specs": specs}), encoding="utf-8")
+            self.win.open_file(str(dxf))
         except Exception as ex:
             self.say("The drawing could not be made: %s" % ex)
             return
-        self.spec = spec
-        pm = QPixmap(self._png)
-        self.pic.setPixmap(pm.scaledToWidth(min(pm.width(), 1100), Qt.TransformationMode.SmoothTransformation))
-        msg = "%s: %d shapes, %d notes." % (spec["title"], len(spec["shapes"]), n)
+        msg = "%s: %d shapes, %d notes (open in the workspace below)." % (spec["title"], len(spec["shapes"]), len(specs))
         if spec["assumptions"]:
             msg += "  Assumed: " + " ".join(spec["assumptions"])
         if problems:
             msg += "  Left out: " + "; ".join(problems)
         msg += "  Check every size and note against SANS and your Engineer before issuing."
         self.say(msg)
-        self.b_save.setEnabled(True)
-        self.b_open.setEnabled(True)
-
-    def _write(self, path):
-        gen.make_detail(self.spec, path)
-
-    def save(self):
-        if not self.spec:
-            return
-        name = "".join(c if c.isalnum() or c in " -_" else "" for c in self.spec["title"]).strip() or "Detail"
-        p, _ = QFileDialog.getSaveFileName(self, "Save detail", str(Path.home() / (name + ".dxf")), "DXF drawing (*.dxf)")
-        if p:
-            try:
-                self._write(p)
-                self.say("Saved: " + p)
-            except Exception as ex:
-                self.say("Could not save: %s" % ex)
-
-    def to_notes(self):
-        if not (self.spec and self.notes_win):
-            return
-        p = os.path.join(tempfile.gettempdir(), "mot_detail_generated.dxf")
-        try:
-            self._write(p)
-            self.notes_win.open_file(p)
-            if self.goto_notes:
-                self.goto_notes()
-        except Exception as ex:
-            self.say("Could not open it in Detail notes: %s" % ex)
