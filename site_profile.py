@@ -89,6 +89,21 @@ def build(state, res, il_head=None, lean_ratio=None):
     else:
         ngl0 = ASSUMED_DATUM
     ngl1 = float(n1) if _set(n1) else ngl0
+    ov_ = (state.get("sheet") or {}).get("fall_ang")
+    if ov_ is not None and not assumed and len(path) >= 2 and terrain_for(state) is None:
+        # the user turned the fall of the ground: the level at the other end follows from how far the pipe runs along that direction
+        import site_sheet as ss_
+        st0_ = dict(state, sheet=dict(state.get("sheet") or {}, fall_ang=None))
+        b_ = ss_.ground_fall(st0_, state["stand"]["corners"], res)
+        s_ = b_[2] if b_ and b_[2] > 1e-4 else 0.05
+        r_ = math.radians(float(ov_))
+        along = (path[-1][0] - path[0][0]) * math.cos(r_) + (path[-1][1] - path[0][1]) * math.sin(r_)   # metres run downhill, house to main
+        if _set(n0):
+            ngl0 = float(n0)
+            ngl1 = ngl0 - s_ * along
+        else:
+            ngl1 = float(n1)
+            ngl0 = ngl1 + s_ * along
     spots = [(x, y) for x, y in parse_spots(lv.get("spots")) if 0 < x < Hh]
     pts = [(0.0, ngl0)] + spots + [(Hh, ngl1)]
     terr = terrain_for(state)

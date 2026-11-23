@@ -122,7 +122,12 @@ pg.turn_fall(90.0)                                                              
 a1_ = _sh.ground_fall(pg.st, pg.st["stand"]["corners"], pg.res)
 assert abs(a1_[0] * a0_[0] + a1_[1] * a0_[1]) < 1e-6 and abs(a1_[2] - a0_[2]) < 1e-9, (a0_, a1_)
 pg.view._dirty = True; pg.view.grab(); pg.view._ph = 0.5; pg.view.grab()
-pg.turn_fall(None)
+b1_ = sp.build(pg.st, pg.res)["ngl1"]                                                          # the ground at the main follows the turned fall
+pg.turn_fall(180.0); pg.solve_now(False)
+b2_ = sp.build(pg.st, pg.res)["ngl1"]
+assert abs(b1_ - b2_) > 0.05, (b1_, b2_)
+pg.turn_fall(None); pg.solve_now(False)
+assert abs(sp.build(pg.st, pg.res)["ngl1"] - 98.5) < 1e-6
 assert _sh.ground_fall(pg.st, pg.st["stand"]["corners"], pg.res) == a0_
 pg.lv_spin["ngl_main"].setValue(-1000.0); pg.solve_now(False)
 assert _sh.ground_fall(pg.st, pg.st["stand"]["corners"], pg.res) is None
