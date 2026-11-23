@@ -380,9 +380,20 @@ def typed_fall(st, res):
     return (ux, uy, drop / L) if drop > 0 else (-ux, -uy, -drop / L)
 
 
+def fall_override(st):
+    """the angle (degrees, counter-clockwise from +x on the plan) the user set for the downhill direction, or None for automatic"""
+    a = (st.get("sheet") or {}).get("fall_ang")
+    return None if a is None else float(a)
+
+
 def ground_fall(st, stand, res=None):
     """the overall fall of the ground over the stand: (direction x, direction y, slope as rise/run), or None. Direction points downhill.
     From the contours when there are some, else from the two ground levels typed for the sewer section."""
+    ov = fall_override(st)
+    if ov is not None:                                            # the user turned it: keep the real steepness when it is known
+        base = ground_fall(dict(st, sheet=dict(st.get("sheet") or {}, fall_ang=None)), stand, res)
+        r = math.radians(ov)
+        return math.cos(r), math.sin(r), (base[2] if base and base[2] > 1e-4 else 0.05)
     gg = ground_grid(st, stand)
     if gg is None:
         return typed_fall(st, res)
@@ -424,6 +435,8 @@ def _falls(D, st, stand, res=None):
     D.L("GROUND_FALL")
     x0, y0 = min(q[0] for q in stand), min(q[1] for q in stand)
     gg = ground_grid(st, stand)
+    if fall_override(st) is not None:
+        gg = None
     if gg is not None:
         _t, g = gg
         _k, nx, ny, dx, dy, z = g
@@ -457,7 +470,7 @@ def _falls(D, st, stand, res=None):
         xs, ys = [q[0] for q in stand], [q[1] for q in stand]
         ox, oy = (min(xs) + max(xs)) / 2.0, max(ys) + 3.2                 # the label sits above the top side of the stand
         _arrow(D, (ox - f[0] * 1.6, oy - f[1] * 1.6), (ox + f[0] * 1.6, oy + f[1] * 1.6), f[0], f[1], col, 0.1, 0.7)
-        D.text((ox, oy + 1.4), "GROUND FALLS 1:%d (%.1f %%)%s" % (round(1.0 / f[2]), f[2] * 100.0, "" if gg is not None else " from the typed levels"), 0.55, (1, 0), True, col, key="fall_dir", fixed=True, upright=True)
+        D.text((ox, oy + 1.4), "GROUND FALLS 1:%d (%.1f %%)%s" % (round(1.0 / f[2]), f[2] * 100.0, "" if gg is not None else (" (direction set by you)" if fall_override(st) is not None else " from the typed levels")), 0.55, (1, 0), True, col, key="fall_dir", fixed=True, upright=True)
     D.L(None)
 
 

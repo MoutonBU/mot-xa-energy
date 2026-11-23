@@ -526,7 +526,7 @@ class ServicesView(QWidget):
         pg = self.page
         stand = pg.st["stand"]["corners"]
         x0, y0 = min(q[0] for q in stand), min(q[1] for q in stand)
-        gg = site_sheet.ground_grid(pg.st, stand)
+        gg = None if site_sheet.fall_override(pg.st) is not None else site_sheet.ground_grid(pg.st, stand)
         f = site_sheet.ground_fall(pg.st, stand, pg.res)
         if f is None or f[2] < 1e-4:
             return
@@ -901,6 +901,12 @@ class ServicesView(QWidget):
                 return
             if self.mode == "north_dir":
                 pg.set_north_from_click(e.position())
+                self.mode = "select"
+                pg.set_hint("")
+                self.update()
+                return
+            if self.mode == "fall_dir":
+                pg.set_fall_from_click(w)
                 self.mode = "select"
                 pg.set_hint("")
                 self.update()
@@ -1892,7 +1898,15 @@ class SiteServicesPage(ToolBase):
         nb_.clicked.connect(lambda: self.arm("north_dir"))
         nm_ = QPushButton("North arrow to the top")
         nm_.clicked.connect(lambda: (self.st["sheet"].__setitem__("north_pos", None), self.view.update(), self.changed()))
-        for b_ in (rb_, nb_, nm_):
+        fb_ = QPushButton("Show which way the ground falls")
+        fb_.setToolTip("Click in the direction the ground falls (downhill). The arrows turn to that way.")
+        fb_.clicked.connect(lambda: self.arm("fall_dir"))
+        ft_ = QPushButton("Turn the fall 15\u00b0")
+        ft_.clicked.connect(lambda: self.turn_fall(15.0))
+        fa_ = QPushButton("Fall: automatic")
+        fa_.setToolTip("Go back to the fall worked out from the contours or the typed levels.")
+        fa_.clicked.connect(lambda: self.turn_fall(None))
+        for b_ in (rb_, nb_, nm_, fb_, ft_, fa_):
             row.addWidget(b_)
         row.addStretch(1)
         ml.addLayout(row)
@@ -2855,7 +2869,7 @@ class SiteServicesPage(ToolBase):
         self.set_hint({"pt_sewer": "Click in the plan where the main sewer connection is.", "pt_water": "Click in the plan where the water connection is.",
                        "pt_elec": "Click in the plan where the electrical supply is.", "port_sewer": "Click on the house outline where the sewer leaves the house.",
                        "port_water": "Click on the house outline where the water enters.", "port_db": "Click on the house outline where the DB is.",
-                       "wport_add": "Click on the house outline where another water point enters. Press Esc when done.", "sport_add": "Click on the house wall where another sewer outlet leaves the house. Press Esc when done.", "sewer_draw": "Click where the sewer starts.", "text_add": "Click in the plan where the text goes.", "dim_add": "Click the first point of the dimension (corners snap), then the second. Drag its figure to slide it. Press Esc when done.", "road": "Click on the side of the stand where the road is.", "north_dir": "Click in the direction north points. You can also drag the arrow to move it.", "via_add": "Click in the plan where the sewer must pass. Click again for the next point, in order from the house to the main. Press Esc when done.", "street": "Click the boundary that faces the street.", "wmain_add": "Click along where the main water line runs, point by point. It snaps parallel to the stand boundaries and at 45 degrees to them (Shift = free). Press Done when it is drawn.", "emain_add": "Click along where the main electrical line runs, point by point. It snaps parallel to the stand boundaries and at 45 degrees to them (Shift = free). Press Done when it is drawn.", "mline_add": "Click along where the main sewer runs, point by point (it can cross the stand). It snaps parallel to the stand boundaries and at 45 degrees to them (Shift = free). Press Done when it is drawn.", "wall_pick": "Click a boundary of the stand to switch its 1.2 m pre-cast wall on or off (red = wall, grey = none). Press Done when finished.", "wall_run": "Click on a boundary where the wall starts, then click where it ends (it snaps to the boundary and sticks to corners). Esc or Done when finished.", "mh_add": "Click on the main sewer where a manhole is. Press Esc when done.", "cust_add": "Click in the plan where your point goes."}.get(mode, ""))
+                       "wport_add": "Click on the house outline where another water point enters. Press Esc when done.", "sport_add": "Click on the house wall where another sewer outlet leaves the house. Press Esc when done.", "sewer_draw": "Click where the sewer starts.", "text_add": "Click in the plan where the text goes.", "dim_add": "Click the first point of the dimension (corners snap), then the second. Drag its figure to slide it. Press Esc when done.", "road": "Click on the side of the stand where the road is.", "north_dir": "Click in the direction north points. You can also drag the arrow to move it.", "fall_dir": "Click in the direction the ground falls (downhill).", "via_add": "Click in the plan where the sewer must pass. Click again for the next point, in order from the house to the main. Press Esc when done.", "street": "Click the boundary that faces the street.", "wmain_add": "Click along where the main water line runs, point by point. It snaps parallel to the stand boundaries and at 45 degrees to them (Shift = free). Press Done when it is drawn.", "emain_add": "Click along where the main electrical line runs, point by point. It snaps parallel to the stand boundaries and at 45 degrees to them (Shift = free). Press Done when it is drawn.", "mline_add": "Click along where the main sewer runs, point by point (it can cross the stand). It snaps parallel to the stand boundaries and at 45 degrees to them (Shift = free). Press Done when it is drawn.", "wall_pick": "Click a boundary of the stand to switch its 1.2 m pre-cast wall on or off (red = wall, grey = none). Press Done when finished.", "wall_run": "Click on a boundary where the wall starts, then click where it ends (it snaps to the boundary and sticks to corners). Esc or Done when finished.", "mh_add": "Click on the main sewer where a manhole is. Press Esc when done.", "cust_add": "Click in the plan where your point goes."}.get(mode, ""))
         self.view.update()
 
     def set_point(self, k, w):
@@ -3612,6 +3626,31 @@ class SiteServicesPage(ToolBase):
         c["entry_face"] = (int(c.get("entry_face") or 0) + 1) % 4
         c.pop("entry_x", None)
         self.view.update()
+        self.commit(True)
+
+    def set_fall_from_click(self, w):
+        st_ = self.st["stand"]["corners"]
+        cx, cy = sum(q[0] for q in st_) / len(st_), sum(q[1] for q in st_) / len(st_)
+        if math.hypot(w[0] - cx, w[1] - cy) > 1e-6:
+            self.st["sheet"]["fall_ang"] = math.degrees(math.atan2(w[1] - cy, w[0] - cx)) % 360.0
+            self.view._seeds = None
+            self.view.update()
+            self.changed()
+            self.commit(True)
+
+    def turn_fall(self, deg):
+        """turn the fall direction by deg degrees (from the automatic one the first time), or None to go back to automatic"""
+        sh = self.st["sheet"]
+        if deg is None:
+            sh["fall_ang"] = None
+        else:
+            if sh.get("fall_ang") is None:
+                f = site_sheet.ground_fall(self.st, self.st["stand"]["corners"], self.res)
+                sh["fall_ang"] = math.degrees(math.atan2(f[1], f[0])) % 360.0 if f and f[2] > 1e-4 else 0.0
+            sh["fall_ang"] = (sh["fall_ang"] + deg) % 360.0
+        self.view._seeds = None
+        self.view.update()
+        self.changed()
         self.commit(True)
 
     def set_look(self, key, on):
