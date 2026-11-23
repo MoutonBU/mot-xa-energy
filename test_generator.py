@@ -40,7 +40,7 @@ def main():
     def fake(req, timeout=0):
         calls.append(1)
         body = _j.loads(req.data.decode())
-        assert body["tool_choice"]["name"] == "draw_detail"
+        assert body["tool_choice"]["type"] == "auto" and body["tools"][0]["name"] == "draw_detail"
         return R(_j.dumps({"content": [{"type": "tool_use", "input": g.SAMPLE_SPEC}]}).encode())
     old = ur.urlopen; ur.urlopen = fake
     try:

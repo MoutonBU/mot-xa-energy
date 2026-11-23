@@ -27,7 +27,7 @@ LIMIT = 30000.0            # mm: nothing in a construction detail is further tha
 
 SYSTEM = (
     "You draw South African construction details (sections) for an architectural technologist. You are given a "
-    "request and answer by calling the draw_detail tool.\n\n"
+    "request and answer ONLY by calling the draw_detail tool (never with plain text).\n\n"
     "Shape of the drawing:\n"
     '{"title": "short title", "shapes": [{"material": "<m>", "pts": [[x,y], ...]}], '
     '"notes": {"<m>": "callout note"}, "assumptions": ["short sentence", ...]}\n\n'
@@ -90,7 +90,7 @@ def api_model():
 
 def ask_claude(request, key, model, timeout=120):
     """-> raw reply text. Raises GenError with a plain message."""
-    body = {"model": model, "max_tokens": 8000, "system": SYSTEM, "tools": [TOOL], "tool_choice": {"type": "tool", "name": "draw_detail"},
+    body = {"model": model, "max_tokens": 8000, "system": SYSTEM, "tools": [TOOL], "tool_choice": {"type": "auto"},
             "messages": [{"role": "user", "content": request.strip()}]}
     req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=json.dumps(body).encode(),
                                  headers={"x-api-key": key, "anthropic-version": "2023-06-01",
