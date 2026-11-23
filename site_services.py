@@ -898,6 +898,10 @@ class ServicesView(QWidget):
                 o.pop("entry_x", None)                                 # the entry follows the carport again
             o["cx"] = round(d[2][0] + w[0] - d[1][0], 2)
             o["cy"] = round(d[2][1] + w[1] - d[1][1], 2)
+        if d[0] in ("house", "carport", "rot") and pg.res:                  # the house follows the mouse at once; the lines catch up as fast as they are worked out
+            pg.res["house"] = se.house_poly(pg.st["house"])
+            pg.res["carport"] = se.carport_poly(pg.st.get("carport"))
+            pg.res["marks"] = se.mark_points(pg.st["house"])
         pg.schedule(True)
         self.update()
 
@@ -1908,7 +1912,9 @@ class SiteServicesPage(ToolBase):
     def schedule(self, light=False):
         """light: the plan is being dragged, so work the lines out and redraw but leave the tables and fields until you let go"""
         self._light = light
-        self._t.setInterval(40 if light else 140)
+        self._t.setInterval(30 if light else 140)
+        if light and self._t.isActive():
+            return                                       # dragging: the lines are worked out as often as they can be, not only when the mouse stops
         self._t.start()
 
     def new_placing(self):

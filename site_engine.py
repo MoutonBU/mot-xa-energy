@@ -8,6 +8,7 @@ import heapq
 import math
 
 GRID = 0.25
+_CELLS = {"sig": None, "cells": {}}
 FAST = False                 # while the plan is being dragged: a coarser routing grid, so the lines follow at once; the exact ones come when you let go
 DEFAULTS = {"fall": 50.0, "conn_depth": 1.5, "max_ie": 25.0, "min_depth": 0.45, "sewer_pipe": "110", "water_pipe": "20",
             "clear": 0.3, "re_ext": 0.35, "ie_first": 1.5, "sep_water": 0.5, "sep_service": 0.1, "min_cover": 0.3, "stub": 1.0, "sb_street": 1.0, "sb_side": 1.0, "sb_rear": 2.0, "fall_flat": 60.0, "fall_special": 120.0, "anchor_fall": 10.0}
@@ -361,22 +362,24 @@ def best_line(a, cands, obstacles, others=()):
 def route(a, b, stand, blocked, street_band=2.5, pad=2.0, bend=3.0):
     """Orthogonal route from a to b on a 0.25 m grid. Blocked polygons are avoided; open land of the neighbours costs a lot,
     the strip in front of the street boundary costs nothing extra (that is where mains are). Returns a list of corner points."""
-    G = 0.5 if FAST else GRID
+    G = 1.0 if FAST else GRID
     xs = [p[0] for p in stand] + [a[0], b[0]]
     ys = [p[1] for p in stand] + [a[1], b[1]]
-    x0, y0 = min(xs) - pad, min(ys) - pad
-    nx = int((max(xs) + pad - x0) / G) + 1
-    ny = int((max(ys) + pad - y0) / G) + 1
-    cell = {}
+    i0, j0 = int(math.floor((min(xs) - pad) / G)), int(math.floor((min(ys) - pad) / G))
+    i1, j1 = int(math.ceil((max(xs) + pad) / G)), int(math.ceil((max(ys) + pad) / G))
     street = (stand[0], stand[1])
     bbs = [(min(q[0] for q in poly), min(q[1] for q in poly), max(q[0] for q in poly), max(q[1] for q in poly), poly) for poly in blocked]
     sbb = (min(q[0] for q in stand), min(q[1] for q in stand), max(q[0] for q in stand), max(q[1] for q in stand))
+    sig = (G, street_band, tuple((round(q[0], 3), round(q[1], 3)) for q in stand), tuple(tuple((round(q[0], 3), round(q[1], 3)) for q in poly) for poly in blocked))
+    if _CELLS["sig"] != sig:                                           # the cost of a grid cell is the same for every run of this stand, house and carport: kept between runs
+        _CELLS["sig"], _CELLS["cells"] = sig, {}
+    cell = _CELLS["cells"]
 
     def cost(i, j):
         k = (i, j)
         if k in cell:
             return cell[k]
-        p = (x0 + i * G, y0 + j * G)
+        p = (i * G, j * G)
         c = 1.0
         for bx0, by0, bx1, by1, poly in bbs:
             if bx0 <= p[0] <= bx1 and by0 <= p[1] <= by1 and inside(p, poly):
@@ -387,8 +390,8 @@ def route(a, b, stand, blocked, street_band=2.5, pad=2.0, bend=3.0):
         cell[k] = c
         return c
 
-    s = (int(round((a[0] - x0) / G)), int(round((a[1] - y0) / G)))
-    g = (int(round((b[0] - x0) / G)), int(round((b[1] - y0) / G)))
+    s = (int(round(a[0] / G)), int(round(a[1] / G)))
+    g = (int(round(b[0] / G)), int(round(b[1] / G)))
     dirs = ((1, 0), (-1, 0), (0, 1), (0, -1))
     pq = [(0.0, 0.0, s, -1)]
     best = {(s, -1): 0.0}
@@ -403,7 +406,7 @@ def route(a, b, stand, blocked, street_band=2.5, pad=2.0, bend=3.0):
             continue
         for k, (dx, dy) in enumerate(dirs):
             nxt = (cur[0] + dx, cur[1] + dy)
-            if not (0 <= nxt[0] < nx and 0 <= nxt[1] < ny):
+            if not (i0 <= nxt[0] <= i1 and j0 <= nxt[1] <= j1):
                 continue
             c = cost(*nxt)
             if c is None and nxt != g:
@@ -423,7 +426,7 @@ def route(a, b, stand, blocked, street_band=2.5, pad=2.0, bend=3.0):
             break
         node = prev[node]
     cells.reverse()
-    pts = [(x0 + i * G, y0 + j * G) for i, j in cells]
+    pts = [(i * G, j * G) for i, j in cells]
     out = [pts[0]]
     for i in range(1, len(pts) - 1):
         d1 = (pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1])
@@ -574,7 +577,7 @@ def _port_for(state, hp, key, target, t0, others, build, kinds=()):
         return user, build(user)
     base = auto_port(hp, target, t0)
     best = None
-    for dt in (0, 0.1, -0.1, 0.2, -0.2, 0.3, -0.3, 0.4, -0.4):
+    for dt in ((0,) if FAST else (0, 0.1, -0.1, 0.2, -0.2, 0.3, -0.3, 0.4, -0.4)):          # (while dragging only the first one is tried)
         port = {"edge": base["edge"], "t": round(min(0.95, max(0.05, base["t"] + dt)), 3)}
         r = build(port)
         ov = sum(overlap_len(r["path"], o) for o in others)
