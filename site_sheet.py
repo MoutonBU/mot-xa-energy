@@ -321,14 +321,12 @@ def _numbered_stands(st, cpoly=None):
     return out
 
 
-def _ground(D, st, stand):
-    """the stand coloured by height (low blue, high brown) with a red glow where it is steep: only on the screen and the PDF, not the DXF"""
-    if hasattr(D.p, "set_layer") or D.lite or not (st.get("look") or {}).get("ground", True):
-        return
+def ground_grid(st, stand):
+    """(terrain, grid) of the ground heights over the stand, or None without contours. grid = (key, nx, ny, dx, dy, z[j][i])"""
     import site_profile
     terr = site_profile.terrain_for(st)
     if terr is None:
-        return
+        return None
     xs, ys = [q[0] for q in stand], [q[1] for q in stand]
     x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
     key = (round(x0, 2), round(x1, 2), round(y0, 2), round(y1, 2), len(stand))
@@ -341,6 +339,111 @@ def _ground(D, st, stand):
         z = [[terr.z_at(x0 + i * dx, y0 + j * dy) for i in range(nx + 1)] for j in range(ny + 1)]
         g = (key, nx, ny, dx, dy, z)
         terr._grid = g
+    return terr, g
+
+
+def grid_slope(g, x, y, x0, y0):
+    """(dz/dx, dz/dy) of the ground at a point (bilinear over the cell), or None"""
+    _k, nx, ny, dx, dy, z = g
+    i, j = int((x - x0) / dx), int((y - y0) / dy)
+    i, j = max(0, min(nx - 1, i)), max(0, min(ny - 1, j))
+    c = (z[j][i], z[j][i + 1], z[j + 1][i + 1], z[j + 1][i])
+    if any(v is None for v in c):
+        return None
+    gx = ((c[1] - c[0]) + (c[2] - c[3])) / 2.0 / dx
+    gy = ((c[3] - c[0]) + (c[2] - c[1])) / 2.0 / dy
+    return gx, gy
+
+
+def ground_fall(st, stand):
+    """the overall fall of the ground over the stand: (direction x, direction y, slope as rise/run), or None. Direction points downhill."""
+    gg = ground_grid(st, stand)
+    if gg is None:
+        return None
+    _t, g = gg
+    _k, nx, ny, dx, dy, z = g
+    x0, y0 = min(q[0] for q in stand), min(q[1] for q in stand)
+    sx = sy = n = 0
+    for j in range(ny):
+        for i in range(nx):
+            s = grid_slope(g, x0 + (i + 0.5) * dx, y0 + (j + 0.5) * dy, x0, y0)
+            if s is not None:
+                sx += s[0]
+                sy += s[1]
+                n += 1
+    if not n:
+        return None
+    gx, gy = sx / n, sy / n
+    m = math.hypot(gx, gy)
+    if m < 1e-4:
+        return 0.0, 0.0, 0.0
+    return -gx / m, -gy / m, m
+
+
+def _falls(D, st, stand):
+    """small arrows over the stand that point downhill, and one label saying how much the ground falls and which way"""
+    if D.lite or not (st.get("look") or {}).get("fall", True):
+        return
+    gg = ground_grid(st, stand)
+    if gg is None:
+        return
+    _t, g = gg
+    _k, nx, ny, dx, dy, z = g
+    x0, y0 = min(q[0] for q in stand), min(q[1] for q in stand)
+    col = QColor(30, 100, 190)
+    D.L("GROUND_FALL")
+    step = 2 if nx * ny > 60 else 1
+    for j in range(0, ny, step):
+        for i in range(0, nx, step):
+            cx, cy = x0 + (i + 0.5) * dx, y0 + (j + 0.5) * dy
+            if not point_in_poly((cx, cy), stand):
+                continue
+            s = grid_slope(g, cx, cy, x0, y0)
+            if s is None:
+                continue
+            m = math.hypot(*s)
+            if m < 0.01:
+                continue
+            ux, uy = -s[0] / m, -s[1] / m
+            L = min(1.6, 0.7 + 6.0 * m)
+            a = (cx - ux * L / 2, cy - uy * L / 2)
+            b = (cx + ux * L / 2, cy + uy * L / 2)
+            D.line(a, b, col, 0.05)
+            for sg in (-1, 1):
+                D.line(b, (b[0] - ux * 0.35 - sg * uy * 0.2, b[1] - uy * 0.35 + sg * ux * 0.2), col, 0.05)
+    f = ground_fall(st, stand)
+    if f and f[2] > 1e-4:
+        xs, ys = [q[0] for q in stand], [q[1] for q in stand]
+        ox, oy = (min(xs) + max(xs)) / 2.0, max(ys) + 3.2                 # the label sits above the top side of the stand
+        D.line((ox - f[0] * 1.6, oy - f[1] * 1.6), (ox + f[0] * 1.6, oy + f[1] * 1.6), col, 0.1)
+        for sg in (-1, 1):
+            tip = (ox + f[0] * 1.6, oy + f[1] * 1.6)
+            D.line(tip, (tip[0] - f[0] * 0.7 - sg * f[1] * 0.4, tip[1] - f[1] * 0.7 + sg * f[0] * 0.4), col, 0.1)
+        D.text((ox, oy + 1.4), "GROUND FALLS 1:%d (%.1f %%)" % (round(1.0 / f[2]), f[2] * 100.0), 0.55, (1, 0), True, col, key="fall_dir", fixed=True, upright=True)
+    D.L(None)
+
+
+def point_in_poly(p, poly):
+    x, y = p
+    inside = False
+    n = len(poly)
+    for i in range(n):
+        a, b = poly[i], poly[(i + 1) % n]
+        if (a[1] > y) != (b[1] > y) and x < (b[0] - a[0]) * (y - a[1]) / (b[1] - a[1]) + a[0]:
+            inside = not inside
+    return inside
+
+
+def _ground(D, st, stand):
+    """the stand coloured by height (low blue, high brown) with a red glow where it is steep: only on the screen and the PDF, not the DXF"""
+    if hasattr(D.p, "set_layer") or D.lite or not (st.get("look") or {}).get("ground", True):
+        return
+    gg = ground_grid(st, stand)
+    if gg is None:
+        return
+    terr, g = gg
+    xs, ys = [q[0] for q in stand], [q[1] for q in stand]
+    x0, y0 = min(xs), min(ys)
     _k, nx, ny, dx, dy, z = g
     flat = [v for row in z for v in row if v is not None]
     if not flat or max(flat) - min(flat) < 0.05:
@@ -377,7 +480,6 @@ def _contours(D, st, stand):
     cd = st.get("contours")
     if not cd or not (cd.get("lines") or cd.get("spots")) or not (st.get("levels") or {}).get("use_contours", 1):
         return
-    _ground(D, st, stand)
     fr = st.get("frame")
     mp = (lambda q: se.apply_frame(fr, q)) if fr else (lambda q: tuple(q))
     xs, ys = [q[0] for q in stand], [q[1] for q in stand]
@@ -453,6 +555,8 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
     look = st.get("look") or {}
     GREEN, WALLC = QColor(183, 221, 167), QColor(170, 25, 25)
     D.poly(stand, BLACK, 0.05, GREEN if look.get("fill", True) else None)       # the stand in green, as on the finished sheets
+    _ground(D, st, stand)                                                        # on top of the green: the height colours and the arrows for the fall
+    _falls(D, st, stand)
     D.L(None)
     def _wall_strip(a, b):
         D.L("WALLS")

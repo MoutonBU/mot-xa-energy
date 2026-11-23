@@ -206,6 +206,14 @@ def build(state, res, il_head=None, lean_ratio=None):
                    else ("Soil cover is less than %d mm (lowest %d mm, at %.1f m from the house%s): lay the pipe deeper%s." % (
                        round(mc * 1000), round(min_cover * 1000), worst, " - the pipe comes out of the ground there" if min_cover < 0 else "",
                        "" if drops_in else ", for example start it about %d mm deeper at the house or use a steeper fall" % (math.ceil((mc - min_cover) * 20.0) * 50))), min_cover >= mc - 1e-6))
+    gfall = (ngl0 - ngl1) / Hh if Hh > 1e-6 else 0.0                 # the ground along the sewer, towards the main
+    depth_main = ngl1 - il(Hh)
+    if abs(gfall) < 0.002:
+        gtx = "The ground is level along the sewer, so the pipe gets %d mm %s towards the main." % (round(abs(depth_main - (ngl0 - il_head)) * 1000), "deeper" if depth_main > ngl0 - il_head else "shallower")
+    else:
+        gtx = "The ground %s 1:%d along the sewer towards the main (the pipe falls 1:%d), so the pipe gets %d mm %s towards the main." % (
+            "falls" if gfall > 0 else "rises", round(1.0 / abs(gfall)), round(fall), round(abs(depth_main - (ngl0 - il_head)) * 1000), "deeper" if depth_main > ngl0 - il_head else "shallower")
+    checks.append((gtx, True))
     if drop >= -0.002:
         checks.append(("The pipe reaches the main %d mm above its invert level (%s)." % (round(drop * 1000), "typed" if main_il_typed else "taken as %d mm below the ground at the main" % round(conn_depth * 1000)), True))
     else:

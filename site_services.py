@@ -522,6 +522,41 @@ class ServicesView(QWidget):
                 p.drawText(r, Qt.AlignmentFlag.AlignCenter, txt)
         p.restore()
 
+    def _drops_downhill(self, p, S, ph):
+        pg = self.page
+        stand = pg.st["stand"]["corners"]
+        gg = site_sheet.ground_grid(pg.st, stand)
+        if gg is None:
+            return
+        _t, g = gg
+        x0, y0 = min(q[0] for q in stand), min(q[1] for q in stand)
+        seeds = getattr(self, "_seeds", None)
+        key = (g[0], len(stand))
+        if seeds is None or seeds[0] != key:
+            _k, nx, ny, dx, dy, z = g
+            pts = []
+            for j in range(ny * 2):
+                for i in range(nx * 2):
+                    cx, cy = x0 + (i + 0.5) * dx / 2.0, y0 + (j + 0.5) * dy / 2.0
+                    if site_sheet.point_in_poly((cx, cy), stand):
+                        s_ = site_sheet.grid_slope(g, cx, cy, x0, y0)
+                        if s_ is not None and math.hypot(*s_) >= 0.01:
+                            m_ = math.hypot(*s_)
+                            pts.append((cx, cy, -s_[0] / m_, -s_[1] / m_, min(1.0, m_ * 6.0)))
+            step = max(1, len(pts) // 70)
+            seeds = (key, pts[::step])
+            self._seeds = seeds
+        p.save()
+        for k, (cx, cy, ux, uy, w) in enumerate(seeds[1]):
+            t = (ph + (k * 0.6180339) % 1.0) % 1.0
+            L = 1.8
+            a = (cx + ux * L * t, cy + uy * L * t)
+            b = (cx + ux * (L * t + 0.4), cy + uy * (L * t + 0.4))
+            c = QColor(40, 130, 220, int(190 * math.sin(math.pi * t) * (0.4 + 0.6 * w)))
+            p.setPen(QPen(c, 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.drawLine(S(a), S(b))
+        p.restore()
+
     def draw_cover(self, p):
         """the stretches of sewer where the soil cover is too low flash red on the plan (the same stretches are red on the section)"""
         pg = self.page
@@ -680,6 +715,12 @@ class ServicesView(QWidget):
         for br in wt_.get("branches") or []:
             run(br.get("path"), QColor(40, 120, 230), True, 2.2, 1.4)
         run(el_.get("path"), QColor(238, 170, 20), True, 2.2, 2.0)
+        # water running downhill over the stand, the way the ground falls (needs contours)
+        if (pg.st.get("look") or {}).get("fall", True):
+            try:
+                self._drops_downhill(p, S, ph)
+            except Exception:
+                pass
         # a ring that grows and fades out of each eye and each connection point, one after the other
         spots = [(n["pt"], QColor(139, 90, 43)) for n in sw_.get("nodes") or [] if n.get("kind") in ("IE", "RE")]
         for pr_, col_ in ((sw_.get("port"), QColor(139, 90, 43)), (wt_.get("port"), QColor(40, 120, 230)), (el_.get("port"), QColor(238, 170, 20))):
@@ -1823,7 +1864,7 @@ class SiteServicesPage(ToolBase):
         ml.addLayout(row)
         row = FlowLayout(None, 8, 6)
         self.look_cb = {}
-        for key, text in (("fill", "Green stand"), ("walls", "Boundary walls"), ("cutout", "Export frame (blue)"), ("storm", "Stormwater arrow"), ("wp_box", "WP / VV box and marks"), ("upright", "Names and numbers stay level when the plan is turned"), ("ground", "Colour the stand by height and show steep ground (needs contours)"), ("flow", "Moving things on the screen: flow of the sewer, water and electrical, pulses at the eyes (not on the PDF)")):
+        for key, text in (("fill", "Green stand"), ("walls", "Boundary walls"), ("cutout", "Export frame (blue)"), ("storm", "Stormwater arrow"), ("wp_box", "WP / VV box and marks"), ("upright", "Names and numbers stay level when the plan is turned"), ("ground", "Colour the stand by height and show steep ground (needs contours)"), ("fall", "Arrows for which way the ground falls (needs contours)"), ("flow", "Moving things on the screen: flow of the sewer, water and electrical, pulses at the eyes (not on the PDF)")):
             cb_ = QCheckBox(text)
             cb_.setChecked(True)
             cb_.toggled.connect(lambda on, k=key: self.set_look(k, on))
@@ -4534,7 +4575,7 @@ class SiteServicesPage(ToolBase):
                 it.widget().deleteLater()
         short = ("Soil cover", "Eyes", "Reaches the main", "Drop", "Fall", "Depth", "Rodding eye")
         for tx, ok in d["checks"]:
-            name = next((k for k in short if k.lower() in tx.lower()), tx[:22])
+            name = "Ground" if tx.startswith("The ground") else next((k for k in short if k.lower() in tx.lower()), tx[:22])
             lb = QLabel(("\u2713 " if ok else "\u26a0 ") + name)
             lb.setToolTip(tx)
             col = "#1f9d55" if ok else "#d8132b"

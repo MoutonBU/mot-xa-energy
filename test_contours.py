@@ -99,6 +99,17 @@ pg.set_look("ground", False); pg.view._dirty = True
 im_b = pg.view.grab().toImage()
 assert im_a != im_b, "ground shading did not show"
 pg.set_look("ground", True)
+# which way the ground falls: contours that fall 0.5 m every 10 m towards +x
+cw_ = [pg._world_of(p_) for p_ in pg.st["stand"]["corners"]]
+cx2, cy2 = sum(p_[0] for p_ in cw_) / len(cw_), sum(p_[1] for p_ in cw_) / len(cw_)
+pg.st["contours"] = {"lines": [[100.0 - 0.5 * k_, [[cx2 + 10 * k_ - 60, cy2 - 60], [cx2 + 10 * k_ - 60, cy2 + 60]]] for k_ in range(0, 13)], "spots": [], "unit": 1.0, "file": "slope.dxf"}
+pg.solve_now(False)
+fl_ = _sh.ground_fall(pg.st, pg.st["stand"]["corners"])
+assert fl_ and abs(fl_[2] - 0.05) < 0.005, fl_                                                  # 1 in 20
+g_ = [t_ for t_, _ok in sp.build(pg.st, pg.res)["checks"] if t_.startswith("The ground")]
+assert g_ and "1:" in g_[0] and ("falls" in g_[0] or "rises" in g_[0]), g_
+pg.view.lite = False; pg.view._dirty = True; pg.view.grab()                                    # the arrows and the running water draw
+pg.view._ph = 0.5; pg.view.grab()
 pg.remove_contours()
 assert not sp.build(pg.st, pg.res)["terrain"] and "No contours" in pg.lv_continfo.text()
 print("ok")
