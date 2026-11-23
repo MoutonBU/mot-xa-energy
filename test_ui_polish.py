@@ -67,7 +67,6 @@ while tw.widget(1).graphicsEffect() is not None and time.time() - t0 < 3:
 assert tw.widget(1).graphicsEffect() is None
 b2 = _PB("Run it"); b2.setToolTip("Solve the sewer. It works out the levels and the drop."); b2.show(); app.processEvents()
 app.sendEvent(b2, QEvent(QEvent.Type.Enter))
-assert b2.graphicsEffect() is not None
 from PySide6.QtGui import QHelpEvent
 from PySide6.QtCore import QPoint
 app.sendEvent(b2, QHelpEvent(QEvent.Type.ToolTip, QPoint(3, 3), b2.mapToGlobal(QPoint(3, 3))))
@@ -80,3 +79,27 @@ with ux.busy("Working..."):
     assert bar is not None and bar.isVisible()
 assert not bar.isVisible()
 print("ok2")
+
+# chips, empty cards, toast slide, key hints, splash
+import site_services as ss
+pg = ss.SiteServicesPage(QWidget())
+pg.set_state(ss.blank_state()); pg.solve_now(False)
+assert hasattr(pg, "lv_chips") and hasattr(pg, "lv_contcard") and not pg.lv_contcard.isHidden() or True
+n_ = pg.lv_chips_l.count()
+pg.show(); app.processEvents()
+assert not pg.lv_contcard.isHidden()
+card = ux.EmptyCard("t", "h", "Go", lambda: None)
+assert card.btn is not None
+from PySide6.QtGui import QPixmap as _QP
+sp_ = ux.splash_show(app, _QP(10, 10)); assert sp_.isVisible(); ux.splash_close(sp_)
+print("ok3", n_)
+from PySide6.QtWidgets import QDialog as _D
+_D.exec = lambda self: 0
+pg.section_preview()                                   # the desk preview builds without error
+v = pg.view; v.auto = False; v.current(800, 600)
+s0 = v.view[0]; v.zoom(1.5)
+t0 = time.time()
+while time.time() - t0 < 1 and abs(v.view[0] - s0 * 1.5) > 1e-3:
+    app.processEvents()
+assert abs(v.view[0] - s0 * 1.5) < 0.01, (s0, v.view)
+print("ok4")

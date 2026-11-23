@@ -20,7 +20,7 @@ def _palette(is_light):
     if is_light:
         return dict(rail="#eceef1", ribbon="#f3f4f6", line="#d4d7dc", text="#1c1f24", muted="#59616b", hover="#e1e4e8",
                     sel="#fbe3e6", accent="#c4162a", hot="#fbe3e6", hotline="#e8a7af", card="#ffffff")
-    return dict(rail="#131316", ribbon="#131316", line="#26262c", text="#eceef0", muted="#9aa0a8", hover="#1f1f24",
+    return dict(rail="#131316", ribbon="#131316", line="#26262c", text="#eceef0", muted="#b0b6be", hover="#1f1f24",
                 sel="#241619", accent="#e0243a", hot="#3a161d", hotline="#7a1c29", card="#17171b")
 
 

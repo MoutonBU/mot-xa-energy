@@ -63,9 +63,23 @@ class Toast(QFrame):
         self.btn.setVisible(bool(action_text and action))
         self.adjustSize()
         self.place()
+        was = self.isVisible()
         self.show()
         self.raise_()
         self.timer.start(ms)
+        if not was:                                                 # slides in from the right edge and fades up
+            try:
+                end = self.pos()
+                an = QVariantAnimation(self)
+                an.setStartValue(0.0)
+                an.setEndValue(1.0)
+                an.setDuration(260)
+                an.setEasingCurve(QEasingCurve.Type.OutCubic)
+                an.valueChanged.connect(lambda v, e=end: self.move(QPoint(e.x() + int(60 * (1.0 - float(v))), e.y())))
+                self._slide = an
+                an.start()
+            except Exception:
+                pass
 
     def _clicked(self):
         a, self._action = self._action, None
@@ -77,7 +91,7 @@ class Toast(QFrame):
         w = self.win
         self.setMaximumWidth(max(300, w.width() - 60))
         self.adjustSize()
-        self.move(QPoint(max(10, (w.width() - self.width()) // 2), w.height() - self.height() - 46))
+        self.move(QPoint(max(10, w.width() - self.width() - 24), w.height() - self.height() - 46))
 
     def eventFilter(self, o, e):
         if o is self.win and e.type() in (QEvent.Type.Resize, QEvent.Type.Move) and self.isVisible():
@@ -729,50 +743,6 @@ class AnimIcon(QLabel):
         p.end()
 
 
-def _glow(b, on, blur=16.0):
-    """a soft red glow round a button while it is pointed at, pressed (tighter) or tabbed to"""
-    try:
-        eff = b.graphicsEffect()
-        if on:
-            if eff is not None and not getattr(eff, "_mot_glow", False):
-                return                                                  # the button already has an effect of its own
-            if eff is None:
-                eff = QGraphicsDropShadowEffect(b)
-                eff._mot_glow = True
-                eff.setOffset(0, 0)
-                eff.setColor(QColor(255, 64, 86, 170))
-                eff.setBlurRadius(0.0)
-                b.setGraphicsEffect(eff)
-            an = getattr(eff, "_mot_an", None)
-            if an is not None:
-                an.stop()
-            an = QVariantAnimation(eff)
-            an.setStartValue(float(eff.blurRadius()))
-            an.setEndValue(float(blur))
-            an.setDuration(160)
-            an.valueChanged.connect(lambda v, e=eff: e.setBlurRadius(float(v)))
-            eff._mot_an = an
-            an.start()
-        elif eff is not None and getattr(eff, "_mot_glow", False):
-            an = getattr(eff, "_mot_an", None)
-            if an is not None:
-                an.stop()
-            an = QVariantAnimation(eff)
-            an.setStartValue(float(eff.blurRadius()))
-            an.setEndValue(0.0)
-            an.setDuration(180)
-            an.valueChanged.connect(lambda v, e=eff: e.setBlurRadius(float(v)))
-
-            def fin(b=b, eff=eff):
-                if b.graphicsEffect() is eff and eff.blurRadius() < 0.5:
-                    b.setGraphicsEffect(None)
-            an.finished.connect(fin)
-            eff._mot_an = an
-            an.start()
-    except Exception:
-        pass
-
-
 _TIP = {}
 
 
@@ -939,19 +909,6 @@ class IconMotion(QObject):
                 return _tip_show(obj, ev)
             if t in (QEvent.Type.Leave, QEvent.Type.MouseButtonPress, QEvent.Type.Hide, QEvent.Type.Wheel, QEvent.Type.KeyPress):
                 _tip_hide()
-            if isinstance(obj, QPushButton) and getattr(obj, "_anim_icon", None) is None and obj.isEnabled():
-                if t == QEvent.Type.Enter:
-                    _glow(obj, True)
-                elif t == QEvent.Type.Leave:
-                    _glow(obj, False)
-                elif t == QEvent.Type.MouseButtonPress:
-                    _glow(obj, True, 7.0)
-                elif t == QEvent.Type.MouseButtonRelease:
-                    _glow(obj, True)
-                elif t == QEvent.Type.FocusIn and ev.reason() in (Qt.FocusReason.TabFocusReason, Qt.FocusReason.BacktabFocusReason, Qt.FocusReason.ShortcutFocusReason):
-                    _glow(obj, True)
-                elif t == QEvent.Type.FocusOut:
-                    _glow(obj, False)
             if t not in (QEvent.Type.Enter, QEvent.Type.Leave, QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease):
                 return False
             big = getattr(obj, "_anim_icon", None)
@@ -1117,3 +1074,144 @@ class busy:
         except Exception:
             pass
         return False
+
+
+class EmptyCard(QFrame):
+    """A friendly empty screen: a soft round picture, what is missing, and one big button for the next step."""
+
+    def __init__(self, title, hint, button="", action=None, icon=None, parent=None):
+        super().__init__(parent)
+        self.setObjectName("emptyCard")
+        self.setStyleSheet("QFrame#emptyCard{background:rgba(128,128,128,14);border:2px dashed rgba(128,128,128,90);border-radius:14px;} QFrame#emptyCard QLabel{border:none;background:transparent;}")
+        v = QVBoxLayout(self)
+        v.setContentsMargins(18, 16, 18, 16)
+        v.setSpacing(6)
+        v.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        pic = QLabel()
+        pic.setFixedSize(54, 54)
+        pic.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        pic.setStyleSheet("QLabel{background:rgba(255,64,86,34);border-radius:27px;color:#ff4056;font-size:26px;font-weight:700;}")
+        if icon is not None:
+            pic.setPixmap(icon)
+        else:
+            pic.setText("+")
+        v.addWidget(pic, 0, Qt.AlignmentFlag.AlignHCenter)
+        t = QLabel("<b style='font-size:15px'>%s</b>" % title)
+        t.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        v.addWidget(t)
+        h = QLabel(hint)
+        h.setWordWrap(True)
+        h.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        h.setStyleSheet("QLabel{color:rgba(128,128,128,230);}")
+        v.addWidget(h)
+        self.btn = None
+        if button and action:
+            self.btn = QPushButton(button)
+            self.btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.btn.setMinimumHeight(38)
+            self.btn.setStyleSheet("QPushButton{background:#d8132b;color:white;border:none;border-radius:10px;padding:8px 26px;font-weight:700;} QPushButton:hover{background:#ff4056;}")
+            self.btn.clicked.connect(lambda _=False: action())
+            v.addWidget(self.btn, 0, Qt.AlignmentFlag.AlignHCenter)
+
+
+class KeyHints(QObject):
+    """Hold Ctrl for a moment and the keys show on the buttons that have one (the tools in the left bar: Ctrl+1 ... Ctrl+9)."""
+
+    def __init__(self, app, rail_fn):
+        super().__init__(app)
+        self.rail_fn = rail_fn
+        self.tags = []
+        self.tm = QTimer(self)
+        self.tm.setSingleShot(True)
+        self.tm.timeout.connect(self.show_tags)
+        app.installEventFilter(self)
+
+    def show_tags(self):
+        try:
+            rail = self.rail_fn()
+            if rail is None:
+                return
+            for idx, b in rail.nav.items():
+                if idx < 9 and b.isVisible():
+                    t = QLabel("Ctrl+%d" % (idx + 1), b)
+                    t.setStyleSheet("QLabel{background:#d8132b;color:white;border-radius:7px;padding:1px 6px;font-size:10px;font-weight:700;}")
+                    t.adjustSize()
+                    t.move(b.width() - t.width() - 6, (b.height() - t.height()) // 2)
+                    t.show()
+                    self.tags.append(t)
+        except Exception:
+            pass
+
+    def hide_tags(self):
+        self.tm.stop()
+        for t in self.tags:
+            try:
+                t.deleteLater()
+            except RuntimeError:
+                pass
+        self.tags = []
+
+    def eventFilter(self, o, e):
+        try:
+            if e.type() == QEvent.Type.KeyPress and e.key() == Qt.Key.Key_Control and not e.isAutoRepeat():
+                self.tm.start(450)
+            elif e.type() == QEvent.Type.KeyRelease and e.key() == Qt.Key.Key_Control and not e.isAutoRepeat():
+                self.hide_tags()
+            elif e.type() in (QEvent.Type.WindowDeactivate, QEvent.Type.ApplicationDeactivate):
+                self.hide_tags()
+        except Exception:
+            pass
+        return False
+
+
+def splash_show(app, logo_pixmap=None):
+    """the logo fades in with a thin red line while the program builds its window"""
+    w = QWidget(None, Qt.WindowType.SplashScreen | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+    w.setFixedSize(420, 240)
+    w.setStyleSheet("QWidget{background:#16171a;}")
+    lay = QVBoxLayout(w)
+    lay.setContentsMargins(24, 24, 24, 30)
+    lb = QLabel()
+    lb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    if logo_pixmap is not None and not logo_pixmap.isNull():
+        lb.setPixmap(logo_pixmap.scaledToHeight(110, Qt.TransformationMode.SmoothTransformation))
+    else:
+        lb.setText("<b style='color:#eceef0;font-size:22px'>MCP Architecture &amp; Interiors</b>")
+    lay.addWidget(lb)
+    bar = QFrame(w)
+    bar.setFixedHeight(3)
+    bar.setStyleSheet("background:#ff4056;")
+    scr = app.primaryScreen().availableGeometry()
+    w.move(scr.center().x() - 210, scr.center().y() - 120)
+    w.setWindowOpacity(0.0)
+    w.show()
+    bar.setGeometry(0, 237, 10, 3)
+    bar.show()
+    an = QVariantAnimation(w)
+    an.setStartValue(0.0)
+    an.setEndValue(1.0)
+    an.setDuration(900)
+    an.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+    def step(v):
+        w.setWindowOpacity(min(1.0, float(v) * 2.0))
+        bar.setGeometry(0, 237, int(420 * float(v)), 3)
+    an.valueChanged.connect(step)
+    w._an = an
+    an.start()
+    for _ in range(6):
+        app.processEvents()
+    return w
+
+
+def splash_close(w):
+    if w is None:
+        return
+    an = QVariantAnimation(w)
+    an.setStartValue(1.0)
+    an.setEndValue(0.0)
+    an.setDuration(260)
+    an.valueChanged.connect(lambda v: w.setWindowOpacity(float(v)))
+    an.finished.connect(w.close)
+    w._out = an
+    an.start()

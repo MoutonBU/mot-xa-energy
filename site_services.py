@@ -5,7 +5,7 @@ import copy
 import json
 import math
 
-from PySide6.QtCore import QPointF, QRectF, QTimer, Qt, QSizeF
+from PySide6.QtCore import QPointF, QRectF, QTimer, Qt, QSizeF, QVariantAnimation, QEasingCurve
 from PySide6.QtGui import QPixmap, QKeySequence, QShortcut, QBrush, QColor, QFont, QPainter, QPen, QPolygonF, QPageSize, QPageLayout, QPdfWriter, QImage
 from PySide6.QtWidgets import (QApplication, QFrame, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QInputDialog, QListWidget, QMenu, QDoubleSpinBox, QFileDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton,
                                QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget, QAbstractItemView)
@@ -67,6 +67,18 @@ def QPainterPath_from(poly):
     pa.addPolygon(poly)
     pa.closeSubpath()
     return pa
+
+
+def _toast(page, text, path=None):
+    """a small message in the corner instead of a pop-up box"""
+    try:
+        w = page.window()
+        if path:
+            w.toast_saved(path, text)
+        else:
+            w.toast(text)
+    except Exception:
+        pass
 
 
 def _busy(text):
@@ -199,6 +211,8 @@ class ServicesView(QWidget):
 
     def current(self, W=None, H=None):
         W, H = W or self.width(), H or self.height()
+        if getattr(self, "_zan", None) is None or self._zan.state() != QVariantAnimation.State.Running:
+            self._zt = (self.view or (0,))[0] if self.view else 0
         if self.auto or self.view is None:
             x0, y0, x1, y1 = self.bounds()
             w, h = site_sheet.page_extent(x0, y0, x1, y1, self.page.st["sheet"].get("road", "left"), self.page.st["sheet"].get("turn", 0.0))
@@ -211,7 +225,24 @@ class ServicesView(QWidget):
             return
         self.auto = False
         s, cx, cy = self.view
-        self.view = (min(max(s * f, 2), 400), cx, cy)
+        tgt = min(max(getattr(self, "_zt", s) * f, 2), 400)                   # the zoom glides to its new size instead of jumping
+        self._zt = tgt
+        old = getattr(self, "_zan", None)
+        if old is not None:
+            old.stop()
+        an = QVariantAnimation(self)
+        an.setStartValue(float(s))
+        an.setEndValue(float(tgt))
+        an.setDuration(150)
+        an.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        def stp(v):
+            if self.view is not None:
+                self.view = (float(v), self.view[1], self.view[2])
+                self.update()
+        an.valueChanged.connect(stp)
+        self._zan = an
+        an.start()
         self._go_lite()
         self.update()
 
@@ -1636,6 +1667,9 @@ class SiteServicesPage(ToolBase):
                 for w_ in (b_, self.lv_usecont, b2_):
                     row.addWidget(w_)
                 ml3.addLayout(row)
+                import ui_extras as _ux
+                self.lv_contcard = _ux.EmptyCard("No contours yet", "Bring in the site's contour DXF and the sewer follows the real ground, so no pipe comes out of it.", "Import contours (DXF)...", lambda: self.import_contours())
+                ml3.addWidget(self.lv_contcard)
                 self.lv_continfo = QLabel("No contours: the ground levels above are used.")
                 self.lv_continfo.setWordWrap(True)
                 ml3.addWidget(self.lv_continfo)
@@ -1663,6 +1697,9 @@ class SiteServicesPage(ToolBase):
                 self.lv_dropinfo = QLabel("")
                 self.lv_dropinfo.setWordWrap(True)
                 ml3.addWidget(self.lv_dropinfo)
+                self.lv_chips = QWidget()                                 # the checks as small coloured pills
+                self.lv_chips_l = FlowLayout(self.lv_chips, 6, 6)
+                ml3.addWidget(self.lv_chips)
                 self.lv_lines = QCheckBox("Sewer as brown lines only (no pipe width)")
                 self.lv_lines.setToolTip("Off: the pipe is drawn with its outside diameter. On: the sewer is one brown line at the invert level, with single lines for the eyes.")
                 self.lv_lines.toggled.connect(self._edited)
@@ -2148,6 +2185,7 @@ class SiteServicesPage(ToolBase):
             return
         self._sync_drop()
         self._contour_info()
+        self._chips()
         self.show_compliance()
         if not light:
             self.fill_results()
@@ -4032,15 +4070,42 @@ class SiteServicesPage(ToolBase):
         self.st["contours"] = dict(cl, file=str(path).replace("\\", "/").split("/")[-1])
         self.lv_usecont.setChecked(True)
         self.solve_now(False)
+        _toast(self, "Contours imported: %d lines, %d spot heights" % (len(cl["lines"]), len(cl["spots"])))
 
     def remove_contours(self):
         self.st.pop("contours", None)
         self.solve_now(False)
 
+    def _chips(self):
+        """the sewer section's checks as pills: green = fine, red = needs a look (the words are in the tool tip)"""
+        if not hasattr(self, "lv_chips") or self.res is None:
+            return
+        try:
+            import site_profile
+            d = site_profile.build(self.st, self.res)
+        except Exception:
+            return
+        lay = self.lv_chips_l
+        while lay.count():
+            it = lay.takeAt(0)
+            if it is not None and it.widget() is not None:
+                it.widget().deleteLater()
+        short = ("Soil cover", "Eyes", "Reaches the main", "Drop", "Fall", "Depth", "Rodding eye")
+        for tx, ok in d["checks"]:
+            name = next((k for k in short if k.lower() in tx.lower()), tx[:22])
+            lb = QLabel(("\u2713 " if ok else "\u26a0 ") + name)
+            lb.setToolTip(tx)
+            col = "#1f9d55" if ok else "#d8132b"
+            lb.setStyleSheet("QLabel{background:%s;color:white;border-radius:10px;padding:3px 10px;font-weight:600;}" % col)
+            lay.addWidget(lb)
+
     def _contour_info(self):
         if not hasattr(self, "lv_continfo"):
             return
         cd = self.st.get("contours")
+        if hasattr(self, "lv_contcard"):
+            self.lv_contcard.setVisible(not cd)
+            self.lv_continfo.setVisible(bool(cd))
         if not cd:
             self.lv_continfo.setText("No contours: the ground levels above are used.")
             return
@@ -4155,13 +4220,37 @@ class SiteServicesPage(ToolBase):
         from PySide6.QtWidgets import QDialog, QScrollArea
         sp_, d_ = self.section_data()
         img = sp_.render_image(d_, self.title_block_lines(), 1800)
+        from PySide6.QtGui import QPainter as _P, QColor as _C, QPen as _Pen
+        pad = 56
+        desk = QPixmap(img.width() + 2 * pad, img.height() + 2 * pad)
+        desk.fill(_C("#2b2d31"))                                   # paper on a desk: a soft shadow, the sheet, and corner marks
+        qp = _P(desk)
+        qp.setRenderHint(_P.RenderHint.Antialiasing)
+        for k in range(14, 0, -1):
+            qp.setPen(Qt.PenStyle.NoPen)
+            qp.setBrush(_C(0, 0, 0, 9))
+            qp.drawRoundedRect(pad - k + 6, pad - k + 10, img.width() + 2 * k, img.height() + 2 * k, 4 + k, 4 + k)
+        qp.drawImage(pad, pad, img)
+        qp.setPen(_Pen(_C("#9aa0a8"), 1.4))
+        for cx_, cy_, sx, sy in ((pad, pad, -1, -1), (pad + img.width(), pad, 1, -1), (pad, pad + img.height(), -1, 1), (pad + img.width(), pad + img.height(), 1, 1)):
+            qp.drawLine(cx_ + sx * 6, cy_, cx_ + sx * 24, cy_)
+            qp.drawLine(cx_, cy_ + sy * 6, cx_, cy_ + sy * 24)
+        qp.end()
         dlg = QDialog(self)
         dlg.setWindowTitle("Sewer section")
         lay = QVBoxLayout(dlg)
         lb = QLabel()
-        lb.setPixmap(QPixmap.fromImage(img))
+        lb.setPixmap(desk)
         sa = QScrollArea()
         sa.setWidget(lb)
+        sa.setStyleSheet("QScrollArea{background:#2b2d31;border:none;}")
+        row_ = QHBoxLayout()
+        for txt_, fn_ in (("Fit the width", lambda: lb.setPixmap(desk.scaledToWidth(max(300, sa.viewport().width() - 4), Qt.TransformationMode.SmoothTransformation))), ("Full size", lambda: lb.setPixmap(desk))):
+            bb_ = QPushButton(txt_)
+            bb_.clicked.connect(lambda _=False, f=fn_: (f(), lb.adjustSize()))
+            row_.addWidget(bb_)
+        row_.addStretch(1)
+        lay.addLayout(row_)
         lay.addWidget(sa)
         dlg.resize(1100, 760)
         dlg.exec()
@@ -4319,6 +4408,7 @@ class SiteServicesPage(ToolBase):
             with _busy("Making the sewer section PDF..."):
                 sp_, d_ = self.section_data()
                 sp_.write_pdf(path, d_, self.title_block_lines())
+            _toast(self, "Sewer section PDF saved", path)
 
     def section_dxf(self):
         path, _ = QFileDialog.getSaveFileName(self, "Save the sewer section as DXF", "sewer_section.dxf", "DXF (*.dxf)")
@@ -4326,6 +4416,7 @@ class SiteServicesPage(ToolBase):
             with _busy("Making the sewer section DXF..."):
                 sp_, d_ = self.section_data()
                 sp_.write_dxf(path, d_, self.title_block_lines())
+            _toast(self, "Sewer section DXF saved", path)
 
     def save_pdf(self):
         path, _ = QFileDialog.getSaveFileName(self, "Save the plan", "site_services.pdf", "PDF (*.pdf)")
@@ -4333,6 +4424,7 @@ class SiteServicesPage(ToolBase):
             return
         with _busy("Making the plan PDF..."):
             self.write_pdf(path)
+        _toast(self, "Plan PDF saved", path)
 
     def write_pdf(self, path):
         w = QPdfWriter(path)
@@ -4349,6 +4441,7 @@ class SiteServicesPage(ToolBase):
             import site_export
             with _busy("Making the plan DXF..."):
                 site_export.build_sheet(self, path)
+            _toast(self, "Plan DXF saved", path)
 
     def save_png(self):
         path, _ = QFileDialog.getSaveFileName(self, "Save the plan", "site_services.png", "Image (*.png)")

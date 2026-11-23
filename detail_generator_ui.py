@@ -87,6 +87,9 @@ class GeneratorPage(QWidget):
         for w in (self.b_save, QLabel("My details"), self.mine, self.b_open, self.b_del):
             row2.addWidget(w)
         tl.addLayout(row2)
+        from ui_extras import EmptyCard
+        self.mine_card = EmptyCard("No saved details yet", "Draw a detail you like, press \"Save as my detail\", and the generator learns to draw like you.")
+        tl.addWidget(self.mine_card)
         self._last = None
         self.refresh_mine()
         self.status = QLabel("")
@@ -111,6 +114,8 @@ class GeneratorPage(QWidget):
             i = self.mine.findText(pick)
             if i >= 0:
                 self.mine.setCurrentIndex(i)
+        if hasattr(self, "mine_card"):
+            self.mine_card.setVisible(not lib)
         self.b_open.setEnabled(bool(lib))
         self.b_del.setEnabled(bool(lib))
         return lib

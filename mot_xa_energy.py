@@ -4256,7 +4256,7 @@ def icon_pixmap(name, color="#eceef0", size=18):
     pm.fill(Qt.GlobalColor.transparent)
     try:
         from PySide6.QtSvg import QSvgRenderer
-        r = QSvgRenderer(icon_svg(name, color).encode("utf-8"))
+        r = QSvgRenderer(icon_svg(name, color, 2.1 if size <= 20 else 1.9 if size <= 32 else 1.5).encode("utf-8"))      # one optical weight: thicker when small, finer when big
         p = QPainter(pm)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         r.render(p)
@@ -9516,6 +9516,7 @@ class MainWindow(QMainWindow):
             ux_m2 = __import__("ui_extras")
             ux_m2.install_icon_motion()
             ux_m2.fade_all(self)
+            self._key_hints = ux_m2.KeyHints(QApplication.instance(), lambda: getattr(self, "shell_rail", None))
             QTimer.singleShot(1500, lambda: ux_m2.fade_all(self))      # the tabs inside the tools that are built later
         except Exception:
             pass
@@ -20754,16 +20755,16 @@ STUDIO_QSS = """
 QMainWindow, QWidget#glassInner, QTabWidget, QStackedWidget { background: transparent; }
 QDialog, QMessageBox, QProgressDialog { background: #16171a; }
 QLabel { background: transparent; }
-QGroupBox#xaGroup { background: #1f2125; border: 1px solid #34383e; border-left: 3px solid #d8132b; border-radius: 12px;
+QGroupBox#xaGroup { background: #1f2125; border: 1px solid #454b53; border-left: 3px solid #d8132b; border-radius: 12px;
     margin-top: 16px; padding-top: 14px; }
 QGroupBox#xaGroup::title { subcontrol-origin: margin; subcontrol-position: top left; left: 14px;
     padding: 2px 12px; background: #d8132b; border-radius: 8px; font-weight: 700; font-size: 13px; color: white; }
-QLabel#xaSub { color: #9aa0a8; }
+QLabel#xaSub { color: #b0b6be; }
 
 QTabWidget::pane { border: none; background: transparent; top: 6px; }
 QTabBar { background: transparent; }
 QTabBar::tab { background: transparent; border: 1px solid transparent; border-radius: 9px;
-    padding: 8px 20px; margin: 0 6px 4px 0; color: #9aa0a8; font-weight: 500; }
+    padding: 8px 20px; margin: 0 6px 4px 0; color: #b0b6be; font-weight: 500; }
 QTabBar::tab:hover { background: #262a2f; color: #eceef0; }
 QTabBar::tab:selected { background: #262a2f; border: 1px solid #3a3f46; color: #ffffff; font-weight: 700;
     border-bottom: 2px solid #d8132b; }
@@ -20772,7 +20773,7 @@ QPushButton { background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #2a2e34, s
     font-weight: 500; }
 QPushButton:hover { background: #30353b; border: 1px solid #d8132b; }
 QPushButton:pressed { background: #1b1e22; }
-QPushButton:disabled { color: #6b7179; background: #1f2125; }
+QPushButton:disabled { color: #858b94; background: #1f2125; }
 QPushButton[accent="true"] { background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #ee1d36, stop:1 #d8132b); border: 1px solid #d8132b; color: #ffffff;
     font-weight: 700; padding: 10px 22px; font-size: 14px; }
 QPushButton[accent="true"]:hover { background: #ee1d36; border: 1px solid #ee1d36; }
@@ -20784,12 +20785,12 @@ QTableWidget { background: #1b1d21; alternate-background-color: #1f2125; gridlin
 QTableWidget::item { padding: 6px 10px; border-bottom: 1px solid #2a2e34; }
 QTableWidget::item:selected { background: transparent; color: white; }
 QHeaderView { background: transparent; }
-QHeaderView::section { background: #1f2125; color: #9aa0a8; border: none; border-bottom: 2px solid #d8132b;
+QHeaderView::section { background: #1f2125; color: #b8bec6; border: none; border-bottom: 2px solid #d8132b;
     padding: 11px 8px; font-weight: 600; font-size: 12px; }
-QHeaderView::section:vertical { border-bottom: 1px solid #2a2e34; padding: 6px; font-weight: 500; color: #6b7179; }
+QHeaderView::section:vertical { border-bottom: 1px solid #2a2e34; padding: 6px; font-weight: 500; color: #8a9099; }
 QTableCornerButton::section { background: #1f2125; border: none; }
 
-QLineEdit, QPlainTextEdit, QTextEdit, QDoubleSpinBox, QSpinBox { background: #121316; border: 1px solid #34383e;
+QLineEdit, QPlainTextEdit, QTextEdit, QDoubleSpinBox, QSpinBox { background: #121316; border: 1px solid #4a5058;
     border-radius: 8px; padding: 5px 10px; selection-background-color: #d8132b; }
 QLineEdit:focus, QPlainTextEdit:focus, QDoubleSpinBox:focus, QSpinBox:focus { border: 1px solid #d8132b; }
 QAbstractSpinBox { padding-right: 20px; }
@@ -21606,6 +21607,15 @@ def main():
         user = sign_in_gate(app)
         if not user:
             return
+    _spl = None
+    if not any(a in sys.argv for a in ("--restore", "--ready", "--after-update", "--tray")):
+        try:
+            from PySide6.QtGui import QPixmap as _QPM
+            _lp = _QPM()
+            _lp.loadFromData(__import__("base64").b64decode(LOGO_B64))
+            _spl = __import__("ui_extras").splash_show(app, _lp)
+        except Exception:
+            _spl = None
     win = MainWindow()
     apply_glass_theme(app, win)
     app._icon_filter = _IconFilter(app)
@@ -21646,6 +21656,10 @@ def main():
         pass                                        # started with Windows: stay in the tray and keep watching Gmail
     else:
         win.show()
+    try:
+        __import__("ui_extras").splash_close(_spl)
+    except Exception:
+        pass
     if SETTINGS.get("start_with_windows"):
         set_autostart(True)                         # the path changes after an update: keep the entry pointing at this program
     if "--ready" in av:

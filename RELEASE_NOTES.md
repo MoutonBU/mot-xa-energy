@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.207**
+Current version: **1.86.208**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **More polish:** messages ("PDF saved", "Contours imported") slide in at the corner as small cards; the sewer checks show as green and red pills above the buttons; the section preview shows the sheet as paper on a dark desk with a shadow and corner marks (Fit the width / Full size buttons); plan zoom glides; empty screens (no contours, no saved details) show a friendly card with a big button; icon line weight is now matched to the icon size; darker theme has clearer borders, headers and disabled text; a splash with the logo and a red line shows while the program opens; hold Ctrl a moment and Ctrl+1... shows on the left bar buttons. (The extra red glow I added last time is removed: buttons already had one.)
 - **Visual polish:** pages fade in when you switch tabs; buttons get a soft red glow when pointed at (tighter when pressed, and when tabbed to); the grey tool tips are now small cards with the icon, the name and what it does; the light/dark switch fades instead of flashing; a thin red bar with a spinner shows while a PDF, DXF or contour import is made; the folded sections on the Site services screen are soft rounded cards. Imported contours are drawn faintly on the site plan with their levels, and the long section has the same "Sewer as brown lines only" tick box as the elevation.
 - **Icons no longer jiggle, and every icon turns red:** the wobble on the big tile icons and the bounce on the small button icons are gone; they now just grow smoothly. Every button icon (top icons, bar, all other buttons) turns red while you point at it or press it, and goes back to its own colour afterwards.
 - **A drop has a rodding eye only:** the program no longer draws an inspection eye at a drop. The rodding eye at the top of the steep part is what is needed to rod down it (SANS 10252-2, 6.5.2.2). An eye that is already on the pipe at that spot stays. The long section, the site plan, the table, the checks and the sewer elevation all follow. (Whether your council wants more access there is for you to confirm.)
