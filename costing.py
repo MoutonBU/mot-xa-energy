@@ -444,7 +444,12 @@ class CostingPage(QWidget):
         self.main = QTabWidget()
         v.addWidget(self.main, 1)
         sp = QSplitter(Qt.Orientation.Vertical)
-        self.main.addTab(sp, "Fixtures and sanitary ware")
+        from PySide6.QtWidgets import QScrollArea
+        fx_scroll = QScrollArea()
+        fx_scroll.setWidgetResizable(True)
+        fx_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        fx_scroll.setWidget(sp)
+        self.main.addTab(fx_scroll, "Fixtures and sanitary ware")
         try:
             import materials
             self.materials = materials.MaterialsPage(self)
@@ -500,6 +505,7 @@ class CostingPage(QWidget):
                 self.ptab.setColumnWidth(i, w)
         self.ptab.doubleClicked.connect(lambda *_: self.edit_product())
         self.ptab.cellClicked.connect(self._p_click)
+        self.ptab.setMinimumHeight(190)
         pv.addWidget(self.ptab)
         sp.addWidget(gp)
 
@@ -525,8 +531,8 @@ class CostingPage(QWidget):
         self.stab.verticalHeader().setVisible(False)
         h = self.stab.horizontalHeader()
         h.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        h.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
-        for i, w in enumerate((56, 110, 60, 150, 170, 0, 76, 110, 110, 90)):
+        h.setStretchLastSection(True)
+        for i, w in enumerate((50, 80, 80, 120, 150, 190, 80, 100, 100, 80)):
             if w:
                 self.stab.setColumnWidth(i, w)
         self.stab.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked)
@@ -545,7 +551,12 @@ class CostingPage(QWidget):
             t_.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.sub_tabs.addTab(self.ttab, "Tally by item")
         self.sub_tabs.addTab(self.gtab, "Cost by level and unit")
+        self.sub_tabs.setMinimumHeight(240)
         sv.addWidget(self.sub_tabs)
+        self.miss_lbl = QLabel("")
+        self.miss_lbl.setWordWrap(True)
+        self.miss_lbl.setStyleSheet("color:#e0a030;")
+        sv.addWidget(self.miss_lbl)
         tot = QHBoxLayout()
         self.cont = QDoubleSpinBox()
         self.cont.setRange(0, 100)
@@ -563,7 +574,8 @@ class CostingPage(QWidget):
         sp.addWidget(gs)
         sp.setStretchFactor(0, 2)
         sp.setStretchFactor(1, 3)
-        sp.setSizes([300, 400])
+        sp.setSizes([340, 460])
+        sp.setMinimumHeight(820)
         self.refresh()
 
     # ----- state -----
@@ -768,7 +780,15 @@ class CostingPage(QWidget):
             a = g.setdefault(k, [0, 0.0])
             a[0] += l.get("qty", 0)
             a[1] += (p or {}).get("price", 0) * l.get("qty", 0)
-        return [(k[0], k[1], v[0], v[1]) for k, v in sorted(g.items())]
+        def rank(f):           # Basement, Ground, First, Second ... Roof, then anything else by name
+            n = str(f).strip().lower()
+            order = ["basement", "lower ground", "ground", "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "roof"]
+            for i, w in enumerate(order):
+                if n == w or n.startswith(w + " "):
+                    return (i, n)
+            m = re.match(r"(?:level|floor|l)\s*(\d+)", n)
+            return (2 + int(m.group(1)), n) if m else (50, n)
+        return [(k[0], k[1], v[0], v[1]) for k, v in sorted(g.items(), key=lambda kv: (rank(kv[0][0]), kv[0][1]))]
 
     def _fill_tally(self):
         t = self.ttab
@@ -843,6 +863,7 @@ class CostingPage(QWidget):
                 ref = QTableWidgetItem("S%02d" % (r + 1))
                 ref.setFlags(ro)
                 s.setItem(r, 0, ref)
+                s.setRowHeight(r, 38)
                 for c, k in ((1, "floor"), (2, "unit"), (3, "room")):
                     s.setItem(r, c, QTableWidgetItem(str(ln.get(k, ""))))
                 cb = QComboBox()
@@ -888,8 +909,8 @@ class CostingPage(QWidget):
             if vat:
                 txt += "   +  VAT %s" % money(vat)
             txt += "   =   %s" % money(tot)
-            if miss:
-                txt += "     (%d lines have no product yet)" % miss
+            self.miss_lbl.setText(("%d line%s in the schedule %s no product yet, so %s priced at R 0.00. Add a product for that item, or set a default."
+                                   % (miss, "" if miss == 1 else "s", "has" if miss == 1 else "have", "it is" if miss == 1 else "they are")) if miss else "")
             self.total_lbl.setText(txt)
             if getattr(self, "summary_page", None):
                 self.summary_page.refresh()

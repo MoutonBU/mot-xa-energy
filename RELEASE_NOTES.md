@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.182**
+Current version: **1.86.183**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Look and fit, whole-program pass:** Building lines and House placing no longer scroll sideways (their button and number rows now wrap), the Costing fixtures page scrolls instead of squashing its tables, the schedule columns and rows are wide and tall enough to read, and the "lines have no product yet" warning has its own line instead of being cut off. The cost-by-level list now runs Basement, Ground, First, Second ... Roof instead of alphabetically. Buttons, group boxes, table headers and drop-downs have red accents and hover highlights in both the dark and the light theme. Checked against the published SANS 10400-XA:2021 text: Table 3 (shading) and Table 4 (fenestration) match the built-in numbers. SANS 10400-O Edition 4 (2025) is gazetted but its numbers are still not checked, so the rules stay on Edition 3.
 - **Look and tidy-up:** number boxes now have proper up / down arrows in the dark and light themes, the Windows and Doors tables keep the Type and Opening style boxes wide enough to read (they scroll sideways instead of squeezing), and the House placing toolbar is shorter, with the less-used tools under "Tools" and "Show" menus.
 - **House placing, snap to the building lines (and past them):** while you drag the house or carport, a wall within about 10 pixels of a building line (the boundary pulled in by its street, side or rear space) sits exactly on it, a corner snaps to two lines at once, and the hint line says which. Hold Alt to move freely, for instance past the line when you will ask for a relaxation; the tick "Snap the house to the building lines" in the zoning box turns the snap off altogether. Nothing ever stops the house at a line. When a line is crossed, the compliance list says how many metres over it is and that a relaxation is needed.
 - **Open items before submission:** a new "Open items before submission..." under Reports lists what still stops a submission, from every tool: empty project details, light and ventilation not run or rooms failing, no compliance route, rational design not run or run only in the uncertified built-in model, no weather or site location, house placing warnings and zoning limits not met or not typed in, missing stand number, and the SANS 10400-O edition the rules come from. Items that must be fixed are red, items to look at are amber.

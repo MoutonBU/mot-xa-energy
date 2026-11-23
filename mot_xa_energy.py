@@ -20665,6 +20665,7 @@ QTableWidget { background: rgba(255,255,255,12); alternate-background-color: rgb
     selection-color: white; }
 QTableWidget::item { padding: 6px 10px; border-bottom: 1px solid rgba(255,255,255,20); }
 QTableWidget::item:selected { background: transparent; color: white; }
+QTableWidget::item:hover { background: #262a2f; }
 QHeaderView { background: transparent; }
 QHeaderView::section { background: rgba(255,255,255,30); color: rgba(255,255,255,235); border: none;
     border-bottom: 1px solid rgba(255,255,255,70); padding: 11px 8px; font-weight: 700; font-size: 12px; }
@@ -20727,7 +20728,7 @@ STUDIO_QSS = """
 QMainWindow, QWidget#glassInner, QTabWidget, QStackedWidget { background: transparent; }
 QDialog, QMessageBox, QProgressDialog { background: #16171a; }
 QLabel { background: transparent; }
-QGroupBox#xaGroup { background: #1f2125; border: 1px solid #34383e; border-radius: 12px;
+QGroupBox#xaGroup { background: #1f2125; border: 1px solid #34383e; border-left: 3px solid #d8132b; border-radius: 12px;
     margin-top: 16px; padding-top: 14px; }
 QGroupBox#xaGroup::title { subcontrol-origin: margin; subcontrol-position: top left; left: 14px;
     padding: 2px 12px; background: #d8132b; border-radius: 8px; font-weight: 700; font-size: 13px; color: white; }
@@ -20741,12 +20742,12 @@ QTabBar::tab:hover { background: #262a2f; color: #eceef0; }
 QTabBar::tab:selected { background: #262a2f; border: 1px solid #3a3f46; color: #ffffff; font-weight: 700;
     border-bottom: 2px solid #d8132b; }
 
-QPushButton { background: #262a2f; border: 1px solid #3a3f46; border-radius: 9px; padding: 7px 16px;
+QPushButton { background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #2a2e34, stop:1 #262a2f); border: 1px solid #3a3f46; border-radius: 9px; padding: 7px 16px;
     font-weight: 500; }
-QPushButton:hover { background: #30353b; border: 1px solid #4a5058; }
+QPushButton:hover { background: #30353b; border: 1px solid #d8132b; }
 QPushButton:pressed { background: #1b1e22; }
 QPushButton:disabled { color: #6b7179; background: #1f2125; }
-QPushButton[accent="true"] { background: #d8132b; border: 1px solid #d8132b; color: #ffffff;
+QPushButton[accent="true"] { background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #ee1d36, stop:1 #d8132b); border: 1px solid #d8132b; color: #ffffff;
     font-weight: 700; padding: 10px 22px; font-size: 14px; }
 QPushButton[accent="true"]:hover { background: #ee1d36; border: 1px solid #ee1d36; }
 QPushButton[flag="true"] { background: #4a3a1c; border: 1px solid #c8932f; color: #ffd98a; }
@@ -20757,7 +20758,7 @@ QTableWidget { background: #1b1d21; alternate-background-color: #1f2125; gridlin
 QTableWidget::item { padding: 6px 10px; border-bottom: 1px solid #2a2e34; }
 QTableWidget::item:selected { background: transparent; color: white; }
 QHeaderView { background: transparent; }
-QHeaderView::section { background: #1f2125; color: #9aa0a8; border: none; border-bottom: 1px solid #34383e;
+QHeaderView::section { background: #1f2125; color: #9aa0a8; border: none; border-bottom: 2px solid #d8132b;
     padding: 11px 8px; font-weight: 600; font-size: 12px; }
 QHeaderView::section:vertical { border-bottom: 1px solid #2a2e34; padding: 6px; font-weight: 500; color: #6b7179; }
 QTableCornerButton::section { background: #1f2125; border: none; }
@@ -20772,7 +20773,8 @@ QAbstractSpinBox::up-arrow { image: url(@UP@); width: 9px; height: 9px; }
 QAbstractSpinBox::down-arrow { image: url(@DOWN@); width: 9px; height: 9px; }
 QTableWidget QLineEdit, QTableWidget QSpinBox, QTableWidget QDoubleSpinBox { border-radius: 5px; background: #121316; color: #eceef0; padding: 0px 6px; min-height: 26px; }
 QComboBox { background: #262a2f; border: 1px solid #3a3f46; border-radius: 9px; padding: 5px 14px; }
-QComboBox:hover { background: #30353b; }
+QComboBox:hover { background: #30353b; border: 1px solid #4a5058; }
+QComboBox:focus { border: 1px solid #d8132b; }
 QComboBox::drop-down { border: none; width: 24px; }
 QComboBox QAbstractItemView { background: #1f2125; border: 1px solid #3a3f46; border-radius: 8px; padding: 4px;
     selection-background-color: #d8132b; }

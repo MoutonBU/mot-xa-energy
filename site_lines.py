@@ -729,12 +729,10 @@ class SitePage(ToolBase):
         bv.addLayout(row)
         v1.addWidget(bx)
         bx, bv = self.box("Corners of the stand", "Metres, measured from any corner. Go round the stand in order. A rectangle is the quickest start.")
-        rr = QHBoxLayout()
+        rr = FlowLayout(None, 10, 6)
         self.q_w, self.q_d = spin(1, 5000, 20, 2, " m"), spin(1, 5000, 30, 2, " m")
-        rr.addWidget(QLabel("Width"))
-        rr.addWidget(self.q_w)
-        rr.addWidget(QLabel("Depth"))
-        rr.addWidget(self.q_d)
+        rr.addWidget(self._pair("Width", self.q_w))
+        rr.addWidget(self._pair("Depth", self.q_d))
         mk = QPushButton("Make a rectangle")
         mk.setToolTip("Sets four corners. The bottom boundary is the street.")
         mk.clicked.connect(self.make_rect)
@@ -748,7 +746,7 @@ class SitePage(ToolBase):
         self.vt.setMinimumHeight(150)
         self.vt.itemChanged.connect(self._verts_edited)
         bv.addWidget(self.vt)
-        br = QHBoxLayout()
+        br = FlowLayout(None, 8, 6)
         a1, a2 = QPushButton("Add a corner"), QPushButton("Remove last corner")
         a1.clicked.connect(lambda: self.add_vertex())
         a2.clicked.connect(self.remove_vertex)
@@ -761,11 +759,10 @@ class SitePage(ToolBase):
         bv.addWidget(self.area_lbl)
         v1.addWidget(bx)
         bx, bv = self.box("Building lines", "Set the distance to keep clear on each boundary. Check the numbers against your zoning scheme.")
-        qr = QHBoxLayout()
+        qr = FlowLayout(None, 10, 6)
         self.q_street, self.q_side, self.q_rear = spin(0, 50, 4.5, 2, " m"), spin(0, 50, 2.0, 2, " m"), spin(0, 50, 3.0, 2, " m")
         for lab, w_ in (("Street", self.q_street), ("Side", self.q_side), ("Rear", self.q_rear)):
-            qr.addWidget(QLabel(lab))
-            qr.addWidget(w_)
+            qr.addWidget(self._pair(lab, w_))
         ap = QPushButton("Apply to the boundaries")
         ap.setToolTip("Fills the table below from the kind of each boundary.")
         ap.clicked.connect(self.apply_quick)
@@ -781,11 +778,10 @@ class SitePage(ToolBase):
         bv.addWidget(self.et)
         v1.addWidget(bx)
         bx, bv = self.box("Limits", "Coverage is the share of the stand the buildings cover. FAR is the floor area divided by the stand area. Use 0 for no limit.")
-        lr = QHBoxLayout()
+        lr = FlowLayout(None, 10, 6)
         self.max_cov, self.max_far, self.floor_area = spin(0, 100, 60, 1, " %"), spin(0, 20, 0, 2), spin(0, 100000, 0, 2, " m2")
         for lab, w_ in (("Coverage limit", self.max_cov), ("FAR limit", self.max_far), ("Floor area", self.floor_area)):
-            lr.addWidget(QLabel(lab))
-            lr.addWidget(w_)
+            lr.addWidget(self._pair(lab, w_))
         self.follow = QCheckBox("Follow the area schedule")
         self.follow.setChecked(True)
         self.follow.setToolTip("Uses the floor area that counts for FAR in the Area schedule.")
@@ -1352,6 +1348,18 @@ class SitePage(ToolBase):
 
 
     # ---- survey drawing and footprint drawing
+    @staticmethod
+    def _pair(lab, w):
+        """a label with its box, kept together when a row wraps"""
+        c = QWidget()
+        h = QHBoxLayout(c)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(6)
+        if lab:
+            h.addWidget(QLabel(lab))
+        h.addWidget(w)
+        return c
+
     def _tool_row(self, role, items):
         row = QWidget()
         fl = FlowLayout(row, 6, 6)
