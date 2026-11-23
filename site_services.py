@@ -6,7 +6,7 @@ import json
 import math
 
 from PySide6.QtCore import QPointF, QRectF, QTimer, Qt, QSizeF
-from PySide6.QtGui import QKeySequence, QShortcut, QBrush, QColor, QFont, QPainter, QPen, QPolygonF, QPageSize, QPageLayout, QPdfWriter, QImage
+from PySide6.QtGui import QPixmap, QKeySequence, QShortcut, QBrush, QColor, QFont, QPainter, QPen, QPolygonF, QPageSize, QPageLayout, QPdfWriter, QImage
 from PySide6.QtWidgets import (QApplication, QFrame, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QInputDialog, QListWidget, QMenu, QDoubleSpinBox, QFileDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton,
                                QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget, QAbstractItemView)
 
@@ -52,7 +52,7 @@ def blank_state():
             "house": {"cx": 9.0, "cy": 12.0, "w": 14.8, "d": 6.5, "rot": 90},
             "carport": {"cx": 3.5, "cy": 3.5, "w": 5.0, "d": 5.0, "rot": 0},
             "points": {"sewer": [12.0, 0.0], "water": [1.5, 0.0], "elec": [6.75, 0.0]},
-            "ports": {}, "params": {}, "mains": {}, "custom": [], "frame": None, "labels": {}, "underlay": [], "underlay_cat": {}, "neighbours": [], "sewer_via": [], "water_ports": [], "dims": [], "sewer_manual": [], "main_line": [], "manholes": [], "look": {}, "notes": [], "text_edit": {}, "text_hidden": [], "pts_manual": False,
+            "ports": {}, "params": {}, "mains": {}, "custom": [], "frame": None, "labels": {}, "underlay": [], "underlay_cat": {}, "neighbours": [], "sewer_via": [], "levels": {}, "water_ports": [], "dims": [], "sewer_manual": [], "main_line": [], "manholes": [], "look": {}, "notes": [], "text_edit": {}, "text_hidden": [], "pts_manual": False,
             "sheet": {"road": "left", "street": "", "road_w": "13m", "street_erf": "", "stand_no": "", "north": 0.0}}
 
 
@@ -1584,6 +1584,45 @@ class SiteServicesPage(ToolBase):
                 row.addWidget(hr_)
                 row.addStretch(1)
                 ml2.addLayout(row)
+                ml3 = self.more(bv, "Sewer section for the council (levels, PDF, DXF)")
+                lt = QLabel("The section needs levels. Type the ground levels from the survey (metres). Leave a box at 'not set' and the section says the levels are assumed.")
+                lt.setWordWrap(True)
+                lt.setObjectName("xaSub")
+                ml3.addWidget(lt)
+                self.lv_spin = {}
+                row = FlowLayout(None, 8, 6)
+                for key_, lab_, tip_ in (("ngl_head", "Ground level at the house", "Natural ground level where the sewer leaves the house."),
+                                         ("ngl_main", "Ground level at the main", "Natural ground level above the connection to the main sewer."),
+                                         ("main_il", "Main sewer invert level", "The invert (bottom inside) level of the municipal main at the connection, from the council's records. Not set: taken as the depth at the main below the ground."),
+                                         ("ffl", "Finished floor level", "Optional: drawn on the section at the house.")):
+                    sp_ = QDoubleSpinBox()
+                    sp_.setRange(0, 5000)
+                    sp_.setDecimals(3)
+                    sp_.setSpecialValueText("not set")
+                    sp_.setSuffix(" m")
+                    sp_.setKeyboardTracking(False)
+                    sp_.setToolTip(tip_)
+                    self.lv_spin[key_] = sp_
+                    row.addWidget(QLabel(lab_))
+                    row.addWidget(sp_)
+                    sp_.valueChanged.connect(self._edited)
+                ml3.addLayout(row)
+                row = FlowLayout(None, 8, 6)
+                self.lv_spots = QLineEdit()
+                self.lv_spots.setPlaceholderText("5 = 98.4, 12 = 98.1")
+                self.lv_spots.setMinimumWidth(240)
+                self.lv_spots.setToolTip("More ground levels along the run: the distance from the house outlet in metres, then the level. Between them the ground is straight.")
+                self.lv_spots.textChanged.connect(self._edited)
+                row.addWidget(QLabel("More ground levels (distance = level)"))
+                row.addWidget(self.lv_spots)
+                ml3.addLayout(row)
+                row = FlowLayout(None, 8, 6)
+                for txt_, fn_ in (("Preview the sewer section", self.section_preview), ("Save the sewer section as PDF...", self.section_pdf), ("Save the sewer section as DXF...", self.section_dxf)):
+                    b_ = QPushButton(txt_)
+                    b_.clicked.connect(lambda _=False, f=fn_: f())
+                    row.addWidget(b_)
+                row.addStretch(1)
+                ml3.addLayout(row)
             v2.addWidget(bx)
         bx, bv = self.box("Extra points (optional)", "Add a connection of your own, for example a manhole. Used when it is closer than the main.")
         row = FlowLayout(None, 8, 6)
@@ -1859,6 +1898,9 @@ class SiteServicesPage(ToolBase):
                        "north_pos": prev.get("north_pos")}
         if self.view.auto is False and False:
             pass
+        if hasattr(self, "lv_spin"):
+            st["levels"] = {k_: w_.value() for k_, w_ in self.lv_spin.items()}
+            st["levels"]["spots"] = self.lv_spots.text().strip()
         st["params"] = {"conn_depth": self.p_depth.value(), "fall": self.p_fall.value(), "max_ie": self.p_ie.value(), "re_ext": self.p_tail.value(), "sewer_pipe": self.p_pipe.currentText(),
                         "sb_street": self.sb_street.value(), "sb_side": self.sb_side.value(), "sb_rear": self.sb_rear.value()}
         self.schedule()
@@ -1910,6 +1952,11 @@ class SiteServicesPage(ToolBase):
             self.p_ie.setValue(pr.get("max_ie", 25))
             self.p_tail.setValue(pr.get("re_ext", 0.35))
             self.p_pipe.setCurrentText(str(pr.get("sewer_pipe", "110")))
+            lvl = st.get("levels") or {}
+            for k_, w_ in getattr(self, "lv_spin", {}).items():
+                w_.setValue(float(lvl.get(k_) or 0))
+            if hasattr(self, "lv_spots"):
+                self.lv_spots.setText(str(lvl.get("spots", "")))
         finally:
             self._busy = False
 
@@ -3842,6 +3889,37 @@ class SiteServicesPage(ToolBase):
             x_ = W * 0.55 if i < 5 else W * 0.78
             y_ = base + (i if i < 5 else i - 5) * step - step * 0.2
             p.drawText(QPointF(x_, y_), t)
+
+    def section_data(self):
+        import site_profile
+        return site_profile, site_profile.build(self.st, self.res)
+
+    def section_preview(self):
+        from PySide6.QtWidgets import QDialog, QScrollArea
+        sp_, d_ = self.section_data()
+        img = sp_.render_image(d_, self.title_block_lines(), 1800)
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Sewer section")
+        lay = QVBoxLayout(dlg)
+        lb = QLabel()
+        lb.setPixmap(QPixmap.fromImage(img))
+        sa = QScrollArea()
+        sa.setWidget(lb)
+        lay.addWidget(sa)
+        dlg.resize(1100, 760)
+        dlg.exec()
+
+    def section_pdf(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Save the sewer section", "sewer_section.pdf", "PDF (*.pdf)")
+        if path:
+            sp_, d_ = self.section_data()
+            sp_.write_pdf(path, d_, self.title_block_lines())
+
+    def section_dxf(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Save the sewer section as DXF", "sewer_section.dxf", "DXF (*.dxf)")
+        if path:
+            sp_, d_ = self.section_data()
+            sp_.write_dxf(path, d_, self.title_block_lines())
 
     def save_pdf(self):
         path, _ = QFileDialog.getSaveFileName(self, "Save the plan", "site_services.pdf", "PDF (*.pdf)")
