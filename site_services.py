@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (QApplication, QFrame, QCheckBox, QComboBox, QDial
 import site_dxf
 import site_dxf_dialog
 import site_township
+import site_plans_data
 try:
     from site_footprints_data import FOOTPRINTS
 except Exception:
@@ -2827,7 +2828,8 @@ class SiteServicesPage(ToolBase):
             return
         cs = self.st["stand"]["corners"]
         xs, ys = [p[0] for p in cs], [p[1] for p in cs]
-        x0, x1, y0, y1 = min(xs) - 45, max(xs) + 45, min(ys) - 45, max(ys) + 45
+        R_ = site_township.SERVICE_REACH
+        x0, x1, y0, y1 = min(xs) - R_, max(xs) + R_, min(ys) - R_, max(ys) + R_
 
         def mv(seg, thick=0):
             p, q = se.apply_frame(fr, (seg[0], seg[1])), se.apply_frame(fr, (seg[2], seg[3]))
@@ -2880,12 +2882,12 @@ class SiteServicesPage(ToolBase):
                 p_, q_ = se.apply_frame(fr, (g[0], g[1])), se.apply_frame(fr, (g[2], g[3]))
                 segs.append((p_[0], p_[1], q_[0], q_[1]))
             if k == "sewer":
-                pl = site_township.main_chain(segs, ref)
+                pl = site_township.main_chain(segs, ref, reach=site_plans_data.TOWNSHIP_SEARCH["main"])
                 if not pl:
                     continue
                 self.st["main_line"] = [[round(x, 2), round(y, 2)] for x, y in pl]
             else:
-                runs = site_township.main_runs(segs, ref)               # the main with its branches, as they run in the drawing
+                runs = site_township.main_runs(segs, ref, reach=site_plans_data.TOWNSHIP_SEARCH["main"])               # the main with its branches, as they run in the drawing
                 if not runs:
                     continue
                 self.st["main_poly"][k] = [[[round(x, 2), round(y, 2)] for x, y in r_] for r_ in runs]

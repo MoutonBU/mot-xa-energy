@@ -53,6 +53,16 @@ CONVENTIONS = {
 }
 
 # the rules those plans give, in the order the tool uses them when it suggests a placement
+# how far round a stand the township reader looks when a stand is cut out of a big site drawing (metres). These are rules, not tuning: a stand on a bend
+# or a corner needs the road both ways round the bend, the kerb on the far side of the street, and every main that serves it (Blue Hills Ext 120, stands
+# 2121, 2122, 2228, 2236: the road runs 60 to 100 m round the corner and the mains follow it).
+TOWNSHIP_SEARCH = {
+    "road": 130.0,         # kerbs, road edges, road names: the whole bend, both sides of the street, the next streets
+    "services": 90.0,      # sewer, water, electrical, stormwater lines and their symbols
+    "stands": 45.0,        # neighbouring stands and their numbers
+    "main": 40.0,          # a main line is taken from the nearest run of lines that comes this close to the stand's street boundary
+}
+
 RULES = [
     "The carport sits against the street boundary (the entry), 5.0 x 5.0 m, or 7.1 x 7.1 m when it is a double.",
     "The house is 1.0 m clear of the carport, and 1.0 to 2.5 m behind the street boundary.",

@@ -45,7 +45,10 @@ def bulged(vs, closed=False):
     return out
 
 
-ROAD_REACH = 130.0          # metres: how far round the stand the road is read (the bend, the other side of the street, the next streets)
+from site_plans_data import TOWNSHIP_SEARCH as _TS
+ROAD_REACH = _TS["road"]          # metres: how far round the stand the road is read (the bend, the other side of the street, the next streets); a rule in site_plans_data
+SERVICE_REACH = _TS["services"]
+STAND_REACH = _TS["stands"]
 
 
 def main_chain(segs, ref, reach=40.0, min_len=12.0):
@@ -683,9 +686,10 @@ class Township:
             return None
         return min(cands, key=lambda s: s["area"])
 
-    def find(self, number, reach=45.0):
+    def find(self, number, reach=None):
         """-> {"no", "poly" (metres), "neighbours": [{"no", "poly"}], "lines": {cat: [(x1, y1, x2, y2)]}, "street_edge", "road_known"} or None.
         Everything in metres in the drawing's own coordinates; the page moves it into the stand frame."""
+        reach = STAND_REACH if reach is None else reach
         hits = self.labels_for(number)
         if not hits:
             return None
@@ -740,6 +744,7 @@ class Township:
                 if len(Q) >= 3 and math.hypot(centroid(Q)[0] - pc[0], centroid(Q)[1] - pc[1]) > 0.5 and not any(math.hypot(centroid(Q)[0] - centroid(o["poly"])[0], centroid(Q)[1] - centroid(o["poly"])[1]) < 0.5 for o in nb):
                     if bx[0] <= centroid(Q)[0] <= bx[2] and bx[1] <= centroid(Q)[1] <= bx[3]:
                         nb.append({"poly": Q, "no": self._number_in(Q), "area": abs(_area(Q))})
+        bxs = (min(p[0] for p in P) - SERVICE_REACH, min(p[1] for p in P) - SERVICE_REACH, max(p[0] for p in P) + SERVICE_REACH, max(p[1] for p in P) + SERVICE_REACH)
         bxr = (min(p[0] for p in P) - ROAD_REACH, min(p[1] for p in P) - ROAD_REACH, max(p[0] for p in P) + ROAD_REACH, max(p[1] for p in P) + ROAD_REACH)
         # the lines around it, by what they are
         lines = {c: [] for c in CATS}
@@ -750,7 +755,7 @@ class Township:
                 continue
             for i in range(0, len(arr), 4):
                 x1, y1, x2, y2 = arr[i] * k, arr[i + 1] * k, arr[i + 2] * k, arr[i + 3] * k
-                b_ = bxr if cat == "road" else bx                 # the road is looked for much wider: round the corner and both kerbs of the street
+                b_ = bxr if cat == "road" else (bxs if cat in ("sewer", "water", "elec", "storm") else bx)                # the road is looked for much wider: round the corner and both kerbs of the street
                 if min(x1, x2) > b_[2] or max(x1, x2) < b_[0] or min(y1, y2) > b_[3] or max(y1, y2) < b_[1]:
                     continue
                 lines[cat].append((x1, y1, x2, y2))

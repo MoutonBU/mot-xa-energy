@@ -80,7 +80,14 @@ def test_house_turns_to_fit_a_diagonal_corner():
     assert o and not o.get("relaxed")
 
 
+def test_search_radius_is_a_rule():
+    import site_plans_data as pd
+    assert pd.TOWNSHIP_SEARCH["road"] >= 100 and pd.TOWNSHIP_SEARCH["services"] >= 80      # the road round a corner and the far kerb, and every main that serves the stand
+    assert tw.ROAD_REACH == pd.TOWNSHIP_SEARCH["road"] and tw.SERVICE_REACH == pd.TOWNSHIP_SEARCH["services"] and tw.STAND_REACH == pd.TOWNSHIP_SEARCH["stands"]
+
+
 if __name__ == "__main__":
+    test_search_radius_is_a_rule()
     test_main_runs_and_branches()
     test_closing_stand_edges()
     test_house_turns_to_fit_a_diagonal_corner()
