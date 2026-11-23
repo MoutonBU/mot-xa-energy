@@ -3,6 +3,7 @@ import os
 import re
 
 import math
+import sys
 
 from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPoint, QPointF, QRectF, QSize, QTimer, Qt, QUrl, QVariantAnimation
 from PySide6.QtGui import QColor, QDesktopServices, QIcon, QCursor, QPalette, QPainter, QPen, QRadialGradient
@@ -511,6 +512,19 @@ class LinkBar(QWidget):
 from PySide6.QtCore import Signal as _Signal
 
 
+STEP_HUES = ["#5b9be6", "#36b3a6", "#e2a93f", "#a587e0", "#d9628f"]
+_STEP_ICONS = (("stand", "land"), ("house", "building"), ("connection", "pin"), ("result", "results"), ("room", "room"), ("total", "calc"), ("report", "pdf"), ("rule", "clipboard"),
+               ("review", "eye"), ("application", "edit"), ("checklist", "check_circle"), ("pack", "folder"), ("who", "user"), ("drawing", "layers"), ("send", "mail"), ("building", "building"))
+
+
+def _step_icon(name, k):
+    n = name.lower()
+    for key, ico in _STEP_ICONS:
+        if key in n:
+            return ico
+    return ("land", "layers", "results", "folder")[k % 4]
+
+
 class StepBar(QObject):
     """The same guided look in every tool: numbered step buttons, a one-line hint for the step, and Back / Next buttons.
     `top` goes above the content, `bottom` below it. Connect `changed(int)` to show the step."""
@@ -532,7 +546,18 @@ class StepBar(QObject):
             b.setCheckable(True)
             b.setMinimumHeight(32)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.setStyleSheet("QPushButton:checked{background:#c0182c;color:#ffffff;font-weight:700;border:1px solid #e0243a;}")
+            hue = STEP_HUES[k % len(STEP_HUES)]
+            dk = QColor(hue).darker(150).name()
+            b.setStyleSheet("QPushButton:checked{background:%s;color:#ffffff;font-weight:700;border:1px solid %s;}" % (dk, hue))
+            try:                                                # each step has its own icon and its own muted colour
+                mod = sys.modules.get("mot_xa_energy") or sys.modules.get("__main__")
+                ic_ = QIcon()
+                ic_.addPixmap(mod.icon_pixmap(_step_icon(t, k), hue, 18), QIcon.Mode.Normal, QIcon.State.Off)
+                ic_.addPixmap(mod.icon_pixmap(_step_icon(t, k), "#ffffff", 18), QIcon.Mode.Normal, QIcon.State.On)      # white on the chosen step
+                b.setIcon(ic_)
+                b.setIconSize(QSize(18, 18))
+            except Exception:
+                pass
             b.clicked.connect(lambda _=False, k=k: self.go(k))
             fl.addWidget(b)
             self.btns.append(b)
@@ -1102,7 +1127,9 @@ class EmptyCard(QFrame):
         h = QLabel(hint)
         h.setWordWrap(True)
         h.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        h.setMinimumWidth(320)
         h.setStyleSheet("QLabel{color:rgba(128,128,128,230);}")
+        self.setMinimumHeight(190)
         v.addWidget(h)
         self.btn = None
         if button and action:

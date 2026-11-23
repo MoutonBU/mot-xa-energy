@@ -13691,6 +13691,8 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentIndex(step)
 
     def _build_launcher(self):
+        TILE_COL = {"Drawing register": "#36b3a6", "Orders": "#e2a93f", "Invoicing": "#55b57a", "Detail tool": "#5b9be6", "Costing": "#a587e0", "SANS": "#ff4056",
+                    "Site and areas": "#c08e5c", "Guidelines review": "#93a0b4", "Light & Ventilation": "#e8b84a", "Energy (XA)": "#f0795a", "Coverage & FAR": "#d9628f"}      # muted, one hue per tool
         """The start screen: four big squares and nothing else. The left bar and the ribbon only show once you are inside one."""
         def tile(title, sub, ico, target):
             b = QPushButton()
@@ -13704,7 +13706,8 @@ class MainWindow(QMainWindow):
             lab.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
             import ui_extras as ux_m
             ux_m.install_icon_motion()
-            icl = ux_m.AnimIcon(icon_pixmap(ico, "#ff4056", 72), "#ff4056", 108)        # lifts, wobbles and glows when pointed at, squeezes and rings when pressed
+            tcol = TILE_COL.get(title.replace("&&", "&"), "#ff4056")
+            icl = ux_m.AnimIcon(icon_pixmap(ico, tcol, 72), tcol, 108)        # lifts, wobbles and glows when pointed at, squeezes and rings when pressed
             b._anim_icon = icl
             bl = QVBoxLayout(b)
             bl.setContentsMargins(18, 18, 18, 18)
@@ -13739,12 +13742,12 @@ class MainWindow(QMainWindow):
         for i, (title, sub, ico, tgt) in enumerate((
                 ("Drawing register", "Issue drawings by email, with the sheet index and what is still to come.", "clipboard", "Drawing register"),
                 ("Orders", "The client's orders and changes, house by house. Watches your Gmail for new orders and flags the urgent ones.", "tag", "Orders"),
-                ("Invoicing", "Numbered invoices with VAT as a PDF. Only the people you allow can open it.", "calc", "Invoicing"),
+                ("Invoicing", "Numbered invoices with VAT as a PDF. Only the people you allow can open it.", "pdf", "Invoicing"),
                 ("Detail tool", "Add notes to an Archicad detail, or describe a detail in words (typed or spoken) and have it drawn.", "ruler", "Detail tool"),
                 ("Costing", "Fixtures, materials and the budget for a job.", "calc", "Costing"),
                 ("SANS", "Light and ventilation, energy and coverage checks for the building regulations.", "sun", "SANS"),
                 ("Site and areas", "Building lines on the stand, the sewer, water and electrical lines to the house, and the area schedule with unit mix and floor area ratio.", "land", "Site and"),
-                ("Guidelines review", "Check the plans against the estate's architectural guidelines and the council's or state's checklist.", "clipboard", "Guidelines review"))):
+                ("Guidelines review", "Check the plans against the estate's architectural guidelines and the council's or state's checklist.", "shield", "Guidelines review"))):
             g.addWidget(tile(title, sub, ico, tgt), i // 3, i % 3)
         for k in (0, 1, 2):
             g.setRowStretch(k, 1)

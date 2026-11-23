@@ -7,9 +7,9 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton, QSizePo
                                QVBoxLayout, QWidget)
 
 # main tab index -> (rail label, icon name); order of the main tabs in the window
-SUBJECTS = [(0, "Project", "home"), (6, "Drawing register", "clipboard"), (10, "Orders", "tag"), (11, "Invoicing", "calc"), (1, "Light && ventilation", "lightvent"), (2, "Energy (XA)", "bolt"), (13, "Rational design", "shield"),
-            (3, "Coverage && FAR", "building"), (4, "Detail notes", "ruler"), (5, "Costing", "tag"),
-            (7, "Area schedule", "layers"), (8, "Building lines", "land"), (12, "House placing", "land"), (9, "Guidelines review", "clipboard")]
+SUBJECTS = [(0, "Project", "home"), (6, "Drawing register", "clipboard"), (10, "Orders", "tag"), (11, "Invoicing", "pdf"), (1, "Light && ventilation", "lightvent"), (2, "Energy (XA)", "bolt"), (13, "Rational design", "shield"),
+            (3, "Coverage && FAR", "building"), (4, "Detail notes", "ruler"), (5, "Costing", "calc"),
+            (7, "Area schedule", "layers"), (8, "Building lines", "compass"), (12, "House placing", "land"), (9, "Guidelines review", "check_circle")]
 CTX = {13: "sans", 11: "invoicing", 10: "orders", 1: "sans", 2: "sans", 3: "sans", 4: "detail", 5: "costing", 6: "register", 7: "site", 8: "site", 9: "rules", 12: "site"}      # which tool a main tab belongs to
 TOOL_COL = {"sans": "#d8132b", "invoicing": "#2e9e6b", "orders": "#e0a020", "detail": "#3b82f6", "costing": "#8b5cf6", "register": "#14b8a6", "site": "#a0714a", "rules": "#8a9099"}      # each tool has its own colour
 PSUB_ICONS = {"Drawings": "clipboard", "Orders": "tag", "Client changes": "edit", "Sent and revisions": "export",
@@ -161,10 +161,11 @@ class Rail(QFrame):
         if not self.make_icon:
             return
         col = "#1c1f24" if self.light_fn() else "#eceef0"
+        own = {b: TOOL_COL.get(CTX.get(i_)) for i_, b in self.nav.items()}          # each tool's own muted colour on its icon
         for b in self.findChildren(QPushButton):
             n = b.property("iconName")
             if n:
-                b.setIcon(self.make_icon(n, col, 28))              # drawn larger than shown, so it stays sharp while it grows under the pointer
+                b.setIcon(self.make_icon(n, own.get(b) or col, 28))              # drawn larger than shown, so it stays sharp while it grows under the pointer
         if not getattr(self, "_hover_filter", None):
             from PySide6.QtCore import QEvent, QObject
 
