@@ -31,6 +31,23 @@ def main():
         g.clean_spec({"shapes": []}); assert False
     except g.GenError:
         pass
+    assert g.parse_reply({"shapes": []}) == {"shapes": []}          # a tool reply is already an object
+    import io, json as _j, urllib.request as ur
+    calls = []
+    class R(io.BytesIO):
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+    def fake(req, timeout=0):
+        calls.append(1)
+        body = _j.loads(req.data.decode())
+        assert body["tool_choice"]["name"] == "draw_detail"
+        return R(_j.dumps({"content": [{"type": "tool_use", "input": g.SAMPLE_SPEC}]}).encode())
+    old = ur.urlopen; ur.urlopen = fake
+    try:
+        sp2, pr = g.generate("wall", "k", "m")
+    finally:
+        ur.urlopen = old
+    assert len(sp2["shapes"]) == 8 and calls
     print("generator ok")
 
 if __name__ == "__main__":

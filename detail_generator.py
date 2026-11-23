@@ -27,8 +27,8 @@ LIMIT = 30000.0            # mm: nothing in a construction detail is further tha
 
 SYSTEM = (
     "You draw South African construction details (sections) for an architectural technologist. You are given a "
-    "request and reply with ONE JSON object and nothing else (no markdown fences, no explanation).\n\n"
-    "JSON shape:\n"
+    "request and answer by calling the draw_detail tool.\n\n"
+    "Shape of the drawing:\n"
     '{"title": "short title", "shapes": [{"material": "<m>", "pts": [[x,y], ...]}], '
     '"notes": {"<m>": "callout note"}, "assumptions": ["short sentence", ...]}\n\n'
     "RULES\n"
@@ -47,8 +47,25 @@ SYSTEM = (
     "metric mm only, thousands with a space (1 200), SANS references only where you are sure (SANS 10400 parts H "
     "foundations, J floors, K walls, L roofs, XA energy, SANS 10100-1 concrete, SANS 952 DPM). Example: "
     "'170 mm concrete to Eng. design min. 25 MPa, reinforced mesh ref. 193, over DPM (SANS 10100-1, SANS 10400-J).'\n"
+    "- Proprietary systems (e.g. Loffelstein or other retaining blocks, Hyload, Cemcrete): draw the generic shape and size from your knowledge, and say in the note 'to manufacturer\'s spec' and list the size you assumed under assumptions. Retaining walls also need a drain (gravel and a perforated pipe) behind the wall, filter fabric, a base and the retained ground.\n"
     "- assumptions: what you had to assume that the request did not say (sizes, levels). At most 5.\n"
     "- Keep the whole detail to about 2 000 mm wide and 1 500 mm high unless the request needs more.")
+
+
+TOOL = {
+    "name": "draw_detail",
+    "description": "The construction detail to draw: outlines per material (mm) and one note per material.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "shapes": {"type": "array", "items": {"type": "object", "properties": {
+                "material": {"type": "string", "enum": sorted(LAYERS)},
+                "pts": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}, "minItems": 3}},
+                "required": ["material", "pts"]}},
+            "notes": {"type": "object", "additionalProperties": {"type": "string"}},
+            "assumptions": {"type": "array", "items": {"type": "string"}}},
+        "required": ["title", "shapes", "notes"]}}
 
 
 class GenError(Exception):
@@ -73,7 +90,7 @@ def api_model():
 
 def ask_claude(request, key, model, timeout=120):
     """-> raw reply text. Raises GenError with a plain message."""
-    body = {"model": model, "max_tokens": 6000, "system": SYSTEM,
+    body = {"model": model, "max_tokens": 8000, "system": SYSTEM, "tools": [TOOL], "tool_choice": {"type": "tool", "name": "draw_detail"},
             "messages": [{"role": "user", "content": request.strip()}]}
     req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=json.dumps(body).encode(),
                                  headers={"x-api-key": key, "anthropic-version": "2023-06-01",
@@ -89,10 +106,17 @@ def ask_claude(request, key, model, timeout=120):
         raise GenError(f"Claude said: {msg or e.reason} (code {e.code})")
     except urllib.error.URLError as e:
         raise GenError(f"No internet connection ({e.reason})")
+    for p in data.get("content", []):
+        if p.get("type") == "tool_use" and isinstance(p.get("input"), dict):
+            return p["input"]                      # already a checked JSON object
+    if data.get("stop_reason") == "max_tokens":
+        raise GenError("The detail was too big for one reply. Ask for a simpler detail or fewer parts.")
     return "".join(p.get("text", "") for p in data.get("content", []))
 
 
 def parse_reply(text):
+    if isinstance(text, dict):
+        return text
     """pull the JSON object out of the reply (tolerates fences or a stray sentence around it)"""
     t = (text or "").strip()
     t = re.sub(r"^```(?:json)?\s*|\s*```$", "", t, flags=re.S)
@@ -208,8 +232,15 @@ def generate(request, key=None, model=None):
     if not key:
         raise GenError("No API key saved. Add one under Settings in the Detail notes tab "
                        "(a Claude Pro subscription does not give the program a key).")
-    raw = ask_claude(request, key, model or api_model())
-    return clean_spec(parse_reply(raw))
+    last = None
+    for _try in range(2):                           # a reply that cannot be read is tried once more
+        try:
+            return clean_spec(parse_reply(ask_claude(request, key, model or api_model())))
+        except GenError as ex:
+            last = ex
+            if "Claude said" in str(ex) or "internet" in str(ex):
+                raise
+    raise last
 
 
 # A detail that needs no internet or key, so the tab can be tried straight away.
