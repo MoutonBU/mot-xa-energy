@@ -1410,8 +1410,14 @@ def house_totals(results):
 # --------------------------------------------------------------------------
 # Rational design report - cover / declaration details kept with the project
 # --------------------------------------------------------------------------
-RD_ROUTES = ["Deemed-to-satisfy (SANS 10400-XA 4.2.1 b) - envelope and fenestration",
-             "Rational design (SANS 10400-XA 4.2.1 c) - energy simulation"]
+RD_ROUTES = ["Deemed-to-satisfy (SANS 10400-XA:2021 clause 4.4) - envelope and fenestration",
+             "Rational design (SANS 10400-XA:2021 clause 4.3) - reference building, certified thermal calculation software"]
+
+
+def rd_route(r):
+    """The route text in the 2021 wording; projects saved with the 2011 clause numbers (4.2.1 b / c) map to the same route."""
+    r = str(r or "")
+    return RD_ROUTES[1] if ("rational" in r.lower() or "4.2.1 c" in r) else RD_ROUTES[0] if r else RD_ROUTES[0]
 RD_DEFAULTS = {
     "project": "", "details": "", "owner": "", "architect": "", "prepared_by": "",
     "company": "MCP Architecture & Interiors", "contact": "", "rev": "0", "date": "",
@@ -18264,13 +18270,25 @@ class MainWindow(QMainWindow):
         req = {"ext_wall": xa_required_r(zone, wall_t), "roof": xa_required_r(zone, "Roof / ceiling"), "floor_exp": xa_required_r(zone, "Suspended floor")}
         floor = sum(z["area"] for z in zones)
         glz = sum(wn["area"] for z in zones for wn in z["wins"])
-        limit = float(self.xa_limit.value())
-        pct = min(limit, glz / floor * 100.0) if floor else limit
-        row = xa_table4_row(pct)
-        ref_glass = (float(row[1]), float(row[3])) if row[1] else (5.6, 0.77)
-        return {"E": E, "zones": zones, "cons": cons, "req": req, "limit": limit, "ref_glass": ref_glass, "w": si["w"], "est": si["est"],
-                "weather": si["loc"]["name"], "lpd": self._lt_lpd(), "floor": floor, "glass": glz, "wall_type": wall_t, "skipped": si["geo"]["skipped"],
-                "unplaced": si["model"]["unplaced"]}
+        occ = self.xa_occ.currentText().split(" - ")[0].strip()
+        pop = 0.0
+        try:
+            pop = float(re.findall(r"[\d.]+", str(self.rd.get("population", "")).split("=")[-1])[0])
+        except (IndexError, ValueError):
+            pop = 0.0
+        if pop <= 0:                                                       # SANS 10400-A regulation A21 for a dwelling: two people per bedroom
+            beds = sum(1 for z in zones if re.search(r"bed|slaap", z["name"], re.I) and not re.search(r"bath", z["name"], re.I))
+            pop = 2.0 * max(1, beds)
+        hw_sys = ""
+        try:
+            for st_ in (self.hw_state().get("store") or {}).values():
+                for v_ in st_.values():
+                    hw_sys = str(v_.get("sys", "")) or hw_sys
+        except Exception:
+            hw_sys = ""
+        return {"E": E, "zones": zones, "cons": cons, "req": req, "table4": XA_TABLE4, "w": si["w"], "est": si["est"],
+                "weather": si["loc"]["name"], "lpd": self._lt_lpd(), "floor": floor, "glass": glz, "wall_type": wall_t,
+                "skipped": si["geo"]["skipped"], "unplaced": si["model"]["unplaced"], "occ": occ, "pop": pop, "hw_sys": hw_sys}
 
     def rational_design_dialog(self):
         if not self._ifc_active() or not os.path.exists(getattr(self, "ifc_path", "") or ""):
@@ -18288,11 +18306,13 @@ class MainWindow(QMainWindow):
         d.setWindowTitle("Rational design - energy simulation (built in)")
         d.resize(980, 780)
         v = QVBoxLayout(d)
-        intro = QLabel("The same building is simulated hour by hour for a whole year, twice: as you designed it, and as the REFERENCE building "
-                       "(same rooms and shape, the deemed-to-satisfy insulation for zone %s, glass kept to %g%% of the floor area, no shading, "
-                       "lights at the allowed power). The design passes when its yearly energy use and its peak demand are not more than the reference's."
-                       % (self.xa_zone.currentText(), ri["limit"]))
+        intro = QLabel("The design is simulated hour by hour for a whole year and compared with the REFERENCE building of SANS 10400-XA:2021 clause 3.16 "
+                       "(same rooms, shape, orientation and glass area, with the deemed-to-satisfy insulation of zone %s and the glass of table 4). "
+                       "Annex B conditions: %s, 75 W per person, lights at table 12, 19 to 25 C, hot water at 60 C. It passes when its yearly energy and its demand are not more than the reference's. "
+                       "<b style='color:#b3202f'>Clause 4.3 requires thermal software certified by Agrement South Africa. This built-in model is not certified: use it to design and pre-check, "
+                       "and run the final submission in certified software.</b>" % (self.xa_zone.currentText(), ri["occ"] or "occupancy"))
         intro.setWordWrap(True)
+        intro.setTextFormat(Qt.TextFormat.RichText)
         v.addWidget(intro)
         grid = QGridLayout()
         spins = {}
@@ -18306,15 +18326,24 @@ class MainWindow(QMainWindow):
             grid.addWidget(lb, r_, c_ * 2)
             grid.addWidget(sp, r_, c_ * 2 + 1)
             spins[key] = sp
-        spin(0, 0, "Air leakage (air changes / hour)", "ach", 0.5, 0.0, 5.0, 2, 0.1, "Same in the design and the reference building.")
-        spin(1, 0, "Heating switches on below (C)", "heat_sp", 19.0, 10.0, 25.0, 1, 0.5)
-        spin(2, 0, "Cooling switches on above (C)", "cool_sp", 25.0, 20.0, 35.0, 1, 0.5)
-        spin(0, 1, "Heating efficiency (COP; 1 = electric element)", "cop_heat", 1.0, 0.5, 6.0, 2, 0.1)
-        spin(1, 1, "Cooling efficiency (COP)", "cop_cool", 3.0, 1.0, 8.0, 2, 0.1)
-        spin(2, 1, "Lights on (hours per evening)", "light_hours", 4.0, 0.0, 24.0, 1, 0.5, "Used for rooms where no lighting was calculated.")
-        spin(0, 2, "Reference glass U (W/m2K)", "ref_u", ri["ref_glass"][0], 0.5, 8.0, 2, 0.1, "From SANS 10400-XA table 4 for the glass share; single glass when the share has no limit.")
-        spin(1, 2, "Reference glass SHGC", "ref_g", ri["ref_glass"][1], 0.1, 0.95, 2, 0.01)
-        spin(2, 2, "Reference glass kept to (% of floor)", "limit", ri["limit"], 1.0, 100.0, 1, 1.0)
+        spin(0, 0, "People (regulation A21)", "pop", ri["pop"], 0.0, 500.0, 0, 1.0, "Two per bedroom for a dwelling, or the population typed in the report details.")
+        spin(1, 0, "Air leakage (air changes / hour)", "ach", 0.5, 0.0, 5.0, 2, 0.1, "Same in the design and the reference building.")
+        spin(2, 0, "Heating switches on below (C)", "heat_sp", 19.0, 10.0, 25.0, 1, 0.5, "Annex B: 19 to 25 C.")
+        spin(0, 1, "Cooling switches on above (C)", "cool_sp", 25.0, 20.0, 35.0, 1, 0.5)
+        spin(1, 1, "Heating efficiency (COP; 1 = electric element)", "cop_heat", 1.0, 0.5, 6.0, 2, 0.1)
+        spin(2, 1, "Cooling efficiency (COP)", "cop_cool", 3.0, 1.0, 8.0, 2, 0.1)
+        spin(0, 2, "Hot water (litres / person / day at 60 C)", "dhw_l_pd", 115.0, 0.0, 300.0, 0, 1.0, "Table 10: 115 for a dwelling house; 64 for a category 1 house.")
+        spin(1, 2, "Clear glass U for glass up to 20% (W/m2K)", "clear_u", 5.6, 0.5, 8.0, 2, 0.1, "Table 4 sets no limit up to 20%: the reference uses plain clear glass.")
+        spin(2, 2, "Clear glass SHGC", "clear_g", 0.77, 0.1, 0.95, 2, 0.01)
+        hwb = QComboBox()
+        hw_items = [("Electric element geyser", "resistance"), ("Heat pump", "heatpump"), ("Solar water heater with electric back-up", "solar"), ("Gas heater", "gas")]
+        for t_, k_ in hw_items:
+            hwb.addItem(t_, k_)
+        hs_ = (ri.get("hw_sys") or "").lower()
+        hwb.setCurrentIndex(1 if "heat pump" in hs_ else 2 if "solar" in hs_ else 3 if "gas" in hs_ else 0)
+        grid.addWidget(QLabel("Hot water in the design"), 3, 0)
+        grid.addWidget(hwb, 3, 1)
+        spin(3, 1, "Heat pump COP / solar share (0-1)", "hw_x", 3.0 if hwb.currentIndex() == 1 else 0.6, 0.0, 8.0, 2, 0.05, "Heat pump: its COP. Solar water heater: the share of the hot water heat it supplies over the year (0 to 1).")
         v.addLayout(grid)
         from PySide6.QtWidgets import QTextBrowser as _TB
         out = _TB()
@@ -18333,17 +18362,20 @@ class MainWindow(QMainWindow):
             QApplication.setOverrideCursor(Qt.WaitCursor)
             try:
                 E = ri["E"]
-                o = {k: sp.value() for k, sp in spins.items() if k in ("ach", "heat_sp", "cool_sp", "cop_heat", "cop_cool", "light_hours")}
-                occ = self.xa_occ.currentText().split(" - ")[0].strip()
+                o = {k: sp.value() for k, sp in spins.items() if k in ("ach", "heat_sp", "cool_sp", "cop_heat", "cop_cool", "dhw_l_pd", "pop")}
+                o["occ"] = ri["occ"]
+                o["equip_w_m2"] = E.APPLIANCE_W_M2.get(ri["occ"], 0.0)
                 try:
                     o["hours"] = float(str(self.rd.get("hrs", "")).replace(",", ".") or 0)
                     o["days"] = int(float(str(self.rd.get("days", "")).replace(",", ".") or 7))
                 except ValueError:
                     o["hours"], o["days"] = 0.0, 7
-                if occ.startswith("H"):
-                    o["hours"] = 0.0
-                res = E.run_rational(ri["zones"], ri["cons"], ri["w"], sun_arrays(ri["w"]), ri["req"], spins["limit"].value(),
-                                     (spins["ref_u"].value(), spins["ref_g"].value()), ri["lpd"], o)
+                kind = hwb.currentData()
+                x = spins["hw_x"].value()
+                o["dhw_cop"] = x if kind == "heatpump" else 3.0
+                dd = {"dhw_kind": kind, "dhw_cop": x if kind == "heatpump" else 3.0, "dhw_solar": x if kind == "solar" else 0.0}
+                res = E.run_rational(ri["zones"], ri["cons"], ri["w"], sun_arrays(ri["w"]), ri["req"], ri["table4"],
+                                     (spins["clear_u"].value(), spins["clear_g"].value()), ri["lpd"], o, dd)
             except Exception as ex:
                 QApplication.restoreOverrideCursor()
                 QMessageBox.warning(self, APP_NAME, "The simulation stopped:\n%s" % ex)
@@ -18358,8 +18390,8 @@ class MainWindow(QMainWindow):
             if not res:
                 return
             self.rd["route"] = RD_ROUTES[1]
-            self.rd["sim_software"] = "MCP Architecture & Interiors built-in hourly model (EN ISO 13790 5R1C, 8760 h, ideal loads)"
-            self.rd["sim_cert"] = "Weather: %s. Built-in model, not a certified product; competent person to confirm." % ri["weather"]
+            self.rd["sim_software"] = "MCP Architecture & Interiors built-in hourly model (EN ISO 13790 5R1C, 8760 h, ideal loads), SANS 10400-XA:2021 Annex B conditions"
+            self.rd["sim_cert"] = ("NOT certified by Agrement South Africa (clause 3.3 / 4.3). Pre-check only: re-run in certified software for submission. Weather: %s." % ri["weather"])
             self.rd["ref_demand"] = "%.1f" % res["ref_demand"]
             self.rd["act_demand"] = "%.1f" % res["act_demand"]
             self.rd["ref_cons"] = "%.1f" % res["ref_cons"]
@@ -18388,13 +18420,15 @@ class MainWindow(QMainWindow):
 
         def pm(x, A_=A):
             return x / A_ if A_ else 0.0
-        h = ["<div style='%spadding:8px 12px'><b>%s</b><br>Yearly energy use: design %.1f, reference %.1f kWh/m2/year (%s).<br>Peak demand: design %.1f, reference %.1f VA/m2 (%s)."
+        h = ["<div style='%spadding:8px 12px'><b>%s</b><br>Yearly energy use: design %.1f, reference %.1f kWh/m2/year (%s).<br>Average demand: design %.1f, reference %.1f VA/m2 (%s)."
              % (col, "The design is not worse than the reference building" if ok else "The design uses MORE than the reference building",
                 res["act_cons"], res["ref_cons"], "ok" if res["cons_ok"] else "%.1f too much" % (res["act_cons"] - res["ref_cons"]),
                 res["act_demand"], res["ref_demand"], "ok" if res["demand_ok"] else "%.1f too much" % (res["act_demand"] - res["ref_demand"]))]
-        if res["glass_scale"] < 1.0:
-            h.append("<br>The reference building has %.0f%% of your glass area: the most that SANS 10400-XA allows for its deemed-to-satisfy fenestration." % (res["glass_scale"] * 100.0))
         h.append("</div>")
+        h.append("<p style='color:#b3202f'><b>Not certified:</b> SANS 10400-XA:2021 clause 4.3 needs thermal software certified by Agrement South Africa. Use this as a pre-check; run the submission in certified software.</p>")
+        rg = res.get("ref_glass") or {}
+        if rg:
+            h.append("<p>Reference glass (table 4): " + "; ".join("%s: %.0f%% glass, U %.2f, SHGC %.2f" % (k_, v_["pct"], v_["U"], v_["g"]) for k_, v_ in rg.items()) + ".</p>")
         h.append(self._rd_model_note(ri))
         row = lambda lab, ra, ac, fmt="%.1f": "<tr><td>%s</td><td align=right>%s</td><td align=right>%s</td><td align=right>%s</td></tr>" % (
             lab, fmt % ra, fmt % ac, ("%+.1f" % (ac - ra)))
@@ -18404,8 +18438,11 @@ class MainWindow(QMainWindow):
         h.append(row("Heating electricity (kWh/m2)", pm(r["elec_heat"]), pm(a["elec_heat"])))
         h.append(row("Cooling electricity (kWh/m2)", pm(r["elec_cool"]), pm(a["elec_cool"])))
         h.append(row("Lighting (kWh/m2)", pm(r["lights"]), pm(a["lights"])))
+        h.append(row("Hot water (kWh/m2)", pm(r["dhw_elec"] + r["dhw_gas"]), pm(a["dhw_elec"] + a["dhw_gas"])))
+        h.append(row("Appliances (kWh/m2)", pm(r["equip"]), pm(a["equip"])))
         h.append(row("<b>Total energy use (kWh/m2/year)</b>", res["ref_cons"], res["act_cons"]))
-        h.append(row("<b>Peak demand (VA/m2)</b>", res["ref_demand"], res["act_demand"]))
+        h.append(row("<b>Average demand (VA/m2)</b>", res["ref_demand"], res["act_demand"]))
+        h.append(row("Highest single hour (VA/m2)", r["peak_w"] / A, a["peak_w"] / A))
         h.append("</table>")
         h.append("<h3>Where the heat goes (W per degree)</h3><table cellpadding=4 border=1 style='border-collapse:collapse'><tr><th></th><th>Reference</th><th>Design</th></tr>")
         for k in ("Walls", "Roof", "Floor", "Windows", "Doors", "Air leakage"):
@@ -18422,9 +18459,11 @@ class MainWindow(QMainWindow):
         h.append("</table>")
         h.append("<h3>How it was worked out</h3><p style='color:#555'>Hourly 5R1C model of EN ISO 13790 (annex C), one zone per room, 8760 hours of the weather file, ideal heating and cooling between the two set-points. "
                  "Sun on every wall and window from the hourly direct and diffuse sun, with the angle of the sun on the glass and overhang shading from the P and H you entered. "
-                 "Walls and roof take the sun-heated outside temperature; the slab is held at the yearly mean air temperature. Both buildings have the same air leakage, people, "
-                 "equipment and hours. Rooms are boxes with flat ceilings. The model was checked against the plain heat-loss sum (UA x temperature difference). "
-                 "It is not a certified simulation product: the competent person who signs the rational design must accept it.</p>")
+                 "Walls and roof take the sun-heated outside temperature; the slab is held at the yearly mean air temperature. Both buildings have the same air leakage, people and hours. "
+                 "Annex B: 75 W per person, lights at table 12 with the table B.2 hours (dwellings; the first day of the year is taken as a Monday, holidays are not marked), no appliance gain except G1 and F1, "
+                 "hot water per table 10 at 60 C with the cold water taken as the monthly air temperature (10 to 22 C); the reference has half of it from electric elements and half from a heat pump. "
+                 "Demand is the highest hour of each month averaged over the year (the standard does not define the period). Rooms are boxes with flat ceilings. "
+                 "The model was checked against the plain heat-loss sum (UA x temperature difference). It is NOT certified by Agrement South Africa.</p>")
         return "".join(h)
 
     def export_xa_pdf(self):
@@ -18815,7 +18854,7 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
         edits = {}
         route_box = QComboBox()
         route_box.addItems(RD_ROUTES)
-        route_box.setCurrentText(self.rd.get("route", RD_ROUTES[0]))
+        route_box.setCurrentText(rd_route(self.rd.get("route")))
         v.addWidget(QLabel("<b>Compliance route</b>"))
         v.addWidget(route_box)
         group = None
@@ -19071,7 +19110,7 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
         town = self.xa_town.currentText()
         town = town if town in XA_TOWNS else ""
         zone11 = self.xa_zone11.currentText()
-        route_c = rd["route"] == RD_ROUTES[1]
+        route_c = rd_route(rd.get("route")) == RD_ROUTES[1]
         date = rd["date"] or datetime.date.today().strftime("%d %B %Y")
         results = getattr(self, "results", [])
         fens = getattr(self, "xa_fen_results", [])
@@ -19159,29 +19198,29 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
         if route_c:
             s1.append(para(
                 f'The building{(" at " + e(rd["details"])) if rd["details"] else ""} has been assessed by '
-                'rational design (SANS 10400-XA, 4.2.1 c): a competent person certifies that the theoretical '
-                'annual energy consumption and demand of the building is less than or equal to that of a '
-                'reference building which complies with the requirements of 4.2.1 b).'))
+                'rational design (SANS 10400-XA:2021, clause 4.3): a competent person demonstrates, with certified '
+                'thermal calculation software, that the theoretical annual energy usage and demand of the building are '
+                'less than or equal to those of a reference building which complies with clause 4.4.'))
         else:
             s1.append(para(
                 f'The building{(" at " + e(rd["details"])) if rd["details"] else ""} has been assessed against the '
-                'deemed-to-satisfy requirements of SANS 10400-XA (4.2.1 b): external walls, roof assembly, '
+                'deemed-to-satisfy requirements of SANS 10400-XA:2021 (clause 4.4): orientation and shading, external walls, roof assembly, '
                 'floors and hot water pipes against the minimum total R-values for the energy zone, and '
                 'fenestration against the limit or calculation of SANS 204.'))
         s1.append(boxed(
-            '<b>4.2 ENERGY USAGE AND BUILDING ENVELOPE</b><br>'
-            'The functional regulations in part XA of the National Building Regulations are deemed to be satisfied where '
-            'a) a competent person certifies that the building has a theoretical annual energy consumption and demand '
-            'within the values in tables 2 and 3; or b) orientation and shading, external walls (4.4.3), fenestration '
-            '(4.4.4), roof assembly (4.4.5), in-slab heating (4.4.2), services and hot water (4.1) comply; or '
-            'c) a competent person certifies that the building has a theoretical annual energy consumption and demand '
-            'less than or equal to a reference building that complies with 4.2.1 b).'))
-        s1.append(ref("SANS 10400-XA, clause 4.2 (paraphrased - confirm the wording against the published edition)."))
+            '<b>SANS 10400-XA:2021, CLAUSE 4 (summary)</b><br>'
+            'The functional regulation XA1 is deemed to be satisfied where the building uses energy efficiently by any of: '
+            '4.2) a competent person certifies that the theoretical annual energy consumption and demand are not more than '
+            'the values in tables 1 and 2 (modelling conditions in Annex B); 4.3) a competent person shows, using certified '
+            'thermal calculation software, that the theoretical energy usage and demand are not more than those of a reference '
+            'building that complies with 4.4 (Annex B); 4.4) orientation (5.1), shading (5.2), fenestration (5.3), floors (5.4), '
+            'external walls (5.5), roof and ceiling assemblies (5.6), building sealing (5.7) and services (clause 6) comply.'))
+        s1.append(ref("SANS 10400-XA:2021 (edition 2), clause 4 - summarised, confirm the wording against the published standard. Certified thermal calculation software is defined in clause 3.3 as software certified by the Board of Agrement South Africa."))
         s1.append(h2("1.2 Method used in this report"))
         s1.append(para(
             ("The reference building is the actual building built to the minimum XA requirements. Its demand and "
-             "consumption, and those of the actual building, come from the certified simulation software named in "
-             "section 6. The envelope assemblies and fenestration are listed in sections 3 to 5."
+             "consumption, and those of the actual building, come from the simulation software named in "
+             "section 6, which clause 3.3 requires to be certified by Agrement South Africa. The envelope assemblies and fenestration are listed in sections 3 to 5."
              if route_c else
              "Every wall, roof, floor and pipe build-up is converted to a total R-value (layer thickness divided by "
              "conductivity, plus surface films) and compared with the minimum for the energy zone. Fenestration is "

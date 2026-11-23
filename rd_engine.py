@@ -9,6 +9,7 @@ Only numpy is used. No Qt: this file can be tested on its own (see test_rd_engin
 Frame: surfaces carry `az` = degrees clockwise from true north (the outward normal), `tilt` 90 = wall, 0 = roof.
 """
 import math
+import re as _re
 import numpy as np
 
 HOURS = 8760
@@ -19,8 +20,31 @@ FILMS = {"ext_wall": (0.13, 0.04), "roof": (0.10, 0.04), "floor_exp": (0.17, 0.0
 GROUND_SOIL_R = 1.0                # m2K/W of soil below a slab on grade (same in both buildings, so it cancels in the comparison)
 DOOR_LEAF_R = 0.25
 ABSORPT = {"ext_wall": 0.6, "roof": 0.6, "floor_exp": 0.6}
+# SANS 10400-XA:2021 Annex B: 75 W sensible per person; lights at table 12; appliance gain 15 W/m2 (G1), 5 W/m2 (F1), none for any other occupancy;
+# 19-25 C; hot water at 60 C per table 10; schedules from table B.2 (H3 / H4 loaded; other occupancies use the simple hours given).
 DEFAULTS = {"ach": 0.5, "heat_sp": 19.0, "cool_sp": 25.0, "cop_heat": 1.0, "cop_cool": 3.0,
-            "lpd": 4.0, "light_hours": 4.0, "persons_m2": 0.04, "person_w": 75.0, "equip_w_m2": 2.0, "hours": 0.0, "days": 7, "sky_dt": 11.0}
+            "lpd": 4.0, "light_hours": 4.0, "persons_m2": 0.04, "pop": 0.0, "person_w": 75.0, "equip_w_m2": 0.0, "hours": 0.0, "days": 7, "sky_dt": 11.0,
+            "occ": "H4", "dhw_l_pd": 115.0, "dhw_kind": "resistance", "dhw_cop": 3.0, "dhw_solar": 0.0, "dhw_gas_eff": 0.85, "dhw_on": True}
+# Table B.2, H3 / H4: fractions for 0-8, 8-11, 11-18, 18-22, 22-24 h
+B2_EDGES = [0, 8, 11, 18, 22, 24]
+B2 = {"occ": {"wd": [0.88, 0.37, 0.36, 0.73, 1.0], "sa": [1.0, 0.43, 0.43, 0.97, 1.0], "su": [1.0, 0.43, 0.43, 0.97, 1.0]},
+      "light": {"wd": [0.13, 0.13, 0.14, 0.24, 0.10], "sa": [0.09, 0.20, 0.14, 0.30, 0.18], "su": [0.09, 0.20, 0.14, 0.30, 0.18]},
+      "plug": {"wd": [0.53, 0.57, 0.59, 0.78, 0.60], "sa": [0.53, 0.57, 0.59, 0.78, 0.60], "su": [0.53, 0.57, 0.59, 0.78, 0.60]}}
+APPLIANCE_W_M2 = {"G1": 15.0, "F1": 5.0}
+
+
+def b2_series(load, dow):
+    """8760-hour utilisation series from table B.2 (day 1 of the year is taken as a Monday; public holidays are not marked)."""
+    out = np.zeros(HOURS)
+    for h in range(HOURS):
+        d = dow[h]
+        key = "wd" if d < 5 else ("sa" if d == 5 else "su")
+        hr = h % 24
+        for k in range(5):
+            if B2_EDGES[k] <= hr < B2_EDGES[k + 1]:
+                out[h] = B2[load][key][k]
+                break
+    return out
 
 
 # ---------------------------------------------------------------------------------------------- constructions
@@ -87,7 +111,8 @@ def zones_from_model(model, cons, glass, shade=None, glass_default=(5.6, 0.77)):
     out = []
     for z in model["zones"]:
         d = {"name": z["label"], "storey": z["storey"], "area": float(z["pg"].area), "vol": float(z["pg"].area) * max(0.5, z["z1"] - z["z0"]),
-             "lights_w": float(z.get("lights_w", 0.0)), "lights_h": float(z.get("lights_h", 0.0)), "surfs": [], "wins": [], "doors": []}
+             "lights_w": float(z.get("lights_w", 0.0)), "lights_h": float(z.get("lights_h", 0.0)), "surfs": [], "wins": [], "doors": [],
+             "habitable": not _re.search(r"garage|carport|stoep|stoop|patio|veranda|porch|deck|balcon|store|shed", z["label"], _re.I)}
         for s in model["surfaces"]:
             if s["zid"] != z["zid"]:
                 continue
@@ -160,6 +185,8 @@ def simulate(zones, cons, w, sun, opts=None, label="building"):
     ua = {"Walls": 0.0, "Roof": 0.0, "Floor": 0.0, "Windows": 0.0, "Doors": 0.0, "Air leakage": 0.0}
     sector_gain = {k: 0.0 for k in ("N", "NE", "E", "SE", "S", "SW", "W", "NW")}
     secnames = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+    occ_b2, lig_b2, plug_b2 = b2_series("occ", dow), b2_series("light", dow), b2_series("plug", dow)
+    pop_area = sum(z["area"] for z in zones if z.get("habitable", True))
     for i, z in enumerate(zones):
         Af[i] = z["area"]
         Hve[i] = RHO_CP_AIR * o["ach"] * z["vol"]
@@ -222,21 +249,28 @@ def simulate(zones, cons, w, sun, opts=None, label="building"):
         Am[i] = (Cm[i] ** 2 / sk2) if sk2 > 0 else 2.5 * z["area"]
         Atot[i] = max(Atot[i], 2.0 * z["area"])
         Am[i] = min(Am[i], Atot[i])
-        # internal gains: people, equipment, lights
-        occ = np.zeros(HOURS)
-        if o["hours"] > 0:
-            prof = profile_24(8.0, o["hours"])
-            occ = prof[hod] * (dow < o["days"])
+        # internal gains (Annex B): people at 75 W sensible, lights at the table 12 power, appliances only for G1 / F1
+        h34 = str(o["occ"]).startswith(("H3", "H4"))
+        if h34:
+            occ = occ_b2
+            lfr = lig_b2
+            pfr = plug_b2
         else:
-            prof = np.where((np.arange(24) >= 17) | (np.arange(24) < 8), 1.0, 0.25)
-            occ = prof[hod]
-        eq = np.where(occ > 0.9, 1.0, 0.3) if o["hours"] <= 0 else occ
+            if o["hours"] > 0:
+                occ = profile_24(8.0, o["hours"])[hod] * (dow < o["days"])
+            else:
+                occ = np.where((hod >= 17) | (hod < 8), 1.0, 0.25)
+            lfr = profile_24(18.0, o["light_hours"] if o["light_hours"] > 0 else 4.0)[hod]
+            pfr = np.where(occ > 0.9, 1.0, 0.3)
         lw = z["lights_w"] if z["lights_w"] > 0 else o["lpd"] * z["area"]
-        lh = z["lights_h"] if z["lights_h"] > 0 else o["light_hours"]
-        lpr = profile_24(18.0, lh)[hod]
-        Plight[:, i] = lw * lpr
-        Pequip[:, i] = o["equip_w_m2"] * z["area"] * eq
-        Pint[:, i] = o["persons_m2"] * z["area"] * o["person_w"] * occ + Pequip[:, i] + Plight[:, i]
+        Plight[:, i] = lw * lfr
+        Pequip[:, i] = o["equip_w_m2"] * z["area"] * pfr
+        if o["pop"] > 0:
+            share = z["area"] / pop_area if z.get("habitable", True) and pop_area > 0 else 0.0
+            npers = o["pop"] * share
+        else:
+            npers = o["persons_m2"] * z["area"] if z.get("habitable", True) else 0.0
+        Pint[:, i] = npers * o["person_w"] * occ + Pequip[:, i] + Plight[:, i]
     # ---- ISO 13790 coefficients (per zone, vectors)
     Htr_is = 3.45 * Atot
     # the U-values already contain the inside surface film; ISO's Htr_is is a second resistance in series, which would under-count the loss
@@ -287,65 +321,114 @@ def simulate(zones, cons, w, sun, opts=None, label="building"):
         if step >= 0:
             heat[t] = np.where(ph > 0, ph, 0.0)
             cool[t] = np.where(ph < 0, -ph, 0.0)
+    # ---- hot water (table 10 litres, stored at 60 C), same people and hours in both buildings
+    dhw_el = np.zeros(HOURS)
+    dhw_gas = 0.0
+    dhw_q = 0.0
+    pop = o["pop"] if o["pop"] > 0 else o["persons_m2"] * pop_area
+    if o.get("dhw_on", True) and pop > 0 and o["dhw_l_pd"] > 0:
+        mon_h = np.concatenate([[m] * (d * 24) for m, d in enumerate(MDAYS)])
+        tm_air = np.array([Te[mon_h == m].mean() for m in range(12)])
+        tcold = np.clip(tm_air, 10.0, 22.0)[mon_h]
+        daily = pop * o["dhw_l_pd"] * 4.186 * (60.0 - tcold) / 3600.0                 # kWh a day, as an hourly series that is spread below
+        prof = np.zeros(24)
+        prof[6:8] = 0.2; prof[18:21] = 0.2                                           # 40% of the day's water in the morning, 60% in the evening
+        q = daily * prof[hod]
+        dhw_q = float(q.sum())
+        kind = o["dhw_kind"]
+        if kind == "ref":                                                            # reference: half from electric elements, half from a non-resistance source
+            dhw_el = 0.5 * q + 0.5 * q / max(o["dhw_cop"], 0.5)
+        elif kind == "heatpump":
+            dhw_el = q / max(o["dhw_cop"], 0.5)
+        elif kind == "solar":
+            dhw_el = q * (1.0 - min(1.0, max(0.0, o["dhw_solar"])))
+        elif kind == "gas":
+            dhw_gas = float(q.sum()) / max(o["dhw_gas_eff"], 0.3)
+        else:
+            dhw_el = q
     # ---- results
     mon = np.concatenate([[m] * (d * 24) for m, d in enumerate(MDAYS)])
     hs, cs = heat.sum(axis=1) / 1000.0, cool.sum(axis=1) / 1000.0
     mh = [float(hs[mon == m].sum()) for m in range(12)]
     mc = [float(cs[mon == m].sum()) for m in range(12)]
-    elec = heat.sum(axis=1) / o["cop_heat"] + cool.sum(axis=1) / max(o["cop_cool"], 0.1) + Plight.sum(axis=1) + Pequip.sum(axis=1)
+    elec = heat.sum(axis=1) / o["cop_heat"] + cool.sum(axis=1) / max(o["cop_cool"], 0.1) + Plight.sum(axis=1) + Pequip.sum(axis=1) + dhw_el * 1000.0
+    mmax = [float(elec[mon == m].max()) for m in range(12)]
     return {"label": label, "area": float(Af.sum()), "monthly_heat": mh, "monthly_cool": mc,
             "heat": float(hs.sum()), "cool": float(cs.sum()),
             "lights": float(Plight.sum() / 1000.0), "equip": float(Pequip.sum() / 1000.0),
             "elec_heat": float(hs.sum() / o["cop_heat"]), "elec_cool": float(cs.sum() / max(o["cop_cool"], 0.1)),
-            "peak_w": float(elec.max()), "zones": [{"name": z["name"], "area": z["area"], "heat": float(heat[:, i].sum() / 1000.0),
-                                                     "cool": float(cool[:, i].sum() / 1000.0)} for i, z in enumerate(zones)],
+            "dhw_q": dhw_q, "dhw_elec": float(dhw_el.sum()), "dhw_gas": dhw_gas, "pop": pop,
+            "peak_w": float(elec.max()), "avg_peak_w": float(np.mean(mmax)), "monthly_peak_w": mmax,
+            "zones": [{"name": z["name"], "area": z["area"], "heat": float(heat[:, i].sum() / 1000.0),
+                       "cool": float(cool[:, i].sum() / 1000.0)} for i, z in enumerate(zones)],
             "ua": ua, "solar_by_sector": sector_gain, "tground": tground}
 
 
 def consumption(res, per_m2=True):
-    """Annual electricity (kWh) the building uses for heating, cooling and lights (equipment is the same in both buildings and is left out)."""
-    e = res["elec_heat"] + res["elec_cool"] + res["lights"]
+    """Annual energy (kWh) the building uses: heating, cooling, lights, appliances (G1 / F1 only) and hot water."""
+    e = res["elec_heat"] + res["elec_cool"] + res["lights"] + res["equip"] + res["dhw_elec"] + res["dhw_gas"]
     return e / res["area"] if per_m2 else e
 
 
 def demand_va_m2(res):
-    return res["peak_w"] / res["area"]
+    """Average demand: the highest hour of each month, averaged over the 12 months, per m2 (power factor 1). The single highest hour is res['peak_w']."""
+    return res["avg_peak_w"] / res["area"]
 
 
 # ---------------------------------------------------------------------------------------------- the reference building
-def make_reference(zones, cons, required_r, limit_pct, ref_glass, lpd, light_hours=4.0):
-    """Reference zones and constructions: same rooms and shape, deemed-to-satisfy insulation, glass area not above `limit_pct` of the floor
-    area (scaled down evenly when the design has more), no shading, plain glass of `ref_glass` = (U, SHGC), lights at the allowed power density.
-    required_r: {'ext_wall': total R, 'roof': total R, 'floor_exp': total R}."""
+def table4_row(table, pct):
+    for row in table:
+        if pct <= row[0] + 1e-9:
+            return row
+    return table[-1]
+
+
+def make_reference(zones, cons, required_r, table4, clear_glass, lpd, light_hours=4.0):
+    """Reference zones and constructions (SANS 10400-XA:2021 clause 3.16 and 4.4): same rooms, shape and orientation, the deemed-to-satisfy insulation, and
+    the same glass AREA as the design (clause 5.3 lets the area go above 20% when table 4 is met) with the table 4 U-value and SHGC for each storey's
+    glass share (no limit up to 20%: plain clear glass). The SHGC used is the table's stricter column (no shading credit), and no shading is modelled.
+    Lights at the table 12 power. required_r: {'ext_wall': total R, 'roof': total R, 'floor_exp': total R}."""
     rc = {k: dict(v) for k, v in cons.items()}
     for key, r in (required_r or {}).items():
         if key in rc and r and r > 0:
             rc[key] = reference_construction(rc[key], key, r)
-    floor = sum(z["area"] for z in zones)
-    glass = sum(wn["area"] for z in zones for wn in z["wins"])
-    k = 1.0
-    if floor > 0 and glass > 0 and glass / floor * 100.0 > limit_pct:
-        k = (limit_pct / 100.0 * floor) / glass
+    by_storey = {}
+    for z in zones:
+        d = by_storey.setdefault(z["storey"], [0.0, 0.0])
+        d[0] += z["area"]
+        d[1] += sum(wn["area"] for wn in z["wins"])
+    notes = {}
     rz = []
     for z in zones:
+        fl, gl = by_storey[z["storey"]]
+        pct = gl / fl * 100.0 if fl > 0 else 0.0
+        row = table4_row(table4, pct)
+        if row[1]:
+            u, g = float(row[1]), float(row[3])
+        else:
+            u, g = clear_glass
+        notes[z["storey"]] = {"pct": pct, "U": u, "g": g}
         n = dict(z)
-        n["wins"] = [dict(wn, area=wn["area"] * k, U=ref_glass[0], g=ref_glass[1], P=0.0) for wn in z["wins"]]
+        n["wins"] = [dict(wn, U=u, g=g, P=0.0) for wn in z["wins"]]
         n["lights_w"] = lpd * z["area"]
-        n["lights_h"] = z["lights_h"] if z["lights_h"] > 0 else light_hours
         rz.append(n)
-    return rz, rc, k
+    return rz, rc, notes
 
 
-def run_rational(zones, cons, w, sun, required_r, limit_pct, ref_glass, lpd, opts=None):
-    """Actual and reference buildings and the verdict."""
+def run_rational(zones, cons, w, sun, required_r, table4, clear_glass, lpd, opts=None, dhw_design=None):
+    """Design and reference buildings and the verdict. dhw_design: {'dhw_kind','dhw_cop','dhw_solar','dhw_gas_eff'} for the design's hot water."""
     o = dict(DEFAULTS)
     o.update(opts or {})
     o["lpd"] = lpd
-    act = simulate(zones, cons, w, sun, o, "Actual building")
-    rz, rc, k = make_reference(zones, cons, required_r, limit_pct, ref_glass, lpd, o["light_hours"])
-    ref = simulate(rz, rc, w, sun, o, "Reference building")
+    od = dict(o)
+    od.update(dhw_design or {})
+    act = simulate(zones, cons, w, sun, od, "Actual building")
+    rz, rc, notes = make_reference(zones, cons, required_r, table4, clear_glass, lpd, o["light_hours"])
+    orf = dict(o)
+    orf["dhw_kind"] = "ref"
+    ref = simulate(rz, rc, w, sun, orf, "Reference building")
     ca, cr = consumption(act), consumption(ref)
     da, dr = demand_va_m2(act), demand_va_m2(ref)
     return {"actual": act, "reference": ref, "act_cons": ca, "ref_cons": cr, "act_demand": da, "ref_demand": dr,
             "cons_ok": ca <= cr + 0.05, "demand_ok": da <= dr + 0.05, "ok": ca <= cr + 0.05 and da <= dr + 0.05,
-            "glass_scale": k, "opts": o}
+            "ref_glass": notes, "opts": od}

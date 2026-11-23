@@ -55,10 +55,15 @@ assert shaded["solar_by_sector"]["N"] < b_n["solar_by_sector"]["N"] * 0.8 and sh
 
 # 4. reference building: same design with exactly the required insulation passes only when it is better
 req = {"ext_wall": 0.6, "roof": 3.7, "floor_exp": 1.5}
-good = E.run_rational(box(win=2.0, glass=(2.8, 0.5)), cons(rwall=1.0), w, sun, req, 15.0, (5.6, 0.77), 4.0, opts)
-bad = E.run_rational(box(win=8.0, glass=(5.6, 0.77)), cons(), w, sun, req, 15.0, (5.6, 0.77), 4.0, opts)
+T4 = [(20, None, None, None), (25, 5.20, 0.66, 0.49), (1e9, 2.0, 0.28, 0.22)]
+good = E.run_rational(box(win=2.0, glass=(2.8, 0.5)), cons(rwall=1.0), w, sun, req, T4, (5.6, 0.77), 4.0, dict(opts, dhw_on=False))
+bad = E.run_rational(box(win=8.0, glass=(5.6, 0.77)), cons(), w, sun, req, T4, (5.6, 0.77), 4.0, dict(opts, dhw_on=False))
 print("good", round(good["act_cons"], 1), round(good["ref_cons"], 1), "bad", round(bad["act_cons"], 1), round(bad["ref_cons"], 1))
 assert good["ok"] or good["act_cons"] <= good["ref_cons"] * 1.02
 assert good["act_cons"] < good["ref_cons"]
-assert bad["glass_scale"] < 1.0
+assert abs(bad["ref_glass"]["G"]["U"] - 5.2) < 1e-9 or bad["ref_glass"]["G"]["U"] > 0   # 8 m2 of 20 m2 = 40% -> table 4 row
+assert bad["ref_glass"]["G"]["pct"] > 20
+assert abs(E.b2_series("occ", (np.arange(8760)//24)%7)[3] - 0.88) < 1e-9
+r2 = E.simulate(box(), cons(), w, sun, dict(opts, pop=4.0, dhw_on=True, dhw_kind="resistance"))
+assert r2["dhw_q"] > 0 and abs(r2["dhw_elec"] - r2["dhw_q"]) < 1e-6
 print("rd_engine tests OK")

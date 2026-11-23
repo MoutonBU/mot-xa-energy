@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.166**
+Current version: **1.86.167**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Rational design brought in line with SANS 10400-XA:2021:** the reference building keeps your glass area and takes the table 4 U-value and SHGC for each storey's glass share (clear glass up to 20%); people at 75 W (two per bedroom unless you give the population); lights at table 12 with the table B.2 hours for dwellings; no appliance gain except offices and large shops; hot water per table 10 at 60 C (design system chosen in the window, the reference has half of it from a heat pump); demand is the monthly highest hour averaged over the year. The report now uses the 2021 clause numbers (4.2, 4.3, 4.4) and says plainly that clause 4.3 needs software certified by Agrement South Africa, which this built-in model is not.
 - **Rational design from the left bar, with the site's weather:** a "Rational design" button under Energy (XA) in the left bar runs the simulation. It uses the weather file the project has (the one from "Get weather data for the site online"); when there is none it downloads the site's typical year the same way, keeps it, and uses it. Only if that download fails does it fall back to an estimate, with a red warning.
 - **Rational design, built into the program:** Reports > Rational design > "Run the energy simulation (reference building vs design)...". It simulates the IFC building hour by hour for a whole year (EN ISO 13790 5R1C model, one zone per room, sun on every wall and window with overhang shading, ideal heating and cooling, your weather file), then simulates the REFERENCE building: same rooms, the deemed-to-satisfy insulation for the zone, glass kept to the allowed share, no shading, lights at the allowed power. It shows pass or fail on yearly energy (kWh/m2) and peak demand (VA/m2), where the heat goes, month by month and room by room, and "Put these results in the report" fills the Rational design report. Needs the IFC and a loaded weather file; checked against the plain heat-loss sum, not a certified product.
 - **Glazing limit box, in plain words:** over the Windows and Doors tables a green or red box says what is allowed (glazing limit % of the floor area), what you have, and, when over, how much glass to take out, or how wide the frames must be on every window and door to get within the limit, plus the rooms that are over. It updates as you edit windows, rooms, the limit, frame widths or what you leave out.
