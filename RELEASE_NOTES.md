@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.161**
+Current version: **1.86.162**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Leave a window or door out:** a new "Leave out..." button under the Windows and Doors tables lists every window and door with two tick boxes: "Not in Energy XA" (left out of the fenestration: conductance, solar gain and % of floor) and "Not in Light & Ventilation" (left out of the light and ventilation check, its room list and its PDF). The window stays in the schedule; the choice is saved with the project and the checks rerun when you press OK. A left-out window shows "Left out by you - not counted" in the room list.
 - **IFC doors, inside doors with an outside door's tag are left out everywhere:** the 1.86.160 fix only changed the row; the room links still counted the inside door, so the report said D1 x 3. Inside doors that carry the tag of an outside door are now removed from the counts, the room links and the schedule (Stand 2066: D1 x 2, D2 x 1), with a note on the row.
 - **IFC doors, inside doors no longer inflate an outside door:** when the same door tag is used on an outside door and on an inside door of another size (for example D1 1800 x 2100 on two outside doors and a D1 1500 x 2100 object in an inside wall), only the outside ones are counted in the fenestration calculation (Stand 2066: D1 was 3, now 2). The note on the row says what was left out.
 - **House placing, 45 degree connection to the main sewer:** right-click where the sewer run meets the main sewer line and choose "Meet the main at 45 degrees (one way / other way)" (or back to square 90). The last leg is shortened and a 45 degree leg carries on to the connection point; where the leg before it runs along the main, its corner slides along it. The inspection and rodding eyes follow the new bend. The choice is saved with the placing.

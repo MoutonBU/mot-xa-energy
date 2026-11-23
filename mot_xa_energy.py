@@ -52,11 +52,14 @@ class Opening:
     frame_mm: float = 0.0       # frame width deducted on every side (0 = opening incl. frame)
     sched_qty: float = 1.0      # how many of this type the schedule lists (information only)
     glazed_area_m2: float = 0.0  # 'Total Glazed Area' from the schedule; beats the Glazed %
+    skip: bool = False          # the user marked this window / door as not to be used in this calculation
 
     @property
     def counts(self):
         """Only glazed doors (outer-wall glass doors) count. A door with no glass is an
-        internal door and is left out of both the light and the ventilation sums."""
+        internal door and is left out of both the light and the ventilation sums. A window or door the user marked 'leave out' never counts."""
+        if self.skip:
+            return False
         return ((not SKIP_UNGLAZED[0]) or self.kind != "Door"
                 or self.glazed_pct > 0 or self.glazed_area_m2 > 0)
 
@@ -1417,6 +1420,7 @@ RD_DEFAULTS = {
     "route": RD_ROUTES[0], "sim_software": "", "sim_cert": "",
     "ref_demand": "", "act_demand": "", "ref_cons": "", "act_cons": "",
     "reg_no": "", "notes": "", "lon": "", "epw": "", "has_ifc": "", "ifc_loaded": "", "lv_ifc": "", "lv_ifc_rooms": "",
+    "skip_xa": "", "skip_lv": "",   # window / door tags the user left out of Energy XA (fenestration) / of Light & ventilation, comma separated
 }
 RD_FIELDS = [   # key, label, group
     ("project", "Project name / number", "Project"), ("details", "Site (erf, suburb, town)", "Project"),
@@ -9166,9 +9170,9 @@ class MainWindow(QMainWindow):
             _t.setMouseTracking(True)
             _t.viewport().setMouseTracking(True)
             _t.viewport().installEventFilter(self._hover)
-        self.tabs.addTab(self._with_buttons(self.sched_table, self.add_sched_row), "1  Windows")
+        self.tabs.addTab(self._with_buttons(self.sched_table, self.add_sched_row, extra=[("Leave out...", lambda: self.leave_out_dialog())]), "1  Windows")
         self.tabs.addTab(self._with_buttons(
-            self.door_table, lambda: self.add_sched_row(None, self.door_table)), "2  Doors")
+            self.door_table, lambda: self.add_sched_row(None, self.door_table), extra=[("Leave out...", lambda: self.leave_out_dialog())]), "2  Doors")
 
         self.combined = {}      # open-plan room name -> the rooms it was made from
         self._units_chks = []
@@ -10593,10 +10597,70 @@ class MainWindow(QMainWindow):
             float(it.get("openable", 50)), it.get("kind", "Window"), it.get("style", "Custom"), 0.0, 0.0, 1.0, 0.0,
             float(it.get("qty", 1)), float(it.get("glazed_m2") or 0.0))
 
+    def _skip_tags(self, key):
+        return {t.strip().upper() for t in str(self.rd.get(key, "") or "").split(",") if t.strip()}
+
+    def _with_skips(self, sched, key):
+        """the schedule with the windows / doors the user left out of this calculation marked (they then count for nothing)"""
+        import dataclasses
+        sk = self._skip_tags(key)
+        return {t: (dataclasses.replace(o, skip=True) if t.upper() in sk else o) for t, o in sched.items()}
+
     def xa_schedule(self):
         if not self._ifc_active():
-            return self.read_schedule()
-        return {it["tag"].upper(): self._ifc_opening(it) for it in self.ifc_data["items"]}
+            return self._with_skips(self.read_schedule(), "skip_xa")
+        return self._with_skips({it["tag"].upper(): self._ifc_opening(it) for it in self.ifc_data["items"]}, "skip_xa")
+
+    def leave_out_dialog(self):
+        """Mark windows / doors that must not be used for the Energy XA fenestration, or for the Light & ventilation check."""
+        base = {}
+        if self._ifc_active() and self.ifc_data.get("items"):
+            base = {it["tag"].upper(): it.get("kind", "") for it in self.ifc_data["items"]}
+        for t_, o_ in self.read_schedule().items():
+            base.setdefault(t_.upper(), o_.kind)
+        if not base:
+            QMessageBox.information(self, APP_NAME, "There are no windows or doors yet.")
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Leave windows and doors out")
+        dlg.resize(560, 460)
+        v = QVBoxLayout(dlg)
+        t = QLabel("Tick a window or door that must NOT be used: in the Energy XA fenestration (conductance, solar gain, % of floor), "
+                   "or in the Light && Ventilation check. It stays in the schedule and the drawings.".replace("&&", "&"))
+        t.setWordWrap(True)
+        v.addWidget(t)
+        tags = sorted(base)
+        tb = QTableWidget(len(tags), 3)
+        tb.setHorizontalHeaderLabels(["Window / door", "Not in Energy XA", "Not in Light & Ventilation"])
+        tb.verticalHeader().setVisible(False)
+        tb.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        sx, sl = self._skip_tags("skip_xa"), self._skip_tags("skip_lv")
+        for r, tg in enumerate(tags):
+            it = QTableWidgetItem("%s  (%s)" % (tg, base[tg]))
+            it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            tb.setItem(r, 0, it)
+            for c, on in ((1, tg in sx), (2, tg in sl)):
+                ci = QTableWidgetItem("")
+                ci.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+                ci.setCheckState(Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
+                tb.setItem(r, c, ci)
+        v.addWidget(tb)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        v.addWidget(bb)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        self.rd["skip_xa"] = ", ".join(tg for r, tg in enumerate(tags) if tb.item(r, 1).checkState() == Qt.CheckState.Checked)
+        self.rd["skip_lv"] = ", ".join(tg for r, tg in enumerate(tags) if tb.item(r, 2).checkState() == Qt.CheckState.Checked)
+        for fn in ("run_check", "_run_xa"):
+            try:
+                if fn == "run_check" and getattr(self, "results", None):
+                    self.run_check(goto=False)
+                elif fn == "_run_xa" and getattr(self, "xa_glass_table", None) is not None:
+                    self._run_xa()
+            except Exception:
+                pass
 
     def _make_ifc_row(self, compact=False):
         """One shared 'I have an IFC model' tick box + import button (Home, Light && Ventilation, Energy)."""
@@ -10844,7 +10908,7 @@ class MainWindow(QMainWindow):
     def run_check(self, *_a, goto=True):
         try: self._xa_autofill()
         except Exception: pass
-        sched = self.read_schedule()
+        sched = self._with_skips(self.read_schedule(), "skip_lv")
         all_rooms = self.read_rooms()
         rooms = [rm for rm in all_rooms if not lv_excluded_reason(rm.name)]
         skipped = [(rm, lv_excluded_reason(rm.name)) for rm in all_rooms if lv_excluded_reason(rm.name)]
@@ -11006,7 +11070,7 @@ class MainWindow(QMainWindow):
                 used.add(tag)
                 if not op.counts:
                     add(["", tag, f"{qty:g}", f"{op.width_mm:g} x {op.height_mm:g}", op.style,
-                         "0.00", "0.00", "Internal door (no glass) - not counted"], grey)
+                         "0.00", "0.00", "Left out by you - not counted" if op.skip else "Internal door (no glass) - not counted"], grey)
                     continue
                 add(["", tag, f"{qty:g}", f"{op.width_mm:g} x {op.height_mm:g}", op.style,
                      f"{op.glazed_m2 * qty:.2f}", f"{op.openable_m2 * qty:.2f}", ""])
@@ -19460,7 +19524,7 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
         import datetime, html as _h
         from PySide6.QtGui import QPdfWriter, QPageSize, QPageLayout, QTextDocument, QFont
         from PySide6.QtCore import QMarginsF, QSizeF, QUrl
-        sched = self.read_schedule()
+        sched = self._with_skips(self.read_schedule(), "skip_lv")
         e = lambda x: _h.escape(str(x))
         RED, DARK, GREY = "#C8102E", "#DCDCDC", "#F4F4F4"   # light grey bands save ink
         th = f'bgcolor="{DARK}" style="color:#111111; font-weight:bold; padding:4px;"'
