@@ -31,6 +31,10 @@ RULES = {
 }
 VENT_PERCENT = 5.0
 MIN_LIGHT_M2 = 0.2
+# SANS 10400-O:2011 (Ed 3) 4.3.1.1.3: ventilation = 5% of floor area, but never less than 0.2 m2
+# (0.1 m2 for category 1 rooms: E4, F2, H3, H4, H5). The larger value applies.
+MIN_VENT_M2 = 0.2
+MIN_VENT_CAT1_M2 = 0.1
 
 
 GLAZE_LIMIT = [20.0]     # max glazing as % of net floor area before a rational design is needed
@@ -1546,7 +1550,7 @@ def check_room(room, schedule, light_pct):
     circulation = bool(re.search(r"\b(passage|corridor|hall|hallway|lobby|landing|stair)", room.name, re.I))
     area = room.area_m2 if not no_area else 1.0
     light_req = max(area * light_pct / 100.0, MIN_LIGHT_M2)
-    vent_req = area * VENT_PERCENT / 100.0
+    vent_req = max(area * VENT_PERCENT / 100.0, MIN_VENT_CAT1_M2 if light_pct <= 5.0 else MIN_VENT_M2)
     glaze_pct = 0.0 if no_area else glazed / area * 100.0
     glaze_max = area * GLAZE_LIMIT[0] / 100.0
     return {
@@ -19989,7 +19993,7 @@ color:{'#1B7F3B' if n_ok == len(self.results) else RED};">{n_ok} / {len(self.res
 <table width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td bgcolor="{RED}" height="3"></td></tr></table>
 {self._project_info_html()}
 <p style="font-size:8pt; color:#555555;">Natural light = glazed area / floor area (minimum {RULES[self.rule_box.currentText()]:g}%,
-at least {MIN_LIGHT_M2:g} m&sup2;). Ventilation = openable area / floor area (minimum {VENT_PERCENT:g}%).
+at least {MIN_LIGHT_M2:g} m&sup2;). Ventilation = openable area / floor area (minimum {VENT_PERCENT:g}% and not less than {MIN_VENT_M2:g} m&sup2;, or {MIN_VENT_CAT1_M2:g} m&sup2; for category 1 rooms). Rules follow SANS 10400-O:2011 Ed 3; SANS 10400-O:2025 Ed 4 was gazetted 30 May 2025 - confirm against it.
 Passages and circulation spaces need neither.
 Glazing limit: glazing may not exceed {GLAZE_LIMIT[0]:g}% of the net floor area, otherwise a rational design is needed.</p>
 <p style="font-size:9pt; font-weight:bold;">{e(glazing_summary(self.results))}</p>"""]
