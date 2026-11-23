@@ -137,7 +137,17 @@ def zones_from_model(model, cons, glass, shade=None, glass_default=(5.6, 0.77)):
 
 
 # ---------------------------------------------------------------------------------------------- sun on a plane
-def plane_irradiance(w, sun, tilt, az):
+def horizon_mask(sun, horizon):
+    """True where the sun is above the skyline of the neighbouring buildings. horizon = 36 altitudes in degrees, one per 10 degrees of compass bearing (0 = north)."""
+    if not horizon:
+        return None
+    hz = np.asarray([float(x) for x in horizon], float)
+    alt, saz = sun
+    idx = np.rint((np.degrees(saz) % 360.0) / 10.0).astype(int) % len(hz)
+    return np.degrees(alt) > hz[idx]
+
+
+def plane_irradiance(w, sun, tilt, az, mask=None):
     """(total, beam on the plane, cos of incidence) in W/m2 on a surface of this tilt and azimuth, per hour."""
     alt, saz = sun
     DN = np.asarray(w["DNI"][:HOURS], float)
@@ -147,6 +157,9 @@ def plane_irradiance(w, sun, tilt, az):
     cth = np.sin(alt) * math.cos(b) + np.cos(alt) * math.sin(b) * np.cos(saz - math.radians(az))
     cth = np.where(alt > 0, cth, 0.0)
     beam = DN * np.clip(cth, 0.0, None)
+    if mask is not None:                                           # a neighbouring building hides the sun: no beam in those hours
+        beam = np.where(mask, beam, 0.0)
+        cth = np.where(mask, cth, 0.0)
     tot = beam + DF * (1 + math.cos(b)) / 2.0 + G * 0.2 * (1 - math.cos(b)) / 2.0
     return tot, beam, np.clip(cth, 0.0, 1.0)
 
@@ -174,11 +187,12 @@ def simulate(zones, cons, w, sun, opts=None, label="building"):
     dow = (np.arange(HOURS) // 24) % 7
     alt, saz = sun
     cache = {}
+    hmask = horizon_mask(sun, o.get("horizon"))
 
     def plane(tilt, az):
         k = (round(tilt), round(az / 5.0) * 5 % 360)
         if k not in cache:
-            cache[k] = plane_irradiance(w, sun, k[0], k[1])
+            cache[k] = plane_irradiance(w, sun, k[0], k[1], hmask)
         return cache[k]
     Hve = np.zeros(nz); Hw = np.zeros(nz); Hop = np.zeros(nz); Atot = np.zeros(nz); Cm = np.zeros(nz); Am = np.zeros(nz); Af = np.zeros(nz)
     Teq = np.zeros((HOURS, nz)); Psol = np.zeros((HOURS, nz)); Pint = np.zeros((HOURS, nz)); Plight = np.zeros((HOURS, nz)); Pequip = np.zeros((HOURS, nz))

@@ -1458,6 +1458,7 @@ RD_DEFAULTS = {
     "route": RD_ROUTES[0], "sim_software": "", "sim_cert": "",
     "ref_demand": "", "act_demand": "", "ref_cons": "", "act_cons": "",
     "reg_no": "", "notes": "", "lon": "", "epw": "", "has_ifc": "", "ifc_loaded": "", "lv_ifc": "", "lv_ifc_rooms": "",
+    "site_no": "", "site_area": "", "site_cov": "", "site_axis": "", "site_horizon": "",   # handed over by the House placing tool
     "skip_xa": "", "skip_lv": "",   # window / door tags the user left out of Energy XA (fenestration) / of Light & ventilation, comma separated
 }
 RD_FIELDS = [   # key, label, group
@@ -18322,6 +18323,34 @@ class MainWindow(QMainWindow):
                 "weather": si["loc"]["name"], "lpd": self._lt_lpd(), "floor": floor, "glass": glz, "wall_type": wall_t,
                 "skipped": si["geo"]["skipped"], "unplaced": si["model"]["unplaced"], "occ": occ, "pop": pop, "hw_sys": hw_sys}
 
+    def receive_site_link(self, link):
+        """the stand number, area, coverage, the compass bearing of the house's long axis and the neighbours' skyline from the House placing tool. Returns what was done, in words."""
+        self.rd["site_no"] = str(link.get("stand_no", "") or "")
+        self.rd["site_area"] = "%.0f" % float(link.get("stand_area", 0) or 0)
+        self.rd["site_cov"] = "%.1f" % float(link.get("coverage", 0) or 0)
+        self.rd["site_axis"] = "%.1f" % float(link.get("long_axis_bearing", 0) or 0)
+        hz = [float(x) for x in (link.get("horizon") or [])]
+        self.rd["site_horizon"] = ",".join("%g" % x for x in hz)
+        said = ["stand %s, %s m2, coverage %s%%" % (self.rd["site_no"] or "(no number)", self.rd["site_area"], self.rd["site_cov"])]
+        if self.rd["site_no"] and not (self.rd.get("details") or "").strip():
+            self.rd["details"] = "Stand %s" % self.rd["site_no"]
+            said.append("the report details now say 'Stand %s'" % self.rd["site_no"])
+        top = max(hz) if hz else 0.0
+        said.append("the house's long side points at compass bearing %.0f deg" % float(link.get("long_axis_bearing", 0) or 0))
+        said.append("the neighbours' shade reaches %.0f deg above the horizon at most; the rational design simulation can use it" % top if top > 0 else "no neighbouring building shades the house")
+        try:
+            self.mark_dirty()
+        except Exception:
+            pass
+        return "Handed over to the energy tools: " + "; ".join(said) + ". The north angle in the report stays as it is; compare the long side's bearing with the one of your IFC model."
+
+    def site_horizon_list(self):
+        try:
+            hz = [float(x) for x in str(self.rd.get("site_horizon", "")).split(",") if x.strip()]
+        except ValueError:
+            return []
+        return hz if len(hz) == 36 else []
+
     def rational_design_dialog(self):
         if not self._ifc_active() or not os.path.exists(getattr(self, "ifc_path", "") or ""):
             QMessageBox.information(self, APP_NAME, "Import the Archicad IFC first. The energy model is built from the shapes of its rooms, windows and doors.")
@@ -18376,6 +18405,12 @@ class MainWindow(QMainWindow):
         grid.addWidget(QLabel("Hot water in the design"), 3, 0)
         grid.addWidget(hwb, 3, 1)
         spin(3, 1, "Heat pump COP / solar share (0-1)", "hw_x", 3.0 if hwb.currentIndex() == 1 else 0.6, 0.0, 8.0, 2, 0.05, "Heat pump: its COP. Solar water heater: the share of the hot water heat it supplies over the year (0 to 1).")
+        hz_cb = QCheckBox("Shade from the neighbouring houses (from House placing; the same for the reference building)")
+        hz_list = self.site_horizon_list()
+        hz_cb.setEnabled(bool(hz_list) and max(hz_list or [0]) > 0)
+        hz_cb.setChecked(hz_cb.isEnabled())
+        hz_cb.setToolTip("Needs 'Send to the energy tools' in the House placing tool. The neighbours' eaves are taken at the height typed there.")
+        grid.addWidget(hz_cb, 4, 0, 1, 4)
         v.addLayout(grid)
         from PySide6.QtWidgets import QTextBrowser as _TB
         out = _TB()
@@ -18403,6 +18438,8 @@ class MainWindow(QMainWindow):
                     o["days"] = int(float(str(self.rd.get("days", "")).replace(",", ".") or 7))
                 except ValueError:
                     o["hours"], o["days"] = 0.0, 7
+                if hz_cb.isChecked():
+                    o["horizon"] = hz_list
                 kind = hwb.currentData()
                 x = spins["hw_x"].value()
                 o["dhw_cop"] = x if kind == "heatpump" else 3.0
@@ -18422,7 +18459,7 @@ class MainWindow(QMainWindow):
                 adv = None
             QApplication.restoreOverrideCursor()
             state["res"] = res
-            out.setHtml(self._rd_result_html(res, ri, adv))
+            out.setHtml(self._rd_result_html(res, ri, adv) + ("<p style='color:#666'>The shade of the neighbouring houses from the House placing tool was used, in the design and in the reference building.</p>" if o.get("horizon") else ""))
             use.setEnabled(True)
 
         def put():
@@ -18466,6 +18503,8 @@ class MainWindow(QMainWindow):
             " <b style='color:#b3202f'>The site's weather could not be downloaded (no internet?), so this is a clear-sky estimate and must not be used for a submission. Press 'Get weather data for the site online' or load a weather file, then run again.</b>" if ri["est"] else ""))
         if ri["unplaced"]:
             txt += " %d windows or doors could not be matched to an exterior wall and are left out." % ri["unplaced"]
+        if self.rd.get("site_no"):
+            txt += " Site plan: stand %s, %s m2, coverage %s%%." % (self.rd.get("site_no"), self.rd.get("site_area"), self.rd.get("site_cov"))
         return txt + "</p>"
 
     def _rd_result_html(self, res, ri, adv=None):

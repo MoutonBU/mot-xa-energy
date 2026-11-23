@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.172**
+Current version: **1.86.173**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **House placing hands over to the energy tools:** "Send to the energy tools" (in the zoning box) passes the stand number, area, coverage, the compass bearing of the house's long side (from the sheet's north arrow, road side and turn) and the skyline of the neighbouring houses to the report and the rational design. The simulation window has a new tick "Shade from the neighbouring houses": the neighbours' eaves (height typed in House placing, 3.5 m to start with) hide the sun's beam in the hours it is below their skyline, in the design and in the reference building alike. The north angle of the IFC is left as it is.
 - **House placing, zoning compliance panel:** type the limits from the zoning scheme (coverage, floor area ratio, storeys, height, parking bays; 0 = none) and a tick / cross list under the stand sizes shows the three building lines, inside-the-stand, coverage, floor area ratio, height and parking, updating while you drag the house.
 - **House placing, service checks:** the sewer fall is checked against SANS 10252-2 table 13 (flatter than 1:60 needs the municipality's special permission, flatter than 1:120 is not allowed, steeper than 1:10 needs anchor blocks); water, sewer and electrical lines that run out over a neighbouring stand now get a red ring on the plan and a warning. Cover (300 mm) and the water / sewer / electrical clearances were already checked.
 - **House placing, DXF layers:** the export now puts the stand boundary (BOUNDARY), neighbours (NEIGHBOURS), road (ROAD), 1.2 m walls (WALLS), dimensions (DIMENSIONS) and the stand numbers (STAND NUMBERS) on their own layers, next to SEWER, WATER, ELECTRICAL, HOUSE, CARPORT and SETTING OUT.

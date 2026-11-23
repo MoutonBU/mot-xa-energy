@@ -1306,6 +1306,15 @@ class SiteServicesPage(ToolBase):
             row.addWidget(w)
         row.addStretch(1)
         bv.addLayout(row)
+        row = QHBoxLayout()
+        self.z_nbh = spin(0, 30, 3.5, 1, " m")
+        sendb = QPushButton("Send to the energy tools")
+        sendb.setToolTip("Hands the stand number, house, compass bearing and the shade of the neighbouring houses to the light, ventilation, XA energy and rational design tools.")
+        sendb.clicked.connect(self.send_to_energy)
+        for w in (QLabel("Neighbours' house height (for their shade)"), self.z_nbh, sendb):
+            row.addWidget(w)
+        row.addStretch(1)
+        bv.addLayout(row)
         self.comp_lbl = QLabel("")
         self.comp_lbl.setWordWrap(True)
         self.comp_lbl.setTextFormat(Qt.TextFormat.RichText)
@@ -1614,7 +1623,7 @@ class SiteServicesPage(ToolBase):
         self.build_frame([p1, p2, p3], side=self._panel())
         for w in (self.sb_street, self.sb_side, self.sb_rear, self.h_w, self.h_d, self.h_rot, self.h_x, self.h_y, self.c_w, self.c_d, self.c_x, self.c_y,
                   self.p_depth, self.p_fall, self.p_ie, self.p_tail,
-                  self.z_cov, self.z_far, self.z_sto, self.z_hmax, self.z_h, self.z_breq, self.z_bays):
+                  self.z_cov, self.z_far, self.z_sto, self.z_hmax, self.z_h, self.z_breq, self.z_bays, self.z_nbh):
             w.valueChanged.connect(self._edited)
         self.c_on.toggled.connect(self._edited)
         for w_ in (self.sh_no, self.sh_street, self.sh_rw, self.sh_se):
@@ -1810,7 +1819,7 @@ class SiteServicesPage(ToolBase):
         st = self.st
         st["stand"]["setbacks"] = {"street": self.sb_street.value(), "side": self.sb_side.value(), "rear": self.sb_rear.value()}
         st["stand"]["zoning"] = {"coverage": self.z_cov.value(), "far": self.z_far.value(), "storeys": int(self.z_sto.value()), "height": self.z_hmax.value(),
-                                 "house_height": self.z_h.value(), "bays_req": int(self.z_breq.value()), "bays": int(self.z_bays.value())}
+                                 "house_height": self.z_h.value(), "nb_height": self.z_nbh.value(), "bays_req": int(self.z_breq.value()), "bays": int(self.z_bays.value())}
         st["house"].update({"w": self.h_w.value(), "d": self.h_d.value(), "rot": self.h_rot.value(), "cx": self.h_x.value(), "cy": self.h_y.value()})
         if self.c_on.isChecked():
             st["carport"] = {"w": self.c_w.value(), "d": self.c_d.value(), "cx": self.c_x.value(), "cy": self.c_y.value(), "rot": (st.get("carport") or {}).get("rot", 0)}
@@ -1855,8 +1864,8 @@ class SiteServicesPage(ToolBase):
             for w, k in ((self.sb_street, "street"), (self.sb_side, "side"), (self.sb_rear, "rear")):
                 w.setValue(sb.get(k, w.value()))
             z_ = st["stand"].get("zoning") or {}
-            for w, k in ((self.z_cov, "coverage"), (self.z_far, "far"), (self.z_sto, "storeys"), (self.z_hmax, "height"), (self.z_h, "house_height"), (self.z_breq, "bays_req"), (self.z_bays, "bays")):
-                w.setValue(z_.get(k, 1 if k == "storeys" else 0))
+            for w, k in ((self.z_cov, "coverage"), (self.z_far, "far"), (self.z_sto, "storeys"), (self.z_hmax, "height"), (self.z_h, "house_height"), (self.z_nbh, "nb_height"), (self.z_breq, "bays_req"), (self.z_bays, "bays")):
+                w.setValue(z_.get(k, 1 if k == "storeys" else 3.5 if k == "nb_height" else 0))
             h = st["house"]
             for w, k in ((self.h_w, "w"), (self.h_d, "d"), (self.h_rot, "rot"), (self.h_x, "cx"), (self.h_y, "cy")):
                 w.setValue(h.get(k, 0))
@@ -1966,6 +1975,66 @@ class SiteServicesPage(ToolBase):
             self.fill_results()
             self.changed()
         self.view.update()
+
+    # ---- hand-over to the energy tools
+    def paper_bearing(self, vec):
+        """compass bearing (degrees clockwise from true north) of a direction in the stand's frame, from the road side, the turn and the north arrow of the sheet"""
+        sh = site_sheet.Sheet(1.0, (0, 0), (0, 0), self.st["sheet"].get("road", "left"), self.st["sheet"].get("turn", 0.0))
+        a, b = sh.pt((0.0, 0.0)), sh.pt(vec)
+        ang = math.degrees(math.atan2(b.x() - a.x(), -(b.y() - a.y())))
+        return (ang - float(self.st["sheet"].get("north", 0.0) or 0.0)) % 360.0
+
+    def bearing_vec(self, bearing):
+        """the direction in the stand's frame that points along a compass bearing"""
+        sh = site_sheet.Sheet(1.0, (0, 0), (0, 0), self.st["sheet"].get("road", "left"), self.st["sheet"].get("turn", 0.0))
+        pa = math.radians(bearing + float(self.st["sheet"].get("north", 0.0) or 0.0))
+        o, q = sh.inv(QPointF(0.0, 0.0)), sh.inv(QPointF(math.sin(pa), -math.cos(pa)))
+        return (q[0] - o[0], q[1] - o[1])
+
+    def site_horizon(self, nb_h=None):
+        """the skyline of the neighbouring houses as seen from the middle of the house: 36 altitudes in degrees, one per 10 degrees of compass bearing (0 = north).
+        A neighbour's house is taken to stand on its building line (the side building line) inside its stand, nb_h high at the eaves; the window's middle is 1.5 m up."""
+        st = self.st
+        z = st["stand"].get("zoning") or {}
+        h_nb = z.get("nb_height", 3.5) if nb_h is None else nb_h
+        polys = [[tuple(q) for q in n["poly"]] for n in (st.get("neighbours") or []) if n.get("poly")]
+        polys += [[tuple(q) for q in f["poly"]] for f in (st.get("far_stands") or []) if f.get("poly")]
+        hc = (st["house"]["cx"], st["house"]["cy"])
+        side = (st["stand"].get("setbacks") or {}).get("side", 1.0) or 1.0
+        out = []
+        for k in range(36):
+            ux, uy = self.bearing_vec(k * 10.0)
+            n_ = math.hypot(ux, uy) or 1.0
+            ux, uy = ux / n_, uy / n_
+            alt = 0.0
+            d = 0.5
+            while d < 80.0 and polys:
+                q = (hc[0] + ux * d, hc[1] + uy * d)
+                if any(se.inside(q, P) for P in polys):
+                    alt = math.degrees(math.atan2(max(h_nb - 1.5, 0.0), d + side))
+                    break
+                d += 0.5
+            out.append(round(alt, 1))
+        return out
+
+    def energy_link(self):
+        """what the energy tools need from this plan"""
+        st = self.st
+        hp = (self.res or se.solve(st))["house"]
+        best = max(range(len(hp)), key=lambda i: math.hypot(hp[(i + 1) % len(hp)][0] - hp[i][0], hp[(i + 1) % len(hp)][1] - hp[i][1]))
+        a, b = hp[best], hp[(best + 1) % len(hp)]
+        res = self.res or se.solve(st)
+        return {"stand_no": str(st["sheet"].get("stand_no") or st["stand"].get("name", "")), "stand_area": res["stand_area"], "coverage": res["coverage_pct"],
+                "north_on_sheet": float(st["sheet"].get("north", 0.0) or 0.0), "long_axis_bearing": round(self.paper_bearing((b[0] - a[0], b[1] - a[1])), 1),
+                "street_bearing": round(self.paper_bearing((0.0, -1.0)), 1), "horizon": self.site_horizon()}
+
+    def send_to_energy(self):
+        link = self.energy_link()
+        f = getattr(self.win, "receive_site_link", None)
+        if f is None:
+            QMessageBox.information(self, "House placing", "The energy tools are not available here.")
+            return
+        QMessageBox.information(self, "House placing", f(link))
 
     def show_compliance(self):
         """the pass / fail rows of the zoning limits, redrawn on every move"""
@@ -3397,7 +3466,8 @@ class SiteServicesPage(ToolBase):
                     own.append(m)
             cen = se.apply_frame(fr, site_township.centroid(Q))
             if o.get("no"):
-                nbs.append({"no": o["no"], "c": [round(cen[0], 2), round(cen[1], 2)]})
+                nbs.append({"no": o["no"], "c": [round(cen[0], 2), round(cen[1], 2)],
+                            "poly": [[round(a, 2), round(b, 2)] for a, b in (se.apply_frame(fr, q) for q in Q)]})
         far = []
         for o in r.get("far") or []:
             Q = o.get("poly") or []
