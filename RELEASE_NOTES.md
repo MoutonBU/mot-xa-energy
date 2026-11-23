@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.177**
+Current version: **1.86.178**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Rational design, clause 4.2 route (Tables 1 and 2):** a new button "Tables 1 and 2 (clause 4.2)..." in the simulation window. Type in the two limits for your occupancy and energy zone from your copy of SANS 10400-XA:2021 (the tables are SABS copyright, so they are not built in) and the result page adds a pass / fail line: yearly energy against Table 1 and demand against Table 2, with no reference building. It warns when the occupancy has no data in the tables (A1 to A4, E2, E3, F1 to F3, G1, H1 to H5 do). The limits are saved with the project.
+- **Light and ventilation, "Rules..." button:** the percentages and least areas of SANS 10400-O can now be edited, with the edition they come from named (SANS 10400-O:2011 Edition 3 until you change it). Edition 4 was gazetted on 30 May 2025 but its text is only sold by SABS, so type its numbers in once you have checked them; they are saved with the project and the report names the edition.
 - **House placing sheet: title block and zoning table:** the PDF and DXF now carry a title block (project, stand, owner, architect, drawing number, revision, date, taken from Project details and a new "Drawing no." field in Plan labels) and the zoning list (building lines, coverage, floor area ratio, height, parking) with OK / NOT MET in red. In the DXF they sit on a TITLE BLOCK layer.
 - **House placing, neighbour shade on the plan:** the tick "Show their shade on the plan" draws red wedges round the house, one per 10 degrees of compass bearing, with the angle above the horizon, exactly what "Send to the energy tools" hands over (screen only).
 - **Council submission pack carries the House placing plan:** the checklist has a new line "Site plan with services (house placing: sewer, water, electrical)", made from House placing as an A3 PDF and joined into the pack with the other sheets. Projects saved earlier get the new line too.

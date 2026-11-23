@@ -34,8 +34,28 @@ MIN_LIGHT_M2 = 0.2
 # SANS 10400-O:2011 (Ed 3) 4.3.1.1.3: ventilation = 5% of floor area, but never less than 0.2 m2
 # (0.1 m2 for category 1 rooms: E4, F2, H3, H4, H5). The larger value applies.
 MIN_VENT_M2 = 0.2
+RULES_EDITION = ["SANS 10400-O:2011 (Edition 3)"]   # the edition the numbers below come from; change it with 'Rules...' once the numbers are checked against a newer one
 LIGHT_FULL_OPENING = [False]    # True: daylight counted on the whole opening incl. frame (SANS 10400-O 4.2.1.1.3 wording), False: on the glass only
 MIN_VENT_CAT1_M2 = 0.1
+
+
+def rules_state():
+    return {"edition": RULES_EDITION[0], "light": dict(RULES), "vent": VENT_PERCENT, "min_light": MIN_LIGHT_M2, "min_vent": MIN_VENT_M2, "min_vent_cat1": MIN_VENT_CAT1_M2}
+
+
+def apply_rules(d):
+    """set the light and ventilation numbers (from the project, or from the Rules dialog)"""
+    global VENT_PERCENT, MIN_LIGHT_M2, MIN_VENT_M2, MIN_VENT_CAT1_M2
+    if not d:
+        return
+    RULES_EDITION[0] = str(d.get("edition") or RULES_EDITION[0])
+    for k, v in (d.get("light") or {}).items():
+        if k in RULES:
+            RULES[k] = float(v)
+    VENT_PERCENT = float(d.get("vent", VENT_PERCENT))
+    MIN_LIGHT_M2 = float(d.get("min_light", MIN_LIGHT_M2))
+    MIN_VENT_M2 = float(d.get("min_vent", MIN_VENT_M2))
+    MIN_VENT_CAT1_M2 = float(d.get("min_vent_cat1", MIN_VENT_CAT1_M2))
 
 
 GLAZE_LIMIT = [20.0]     # max glazing as % of net floor area before a rational design is needed
@@ -1466,6 +1486,7 @@ RD_DEFAULTS = {
     "route": RD_ROUTES[0], "sim_software": "", "sim_cert": "",
     "ref_demand": "", "act_demand": "", "ref_cons": "", "act_cons": "",
     "reg_no": "", "notes": "", "lon": "", "epw": "", "has_ifc": "", "ifc_loaded": "", "lv_ifc": "", "lv_ifc_rooms": "",
+    "t12_kwh": "", "t12_va": "",   # clause 4.2: the limits typed in from Tables 1 and 2 for this occupancy and energy zone
     "site_no": "", "site_area": "", "site_cov": "", "site_axis": "", "site_horizon": "",   # handed over by the House placing tool
     "skip_xa": "", "skip_lv": "",   # window / door tags the user left out of Energy XA (fenestration) / of Light & ventilation, comma separated
 }
@@ -1561,7 +1582,7 @@ def check_room(room, schedule, light_pct):
     circulation = bool(re.search(r"\b(passage|corridor|hall|hallway|lobby|landing|stair)", room.name, re.I))
     area = room.area_m2 if not no_area else 1.0
     light_req = max(area * light_pct / 100.0, MIN_LIGHT_M2)
-    vent_req = max(area * VENT_PERCENT / 100.0, MIN_VENT_CAT1_M2 if light_pct <= 5.0 else MIN_VENT_M2)
+    vent_req = max(area * VENT_PERCENT / 100.0, MIN_VENT_CAT1_M2 if light_pct <= min(RULES.values()) + 1e-9 else MIN_VENT_M2)
     glaze_pct = 0.0 if no_area else glazed / area * 100.0
     glaze_max = area * GLAZE_LIMIT[0] / 100.0
     return {
@@ -9108,6 +9129,10 @@ class MainWindow(QMainWindow):
         self.rule_box.addItems(list(RULES.keys()))
         self.rule_box.currentIndexChanged.connect(self._lv_refresh_soon)
         top.addWidget(self.rule_box)
+        rb = QPushButton("Rules...")
+        rb.setToolTip("The light and ventilation numbers and the edition of SANS 10400-O they come from. Change them when you have checked them against a newer edition.")
+        rb.clicked.connect(self.rules_dialog)
+        top.addWidget(rb)
         self.full_chk = QCheckBox("Light on the whole opening:")
         self.full_chk.setToolTip("SANS 10400-O 4.2.1.1.3 counts the total opening area including the frame. On: daylight is counted on the whole opening. Off: on the glass only (the safer reading).")
         self.full_chk.toggled.connect(lambda on: (LIGHT_FULL_OPENING.__setitem__(0, bool(on)), self._lv_refresh_soon()))
@@ -11477,6 +11502,7 @@ class MainWindow(QMainWindow):
             "rule": self.rule_box.currentText(),
             "deduct_frames": self.frame_chk.isChecked(),
             "light_full_opening": self.full_chk.isChecked(),
+            "rules": rules_state(),
             "skip_unglazed": self.skip_chk.isChecked(),
             "glaze_limit": self.glaze_spin.value(),
             "frame_mm": self.frame_spin.value(),
@@ -12033,6 +12059,7 @@ class MainWindow(QMainWindow):
             self.rule_box.setCurrentText(data["rule"])
         self.frame_chk.setChecked(bool(data.get("deduct_frames", False)))
         self.full_chk.setChecked(bool(data.get("light_full_opening", False)))
+        apply_rules(data.get("rules"))
         self.skip_chk.setChecked(bool(data.get("skip_unglazed", True)))
         self.glaze_spin.setValue(float(data.get("glaze_limit", 20.0) or 20.0))
         self.internal_tags = set(data.get("internal_tags", []))
@@ -18340,6 +18367,104 @@ class MainWindow(QMainWindow):
                 "weather": si["loc"]["name"], "lpd": self._lt_lpd(), "floor": floor, "glass": glz, "wall_type": wall_t,
                 "skipped": si["geo"]["skipped"], "unplaced": si["model"]["unplaced"], "occ": occ, "pop": pop, "hw_sys": hw_sys}
 
+    T12_OCC = ("A1", "A2", "A3", "A4", "E2", "E3", "F1", "F2", "F3", "G1", "H1", "H2", "H3", "H4", "H5")      # clause 4.2: the occupancies that have data in Tables 1 and 2
+
+    def _t12_dialog(self, parent, ri):
+        """clause 4.2 of SANS 10400-XA:2021: the limits of Tables 1 (kWh/m2/year) and 2 (VA/m2) for this occupancy and energy zone, typed in from the standard"""
+        d = QDialog(parent)
+        d.setWindowTitle("Clause 4.2 - Tables 1 and 2")
+        v = QVBoxLayout(d)
+        lab = QLabel("Clause 4.2 of SANS 10400-XA:2021 accepts a building whose theoretical yearly energy use (Table 1, kWh/m2/year) and demand (Table 2, VA/m2) are not more than the table values for its "
+                     "occupancy and energy zone. The tables are copyright of SABS and are not built into the program: read the two numbers for <b>%s, %s</b> in your copy of the standard and type them in. "
+                     "They are saved with the project." % (ri.get("occ") or "this occupancy", self.xa_zone.currentText()))
+        lab.setWordWrap(True)
+        lab.setTextFormat(Qt.TextFormat.RichText)
+        v.addWidget(lab)
+        if ri.get("occ") and ri["occ"] not in self.T12_OCC:
+            w_ = QLabel("Tables 1 and 2 have no data for occupancy %s: use clause 4.3 (the reference building) instead." % ri["occ"])
+            w_.setStyleSheet("color:#b3202f;")
+            w_.setWordWrap(True)
+            v.addWidget(w_)
+        g = QGridLayout()
+        a, b = QDoubleSpinBox(), QDoubleSpinBox()
+        for w_, key in ((a, "t12_kwh"), (b, "t12_va")):
+            w_.setRange(0.0, 2000.0)
+            w_.setDecimals(1)
+            try:
+                w_.setValue(float(str(self.rd.get(key, "") or 0).replace(",", ".")))
+            except ValueError:
+                w_.setValue(0.0)
+        g.addWidget(QLabel("Table 1: yearly energy (kWh/m2/year)"), 0, 0)
+        g.addWidget(a, 0, 1)
+        g.addWidget(QLabel("Table 2: demand (VA/m2)"), 1, 0)
+        g.addWidget(b, 1, 1)
+        v.addLayout(g)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        bb.accepted.connect(d.accept)
+        bb.rejected.connect(d.reject)
+        v.addWidget(bb)
+        if d.exec() != QDialog.DialogCode.Accepted:
+            return False
+        self.rd["t12_kwh"] = "%.1f" % a.value() if a.value() > 0 else ""
+        self.rd["t12_va"] = "%.1f" % b.value() if b.value() > 0 else ""
+        return True
+
+    def _t12_html(self, res, ri):
+        """the clause 4.2 verdict under the simulation result, when the two table limits have been typed in"""
+        try:
+            lk, lv = float(str(self.rd.get("t12_kwh", "") or 0)), float(str(self.rd.get("t12_va", "") or 0))
+        except ValueError:
+            return ""
+        if lk <= 0 and lv <= 0:
+            return ""
+        c, dm = res["act_cons"], res["act_demand"]
+        okc, okd = (lk <= 0 or c <= lk + 0.05), (lv <= 0 or dm <= lv + 0.05)
+        ok = okc and okd
+        col = "background:#e7f5ec;color:#14532d;border:2px solid #1f7a3d;" if ok else "background:#fdecee;color:#7f1020;border:2px solid #b3202f;"
+        h = ["<div style='%spadding:8px 12px;margin-top:8px'><b>Clause 4.2 (Tables 1 and 2): %s</b>" % (col, "PASSES" if ok else "DOES NOT PASS")]
+        if lk > 0:
+            h.append("<br>Yearly energy: design %.1f, Table 1 limit %.1f kWh/m2/year (%s)." % (c, lk, "ok" if okc else "%.1f too much" % (c - lk)))
+        if lv > 0:
+            h.append("<br>Demand: design %.1f, Table 2 limit %.1f VA/m2 (%s)." % (dm, lv, "ok" if okd else "%.1f too much" % (dm - lv)))
+        h.append("<br><span style='font-size:90%%'>The design is run with the Annex B conditions, as clause 4.2 note 1 asks. The built-in model is not certified: the final figures must come from certified software and be signed by a competent person (A19).</span></div>")
+        if ri.get("occ") and ri["occ"] not in self.T12_OCC:
+            h.append("<p style='color:#b3202f'>Tables 1 and 2 have no data for occupancy %s.</p>" % ri["occ"])
+        return "".join(h)
+
+    def rules_dialog(self):
+        """the numbers of SANS 10400-O the light and ventilation check uses, with the edition they come from"""
+        st = rules_state()
+        d = QDialog(self)
+        d.setWindowTitle("Light and ventilation rules")
+        v = QVBoxLayout(d)
+        v.addWidget(QLabel("The numbers below are those of SANS 10400-O:2011 (Edition 3). Edition 4 was gazetted on 30 May 2025 and its text is sold by SABS: "
+                           "if it differs, type its numbers here and name the edition. Saved with the project."))
+        g = QGridLayout()
+        ed = QLineEdit(st["edition"])
+        g.addWidget(QLabel("Edition used"), 0, 0)
+        g.addWidget(ed, 0, 1)
+        sp = {}
+        rows = [(k, "Light: " + k, 0.0, 100.0) for k in st["light"]] + [("vent", "Ventilation, % of floor area", 0.0, 100.0), ("min_light", "Light, least opening (m2)", 0.0, 5.0),
+                                                                          ("min_vent", "Ventilation, least opening (m2)", 0.0, 5.0), ("min_vent_cat1", "Ventilation, least opening, category 1 rooms (m2)", 0.0, 5.0)]
+        for i, (k, lab, lo, hi) in enumerate(rows, start=1):
+            w = QDoubleSpinBox()
+            w.setRange(lo, hi)
+            w.setDecimals(2)
+            w.setValue(st["light"].get(k) if k in st["light"] else st[k])
+            g.addWidget(QLabel(lab), i, 0)
+            g.addWidget(w, i, 1)
+            sp[k] = w
+        v.addLayout(g)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        bb.accepted.connect(d.accept)
+        bb.rejected.connect(d.reject)
+        v.addWidget(bb)
+        if d.exec() != QDialog.DialogCode.Accepted:
+            return
+        apply_rules({"edition": ed.text().strip(), "light": {k: sp[k].value() for k in st["light"]}, "vent": sp["vent"].value(), "min_light": sp["min_light"].value(),
+                     "min_vent": sp["min_vent"].value(), "min_vent_cat1": sp["min_vent_cat1"].value()})
+        self._lv_refresh_soon()
+
     def receive_site_link(self, link):
         """the stand number, area, coverage, the compass bearing of the house's long axis and the neighbours' skyline from the House placing tool. Returns what was done, in words."""
         self.rd["site_no"] = str(link.get("stand_no", "") or "")
@@ -18460,8 +18585,10 @@ class MainWindow(QMainWindow):
         use = QPushButton("Put these results in the report")
         use.setEnabled(False)
         cert = QPushButton("How to get this certified")
+        t12 = QPushButton("Tables 1 and 2 (clause 4.2)...")
+        t12.setToolTip("The other route of SANS 10400-XA:2021: the building's yearly energy and demand against the limits of Tables 1 and 2, with no reference building.")
         close = QPushButton("Close")
-        btns.addWidget(run); btns.addWidget(use); btns.addWidget(cert); btns.addStretch(); btns.addWidget(close)
+        btns.addWidget(run); btns.addWidget(use); btns.addWidget(cert); btns.addWidget(t12); btns.addStretch(); btns.addWidget(close)
         v.addLayout(btns)
 
         def go():
@@ -18502,7 +18629,8 @@ class MainWindow(QMainWindow):
                 adv = None
             QApplication.restoreOverrideCursor()
             state["res"] = res
-            out.setHtml(self._rd_result_html(res, ri, adv) + (("<p style='color:#666'>Shade from a neighbouring building was used in the design%s.</p>" % (" and in the reference building" if o.get("horizon_ref", True) else " only")) if o.get("horizon") else ""))
+            state["base"] = self._rd_result_html(res, ri, adv) + (("<p style='color:#666'>Shade from a neighbouring building was used in the design%s.</p>" % (" and in the reference building" if o.get("horizon_ref", True) else " only")) if o.get("horizon") else "")
+            out.setHtml(state["base"] + self._t12_html(res, ri))
             use.setEnabled(True)
 
         def put():
@@ -18518,6 +18646,12 @@ class MainWindow(QMainWindow):
             self.rd["act_cons"] = "%.1f" % res["act_cons"]
             QMessageBox.information(d, APP_NAME, "The results are in the Rational design report (Reports > Rational design > Report details, Simulation results).")
         cert.clicked.connect(lambda: self._rd_cert_roadmap(d))
+
+        def t12_go():
+            if self._t12_dialog(d, ri):
+                if state.get("res"):
+                    out.setHtml(state["base"] + self._t12_html(state["res"], ri))
+        t12.clicked.connect(t12_go)
         run.clicked.connect(go)
         use.clicked.connect(put)
         close.clicked.connect(d.accept)
@@ -20075,7 +20209,7 @@ color:{'#1B7F3B' if n_ok == len(self.results) else RED};">{n_ok} / {len(self.res
 <table width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td bgcolor="{RED}" height="3"></td></tr></table>
 {self._project_info_html()}
 <p style="font-size:8pt; color:#555555;">Natural light = {'whole opening including frame' if LIGHT_FULL_OPENING[0] else 'glazed area'} / floor area (minimum {RULES[self.rule_box.currentText()]:g}%,
-at least {MIN_LIGHT_M2:g} m&sup2;). Ventilation = openable area / floor area (minimum {VENT_PERCENT:g}% and not less than {MIN_VENT_M2:g} m&sup2;, or {MIN_VENT_CAT1_M2:g} m&sup2; for category 1 rooms). Rules follow SANS 10400-O:2011 Ed 3; SANS 10400-O:2025 Ed 4 was gazetted 30 May 2025 - confirm against it.
+at least {MIN_LIGHT_M2:g} m&sup2;). Ventilation = openable area / floor area (minimum {VENT_PERCENT:g}% and not less than {MIN_VENT_M2:g} m&sup2;, or {MIN_VENT_CAT1_M2:g} m&sup2; for category 1 rooms). Rules follow {RULES_EDITION[0]}. SANS 10400-O Edition 4 was gazetted on 30 May 2025: confirm the numbers against the edition in force.
 Passages and circulation spaces need neither.
 Glazing limit: glazing may not exceed {GLAZE_LIMIT[0]:g}% of the net floor area, otherwise a rational design is needed.</p>
 <p style="font-size:9pt; font-weight:bold;">{e(glazing_summary(self.results))}</p>"""]
