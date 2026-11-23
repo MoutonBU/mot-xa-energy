@@ -67,6 +67,11 @@ tl = pg.title_block_lines()
 for f_, fn in (("a.pdf", se.write_pdf), ("a.dxf", se.write_dxf)):
     fn(os.path.join(d_, f_), dat, tl)
 se.render_image(dat, tl, 800).save(os.path.join(d_, "a.png"))
+im_a, im_b = se.render_image(dat, tl, 800), se.render_image(dict(dat, lines_only=True), tl, 800)     # pipes with their width, or brown lines only
+assert im_a != im_b
+pg.el_lines.setChecked(True)
+assert pg.st["elev"]["lines_only"] is True and pg.elev_data()[1]["lines_only"] is True
+pg.el_lines.setChecked(False)
 assert all(os.path.getsize(os.path.join(d_, x)) > 1000 for x in ("a.pdf", "a.dxf", "a.png"))
 pg.st["levels"] = {"ngl_head": 218.45, "ngl_main": 218.45, "ffl": 218.6, "main_il": 216.5}           # the main is deep: the pipe cannot reach it without a drop
 bad = se.build(pg.st, pg.res, pg._elev_model)

@@ -1616,6 +1616,21 @@ class SiteServicesPage(ToolBase):
                 row.addWidget(QLabel("More ground levels (distance = level)"))
                 row.addWidget(self.lv_spots)
                 ml3.addLayout(row)
+                row = FlowLayout(None, 8, 6)
+                b_ = QPushButton("Import contours (DXF)...")
+                b_.setToolTip("A contoured site plan or survey: the polylines at a level (their elevation, their Z, or the number written on them) and spot heights. The ground along the sewer is then read off the contours.")
+                b_.clicked.connect(lambda _=False: self.import_contours())
+                self.lv_usecont = QCheckBox("Take the ground levels from the contours")
+                self.lv_usecont.setChecked(True)
+                self.lv_usecont.toggled.connect(self._edited)
+                b2_ = QPushButton("Remove the contours")
+                b2_.clicked.connect(lambda _=False: self.remove_contours())
+                for w_ in (b_, self.lv_usecont, b2_):
+                    row.addWidget(w_)
+                ml3.addLayout(row)
+                self.lv_continfo = QLabel("No contours: the ground levels above are used.")
+                self.lv_continfo.setWordWrap(True)
+                ml3.addWidget(self.lv_continfo)
                 self.lv_drops = QLineEdit()                              # holds "distance = invert level" for the drawing; filled in by the choices below, not typed
                 self.lv_drops.textChanged.connect(self._edited)
                 row = FlowLayout(None, 8, 6)
@@ -1661,7 +1676,10 @@ class SiteServicesPage(ToolBase):
                 self.el_title.textChanged.connect(lambda *_: self._elev_set("title", self.el_title.text().strip()))
                 self.el_flip = QCheckBox("View from the other side")
                 self.el_flip.toggled.connect(lambda v_: self._elev_set("flip", bool(v_)))
-                for w_ in (self.el_title, self.el_flip):
+                self.el_lines = QCheckBox("Sewer as brown lines only (no pipe width)")
+                self.el_lines.setToolTip("Off: the pipes are drawn with their outside diameter. On: the sewer is a single brown line at the invert level, with single lines for the eyes.")
+                self.el_lines.toggled.connect(lambda v_: self._elev_set("lines_only", bool(v_)))
+                for w_ in (self.el_title, self.el_flip, self.el_lines):
                     row.addWidget(w_)
                 ml4.addLayout(row)
                 row = FlowLayout(None, 8, 6)
@@ -1953,6 +1971,8 @@ class SiteServicesPage(ToolBase):
             st["levels"]["spots"] = self.lv_spots.text().strip()
             if hasattr(self, "lv_drops"):
                 st["levels"]["drops"] = self.lv_drops.text().strip()
+            if hasattr(self, "lv_usecont"):
+                st["levels"]["use_contours"] = 1 if self.lv_usecont.isChecked() else 0
             if hasattr(self, "lv_mode"):
                 st["levels"]["drop_mode"] = self.lv_mode.currentIndex()
                 st["levels"]["drop_x"] = self.lv_dropx.value()
@@ -2014,6 +2034,8 @@ class SiteServicesPage(ToolBase):
                 self.lv_spots.setText(str(lvl.get("spots", "")))
             if hasattr(self, "lv_drops"):
                 self.lv_drops.setText(str(lvl.get("drops", "")))
+            if hasattr(self, "lv_usecont"):
+                self.lv_usecont.setChecked(bool(lvl.get("use_contours", 1)))
             if hasattr(self, "lv_mode"):
                 mode_ = lvl.get("drop_mode")
                 x_ = lvl.get("drop_x")
@@ -2029,6 +2051,7 @@ class SiteServicesPage(ToolBase):
                 el_ = st.get("elev") or {}
                 self.el_title.setText(str(el_.get("title", "")))
                 self.el_flip.setChecked(bool(el_.get("flip", False)))
+                self.el_lines.setChecked(bool(el_.get("lines_only", False)))
                 self._elev_model = None
                 self.elev_status()
         finally:
@@ -2109,6 +2132,7 @@ class SiteServicesPage(ToolBase):
             self.warn_lbl.setText("Could not work out the lines: %s" % e)
             return
         self._sync_drop()
+        self._contour_info()
         self.show_compliance()
         if not light:
             self.fill_results()
@@ -3965,6 +3989,58 @@ class SiteServicesPage(ToolBase):
             y_ = base + (i if i < 5 else i - 5) * step - step * 0.2
             p.drawText(QPointF(x_, y_), t)
 
+    def _world_of(self, p):
+        """a point of the stand's frame in the drawing's own coordinates (the way back from the frame the stand was moved by)"""
+        f = self.st.get("frame")
+        if not f:
+            return tuple(p)
+        x, y = p[0] - f[2], p[1] - f[3]
+        return (f[0] * x + f[1] * y, -f[1] * x + f[0] * y)
+
+    def import_contours(self, path=None):
+        import site_contours
+        if not path:
+            path, _ = QFileDialog.getOpenFileName(self, "Import the contours", "", "Drawings (*.dxf *.dwg)")
+        if not path:
+            return
+        try:
+            data = site_contours.read(path)
+        except Exception as e:
+            QMessageBox.warning(self, "Contours", str(e))
+            return
+        poly = [self._world_of(p) for p in self.st["stand"]["corners"]]
+        cl = site_contours.clip(data, poly)
+        if not cl["lines"] and not cl["spots"]:
+            QMessageBox.warning(self, "Contours", "These contours are not near the stand. They must be drawn in the same coordinates as the stand (the same drawing, or the survey the stand came from).")
+            return
+        self.st["contours"] = dict(cl, file=str(path).replace("\\", "/").split("/")[-1])
+        self.lv_usecont.setChecked(True)
+        self.solve_now(False)
+
+    def remove_contours(self):
+        self.st.pop("contours", None)
+        self.solve_now(False)
+
+    def _contour_info(self):
+        if not hasattr(self, "lv_continfo"):
+            return
+        cd = self.st.get("contours")
+        if not cd:
+            self.lv_continfo.setText("No contours: the ground levels above are used.")
+            return
+        import site_profile
+        t = site_profile.terrain_for(self.st)
+        base = "Contours from %s: %d lines, %d spot heights. " % (cd.get("file", "the drawing"), len(cd.get("lines") or []), len(cd.get("spots") or []))
+        if t is None:
+            self.lv_continfo.setText(base + "Not used (the box above is off): the ground levels typed above are used.")
+            return
+        lo, hi = t.range()
+        try:
+            d = site_profile.build(self.st, self.res)
+            self.lv_continfo.setText(base + "Levels %.2f to %.2f m. Ground at the house %.2f m, at the main %.2f m; the section follows the ground along the pipe." % (lo, hi, d["ngl0"], d["ngl1"]))
+        except Exception:
+            self.lv_continfo.setText(base)
+
     def _drop_base(self):
         import site_profile
         lv = dict(self.st.get("levels") or {}, drops="")
@@ -4177,7 +4253,9 @@ class SiteServicesPage(ToolBase):
             raise ValueError("Add a floor plan screenshot first.")
         if getattr(self, "_elev_model", None) is None:
             self._elev_model = sewer_elev.model_from_shots(el["shots"], site_engine.house_poly(self.st["house"]))
-        return sewer_elev, sewer_elev.build(self.st, self.res, self._elev_model, el.get("turn", 0), el.get("flip", False), el.get("title") or None)
+        data = sewer_elev.build(self.st, self.res, self._elev_model, el.get("turn", 0), el.get("flip", False), el.get("title") or None)
+        data["lines_only"] = bool(el.get("lines_only", False))
+        return sewer_elev, data
 
     def _elev_try(self):
         try:

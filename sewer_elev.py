@@ -424,19 +424,21 @@ def draw(p, W, H, S, d, title_lines=(), when=None):
         a, b = min(t0, t1), max(t0, t1)
         return (u1 + (u2 - u1) * a, v1 + (v2 - v1) * a, u1 + (u2 - u1) * b, v1 + (v2 - v1) * b)
     layer("SEWER")
+    lo = bool(d.get("lines_only"))                                       # just brown lines for the sewer, or the pipes drawn with their width
+    offs = (0.0,) if lo else (0.0, od)
     dxs = [x_ for x_, _a, _b in d["drops"]]
     for (xa, ua), (xb, ub) in zip(pts[:-1], pts[1:]):
         if xb - xa < 0.03:
             continue
         end_il = d["il_in"](xb) if any(abs(xb - x_) < 0.03 for x_ in dxs) else d["il"](xb)
-        for off in (0.0, od):
+        for off in offs:
             c_ = seg_clip(ua, d["il"](xa) + off, ub, end_il + off)
             if c_:
-                line(X(c_[0]), Y(c_[1]), X(c_[2]), Y(c_[3]), BROWN, 0.25, DD)
+                line(X(c_[0]), Y(c_[1]), X(c_[2]), Y(c_[3]), BROWN, 0.7 if lo else 0.25, DD)
     for t in sts:                                                       # a drop: the pipe steps down inside the inspection eye
         if t["kind"] == "IE" and t.get("drop", 0) > 0.002 and ulo - 0.01 <= t["u"] <= uhi + 0.01:
-            for off in (0.0, od):
-                line(X(t["u"]), Y(t["il"] + t["drop"] + off), X(t["u"]), Y(t["il"] + off), BROWN, 0.5)
+            for off in offs:
+                line(X(t["u"]), Y(t["il"] + t["drop"] + off), X(t["u"]), Y(t["il"] + off), BROWN, 0.7 if lo else 0.5)
             text(X(t["u"]) + 2.0, (Y(t["il"] + t["drop"]) + Y(t["il"])) / 2 + 0.8, "drop %d mm" % round(t["drop"] * 1000), 2.0, False, BROWN)
     cut_l = any(t["u"] < ulo for t in sts)
     cut_r = any(t["u"] > uhi for t in sts)
@@ -459,13 +461,14 @@ def draw(p, W, H, S, d, title_lines=(), when=None):
             text(ux + w * 1000.0 / scl / 2 + 2, Y(il_ - 0.15), "MH size to be designed by the Civil Eng. to the local council's criteria.", 2.0)
         elif t["kind"] == "RE":
             dirn = -1.0 if d["u_of_x"](max(0.0, t["x"] - 0.5)) < d["u_of_x"](t["x"]) else 1.0      # leans up the line, the way the pipe comes from
-            run = (Y(t["top"] + od) - Y(t["ngl"])) * dirn                                              # 45 degrees on the paper
-            line(ux, Y(t["top"] + od), ux + run, Y(t["ngl"]), BROWN, 0.25, DD)
-            line(ux, Y(t["top"]), ux + run, Y(t["ngl"]), BROWN, 0.25, DD)
+            run = (Y(t["top"] + (0.0 if lo else od)) - Y(t["ngl"])) * dirn                              # 45 degrees on the paper
+            for off in offs:
+                line(ux, Y(t["top"] + off), ux + run, Y(t["ngl"]), BROWN, 0.25, DD)
             text(ux + run + (1.5 if dirn > 0 else -1.5), Y(t["ngl"]) + 3.0, t["name"], 2.2, True, align="l" if dirn > 0 else "r")
             t["_lean"] = run
         else:
-            line(ux, Y(t["top"] + od), ux, Y(t["ngl"]), BROWN, 0.25, DD)
+            for off in offs:
+                line(ux, Y(t["top"] + off), ux, Y(t["ngl"]), BROWN, 0.25, DD)
             text(ux - 1.5, Y(t["ngl"]) + 4.0, t["name"], 2.2, True, align="r")
         same = next((o for o in tags if abs(o["u"] - t["u"]) < 0.5 and abs(o["il"] - t["il"]) < 0.12), None)
         if same is not None:                                           # an eye pair at one place shares one box: RE2 / IE2

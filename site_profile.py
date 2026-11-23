@@ -46,6 +46,29 @@ def parse_spots(text):
     return sorted(out)
 
 
+_TERR = {}
+
+
+def terrain_for(state):
+    """the ground model made from the contours in the project (in the stand's own frame), or None when there are none or they are switched off"""
+    cd = state.get("contours")
+    if not cd or not (cd.get("lines") or cd.get("spots")):
+        return None
+    if not (state.get("levels") or {}).get("use_contours", 1):
+        return None
+    import site_contours
+    import site_engine as se_
+    fr = state.get("frame")
+    key = (id(cd), len(cd.get("lines") or []), len(cd.get("spots") or []), tuple(fr) if fr else None)
+    t = _TERR.get("t")
+    if _TERR.get("k") == key and t is not None:
+        return t
+    mp = (lambda p: se_.apply_frame(fr, p)) if fr else (lambda p: tuple(p))
+    t = site_contours.Terrain([[z, [mp(p) for p in pts]] for z, pts in cd.get("lines") or []], [list(mp(s[:2])) + [s[2]] for s in cd.get("spots") or []])
+    _TERR["k"], _TERR["t"] = key, t
+    return t if t.ok() else None
+
+
 def build(state, res, il_head=None, lean_ratio=None):
     sw = res["sewer"]
     par = res.get("params") or {}
@@ -67,6 +90,19 @@ def build(state, res, il_head=None, lean_ratio=None):
     ngl1 = float(n1) if _set(n1) else ngl0
     spots = [(x, y) for x, y in parse_spots(lv.get("spots")) if 0 < x < Hh]
     pts = [(0.0, ngl0)] + spots + [(Hh, ngl1)]
+    terr = terrain_for(state)
+    if terr is not None:                                        # a contoured site: the ground along the pipe is read off the contours
+        import site_engine as se_
+        path_ = [tuple(q) for q in sw["path"]]
+        Lp_ = sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(path_[:-1], path_[1:]))
+
+        def gxy(x_):
+            c_ = x_ - (Hh - Lp_)
+            return path_[0] if c_ <= 0 else se_._point_at(path_, c_)
+        xs_c = sorted(set([k_ * 0.5 for k_ in range(int(Hh / 0.5) + 1)] + [Hh]))
+        pts = [(x_, terr.z_at(*gxy(x_))) for x_ in xs_c]
+        ngl0, ngl1 = pts[0][1], pts[-1][1]
+        assumed = False
 
     def ngl(x):
         x = max(0.0, min(Hh, x))
@@ -138,6 +174,9 @@ def build(state, res, il_head=None, lean_ratio=None):
         st.append({"name": name, "kind": k, "desc": desc, "x": round(x, 2), "ngl": g, "il": i, "depth": g - i, "cover": g - i - od,
                    "drop": (il_in(x) - i) if dr is not None and k == "IE" else 0.0, "top": il_in(x) if dr is not None else i})
     covers = [ngl(k / 10.0 * Hh) - il(k / 10.0 * Hh) - od for k in range(0, 11)]
+    if terr is not None:                                        # on a contoured site look every half metre, so no hump in the ground is missed
+        covers += [ngl(x_) - il(x_) - od for x_ in xs_c]
+    worst = min(range(0, 41), key=lambda k: ngl(k / 40.0 * Hh) - il(k / 40.0 * Hh) - od) / 40.0 * Hh
     covers += [s["cover"] for s in st] + [ngl(x_) - il_in(x_) - od for x_, _y in drops_in]
     min_cover = min(covers) if covers else 0.0
     drop = il(Hh) - main_il
@@ -151,7 +190,9 @@ def build(state, res, il_head=None, lean_ratio=None):
         checks.append(("Fall 1:%d is flatter than 1:%d, the flattest allowed (SANS 10252-2, table 13)." % (fall, f_sp), False))
     mc = float(par.get("min_cover", 0.3))
     checks.append(("Soil cover over the pipe is at least %d mm everywhere (lowest %d mm)." % (round(mc * 1000), round(min_cover * 1000)) if min_cover >= mc - 1e-6
-                   else "Soil cover is less than %d mm (lowest %d mm): lay the pipe deeper." % (round(mc * 1000), round(min_cover * 1000)), min_cover >= mc - 1e-6))
+                   else ("Soil cover is less than %d mm (lowest %d mm, at %.1f m from the house%s): lay the pipe deeper%s." % (
+                       round(mc * 1000), round(min_cover * 1000), worst, " - the pipe comes out of the ground there" if min_cover < 0 else "",
+                       "" if drops_in else ", for example start it about %d mm deeper at the house or use a steeper fall" % (math.ceil((mc - min_cover) * 20.0) * 50))), min_cover >= mc - 1e-6))
     if drop >= -0.002:
         checks.append(("The pipe reaches the main %d mm above its invert level (%s)." % (round(drop * 1000), "typed" if main_il_typed else "taken as %d mm below the ground at the main" % round(conn_depth * 1000)), True))
     else:
@@ -165,7 +206,7 @@ def build(state, res, il_head=None, lean_ratio=None):
     if gaps:
         checks.append(("Eyes are at most %.1f m apart (limit %.0f m)." % (max(gaps), mx) if max(gaps) <= mx + 1e-6 else "Eyes are %.1f m apart: more than %.0f m." % (max(gaps), mx), max(gaps) <= mx + 1e-6))
     out = {"stations": st, "length": Hh, "fall": fall, "od": od, "pipe": str(par.get("sewer_pipe", "110")), "ngl": ngl, "il": il, "ngl0": ngl0, "ngl1": ngl1,
-            "pts": pts, "il_in": il_in, "segs": segs, "drops": [(x_, il_in(x_), y_) for x_, y_ in drops_in], "drop_lean": drop_lean, "main_il": main_il, "main_typed": main_il_typed, "drop": drop, "assumed": assumed, "min_cover": min_cover, "checks": checks,
+            "pts": pts, "il_in": il_in, "segs": segs, "drops": [(x_, il_in(x_), y_) for x_, y_ in drops_in], "drop_lean": drop_lean, "terrain": terr is not None, "main_il": main_il, "main_typed": main_il_typed, "drop": drop, "assumed": assumed, "min_cover": min_cover, "checks": checks,
             "ffl": float(lv["ffl"]) if _set(lv.get("ffl")) else None, "note": sw.get("note", "")}
     out["lean_ratio"] = 0.5 if lean_ratio is None else lean_ratio
     if drops_in and lean_ratio is None:                         # the steep part is 45 degrees on the sheet: its run is its height times (horizontal scale / vertical scale)
