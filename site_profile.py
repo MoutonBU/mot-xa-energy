@@ -78,7 +78,15 @@ def build(state, res, il_head=None):
     il_head = ngl0 - D0 if il_head is None else float(il_head)
     # drops the designer added (chainage = invert level just after the drop): the pipe steps down inside an inspection eye and carries on at the fall
     drops_in = [(x, y) for x, y in parse_spots(lv.get("drops")) if 0 < x < Hh]
-    segs = [(0.0, il_head)] + drops_in                          # (chainage where the run starts, invert level there)
+    # the steep part of a drop is drawn at 45 degrees on the sheet (horizontal 1:50, vertical 1:100): it takes half its height in metres of chainage,
+    # and the lower run starts at the foot of it
+    segs, drop_lean = [(0.0, il_head)], {}
+    for xd_, yd_ in drops_in:
+        yin_ = segs[-1][1] - (xd_ - segs[-1][0]) / fall
+        lean_ = max(0.0, 0.5 * (yin_ - yd_))
+        lean_ = min(lean_, max(Hh - xd_ - 0.05, 0.0))
+        drop_lean[xd_] = lean_
+        segs.append((xd_ + lean_, yd_))                         # (chainage where the run starts, invert level there)
 
     def il(x):
         xs_, ys_ = segs[0]
@@ -123,6 +131,8 @@ def build(state, res, il_head=None):
         g = ngl(x)
         i = il(x)
         dr = next((yd for xd, yd in drops_in if abs(xd - x) < 0.05), None)
+        if dr is not None:
+            i = dr
         if dr is not None and k != "MAIN":
             desc = ("Inspection eye with a drop of %d mm" % round((il_in(x) - i) * 1000)) if k == "IE" else "Rodding eye at the drop"
         st.append({"name": name, "kind": k, "desc": desc, "x": round(x, 2), "ngl": g, "il": i, "depth": g - i, "cover": g - i - od,
@@ -155,7 +165,7 @@ def build(state, res, il_head=None):
     if gaps:
         checks.append(("Eyes are at most %.1f m apart (limit %.0f m)." % (max(gaps), mx) if max(gaps) <= mx + 1e-6 else "Eyes are %.1f m apart: more than %.0f m." % (max(gaps), mx), max(gaps) <= mx + 1e-6))
     return {"stations": st, "length": Hh, "fall": fall, "od": od, "pipe": str(par.get("sewer_pipe", "110")), "ngl": ngl, "il": il, "ngl0": ngl0, "ngl1": ngl1,
-            "pts": pts, "il_in": il_in, "segs": segs, "drops": [(x_, il_in(x_), y_) for x_, y_ in drops_in], "main_il": main_il, "main_typed": main_il_typed, "drop": drop, "assumed": assumed, "min_cover": min_cover, "checks": checks,
+            "pts": pts, "il_in": il_in, "segs": segs, "drops": [(x_, il_in(x_), y_) for x_, y_ in drops_in], "drop_lean": drop_lean, "main_il": main_il, "main_typed": main_il_typed, "drop": drop, "assumed": assumed, "min_cover": min_cover, "checks": checks,
             "ffl": float(lv["ffl"]) if _set(lv.get("ffl")) else None, "note": sw.get("note", "")}
 
 
@@ -300,24 +310,23 @@ def draw(p, W, H, S, d, title_lines=(), when=None):
     ilh, ile = d["il"](0.0), d["il"](Hh)
     od_mm = max(d["od"] * 1000.0 / vs, 0.8)
     bounds = [x_ for x_, _y in d["segs"]] + [Hh]
-    leans = {}                                                   # a drop is the rodding eye's 45 degree line carried on down to the lower pipe
-    for xd_, yin_, yout_ in d["drops"]:
-        leans[xd_] = max(0.0, min(abs(Y(yout_) - Y(yin_)), X(Hh) - X(xd_) - 3.0))
     for k_ in range(len(bounds) - 1):
         xa_, xb_ = bounds[k_], bounds[k_ + 1]
         ya_ = d["il"](xa_)
-        yb_ = d["il_in"](xb_) if k_ + 1 < len(bounds) - 1 else d["il"](xb_)
-        xs_ = X(xa_) + (leans.get(xa_, 0.0) if k_ > 0 else 0.0)
-        xe_ = X(xb_)
+        if k_ + 1 < len(bounds) - 1:                             # an upper run ends at the drop, before the foot of the steep part
+            xb_ = next((xd_ for xd_, _a, _b in d["drops"] if abs(xd_ + d["drop_lean"].get(xd_, 0.0) - xb_) < 1e-6), xb_)
+            yb_ = d["il_in"](xb_)
+        else:
+            yb_ = d["il"](xb_)
         for off_, w_ in ((0.0, 0.6), (od_mm, 0.3)):
-            line(xs_, Y(ya_) - off_, xe_, Y(yb_) - off_, BROWN, w_)
+            line(X(xa_), Y(ya_) - off_, X(xb_), Y(yb_) - off_, BROWN, w_)
     p.setPen(pen(BROWN, 0.3))
     p.drawLine(P(X(0.0), Y(ilh)), P(X(0.0), Y(ilh) - od_mm))
-    for xd_, yin_, yout_ in d["drops"]:                           # the drop: the leaning line from the upper pipe down to the lower pipe
-        ln_ = leans[xd_]
+    for xd_, yin_, yout_ in d["drops"]:                           # the drop: a steep part from the upper pipe down to the lower pipe
+        xf_ = xd_ + d["drop_lean"].get(xd_, 0.0)
         for off_ in (0.0, od_mm):
-            line(X(xd_), Y(yin_) - off_, X(xd_) + ln_, Y(yout_) - off_, BROWN, 0.6 if off_ == 0 else 0.3)
-        text(X(xd_) + ln_ + 2.0, Y(yout_) + 4.5, "drop %d mm" % round((yin_ - yout_) * 1000), 2.0, False, BROWN)
+            line(X(xd_), Y(yin_) - off_, X(xf_), Y(yout_) - off_, BROWN, 0.6 if off_ == 0 else 0.3)
+        text(X(xf_) + 2.0, Y(yout_) + 4.5, "drop %d mm" % round((yin_ - yout_) * 1000), 2.0, False, BROWN)
     # eyes
     for i, s in enumerate(st):
         if s["kind"] == "MAIN":

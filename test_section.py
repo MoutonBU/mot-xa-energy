@@ -29,8 +29,10 @@ assert abs(pg.lv_spin["ngl_head"].value() - 98.62) < 1e-9 and pg.lv_spots.text()
 dd = dict(pg.st, levels={"ngl_head": 98.62, "ngl_main": 98.40, "main_il": 95.0})
 d0 = sp.build(dd, pg.res)
 assert d0["drop"] > 1.0
-x_ = [s_ for s_ in d0["stations"] if s_["kind"] != "MAIN"][-1]["x"]
-dd["levels"]["drops"] = "%.2f = %.3f" % (x_, 95.0 + (d0["length"] - x_) / d0["fall"])
+pg.st["levels"].update(dd["levels"]); pg.st["levels"]["drops"] = ""
+pg.lv_drops.setText(""); pg.add_drop_to_main()
+dd["levels"]["drops"] = pg.lv_drops.text()
+x_ = float(dd["levels"]["drops"].split("=")[0])
 d1 = sp.build(dd, pg.res)
 assert abs(d1["drop"]) < 0.003 and d1["drops"] and abs(d1["il"](d1["length"]) - 95.0) < 0.003
 assert any(s_["drop"] > 1.0 and s_["kind"] == "IE" for s_ in d1["stations"]) and any("rodding eye at the drop" in s_["desc"].lower() for s_ in d1["stations"])

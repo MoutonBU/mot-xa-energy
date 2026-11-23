@@ -3941,18 +3941,21 @@ class SiteServicesPage(ToolBase):
             p.drawText(QPointF(x_, y_), t)
 
     def add_drop_to_main(self, x=None):
+        """the pipe runs from the minimum invert at its fall; a drop is put on an eye so the lower run, at the same fall, arrives at the main's invert"""
         import site_profile
         d = site_profile.build(self.st, self.res)
         if d["drop"] <= 0.005:
             QMessageBox.information(self, "Sewer section", "The pipe already reaches the main (it arrives %d mm above its invert level, which is fine)." % round(d["drop"] * 1000))
             return
-        if x is None:
-            from PySide6.QtWidgets import QInputDialog
-            x0 = round(d["length"] * 0.55 * 2) / 2
-            x, ok = QInputDialog.getDouble(self, "Drop to the main", "Where does the pipe drop? Distance from the house outlet (m).\nAn inspection eye and a rodding eye are put there.", x0, 0.5, max(0.6, d["length"] - 0.3), 2)
-            if not ok:
-                return
-        new_il = d["main_il"] + (d["length"] - x) / d["fall"]
+        H, f = d["length"], d["fall"]
+        dy = d["drop"] / (1.0 - 1.0 / (2.0 * f))                 # the steep part takes half its height in chainage
+        lean = dy / 2.0
+        if x is None:                                           # the last eye that still leaves the lower pipe a run of its own
+            run = max(1.5, 0.25 * H)
+            ok = [s_["x"] for s_ in d["stations"] if s_["kind"] != "MAIN" and 0.4 < s_["x"] and s_["x"] + lean + run <= H]
+            x = max(ok) if ok else max(0.5, H - lean - run)
+        il_x = d["il"](x)
+        new_il = il_x - dy
         txt = (self.lv_drops.text().strip().rstrip(",") + ", " if self.lv_drops.text().strip() else "") + "%.2f = %.3f" % (x, new_il)
         self.lv_drops.setText(txt)
 
