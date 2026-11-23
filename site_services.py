@@ -1623,6 +1623,30 @@ class SiteServicesPage(ToolBase):
                     row.addWidget(b_)
                 row.addStretch(1)
                 ml3.addLayout(row)
+                ml4 = self.more(bv, "Sewer elevation from the IFC model (WCs, basins, council sheet)")
+                lt4 = QLabel("Reads the WCs, basins, showers, baths, sinks and washing machines and the storeys from the building's IFC model, turns the model onto the house on the "
+                             "site plan, and draws the sewer elevation: the stacks, the sewer under them and the invert levels that clear the lowest fixtures.")
+                lt4.setWordWrap(True)
+                ml4.addWidget(lt4)
+                row = FlowLayout(None, 8, 6)
+                self.el_lbl = QLabel("No IFC model chosen.")
+                self.el_title = QLineEdit()
+                self.el_title.setPlaceholderText("Title under the sheet, e.g. (A) South East Block B")
+                self.el_title.setMinimumWidth(260)
+                self.el_title.textChanged.connect(lambda *_: self._elev_set("title", self.el_title.text().strip()))
+                self.el_flip = QCheckBox("View from the other side")
+                self.el_flip.toggled.connect(lambda v_: self._elev_set("flip", bool(v_)))
+                for w_ in (self.el_title, self.el_flip):
+                    row.addWidget(w_)
+                ml4.addLayout(row)
+                row = FlowLayout(None, 8, 6)
+                for txt_, fn_ in (("Choose the IFC model...", self.elev_choose), ("Turn the model", self.elev_turn), ("Preview the elevation", self.elev_preview),
+                                  ("Save elevation PDF...", self.elev_pdf), ("Save elevation DXF...", self.elev_dxf)):
+                    b_ = QPushButton(txt_)
+                    b_.clicked.connect(lambda _=False, f=fn_: f())
+                    row.addWidget(b_)
+                ml4.addLayout(row)
+                ml4.addWidget(self.el_lbl)
             v2.addWidget(bx)
         bx, bv = self.box("Extra points (optional)", "Add a connection of your own, for example a manhole. Used when it is closer than the main.")
         row = FlowLayout(None, 8, 6)
@@ -1957,6 +1981,12 @@ class SiteServicesPage(ToolBase):
                 w_.setValue(float(lvl.get(k_) or 0))
             if hasattr(self, "lv_spots"):
                 self.lv_spots.setText(str(lvl.get("spots", "")))
+            if hasattr(self, "el_title"):
+                el_ = st.get("elev") or {}
+                self.el_title.setText(str(el_.get("title", "")))
+                self.el_flip.setChecked(bool(el_.get("flip", False)))
+                self._elev_model = None
+                self.elev_status()
         finally:
             self._busy = False
 
@@ -3908,6 +3938,94 @@ class SiteServicesPage(ToolBase):
         lay.addWidget(sa)
         dlg.resize(1100, 760)
         dlg.exec()
+
+    # ---- sewer elevation from the IFC model
+    def _elev_set(self, k, v):
+        if getattr(self, "_busy", False):
+            return
+        self.st.setdefault("elev", {})[k] = v
+
+    def elev_choose(self):
+        path, _ = QFileDialog.getOpenFileName(self, "IFC model", "", "IFC model (*.ifc *.ifczip)")
+        if not path:
+            return
+        import sewer_elev
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            self._elev_model = sewer_elev.read_ifc(path)
+        except Exception as e:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, "Sewer elevation", "The IFC model could not be read: %s" % e)
+            return
+        QApplication.restoreOverrideCursor()
+        el = self.st.setdefault("elev", {})
+        el.update({"path": path, "turn": 0})
+        self.elev_status()
+
+    def elev_status(self):
+        m = getattr(self, "_elev_model", None)
+        if m is None:
+            self.el_lbl.setText("No IFC model chosen." if not (self.st.get("elev") or {}).get("path") else "Model: %s (press Preview to read it again)." % self.st["elev"]["path"])
+            return
+        from collections import Counter
+        c = Counter(f["kind"] for f in m["fixtures"])
+        self.el_lbl.setText("%s: %d storeys, fixtures found: %s." % (m["file"].replace("\\", "/").split("/")[-1], len(m["storeys"]),
+                                                              ", ".join("%d %s" % (n, k) for k, n in sorted(c.items())) or "none"))
+
+    def elev_turn(self):
+        el = self.st.setdefault("elev", {})
+        el["turn"] = int(el.get("turn", 0)) + 1
+        self.elev_preview()
+
+    def elev_data(self):
+        import sewer_elev
+        el = self.st.get("elev") or {}
+        if getattr(self, "_elev_model", None) is None:
+            if not el.get("path"):
+                raise ValueError("Choose the IFC model first.")
+            self._elev_model = sewer_elev.read_ifc(el["path"])
+            self.elev_status()
+        return sewer_elev, sewer_elev.build(self.st, self.res, self._elev_model, el.get("turn", 0), el.get("flip", False), el.get("title") or None)
+
+    def _elev_try(self):
+        try:
+            return self.elev_data()
+        except Exception as e:
+            QMessageBox.warning(self, "Sewer elevation", str(e))
+            return None, None
+
+    def elev_preview(self):
+        from PySide6.QtWidgets import QDialog, QScrollArea
+        mod, d = self._elev_try()
+        if d is None:
+            return
+        img = mod.render_image(d, self.title_block_lines(), 2000)
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Sewer elevation - view from the %s (model fits the house %d %%; 'Turn the model' if it faces the wrong way)" % (d["side"], round(d["overlap"] * 100)))
+        lay = QVBoxLayout(dlg)
+        lb = QLabel()
+        lb.setPixmap(QPixmap.fromImage(img))
+        sa = QScrollArea()
+        sa.setWidget(lb)
+        lay.addWidget(sa)
+        dlg.resize(1200, 800)
+        dlg.exec()
+
+    def elev_pdf(self):
+        mod, d = self._elev_try()
+        if d is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Save the sewer elevation", "sewer_elevation.pdf", "PDF (*.pdf)")
+        if path:
+            mod.write_pdf(path, d, self.title_block_lines())
+
+    def elev_dxf(self):
+        mod, d = self._elev_try()
+        if d is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Save the sewer elevation as DXF", "sewer_elevation.dxf", "DXF (*.dxf)")
+        if path:
+            mod.write_dxf(path, d, self.title_block_lines())
 
     def section_pdf(self):
         path, _ = QFileDialog.getSaveFileName(self, "Save the sewer section", "sewer_section.pdf", "PDF (*.pdf)")
