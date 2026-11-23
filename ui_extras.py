@@ -5,7 +5,7 @@ import re
 import math
 
 from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPoint, QPointF, QRectF, QSize, QTimer, Qt, QUrl, QVariantAnimation
-from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPen, QRadialGradient
+from PySide6.QtGui import QColor, QDesktopServices, QIcon, QPainter, QPen, QRadialGradient
 from PySide6.QtWidgets import (QAbstractButton, QApplication, QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QTextBrowser, QVBoxLayout, QWidget)
 
 GREEN, AMBER, GREY, RED = "#2e9e5b", "#d9a21b", "#8a8f98", "#C8102E"
@@ -687,16 +687,14 @@ class AnimIcon(QLabel):
         self.update()
 
     def hover(self, on):
-        self._run("h", self._h, 1.0 if on else 0.0, 380 if on else 260, QEasingCurve.Type.OutBack if on else QEasingCurve.Type.OutCubic)
-        if on:
-            self._run("w", 0.0, 1.0, 650, QEasingCurve.Type.Linear)
+        self._run("h", self._h, 1.0 if on else 0.0, 240 if on else 200, QEasingCurve.Type.OutCubic)
 
     def press(self, down):
         if down:
             self._run("p", self._p, 1.0, 90, QEasingCurve.Type.OutCubic)
             self._run("r", 0.0, 1.0, 520, QEasingCurve.Type.OutCubic)
         else:
-            self._run("p", self._p, 0.0, 380, QEasingCurve.Type.OutBack)
+            self._run("p", self._p, 0.0, 220, QEasingCurve.Type.OutCubic)
 
     def paintEvent(self, _e):
         p = QPainter(self)
@@ -752,6 +750,30 @@ class IconMotion(QObject):
             b.setMaximumSize(old[1])
             b.setProperty("_ia_locked", None)
 
+    @staticmethod
+    def _red(b, on):
+        """the icon turns red while pointed at or pressed, and goes back to its own colour afterwards"""
+        try:
+            orig = b.property("_ia_icon")
+            if on:
+                if orig is None:
+                    ic = b.icon()
+                    sz = b.iconSize()
+                    pm = ic.pixmap(QSize(sz.width() * 2, sz.height() * 2))
+                    if pm.isNull():
+                        return
+                    q = QPainter(pm)
+                    q.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+                    q.fillRect(pm.rect(), QColor("#ff4056"))
+                    q.end()
+                    b.setProperty("_ia_icon", ic)
+                    b.setIcon(QIcon(pm))
+            elif orig is not None:
+                b.setIcon(orig)
+                b.setProperty("_ia_icon", None)
+        except Exception:
+            pass
+
     def _to(self, b, target, ms=170):
         base = b.property("_ia_base")
         if base is None:
@@ -766,7 +788,7 @@ class IconMotion(QObject):
         an.setStartValue(cur)
         an.setEndValue(float(target))
         an.setDuration(ms)
-        an.setEasingCurve(QEasingCurve.Type.OutBack if target >= 1.0 else QEasingCurve.Type.OutCubic)
+        an.setEasingCurve(QEasingCurve.Type.OutCubic)
 
         def step(v, b=b, base=base):
             b.setProperty("_ia_scale", float(v))
@@ -803,13 +825,15 @@ class IconMotion(QObject):
             if isinstance(obj, QAbstractButton) and obj.isEnabled() and not obj.icon().isNull() and obj.isVisible():
                 if t == QEvent.Type.Enter:
                     self._lock(obj)
-                    self._to(obj, 1.2)
+                    self._red(obj, True)
+                    self._to(obj, 1.15)
                 elif t == QEvent.Type.Leave:
+                    self._red(obj, False)
                     self._to(obj, 1.0, 220)
                 elif t == QEvent.Type.MouseButtonPress:
                     self._to(obj, 0.86, 90)
                 else:
-                    self._to(obj, 1.2, 260)
+                    self._to(obj, 1.15, 200)
         except Exception:
             pass
         return False

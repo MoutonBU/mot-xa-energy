@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.205**
+Current version: **1.86.206**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Icons no longer jiggle, and every icon turns red:** the wobble on the big tile icons and the bounce on the small button icons are gone; they now just grow smoothly. Every button icon (top icons, bar, all other buttons) turns red while you point at it or press it, and goes back to its own colour afterwards.
 - **A drop has a rodding eye only:** the program no longer draws an inspection eye at a drop. The rodding eye at the top of the steep part is what is needed to rod down it (SANS 10252-2, 6.5.2.2). An eye that is already on the pipe at that spot stays. The long section, the site plan, the table, the checks and the sewer elevation all follow. (Whether your council wants more access there is for you to confirm.)
 - **Left bar icons turn red** while you point at them, and grow a little (they are sharper now when they grow).
 - **Detail generator learns your details:** after a detail is drawn, "Save as my detail" keeps it. The next time you ask for a detail the generator is shown your saved details that are closest to the request (up to two) as examples, so new details are drawn the way you draw them: your material names, layers, note wording. "My details" lists them; "Open my detail" puts one back in the workspace and "Delete it" removes it. They are kept in the Detail notes outputs folder (my_details.json). Tested with a pretend reply only, because no API key was available here.

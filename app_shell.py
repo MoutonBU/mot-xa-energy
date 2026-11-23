@@ -179,9 +179,7 @@ class Rail(QFrame):
                         pass
                     return False
             self._hover_filter = _Hover(self)
-            for b in self.findChildren(QPushButton):
-                if b.property("iconName"):
-                    b.installEventFilter(self._hover_filter)
+            # the red hover now comes from ui_extras.IconMotion for every icon button
 
     def _inner_tabs(self, idx):
         """The tab widget inside the Drawing register (6) or the Costing (5), whose sections the bar lists."""

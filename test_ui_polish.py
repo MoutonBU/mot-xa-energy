@@ -42,9 +42,14 @@ host = Host()
 rail = app_shell.Rail(host, mk, lambda: False)
 rail.icons()
 btn = next(b for b in rail.findChildren(QPushButton) if b.property("iconName"))
-n0 = len(calls)
+import ui_extras
+ui_extras.install_icon_motion()
+rail.show(); btn.show(); app.processEvents()
 app.sendEvent(btn, QEvent(QEvent.Type.Enter))
-assert calls[-1][1] == "#ff4056" and calls[-1][2] == 28, calls[-1]
+assert btn.property("_ia_icon") is not None
+img = btn.icon().pixmap(btn.iconSize()).toImage()
+reds = [img.pixelColor(x, y) for x in range(img.width()) for y in range(img.height()) if img.pixelColor(x, y).alpha() > 200]
+assert reds and all(c.red() > 200 and c.green() < 120 for c in reds)
 app.sendEvent(btn, QEvent(QEvent.Type.Leave))
-assert calls[-1][1] == "#eceef0" and len(calls) == n0 + 2
+assert btn.property("_ia_icon") is None
 print("ok")
