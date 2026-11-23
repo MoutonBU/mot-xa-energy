@@ -29,8 +29,16 @@ assert abs(pg.lv_spin["ngl_head"].value() - 98.62) < 1e-9 and pg.lv_spots.text()
 dd = dict(pg.st, levels={"ngl_head": 98.62, "ngl_main": 98.40, "main_il": 95.0})
 d0 = sp.build(dd, pg.res)
 assert d0["drop"] > 1.0
-pg.st["levels"].update(dd["levels"]); pg.st["levels"]["drops"] = ""
-pg.lv_drops.setText(""); pg.add_drop_to_main()
+pg.lv_spin["main_il"].setValue(95.0); pg.lv_spots.setText(""); pg.add_drop_to_main()          # the choice "the program places it"
+assert pg.lv_mode.currentIndex() == 1 and not pg.lv_dropx.isEnabled() and "drop" in pg.lv_dropinfo.text().lower() and "from the house outlet" in pg.lv_dropinfo.text()
+x_auto = pg.lv_dropx.value()
+pg.lv_mode.setCurrentIndex(2); pg.lv_dropx.setValue(3.0); pg.solve_now(False)                   # "I choose where": at 3 m, and the lower level follows
+assert pg.lv_dropx.isEnabled() and pg.lv_drops.text().startswith("3.00 =") and abs(sp.build(pg.st, pg.res)["drop"]) < 0.003
+pg.lv_mode.setCurrentIndex(1); pg.solve_now(False)
+assert abs(pg.lv_dropx.value() - x_auto) < 0.06
+pg.lv_mode.setCurrentIndex(0); pg.solve_now(False)
+assert pg.lv_drops.text() == "" and "ABOVE" in pg.lv_dropinfo.text()
+pg.lv_mode.setCurrentIndex(1); pg.solve_now(False)
 dd["levels"]["drops"] = pg.lv_drops.text()
 x_ = float(dd["levels"]["drops"].split("=")[0])
 d1 = sp.build(dd, pg.res)

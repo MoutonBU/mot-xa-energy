@@ -1616,20 +1616,30 @@ class SiteServicesPage(ToolBase):
                 row.addWidget(QLabel("More ground levels (distance = level)"))
                 row.addWidget(self.lv_spots)
                 ml3.addLayout(row)
-                row = FlowLayout(None, 8, 6)
-                self.lv_drops = QLineEdit()
-                self.lv_drops.setPlaceholderText("12 = 0.35")
-                self.lv_drops.setMinimumWidth(200)
-                self.lv_drops.setToolTip("Extra invert levels where the pipe steps down inside an inspection eye (with a rodding eye): the distance from the house outlet in metres, then the invert level "
-                                         "just after the drop. The pipe then carries on at its fall. Use it when the pipe would arrive above the main.")
+                self.lv_drops = QLineEdit()                              # holds "distance = invert level" for the drawing; filled in by the choices below, not typed
                 self.lv_drops.textChanged.connect(self._edited)
-                row.addWidget(QLabel("Drops to the main (distance = invert level after the drop)"))
-                row.addWidget(self.lv_drops)
-                b_ = QPushButton("Add a drop to reach the main")
-                b_.setToolTip("Asks where the pipe drops, then sets the invert level after the drop so the pipe arrives at the main's invert level. The eyes are drawn on the site plan as well.")
-                b_.clicked.connect(lambda _=False: self.add_drop_to_main())
-                row.addWidget(b_)
+                row = FlowLayout(None, 8, 6)
+                self.lv_mode = QComboBox()
+                self.lv_mode.addItems(["No drop", "Drop to the main: the program places it", "Drop to the main: I choose where"])
+                self.lv_mode.setToolTip("Use a drop when the pipe, falling from the house, would arrive ABOVE the main sewer's invert level. The pipe falls normally, steps down steeply "
+                                        "(at 45 degrees on the sheet) and then falls on to the main's invert level. The program works out how deep the drop is.")
+                self.lv_mode.currentIndexChanged.connect(self._edited)
+                row.addWidget(QLabel("Drop to reach the main"))
+                row.addWidget(self.lv_mode)
+                self.lv_dropx = QDoubleSpinBox()
+                self.lv_dropx.setRange(0.5, 500.0)
+                self.lv_dropx.setDecimals(1)
+                self.lv_dropx.setSuffix(" m")
+                self.lv_dropx.setKeyboardTracking(False)
+                self.lv_dropx.setToolTip("Where the drop is, measured along the sewer from the house outlet (0 m is the first rodding eye at the house). The main sewer is at the far end.")
+                self.lv_dropx.valueChanged.connect(self._edited)
+                row.addWidget(QLabel("Drop is"))
+                row.addWidget(self.lv_dropx)
+                row.addWidget(QLabel("from the house outlet"))
                 ml3.addLayout(row)
+                self.lv_dropinfo = QLabel("")
+                self.lv_dropinfo.setWordWrap(True)
+                ml3.addWidget(self.lv_dropinfo)
                 row = FlowLayout(None, 8, 6)
                 for txt_, fn_ in (("Preview the sewer section", self.section_preview), ("Save the sewer section as PDF...", self.section_pdf), ("Save the sewer section as DXF...", self.section_dxf)):
                     b_ = QPushButton(txt_)
@@ -1943,6 +1953,9 @@ class SiteServicesPage(ToolBase):
             st["levels"]["spots"] = self.lv_spots.text().strip()
             if hasattr(self, "lv_drops"):
                 st["levels"]["drops"] = self.lv_drops.text().strip()
+            if hasattr(self, "lv_mode"):
+                st["levels"]["drop_mode"] = self.lv_mode.currentIndex()
+                st["levels"]["drop_x"] = self.lv_dropx.value()
         st["params"] = {"conn_depth": self.p_depth.value(), "fall": self.p_fall.value(), "max_ie": self.p_ie.value(), "re_ext": self.p_tail.value(), "sewer_pipe": self.p_pipe.currentText(),
                         "sb_street": self.sb_street.value(), "sb_side": self.sb_side.value(), "sb_rear": self.sb_rear.value()}
         self.schedule()
@@ -2001,6 +2014,17 @@ class SiteServicesPage(ToolBase):
                 self.lv_spots.setText(str(lvl.get("spots", "")))
             if hasattr(self, "lv_drops"):
                 self.lv_drops.setText(str(lvl.get("drops", "")))
+            if hasattr(self, "lv_mode"):
+                mode_ = lvl.get("drop_mode")
+                x_ = lvl.get("drop_x")
+                if mode_ is None:                                   # a project from before the choices: a typed drop stays, as one the designer placed
+                    first_ = str(lvl.get("drops", "")).replace(";", ",").split(",")[0].split("=")[0].strip()
+                    try:
+                        x_, mode_ = float(first_), 2
+                    except ValueError:
+                        x_, mode_ = 10.0, 0
+                self.lv_mode.setCurrentIndex(int(mode_))
+                self.lv_dropx.setValue(float(x_ if x_ else 10.0))
             if hasattr(self, "el_title"):
                 el_ = st.get("elev") or {}
                 self.el_title.setText(str(el_.get("title", "")))
@@ -2084,6 +2108,7 @@ class SiteServicesPage(ToolBase):
             self.res = None
             self.warn_lbl.setText("Could not work out the lines: %s" % e)
             return
+        self._sync_drop()
         self.show_compliance()
         if not light:
             self.fill_results()
@@ -3940,17 +3965,20 @@ class SiteServicesPage(ToolBase):
             y_ = base + (i if i < 5 else i - 5) * step - step * 0.2
             p.drawText(QPointF(x_, y_), t)
 
-    def add_drop_to_main(self, x=None):
-        """the pipe runs from the minimum invert at its fall; a drop is put on an eye so the lower run, at the same fall, arrives at the main's invert"""
+    def _drop_base(self):
         import site_profile
-        d = site_profile.build(self.st, self.res)
-        if d["drop"] <= 0.005:
-            QMessageBox.information(self, "Sewer section", "The pipe already reaches the main (it arrives %d mm above its invert level, which is fine)." % round(d["drop"] * 1000))
-            return
-        H, f = d["length"], d["fall"]
+        lv = dict(self.st.get("levels") or {}, drops="")
+        return site_profile.build(dict(self.st, levels=lv), self.res)
+
+    def _compute_drop(self, x=None):
+        """'distance = invert level' for a drop that makes the pipe arrive at the main's invert level, or '' when none is needed.
+        The pipe falls to the drop, steps down at 45 degrees on the sheet and falls on to the main."""
+        import site_profile
+        d = self._drop_base()
+        D, H, f = d["drop"], d["length"], d["fall"]
+        if D <= 0.005:
+            return ""
         run = max(1.5, 0.25 * H)
-        base = self.lv_drops.text().strip().rstrip(",")
-        D = d["drop"]
 
         def pick(lean_):                                        # the last eye that still leaves the lower pipe a run of its own
             ok = [s_["x"] for s_ in d["stations"] if s_["kind"] != "MAIN" and 0.4 < s_["x"] and s_["x"] + lean_ + run <= H]
@@ -3958,17 +3986,74 @@ class SiteServicesPage(ToolBase):
         given, ratio, x_prev, new_il, txt = x, 0.5, None, None, ""
         for _k in range(14):    # the 45 degree part's length depends on the sheet's scales, which depend on the levels: settle its place and the lower level
             x = given if given is not None else pick(ratio * D / (1.0 - ratio / f))
+            x = max(0.3, min(x, H - 0.5))
             il_x = d["il"](x)
             if new_il is None or x != x_prev:
                 new_il = il_x - D / (1.0 - ratio / f)
             x_prev = x
-            txt = (base + ", " if base else "") + "%.2f = %.3f" % (x, new_il)
+            txt = "%.2f = %.3f" % (x, new_il)
             r = site_profile.build(dict(self.st, levels=dict(self.st.get("levels") or {}, drops=txt)), self.res)
             ratio = r["lean_ratio"]
             if abs(r["drop"]) < 0.0008 and (given is not None or x == pick(ratio * (il_x - new_il))):
                 break
             new_il -= r["drop"]
-        self.lv_drops.setText(txt)
+        return txt
+
+    def _sync_drop(self):
+        """keeps the drop in step with the choices (none / the program places it / I choose where) and the levels"""
+        if not hasattr(self, "lv_mode") or self.res is None or getattr(self, "_syncing", False):
+            return
+        self._syncing = True
+        try:
+            mode = self.lv_mode.currentIndex()
+            if mode == 0:
+                txt = ""
+            elif mode == 1:
+                txt = self._compute_drop()
+            else:
+                txt = self._compute_drop(self.lv_dropx.value())
+            self._busy = True
+            try:
+                self.lv_dropx.setEnabled(mode == 2)
+                if txt and mode == 1:
+                    self.lv_dropx.setValue(float(txt.split("=")[0]))
+                self.lv_drops.setText(txt)
+            finally:
+                self._busy = False
+            if txt != (self.st.get("levels") or {}).get("drops", ""):
+                self.st.setdefault("levels", {})["drops"] = txt
+                self.res = se.solve(self.st)
+            self._drop_info(mode, txt)
+        except Exception as e_:
+            self.lv_dropinfo.setText("Could not work out the drop: %s" % e_)
+        finally:
+            self._syncing = False
+
+    def _drop_info(self, mode, txt):
+        import site_profile
+        d = site_profile.build(self.st, self.res)
+        H = d["length"]
+        head = "Distances are measured along the sewer from the house outlet (0 m, the first rodding eye) towards the main sewer, which is at %.1f m. " % H
+        if txt:
+            x = float(txt.split("=")[0])
+            ds = d["drops"][0] if d["drops"] else None
+            dep = round((ds[1] - ds[2]) * 1000) if ds else 0
+            tail = ("The pipe falls at 1:%d from the house to the drop at %.1f m (%.1f m before the main), steps down %d mm at 45 degrees, then falls on to the main's invert "
+                    "level. A rodding eye is needed at the top of the drop; the program also draws an inspection eye there." % (round(d["fall"]), x, H - x, dep))
+        elif d["drop"] > 0.005 and mode == 0:
+            tail = "With no drop the pipe arrives %d mm ABOVE the main's invert level: choose a drop." % round(d["drop"] * 1000)
+        elif d["drop"] < -0.002:
+            tail = "The pipe arrives %d mm BELOW the main's invert level: it cannot drain to the main by gravity. Lay it shallower or check the levels." % round(-d["drop"] * 1000)
+        else:
+            tail = "The pipe reaches the main without a drop (it arrives %d mm above its invert level), so none is needed." % max(0, round(d["drop"] * 1000))
+        self.lv_dropinfo.setText(head + tail)
+
+    def add_drop_to_main(self, x=None):
+        """puts a drop to the main (placed by the program, or at x metres from the house outlet) and updates everything"""
+        self.lv_mode.setCurrentIndex(1 if x is None else 2)
+        if x is not None:
+            self.lv_dropx.setValue(x)
+        self.solve_now(False)
 
     def section_data(self):
         import site_profile
