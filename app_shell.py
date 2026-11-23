@@ -7,10 +7,10 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton, QSizePo
                                QVBoxLayout, QWidget)
 
 # main tab index -> (rail label, icon name); order of the main tabs in the window
-SUBJECTS = [(0, "Project", "home"), (6, "Drawing register", "clipboard"), (10, "Orders", "tag"), (11, "Invoicing", "calc"), (1, "Light && ventilation", "lightvent"), (2, "Energy (XA)", "bolt"),
+SUBJECTS = [(0, "Project", "home"), (6, "Drawing register", "clipboard"), (10, "Orders", "tag"), (11, "Invoicing", "calc"), (1, "Light && ventilation", "lightvent"), (2, "Energy (XA)", "bolt"), (13, "Rational design", "shield"),
             (3, "Coverage && FAR", "building"), (4, "Detail notes", "ruler"), (5, "Costing", "tag"),
             (7, "Area schedule", "layers"), (8, "Building lines", "land"), (12, "House placing", "land"), (9, "Guidelines review", "clipboard")]
-CTX = {11: "invoicing", 10: "orders", 1: "sans", 2: "sans", 3: "sans", 4: "detail", 5: "costing", 6: "register", 7: "site", 8: "site", 9: "rules", 12: "site"}      # which tool a main tab belongs to
+CTX = {13: "sans", 11: "invoicing", 10: "orders", 1: "sans", 2: "sans", 3: "sans", 4: "detail", 5: "costing", 6: "register", 7: "site", 8: "site", 9: "rules", 12: "site"}      # which tool a main tab belongs to
 PSUB_ICONS = {"Drawings": "clipboard", "Orders": "tag", "Client changes": "edit", "Sent and revisions": "export",
               "Fixtures and sanitary ware": "drop", "Building materials": "layers", "Whole building and budget": "calc"}
 LV_SUBS = [(0, "Windows", "window"), (1, "Doors", "door"), (2, "Rooms", "room"), (3, "Results", "results"), (4, "Plan", "plan")]
@@ -108,7 +108,11 @@ class Rail(QFrame):
             b.setProperty("iconName", _icon)
             b.setIconSize(QSize(20, 20))
             b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.clicked.connect(lambda _c=False, i=idx: win.main_tabs.setCurrentIndex(i))
+            if idx == 13:                           # not a tab: runs the built-in rational design simulation
+                b.setToolTip("Simulate the building for a year against the reference building (SANS 10400-XA rational design)")
+                b.clicked.connect(lambda _c=False: win.rational_design_dialog())
+            else:
+                b.clicked.connect(lambda _c=False, i=idx: win.main_tabs.setCurrentIndex(i))
             bd = QLabel("")
             bd.setObjectName("railBadge")
             hl.addWidget(b, 1)

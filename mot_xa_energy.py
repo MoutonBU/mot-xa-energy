@@ -14003,6 +14003,27 @@ class MainWindow(QMainWindow):
                                 "and reanalysis data, not measured at a weather station; for a station file use the .epw "
                                 "button):\n%s" % path)
 
+    def _weather_for_rd(self):
+        """The weather file of the project; when there is none, the site's typical year is downloaded (the same as 'Get weather data for the site online') and kept."""
+        w = self._weather_for_report()
+        if w is not None:
+            return w
+        la, lo = self._site_lonlat()
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            txt = fetch_pvgis_epw(la, lo)
+            w = parse_epw(txt)
+            w["source"] = "EU PVGIS typical meteorological year 2005-2020 (satellite and reanalysis data for the exact point, not a weather station)"
+            path = os.path.join(self._weather_dir(), f"pvgis_{la:.3f}_{lo:.3f}.epw")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(txt)
+        except Exception:
+            return None
+        finally:
+            QApplication.restoreOverrideCursor()
+        self._set_weather(w, path)
+        return w
+
     def load_epw(self):
         path, _ = QFileDialog.getOpenFileName(self, "Weather file", "", "EPW weather file (*.epw);;All files (*)")
         if not path:
@@ -18162,7 +18183,7 @@ class MainWindow(QMainWindow):
         vals = list(glass.values())
         if vals:
             glass["*"] = (sum(v[0] for v in vals) / len(vals), sum(v[1] for v in vals) / len(vals))
-        w = self._weather_for_report()
+        w = self._weather_for_rd()
         est = False
         if w is None:
             lat, lon = self._site_lonlat()
@@ -18354,7 +18375,7 @@ class MainWindow(QMainWindow):
         n = sum(len(z["wins"]) for z in ri["zones"])
         txt = ("<p style='color:#666'>%d rooms, %d windows, floor %.1f m2, glass %.1f m2 (%.1f%% of the floor). Weather: %s.%s" % (
             len(ri["zones"]), n, ri["floor"], ri["glass"], ri["glass"] / ri["floor"] * 100.0 if ri["floor"] else 0.0, ri["weather"],
-            " <b style='color:#b3202f'>No weather file is loaded: this is a clear-sky estimate and must not be used for a submission. Load a weather file first.</b>" if ri["est"] else ""))
+            " <b style='color:#b3202f'>The site's weather could not be downloaded (no internet?), so this is a clear-sky estimate and must not be used for a submission. Press 'Get weather data for the site online' or load a weather file, then run again.</b>" if ri["est"] else ""))
         if ri["unplaced"]:
             txt += " %d windows or doors could not be matched to an exterior wall and are left out." % ri["unplaced"]
         return txt + "</p>"

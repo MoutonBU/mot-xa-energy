@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.165**
+Current version: **1.86.166**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Rational design from the left bar, with the site's weather:** a "Rational design" button under Energy (XA) in the left bar runs the simulation. It uses the weather file the project has (the one from "Get weather data for the site online"); when there is none it downloads the site's typical year the same way, keeps it, and uses it. Only if that download fails does it fall back to an estimate, with a red warning.
 - **Rational design, built into the program:** Reports > Rational design > "Run the energy simulation (reference building vs design)...". It simulates the IFC building hour by hour for a whole year (EN ISO 13790 5R1C model, one zone per room, sun on every wall and window with overhang shading, ideal heating and cooling, your weather file), then simulates the REFERENCE building: same rooms, the deemed-to-satisfy insulation for the zone, glass kept to the allowed share, no shading, lights at the allowed power. It shows pass or fail on yearly energy (kWh/m2) and peak demand (VA/m2), where the heat goes, month by month and room by room, and "Put these results in the report" fills the Rational design report. Needs the IFC and a loaded weather file; checked against the plain heat-loss sum, not a certified product.
 - **Glazing limit box, in plain words:** over the Windows and Doors tables a green or red box says what is allowed (glazing limit % of the floor area), what you have, and, when over, how much glass to take out, or how wide the frames must be on every window and door to get within the limit, plus the rooms that are over. It updates as you edit windows, rooms, the limit, frame widths or what you leave out.
 - **Leave a window or door out:** a new "Leave out..." button under the Windows and Doors tables lists every window and door with two tick boxes: "Not in Energy XA" (left out of the fenestration: conductance, solar gain and % of floor) and "Not in Light & Ventilation" (left out of the light and ventilation check, its room list and its PDF). The window stays in the schedule; the choice is saved with the project and the checks rerun when you press OK. A left-out window shows "Left out by you - not counted" in the room list.
