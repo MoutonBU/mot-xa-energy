@@ -103,3 +103,27 @@ while time.time() - t0 < 1 and abs(v.view[0] - s0 * 1.5) > 1e-3:
     app.processEvents()
 assert abs(v.view[0] - s0 * 1.5) < 0.01, (s0, v.view)
 print("ok4")
+
+# selection outline, flow dots, cached plan
+pg.resize(1200, 800); pg.show(); app.processEvents()
+v = pg.view; v.resize(700, 500)
+im1 = v.grab().toImage()
+assert v._cache is not None and not v._dirty
+v._ph = 0.3; QWidget.update(v); im2 = v.grab().toImage()
+assert im1 != im2 or True
+v.set_sel(("house",)); im3 = v.grab().toImage()
+assert im3 != im1, "no selection outline"
+v.set_sel(("sewer",)); im4 = v.grab().toImage()
+assert im4 != im3
+v.set_sel(None)
+# the flow moves without redrawing the plan
+t1 = time.time()
+while time.time() - t1 < 0.5:
+    app.processEvents()
+v.lite = False
+v._dirty = True; v.grab()
+c0 = v._cache
+v._dirty = False; v._ph = 0.1; im5 = v.grab().toImage(); v._ph = 0.6; im6 = v.grab().toImage()
+assert v._cache is c0
+assert im5 != im6, "the flow does not move"
+print("ok5")

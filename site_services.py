@@ -4,6 +4,7 @@ the DB, the fall and the invert depths. Move anything and everything redraws. St
 import copy
 import json
 import math
+import sys
 
 from PySide6.QtCore import QPointF, QRectF, QTimer, Qt, QSizeF, QVariantAnimation, QEasingCurve
 from PySide6.QtGui import QPixmap, QKeySequence, QShortcut, QBrush, QColor, QFont, QPainter, QPen, QPolygonF, QPageSize, QPageLayout, QPdfWriter, QImage
@@ -326,16 +327,127 @@ class ServicesView(QWidget):
         return self.sh.inv(pt) if self.sh else (0, 0)
 
     # ---- drawing
+    def update(self, *a):
+        self._dirty = True                                        # anything but the animation timer means the plan itself changed
+        super().update(*a)
+
+    def _tick(self):
+        pg = self.page
+        want = bool(self.sel) and self.sel[0] in ("house", "carport", "sewer", "eye") or (bool(pg.res) and (pg.st.get("look") or {}).get("flow", True) and bool((pg.res.get("sewer") or {}).get("path")))
+        if not want or not self.isVisible() or self.drag is not None:
+            return
+        self._ph = (getattr(self, "_ph", 0.0) + 0.045) % 1.0
+        QWidget.update(self)                                       # only the moving parts: the plan is shown from its picture
+
     def paintEvent(self, _e):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, not self.lite)
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
-        p.fillRect(self.rect(), QColor("white"))
-        self.sh = self.sheet(self.width(), self.height())
-        self.view = (self.sh.s, self.sh.cx, self.sh.cy)
-        self.draw(p, self.sh, interactive=True)
+        dpr = self.devicePixelRatioF()
+        cache = getattr(self, "_cache", None)
+        fresh = cache is not None and not getattr(self, "_dirty", True) and cache.size() == self.size() * dpr and self.sh is not None
+        if fresh:
+            p.drawPixmap(0, 0, cache)
+        else:
+            self._dirty = False
+            pm = QPixmap(self.size() * dpr)
+            pm.setDevicePixelRatio(dpr)
+            q = QPainter(pm)
+            q.setRenderHint(QPainter.RenderHint.Antialiasing, not self.lite)
+            q.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+            q.fillRect(self.rect(), QColor("white"))
+            self.sh = self.sheet(self.width(), self.height())
+            self.view = (self.sh.s, self.sh.cx, self.sh.cy)
+            self.draw(q, self.sh, interactive=True)
+            q.end()
+            self._cache = pm
+            p.drawPixmap(0, 0, pm)
+            if not hasattr(self, "_anim_t"):
+                self._anim_t = QTimer(self)
+                self._anim_t.timeout.connect(self._tick)
+                self._anim_t.start(60)
         if not self.lite:
+            self.draw_select(p)
+            self.draw_flow(p)
             self.draw_gizmo(p)
+
+    def draw_select(self, p):
+        """the selected house, carport, sewer or eye gets a soft red outline and the rest of the plan dims a little"""
+        pg, sel = self.page, self.sel
+        if not sel or not pg.res or not self.sh or sel[0] not in ("house", "carport", "sewer", "eye"):
+            return
+        S = self.sh.pt
+        from PySide6.QtGui import QPainterPath, QPainterPathStroker
+        shape = QPainterPath()
+        try:
+            if sel[0] in ("house", "carport"):
+                pl = pg.res.get(sel[0])
+                if not pl:
+                    return
+                shape.addPolygon(QPolygonF([S(q) for q in pl]))
+                shape.closeSubpath()
+            elif sel[0] == "sewer":
+                pts = [S(q) for q in (pg.res.get("sewer") or {}).get("path") or []]
+                if len(pts) < 2:
+                    return
+                shape.moveTo(pts[0])
+                for q in pts[1:]:
+                    shape.lineTo(q)
+            else:
+                nd = next((n for n in (pg.res.get("sewer") or {}).get("nodes", []) if n.get("key") == sel[1]), None)
+                if nd is None:
+                    return
+                shape.addEllipse(S(nd["pt"]), 14, 14)
+        except Exception:
+            return
+        hole = shape if sel[0] in ("house", "carport", "eye") else QPainterPathStroker(QPen(Qt.GlobalColor.black, 18)).createStroke(shape)
+        full = QPainterPath()
+        full.addRect(QRectF(self.rect()))
+        dim = full.subtracted(hole)
+        p.save()
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(255, 255, 255, 105))
+        p.drawPath(dim)
+        pulse = 0.5 + 0.5 * math.sin(getattr(self, "_ph", 0.0) * 2 * math.pi)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(QColor(255, 64, 86, int(40 + 40 * pulse)), 9, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        p.drawPath(shape)
+        p.setPen(QPen(QColor("#ff4056"), 2.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        p.drawPath(shape)
+        p.restore()
+
+    def draw_flow(self, p):
+        """small dots drift along the sewer from the house to the main, so the way it flows is clear (the screen only, never the PDF)"""
+        pg = self.page
+        if not pg.res or not self.sh or not (pg.st.get("look") or {}).get("flow", True):
+            return
+        path = (pg.res.get("sewer") or {}).get("path") or []
+        if len(path) < 2:
+            return
+        S = self.sh.pt
+        pts = [S(q) for q in path]
+        seg = [math.hypot(b.x() - a.x(), b.y() - a.y()) for a, b in zip(pts[:-1], pts[1:])]
+        tot = sum(seg)
+        if tot < 8:
+            return
+        gap = max(26.0, self.sh.s * 1.4)
+        p.save()
+        p.setPen(Qt.PenStyle.NoPen)
+        ph = getattr(self, "_ph", 0.0)
+        d = (ph * gap) % gap
+        while d < tot:
+            k, acc = 0, 0.0
+            while k < len(seg) - 1 and acc + seg[k] < d:
+                acc += seg[k]
+                k += 1
+            f = (d - acc) / seg[k] if seg[k] > 1e-9 else 0.0
+            x = pts[k].x() + (pts[k + 1].x() - pts[k].x()) * f
+            y = pts[k].y() + (pts[k + 1].y() - pts[k].y()) * f
+            fade = min(1.0, d / 30.0, (tot - d) / 30.0)
+            p.setBrush(QColor(139, 90, 43, int(210 * max(0.0, fade))))
+            p.drawEllipse(QPointF(x, y), 2.8, 2.8)
+            d += gap
+        p.restore()
 
     def draw(self, p, sh, interactive=False):
         pg = self.page
@@ -1232,13 +1344,31 @@ class SiteServicesPage(ToolBase):
                   "Show where the sewer, water and electricity come in. Click the plan, or drag the dots.",
                   "Pipe lengths and checks. Save the plan when you are happy."]
 
-    def more(self, bv, text="More options"):
-        """A folded-away section for the less used settings."""
+    def more(self, bv, text="More options", icon=None, summary=None):
+        """A folded-away section for the less used settings: an icon, the name, and (while it is closed) a line saying what is set."""
         from PySide6.QtWidgets import QToolButton
+        from PySide6.QtGui import QIcon
+        head = QWidget()
+        hl = QHBoxLayout(head)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.setSpacing(8)
         btn = QToolButton()
         btn.setText("\u25b8 " + text)
         btn.setCheckable(True)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setStyleSheet("QToolButton{border:none;text-align:left;padding:4px 2px;font-weight:600;} QToolButton:hover{color:#ff4056;}")
+        if icon:
+            try:
+                mod = sys.modules.get("mot_xa_energy") or sys.modules.get("__main__")
+                btn.setIcon(QIcon(mod.icon_pixmap(icon, "#ff4056", 18)))
+                btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            except Exception:
+                pass
+        hl.addWidget(btn)
+        sm = QLabel("")
+        sm.setObjectName("xaSub")
+        sm.setStyleSheet("QLabel{color:rgba(128,128,128,230);font-size:12px;}")
+        hl.addWidget(sm, 1)
         w = QFrame()                                    # a soft rounded card that works on the light and the dark theme
         w.setObjectName("svcCard")
         w.setStyleSheet("QFrame#svcCard{background:rgba(128,128,128,18);border:1px solid rgba(128,128,128,70);border-radius:10px;}")
@@ -1246,10 +1376,27 @@ class SiteServicesPage(ToolBase):
         lay.setContentsMargins(12, 10, 12, 12)
         lay.setSpacing(8)
         w.setVisible(False)
-        btn.toggled.connect(lambda on: (w.setVisible(on), btn.setText(("\u25be " if on else "\u25b8 ") + text)))
-        bv.addWidget(btn)
+        if not hasattr(self, "_sums"):
+            self._sums = []
+        if summary:
+            self._sums.append((sm, summary, w))
+
+        def tg(on):
+            w.setVisible(on)
+            btn.setText(("\u25be " if on else "\u25b8 ") + text)
+            sm.setVisible(not on)
+            self._refresh_sums()
+        btn.toggled.connect(tg)
+        bv.addWidget(head)
         bv.addWidget(w)
         return lay
+
+    def _refresh_sums(self):
+        for sm, fn, w in getattr(self, "_sums", []):
+            try:
+                sm.setText("" if w.isVisibleTo(self) and not w.isHidden() else fn())
+            except Exception:
+                sm.setText("")
 
     def __init__(self, win):
         super().__init__(win)
@@ -1391,7 +1538,7 @@ class SiteServicesPage(ToolBase):
             row.addWidget(QLabel(lab))
             row.addWidget(w_, st_ or 1)
         bv.addLayout(row)
-        ml = self.more(bv, "Road side and north arrow")
+        ml = self.more(bv, "Road side and north arrow", "land", lambda: "north %d\u00b0" % round(float((self.st.get("sheet") or {}).get("north", 0) or 0)))
         row = FlowLayout(None, 8, 6)
         self.sh_road = QComboBox()
         for t_ in ("left", "right", "top", "bottom"):
@@ -1419,7 +1566,7 @@ class SiteServicesPage(ToolBase):
         ml.addLayout(row)
         row = FlowLayout(None, 8, 6)
         self.look_cb = {}
-        for key, text in (("fill", "Green stand"), ("walls", "Boundary walls"), ("cutout", "Export frame (blue)"), ("storm", "Stormwater arrow"), ("wp_box", "WP / VV box and marks"), ("upright", "Names and numbers stay level when the plan is turned")):
+        for key, text in (("fill", "Green stand"), ("walls", "Boundary walls"), ("cutout", "Export frame (blue)"), ("storm", "Stormwater arrow"), ("wp_box", "WP / VV box and marks"), ("upright", "Names and numbers stay level when the plan is turned"), ("flow", "Show the sewer flowing on the screen (not on the PDF)")):
             cb_ = QCheckBox(text)
             cb_.setChecked(True)
             cb_.toggled.connect(lambda on, k=key: self.set_look(k, on))
@@ -1449,7 +1596,7 @@ class SiteServicesPage(ToolBase):
             row.addWidget(w)
         row.addStretch(1)
         bv.addLayout(row)
-        ml = self.more(bv, "Exact position")
+        ml = self.more(bv, "Exact position", "ruler")
         row = FlowLayout(None, 8, 6)
         for lab, w in (("Centre x", self.h_x), ("y", self.h_y)):
             row.addWidget(QLabel(lab))
@@ -1477,7 +1624,7 @@ class SiteServicesPage(ToolBase):
             row.addWidget(w)
         row.addStretch(1)
         bv.addLayout(row)
-        ml = self.more(bv, "Exact position")
+        ml = self.more(bv, "Exact position", "ruler")
         row = FlowLayout(None, 8, 6)
         for lab, w in (("Centre x", self.c_x), ("y", self.c_y)):
             row.addWidget(QLabel(lab))
@@ -1525,7 +1672,7 @@ class SiteServicesPage(ToolBase):
             row.addWidget(ab)
             row.addStretch(1)
             bv.addLayout(row)
-            ml = self.more(bv, "Exact position and settings")
+            ml = self.more(bv, "Exact position and settings", "ruler")
             row = FlowLayout(None, 8, 6)
             row.addWidget(QLabel("Along the street"))
             row.addWidget(sx)
@@ -1592,7 +1739,7 @@ class SiteServicesPage(ToolBase):
                     row.addWidget(QLabel(lab))
                     row.addWidget(w)
                 row.addStretch(1)
-                ml2 = self.more(bv, "Pipe settings (depth, fall, eyes)")
+                ml2 = self.more(bv, "Pipe settings (depth, fall, eyes)", "drop", lambda: "%s mm pipe, fall 1:%d, %d mm deep at the house" % ((self.st.get("params") or {}).get("sewer_pipe", "110"), round(float((self.st.get("params") or {}).get("fall", 50))), round(float((self.st.get("params") or {}).get("min_depth", 0.45)) * 1000)))
                 ml2.addLayout(row)
                 row = FlowLayout(None, 8, 6)
                 vb = QPushButton("Add a sewer point: click in the plan")
@@ -1623,7 +1770,7 @@ class SiteServicesPage(ToolBase):
                 row.addWidget(hr_)
                 row.addStretch(1)
                 ml2.addLayout(row)
-                ml3 = self.more(bv, "Sewer section for the council (levels, PDF, DXF)")
+                ml3 = self.more(bv, "Sewer section for the council (levels, PDF, DXF)", "layers", lambda: "%s; %s" % ("contours in use" if (self.st.get("contours") and (self.st.get("levels") or {}).get("use_contours", 1)) else "typed levels", ("no drop", "drop by the program", "drop where you chose")[int((self.st.get("levels") or {}).get("drop_mode", 0) or 0)] if str((self.st.get("levels") or {}).get("drop_mode", 0) or 0) in "012" else "no drop"))
                 lt = QLabel("The section needs levels. Type the ground levels from the survey (metres). Leave a box at 'not set' and the section says the levels are assumed.")
                 lt.setWordWrap(True)
                 lt.setObjectName("xaSub")
@@ -1711,7 +1858,7 @@ class SiteServicesPage(ToolBase):
                     row.addWidget(b_)
                 row.addStretch(1)
                 ml3.addLayout(row)
-                ml4 = self.more(bv, "Sewer elevation from floor plan and elevation screenshots (WCs, basins, council sheet)")
+                ml4 = self.more(bv, "Sewer elevation from floor plan and elevation screenshots (WCs, basins, council sheet)", "clipboard", lambda: "%d screenshot(s)" % len((self.st.get("elev") or {}).get("shots") or []))
                 lt4 = QLabel("Add a screenshot of each floor plan (Claude reads where the WCs, basins, showers, baths, sinks and washing machines are) and, if you have one, a "
                              "screenshot of an elevation (Claude reads the floor levels). The plan is laid onto the house on the site plan using the stand's orientation, and "
                              "the sewer elevation is drawn from it: the stacks, the sewer under them and the invert levels that clear the lowest fixtures.")
@@ -2186,6 +2333,7 @@ class SiteServicesPage(ToolBase):
         self._sync_drop()
         self._contour_info()
         self._chips()
+        self._refresh_sums()
         self.show_compliance()
         if not light:
             self.fill_results()

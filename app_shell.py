@@ -11,6 +11,7 @@ SUBJECTS = [(0, "Project", "home"), (6, "Drawing register", "clipboard"), (10, "
             (3, "Coverage && FAR", "building"), (4, "Detail notes", "ruler"), (5, "Costing", "tag"),
             (7, "Area schedule", "layers"), (8, "Building lines", "land"), (12, "House placing", "land"), (9, "Guidelines review", "clipboard")]
 CTX = {13: "sans", 11: "invoicing", 10: "orders", 1: "sans", 2: "sans", 3: "sans", 4: "detail", 5: "costing", 6: "register", 7: "site", 8: "site", 9: "rules", 12: "site"}      # which tool a main tab belongs to
+TOOL_COL = {"sans": "#d8132b", "invoicing": "#2e9e6b", "orders": "#e0a020", "detail": "#3b82f6", "costing": "#8b5cf6", "register": "#14b8a6", "site": "#a0714a", "rules": "#8a9099"}      # each tool has its own colour
 PSUB_ICONS = {"Drawings": "clipboard", "Orders": "tag", "Client changes": "edit", "Sent and revisions": "export",
               "Fixtures and sanitary ware": "drop", "Building materials": "layers", "Whole building and budget": "calc"}
 LV_SUBS = [(0, "Windows", "window"), (1, "Doors", "door"), (2, "Rooms", "room"), (3, "Results", "results"), (4, "Plan", "plan")]
@@ -97,6 +98,9 @@ class Rail(QFrame):
         navsc.setStyleSheet("QScrollArea{background:transparent;} #railNavBox{background:transparent;} QScrollBar:vertical{width:6px;}")
         navsc.setWidget(navw)
         v.addWidget(navsc, 1)
+        self.stripe = QFrame()                       # a thin line in the colour of the tool you are in
+        self.stripe.setFixedHeight(3)
+        v.insertWidget(0, self.stripe)
         self.nav, self.badge, self.subs, self.rows, self.psubs = {}, {}, {}, {}, {}
         for idx, label, _icon in SUBJECTS:
             row = QWidget()
@@ -238,12 +242,16 @@ class Rail(QFrame):
                     sb.setProperty("on", on)
                     sb.style().unpolish(sb)
                     sb.style().polish(sb)
+        col_ = TOOL_COL.get(ctx, "#d8132b")
+        if hasattr(self, "stripe"):
+            self.stripe.setStyleSheet("background:%s;border-radius:1px;" % col_)
         for idx, b in self.nav.items():
             on = "true" if idx == cur else "false"
             if b.property("on") != on:
                 b.setProperty("on", on)
                 b.style().unpolish(b)
                 b.style().polish(b)
+            b.setStyleSheet(("QPushButton#railNav[on=\"true\"]{border-left:3px solid %s;}" % col_) if idx == cur else "")
         lvi = self.win.tabs.currentIndex()
         for i, sb in self.subs.items():
             on = "true" if (cur == 1 and i == lvi) else "false"

@@ -20791,7 +20791,7 @@ QHeaderView::section:vertical { border-bottom: 1px solid #2a2e34; padding: 6px; 
 QTableCornerButton::section { background: #1f2125; border: none; }
 
 QLineEdit, QPlainTextEdit, QTextEdit, QDoubleSpinBox, QSpinBox { background: #121316; border: 1px solid #4a5058;
-    border-radius: 8px; padding: 5px 10px; selection-background-color: #d8132b; }
+    border-radius: 10px; padding: 5px 11px; selection-background-color: #d8132b; }
 QLineEdit:focus, QPlainTextEdit:focus, QDoubleSpinBox:focus, QSpinBox:focus { border: 1px solid #d8132b; }
 QAbstractSpinBox { padding-right: 20px; }
 QAbstractSpinBox::up-button { subcontrol-origin: border; subcontrol-position: top right; width: 18px; border: none; background: transparent; margin-top: 2px; }
@@ -20810,6 +20810,16 @@ QCheckBox { background: transparent; spacing: 9px; }
 QCheckBox::indicator { width: 19px; height: 19px; border-radius: 6px; border: 1px solid #4a5058; background: #1b1d21; }
 QCheckBox::indicator:hover { border: 1px solid #8a9099; }
 QCheckBox::indicator:checked { background: #d8132b; border: 1px solid #d8132b; image: url(@TICK@); }
+QCheckBox::indicator:checked:hover { background: #ff4056; border: 1px solid #ff4056; }
+QRadioButton { background: transparent; spacing: 9px; }
+QRadioButton::indicator { width: 19px; height: 19px; border-radius: 10px; border: 1px solid #4a5058; background: #1b1d21; }
+QRadioButton::indicator:hover { border: 1px solid #8a9099; }
+QRadioButton::indicator:checked { border: 6px solid #d8132b; background: #121316; }
+QSlider::groove:horizontal { height: 6px; border-radius: 3px; background: #34383e; }
+QSlider::sub-page:horizontal { background: #d8132b; border-radius: 3px; }
+QSlider::handle:horizontal { background: #eceef0; border: 2px solid #d8132b; width: 14px; height: 14px; margin: -6px 0; border-radius: 9px; }
+QProgressBar { border: none; border-radius: 6px; background: #262a2f; text-align: center; min-height: 12px; }
+QProgressBar::chunk { background: #d8132b; border-radius: 6px; }
 
 QMenuBar { background: #121316; color: #eceef0; padding: 3px 8px; border-bottom: 1px solid #2a2e34; }
 QMenuBar::item { background: transparent; padding: 6px 14px; border-radius: 7px; }
