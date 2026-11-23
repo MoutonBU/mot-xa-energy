@@ -11300,6 +11300,7 @@ class MainWindow(QMainWindow):
         add(rd, "Report details...", self.rd_dialog)
         add(rd, "Preview report", lambda: self.preview_pdf_report(self._write_rd_pdf, self._run_xa_quiet))
         add(rd, "Export report...", self.export_rd_pdf)
+        add(rp, "Open items before submission...", self.open_items_dialog)
         add(rd, "Export each subject as its own PDF...", lambda: self.export_subject_pdfs("rd"))
         add(rd, "Export pages as PNG (for Archicad)...", lambda: self.export_pages_png("rd"))
         add(rp, "Compliance summary sheet (PNG / PDF for Archicad)...", self.export_summary_block)
@@ -18430,6 +18431,75 @@ class MainWindow(QMainWindow):
         if ri.get("occ") and ri["occ"] not in self.T12_OCC:
             h.append("<p style='color:#b3202f'>Tables 1 and 2 have no data for occupancy %s.</p>" % ri["occ"])
         return "".join(h)
+
+    def open_items(self):
+        """what still stops a submission, from every tool: -> [(section, text, severity)] with severity 'must' (a check fails or is missing) or 'check' (look at it)"""
+        rd = self.rd
+        out = []
+
+        def need(sec, txt, sev="must"):
+            out.append((sec, txt, sev))
+        for k, lab in (("project", "project name"), ("owner", "owner"), ("architect", "architect"), ("details", "site details (erf / stand)"), ("date", "date")):
+            if not str(rd.get(k, "") or "").strip():
+                need("Report details", "The %s is empty (Project details)." % lab, "check")
+        # light and ventilation
+        res = getattr(self, "results", None)
+        if not res:
+            need("Light and ventilation", "The light and ventilation check has not been run.")
+        else:
+            bad = [r for r in res if not (r["light_ok"] and r["vent_ok"]) and not r.get("circulation")]
+            if bad:
+                need("Light and ventilation", "%d room%s fail%s the light or ventilation check (%s)." % (len(bad), "" if len(bad) == 1 else "s", "s" if len(bad) == 1 else "", ", ".join(sorted({r["room"] for r in bad})[:6])))
+        need("Light and ventilation", "Rules are from %s. SANS 10400-O Edition 4 was gazetted on 30 May 2025: check the numbers (Rules...) against the edition in force." % RULES_EDITION[0], "check") if "2011" in RULES_EDITION[0] else None
+        # energy
+        if not str(rd.get("route", "")).strip():
+            need("Energy (XA)", "No compliance route is chosen (Report details).")
+        if "rational" in str(rd.get("route", "")).lower() or "4.3" in str(rd.get("route", "")):
+            if not str(rd.get("act_cons", "")).strip():
+                need("Rational design", "The rational design simulation has not been run.")
+            elif str(rd.get("sim_cert", "")).startswith("NOT certified") or not str(rd.get("sim_cert", "")).strip():
+                need("Rational design", "The simulation figures come from the built-in model, which is not certified by Agrement South Africa: run the final figures in certified software (clause 4.3).")
+        if not str(rd.get("epw", "") or "").strip() and not str(rd.get("lat", "") or "").strip():
+            need("Energy (XA)", "No weather file or site location is set (Get weather data for the site online).", "check")
+        # house placing
+        sp = getattr(self, "services_page", None)
+        if sp is not None and getattr(sp, "res", None):
+            r = sp.res
+            for w in r.get("warnings") or []:
+                need("House placing", w)
+            for c in r.get("compliance") or []:
+                if c["ok"] is False:
+                    need("House placing", "%s: %s (%s)." % (c["label"], c["value"], c["limit"]))
+            z = sp.st["stand"].get("zoning") or {}
+            if not (z.get("coverage") or z.get("far") or z.get("height")):
+                need("House placing", "No zoning limits are typed in (coverage, floor area ratio, height), so those are not checked.", "check")
+            if not str(sp.st["sheet"].get("stand_no", "") or "").strip():
+                need("House placing", "The stand number is not typed in (Plan labels).", "check")
+        return out
+
+    def open_items_dialog(self):
+        from PySide6.QtWidgets import QTextBrowser
+        items = self.open_items()
+        d = QDialog(self)
+        d.setWindowTitle("Open items before submission")
+        d.resize(720, 520)
+        v = QVBoxLayout(d)
+        if not items:
+            h = "<h3 style='color:#1f7a3d'>Nothing open that the program can see.</h3><p>It cannot see drawings, forms or the municipality's own requirements: use the council pack checklist for those.</p>"
+        else:
+            must = [i for i in items if i[2] == "must"]
+            chk = [i for i in items if i[2] != "must"]
+            h = "<h3>%d to fix, %d to look at</h3>" % (len(must), len(chk))
+            for title, lst, col in (("To fix", must, "#b3202f"), ("To look at", chk, "#8a6d00")):
+                if lst:
+                    h += "<p style='color:%s'><b>%s</b></p><ul>%s</ul>" % (col, title, "".join("<li><b>%s</b>: %s</li>" % (a, b) for a, b, _c in lst))
+        t = QTextBrowser()
+        t.setHtml(h)
+        v.addWidget(t)
+        b = QPushButton("Close")
+        b.clicked.connect(d.accept)
+        v.addWidget(b)
+        d.exec()
 
     def rules_dialog(self):
         """the numbers of SANS 10400-O the light and ventilation check uses, with the edition they come from"""

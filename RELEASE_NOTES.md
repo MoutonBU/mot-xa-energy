@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.179**
+Current version: **1.86.180**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Open items before submission:** a new "Open items before submission..." under Reports lists what still stops a submission, from every tool: empty project details, light and ventilation not run or rooms failing, no compliance route, rational design not run or run only in the uncertified built-in model, no weather or site location, house placing warnings and zoning limits not met or not typed in, missing stand number, and the SANS 10400-O edition the rules come from. Items that must be fixed are red, items to look at are amber.
 - **House placing, moving the house is much faster:** the house and carport now follow the mouse at once instead of waiting for you to pause, and the sewer, water and electrical lines are worked out about seven times faster while you drag (coarser grid, no side-to-side port tries, and the grid costs are kept between the three lines). The exact lines are drawn when you let go, as before. On the Blue Hills stand 2093 a drag step went from about 120 ms to about 35 ms.
 - **Rational design, clause 4.2 route (Tables 1 and 2):** a new button "Tables 1 and 2 (clause 4.2)..." in the simulation window. Type in the two limits for your occupancy and energy zone from your copy of SANS 10400-XA:2021 (the tables are SABS copyright, so they are not built in) and the result page adds a pass / fail line: yearly energy against Table 1 and demand against Table 2, with no reference building. It warns when the occupancy has no data in the tables (A1 to A4, E2, E3, F1 to F3, G1, H1 to H5 do). The limits are saved with the project.
 - **Light and ventilation, "Rules..." button:** the percentages and least areas of SANS 10400-O can now be edited, with the edition they come from named (SANS 10400-O:2011 Edition 3 until you change it). Edition 4 was gazetted on 30 May 2025 but its text is only sold by SABS, so type its numbers in once you have checked them; they are saved with the project and the report names the edition.
