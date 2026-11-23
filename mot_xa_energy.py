@@ -9248,6 +9248,8 @@ class MainWindow(QMainWindow):
             for c in (7, 8, 9):
                 t.horizontalHeaderItem(c).setToolTip(tip)
             t.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+            t.horizontalHeader().setMinimumSectionSize(118)       # keeps the Type / Opening style boxes readable
+            t.horizontalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
             t.itemChanged.connect(self._on_sched_changed)
             t.itemChanged.connect(self._lv_refresh_soon)
             for c in (7, 8, 9):
@@ -12406,7 +12408,7 @@ class MainWindow(QMainWindow):
         qc_ = _QSS_CACHE.get(key_)
         if qc_ is None:
             qc_ = light_qss(STUDIO_QSS) if light() else STUDIO_QSS
-            qc_ = _QSS_CACHE[key_] = qc_.replace("@TICK@", _tick_png())
+            qc_ = _QSS_CACHE[key_] = qc_.replace("@TICK@", _tick_png()).replace("@UP@", _arrow_png(True)).replace("@DOWN@", _arrow_png(False))
         app.setStyleSheet(qc_)
         for w_ in app.allWidgets():                 # colours written inside labels and style sheets
             try:
@@ -20763,6 +20765,11 @@ QTableCornerButton::section { background: #1f2125; border: none; }
 QLineEdit, QPlainTextEdit, QTextEdit, QDoubleSpinBox, QSpinBox { background: #121316; border: 1px solid #34383e;
     border-radius: 8px; padding: 5px 10px; selection-background-color: #d8132b; }
 QLineEdit:focus, QPlainTextEdit:focus, QDoubleSpinBox:focus, QSpinBox:focus { border: 1px solid #d8132b; }
+QAbstractSpinBox { padding-right: 20px; }
+QAbstractSpinBox::up-button { subcontrol-origin: border; subcontrol-position: top right; width: 18px; border: none; background: transparent; margin-top: 2px; }
+QAbstractSpinBox::down-button { subcontrol-origin: border; subcontrol-position: bottom right; width: 18px; border: none; background: transparent; margin-bottom: 2px; }
+QAbstractSpinBox::up-arrow { image: url(@UP@); width: 9px; height: 9px; }
+QAbstractSpinBox::down-arrow { image: url(@DOWN@); width: 9px; height: 9px; }
 QTableWidget QLineEdit, QTableWidget QSpinBox, QTableWidget QDoubleSpinBox { border-radius: 5px; background: #121316; color: #eceef0; padding: 0px 6px; min-height: 26px; }
 QComboBox { background: #262a2f; border: 1px solid #3a3f46; border-radius: 9px; padding: 5px 14px; }
 QComboBox:hover { background: #30353b; }
@@ -20800,6 +20807,25 @@ QScrollBar::handle:horizontal:hover { background: #565c64; }
 QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
 QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 """
+
+
+def _arrow_png(up):
+    """a small grey chevron for the up / down buttons of number boxes; returns its path"""
+    from PySide6.QtGui import QPixmap
+    path = os.path.join(tempfile.gettempdir(), "mcp_lv_spin_%s.png" % ("up" if up else "down"))
+    pm = QPixmap(36, 36)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor(150, 156, 165), 5)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    y0, y1 = (24, 12) if up else (12, 24)
+    p.drawPolyline([QPointF(8, y0), QPointF(18, y1), QPointF(28, y0)])
+    p.end()
+    pm.save(path, "PNG")
+    return path.replace("\\", "/")
 
 
 def _tick_png():
@@ -20896,7 +20922,7 @@ class GlassCard(QFrame):
 
 def apply_glass_theme(app, win):
     app.setStyle("Fusion")
-    app.setStyleSheet((light_qss(STUDIO_QSS) if light() else STUDIO_QSS if studio() else GLASS_QSS).replace("@TICK@", _tick_png()))
+    app.setStyleSheet((light_qss(STUDIO_QSS) if light() else STUDIO_QSS if studio() else GLASS_QSS).replace("@TICK@", _tick_png()).replace("@UP@", _arrow_png(True)).replace("@DOWN@", _arrow_png(False)))
     _install_header_marks(app)
     app.setWindowIcon(app_icon())
     win.setWindowIcon(app_icon())
@@ -21521,7 +21547,7 @@ def sign_in_gate(app):
         if u:
             return u
     app.setStyle("Fusion")
-    app.setStyleSheet((light_qss(STUDIO_QSS) if light() else STUDIO_QSS).replace("@TICK@", _tick_png()))
+    app.setStyleSheet((light_qss(STUDIO_QSS) if light() else STUDIO_QSS).replace("@TICK@", _tick_png()).replace("@UP@", _arrow_png(True)).replace("@DOWN@", _arrow_png(False)))
     dlg = LoginDialog()
     if dlg.exec() == QDialog.DialogCode.Accepted:
         return dlg.user
