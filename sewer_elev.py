@@ -515,10 +515,12 @@ def draw(p, W, H, S, d, title_lines=(), when=None):
             text(ux, Y(t["ngl"]) + 5.0, "MH", 2.5, True, align="c")
             text(ux + w * 1000.0 / scl / 2 + 2, Y(il_ - 0.15), "MH size to be designed by the Civil Eng. to the local council's criteria.", 2.0)
         elif t["kind"] == "RE":
-            run = t["depth"] * 0.9
-            line(ux, Y(il_ + od), ux + run * 1000.0 / scl, Y(t["ngl"]), BROWN, 0.25, DD)
-            line(ux, Y(il_), ux + run * 1000.0 / scl, Y(t["ngl"]), BROWN, 0.25, DD)
-            text(ux + run * 1000.0 / scl + 1.5, Y(t["ngl"]) + 3.0, "RE", 2.2, True)
+            dirn = -1.0 if d["u_of_x"](max(0.0, t["x"] - 0.5)) < d["u_of_x"](t["x"]) else 1.0      # leans up the line, the way the pipe comes from
+            run = (Y(il_ + od) - Y(t["ngl"])) * dirn                                              # 45 degrees on the paper
+            line(ux, Y(il_ + od), ux + run, Y(t["ngl"]), BROWN, 0.25, DD)
+            line(ux, Y(il_), ux + run, Y(t["ngl"]), BROWN, 0.25, DD)
+            text(ux + run + (1.5 if dirn > 0 else -1.5), Y(t["ngl"]) + 3.0, "RE", 2.2, True, align="l" if dirn > 0 else "r")
+            t["_lean"] = run
         else:
             line(ux, Y(il_ + od), ux, Y(t["ngl"]), BROWN, 0.25, DD)
             text(ux - 1.5, Y(t["ngl"]) + 4.0, "IE", 2.2, True, align="r")
@@ -572,7 +574,7 @@ def draw(p, W, H, S, d, title_lines=(), when=None):
         text(bx + 1.2, by + 3.3, "CL = %.3f" % t["ngl"], 2.2)
         text(bx + 1.2, by + 6.3, "IL  = %.3f" % t["il"], 2.2)
         text(bx + 1.2, by + 9.3, "D  = %dmm" % round(t["depth"] * 1000) if t["depth"] < 1.0 else "D  = %.2fm" % t["depth"], 2.2)
-        gx_ = X(t["u"]) + (t["depth"] * 0.9 * 1000.0 / scl if t["kind"] == "RE" else 0)
+        gx_ = X(t["u"]) + t.get("_lean", 0.0)
         line(bx + (0 if bx > gx_ else bw), by + 4.0, gx_, Y(t["ngl"]) + 0.4, BLACK, 0.2)
         p.setBrush(BLACK)
         p.drawEllipse(P(gx_, Y(t["ngl"]) + 0.4), 0.5 * S, 0.5 * S)

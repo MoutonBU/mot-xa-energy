@@ -285,12 +285,13 @@ def draw(p, W, H, S, d, title_lines=(), when=None):
         xe, yg, yc = X(s["x"]), Y(s["ngl"]), Y(s["il"]) - od_mm
         w = 1.6
         sty = Qt.PenStyle.SolidLine if s["kind"] == "IE" else Qt.PenStyle.DashLine
-        line(xe - w, yc, xe - w, yg, BROWN, 0.35, sty)
-        line(xe + w, yc, xe + w, yg, BROWN, 0.35, sty)
-        line(xe - w - 0.8, yg, xe + w + 0.8, yg, BROWN, 0.5)
+        lean = (yc - yg) if s["kind"] == "RE" else 0.0              # a rodding eye leans at 45 degrees (on the paper) up the line, back towards the house
+        line(xe - w, yc, xe - w - lean, yg, BROWN, 0.35, sty)
+        line(xe + w, yc, xe + w - lean, yg, BROWN, 0.35, sty)
+        line(xe - w - lean - 0.8, yg, xe + w - lean + 0.8, yg, BROWN, 0.5)
         ly = yg - 5.0 - (i % 3) * 3.8
-        line(xe, yg - 0.5, xe, ly + 0.6, GREY, 0.12)
-        text(xe, ly, s["name"], 2.3, True, BROWN, "c")
+        line(xe - lean, yg - 0.5, xe - lean, ly + 0.6, GREY, 0.12)
+        text(xe - lean, ly, s["name"], 2.3, True, BROWN, "c")
     # the main sewer at the right
     r = 3.2
     if main_off:
