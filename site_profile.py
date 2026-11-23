@@ -300,21 +300,24 @@ def draw(p, W, H, S, d, title_lines=(), when=None):
     ilh, ile = d["il"](0.0), d["il"](Hh)
     od_mm = max(d["od"] * 1000.0 / vs, 0.8)
     bounds = [x_ for x_, _y in d["segs"]] + [Hh]
+    leans = {}                                                   # a drop is the rodding eye's 45 degree line carried on down to the lower pipe
+    for xd_, yin_, yout_ in d["drops"]:
+        leans[xd_] = max(0.0, min(abs(Y(yout_) - Y(yin_)), X(Hh) - X(xd_) - 3.0))
     for k_ in range(len(bounds) - 1):
         xa_, xb_ = bounds[k_], bounds[k_ + 1]
         ya_ = d["il"](xa_)
         yb_ = d["il_in"](xb_) if k_ + 1 < len(bounds) - 1 else d["il"](xb_)
-        p.setPen(pen(BROWN, 0.6))
-        p.drawLine(P(X(xa_), Y(ya_)), P(X(xb_), Y(yb_)))
-        p.setPen(pen(BROWN, 0.3))
-        p.drawLine(P(X(xa_), Y(ya_) - od_mm), P(X(xb_), Y(yb_) - od_mm))
+        xs_ = X(xa_) + (leans.get(xa_, 0.0) if k_ > 0 else 0.0)
+        xe_ = X(xb_)
+        for off_, w_ in ((0.0, 0.6), (od_mm, 0.3)):
+            line(xs_, Y(ya_) - off_, xe_, Y(yb_) - off_, BROWN, w_)
     p.setPen(pen(BROWN, 0.3))
     p.drawLine(P(X(0.0), Y(ilh)), P(X(0.0), Y(ilh) - od_mm))
-    for xd_, yin_, yout_ in d["drops"]:                           # the drop: the pipe steps down inside the eye
-        lean_ = min(abs(Y(yout_) - Y(yin_)), max(X(xd_) - X(0.0), 0.0))   # leans 45 degrees up toward the house, like the rodding eye, as in the designer's sketch
+    for xd_, yin_, yout_ in d["drops"]:                           # the drop: the leaning line from the upper pipe down to the lower pipe
+        ln_ = leans[xd_]
         for off_ in (0.0, od_mm):
-            line(X(xd_) - lean_, Y(yin_) - off_, X(xd_), Y(yout_) - off_, BROWN, 0.6 if off_ == 0 else 0.3)
-        text(X(xd_) + 2.0, (Y(yin_) + Y(yout_)) / 2.0 + 0.8, "drop %d mm" % round((yin_ - yout_) * 1000), 2.0, False, BROWN)
+            line(X(xd_), Y(yin_) - off_, X(xd_) + ln_, Y(yout_) - off_, BROWN, 0.6 if off_ == 0 else 0.3)
+        text(X(xd_) + ln_ + 2.0, Y(yout_) + 4.5, "drop %d mm" % round((yin_ - yout_) * 1000), 2.0, False, BROWN)
     # eyes
     for i, s in enumerate(st):
         if s["kind"] == "MAIN":
