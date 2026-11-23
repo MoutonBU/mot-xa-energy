@@ -229,6 +229,7 @@ def build_sheet(page, path, scale_text="1:200"):
     turn = st["sheet"].get("turn", 0.0)
     W, H = w_m * S_MM, h_m * S_MM
     opts = page.export_opts()
+    opts["cutpoly"] = [tuple(q) for q in cpoly]
     # where texts have to move off each other is worked out the way the screen does it, at the zoom on the screen
     scr = view.sh or site_sheet.Sheet(max(min(800.0 / w_m, 600.0 / h_m), 2.0), (cx, cy), (800, 600), road, turn)
     pic = QPicture()

@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.170**
+Current version: **1.86.171**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **House placing, the export frame carries every stand number inside it:** the numbers of all stands within 150 m are now read from the township plan (before, only the stands touching yours), and any stand that lies in or reaches into the blue frame gets its number written inside it on the DXF and PDF, also when the frame is turned. A number whose stand sticks out of the frame is moved in to sit just inside the edge. Load the stand again once so an older project picks the numbers up.
 - **Light and ventilation rules checked against SANS 10400-O:2011 (Edition 3):** ventilation now also has the minimum opening area, 0.2 m2 per room (0.1 m2 for category 1 rooms), the larger of that and 5% of the floor area. The report names the edition. SANS 10400-O Edition 4 was gazetted on 30 May 2025; its text is sold by SABS and was not available to check, so confirm it against the new edition.
 - **House placing, the blue export frame is always square to the paper and can be turned:** it no longer lies at 45 degrees when the plan is turned. Drag its edges and corners to resize, the round ring above it to turn it (it snaps back to square within 2 degrees, Shift gives steps of 15 degrees; the angle is shown), and the cross in its middle to move it. The DXF and PDF are cut to the frame as turned, and "Reset frame" puts it back square. Projects saved with the old frame open with a square frame that holds it.
 - **Rational design: what to change to pass, and the certification roadmap:** when the design uses more than the reference building, the window now tries 11 changes (hot water system, ceiling and wall insulation, glass, shading, smaller east and west windows, lighting, air tightness, heating efficiency), shows what each saves on its own, and lists the combination that gets the design to or under the reference. The "How to get this certified" button sets out the Agrement South Africa protocol steps and where the built-in model stands against them.

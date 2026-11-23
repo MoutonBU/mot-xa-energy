@@ -3222,7 +3222,11 @@ class SiteServicesPage(ToolBase):
                 site_township._seg_dist(((P_[i][0] + P_[(i + 1) % len(P_)][0]) / 2, (P_[i][1] + P_[(i + 1) % len(P_)][1]) / 2), o["poly"][j], o["poly"][(j + 1) % len(o["poly"])]) < 0.4
                 for o in nbs for j in range(len(o["poly"])))]
             r = {"no": no, "poly": P_, "neighbours": nbs, "lines": lines, "street_edge": d["street"], "corner": corner,
-                 "road_known": True, "connections": conn, "matches": 1, "label": None, "ref": name}
+                 "road_known": True, "connections": conn, "matches": 1, "label": None, "ref": name,
+                 "far": [{"no": n, "poly": [tuple(q) for q in v["poly"]]} for n, v in stands.items()
+                         if n != no and n not in d.get("nb", []) and v.get("poly")
+                         and math.hypot(site_township.centroid([tuple(q) for q in v["poly"]])[0] - site_township.centroid(P_)[0],
+                                        site_township.centroid([tuple(q) for q in v["poly"]])[1] - site_township.centroid(P_)[1]) <= site_township.FAR_REACH]}
             return r, d
         return None, None
 
@@ -3352,6 +3356,16 @@ class SiteServicesPage(ToolBase):
             cen = se.apply_frame(fr, site_township.centroid(Q))
             if o.get("no"):
                 nbs.append({"no": o["no"], "c": [round(cen[0], 2), round(cen[1], 2)]})
+        far = []
+        for o in r.get("far") or []:
+            Q = o.get("poly") or []
+            c0 = tuple(o["c"]) if o.get("c") else (site_township.centroid(Q) if Q else None)
+            if c0 is None:
+                continue
+            cen = se.apply_frame(fr, c0)
+            far.append({"no": o["no"], "c": [round(cen[0], 2), round(cen[1], 2)],
+                        "poly": [[round(a, 2), round(b, 2)] for a, b in (se.apply_frame(fr, q) for q in Q)]})
+        self.st["far_stands"] = far
         cats["other"] += own
         rl = []
         for g in r["lines"].get("road", []):

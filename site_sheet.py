@@ -243,6 +243,53 @@ def edge_len(a, b):
     return math.hypot(b[0] - a[0], b[1] - a[1])
 
 
+def _in_poly(p, poly):
+    c = False
+    for i in range(len(poly)):
+        a, b = poly[i], poly[(i + 1) % len(poly)]
+        if (a[1] > p[1]) != (b[1] > p[1]) and p[0] < (b[0] - a[0]) * (p[1] - a[1]) / ((b[1] - a[1]) or 1e-12) + a[0]:
+            c = not c
+    return c
+
+
+def _into_poly(p, poly, margin=1.4):
+    """p if it is inside the (convex) frame, otherwise the nearest place inside it, a margin in from the edge"""
+    cen = (sum(q[0] for q in poly) / len(poly), sum(q[1] for q in poly) / len(poly))
+    def ok(q):
+        if not _in_poly(q, poly):
+            return False
+        return all(se.seg_dist(q, poly[i], poly[(i + 1) % len(poly)]) >= margin for i in range(len(poly)))
+    if ok(p):
+        return p
+    lo, hi = 0.0, 1.0                                                  # slide it along the line to the middle until it fits
+    for _ in range(30):
+        mid = (lo + hi) / 2
+        q = (p[0] + (cen[0] - p[0]) * mid, p[1] + (cen[1] - p[1]) * mid)
+        if ok(q):
+            hi = mid
+        else:
+            lo = mid
+    return (p[0] + (cen[0] - p[0]) * hi, p[1] + (cen[1] - p[1]) * hi)
+
+
+def _numbered_stands(st, cpoly=None):
+    """the stands whose numbers are written on the plan: the neighbours, and (for the export frame) every further stand that lies in or reaches into the frame"""
+    out = [n for n in (st.get("neighbours") or []) if n.get("no")]
+    if not cpoly:
+        return out
+    have = {n["no"] for n in out}
+    for f in st.get("far_stands") or []:
+        if f["no"] in have:
+            continue
+        c = tuple(f["c"])
+        poly = [tuple(q) for q in f.get("poly") or []]
+        hit = _in_poly(c, cpoly) or any(_in_poly(q, cpoly) for q in poly) or any(_in_poly(q, poly) for q in cpoly if len(poly) >= 3)
+        if hit:
+            out.append(f)
+            have.add(f["no"])
+    return out
+
+
 def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=False):
     """the whole plan. st = engine state, res = engine result, opts = sheet details (names, north, scale text)"""
     D = Drawer(p, sh, minpx, lite)
@@ -308,13 +355,15 @@ def _draw(p, sh, st, res, opts, minpx=7, under=None, show_under=False, lite=Fals
                 _wall_strip(pa, pb)
     # ---- entry block (kerb to the carport front)
     cp = res.get("carport") if res else None
-    for i_, nb_ in enumerate(st.get("neighbours") or []):          # the stands beside it, from the township drawing
-        if nb_.get("no"):
-            cn_ = tuple(nb_["c"])
-            cut_ = opts.get("cutout")
-            if cut_:                                                   # the exported cut-out: the number is moved in to sit inside the frame
-                cn_ = (min(max(cn_[0], cut_[0] + 1.4), cut_[2] - 1.4), min(max(cn_[1], cut_[1] + 1.0), cut_[3] - 1.0))
-            D.text(cn_, str(nb_["no"]), 1.3, (1, 0), bold=True, color=QColor(120, 120, 120), key="NB:%d" % i_, upright=True)
+    cpoly_ = opts.get("cutpoly")
+    for i_, nb_ in enumerate(_numbered_stands(st, cpoly_)):          # the stand numbers: the stands beside it and every other stand that reaches into the export frame
+        cn_ = tuple(nb_["c"])
+        if cpoly_:                                                     # the exported cut-out: the number is moved in to sit inside the frame
+            cn_ = _into_poly(cn_, cpoly_, 1.4)
+        elif opts.get("cutout"):
+            cut_ = opts["cutout"]
+            cn_ = (min(max(cn_[0], cut_[0] + 1.4), cut_[2] - 1.4), min(max(cn_[1], cut_[1] + 1.0), cut_[3] - 1.0))
+        D.text(cn_, str(nb_["no"]), 1.3, (1, 0), bold=True, color=QColor(120, 120, 120), key="NB:%d" % i_, upright=True)
     if cp:
         en = entry_shape(st, cp)
         D.poly(en["poly"], GREY, 0.03, ENTRY)

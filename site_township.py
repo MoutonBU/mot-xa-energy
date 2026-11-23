@@ -50,6 +50,7 @@ CONN_REACH = _TS["connection"]
 ROAD_REACH = _TS["road"]          # metres: how far round the stand the road is read (the bend, the other side of the street, the next streets); a rule in site_plans_data
 SERVICE_REACH = _TS["services"]
 STAND_REACH = _TS["stands"]
+FAR_REACH = 150.0
 
 
 def main_chain(segs, ref, reach=40.0, min_len=12.0):
@@ -776,8 +777,23 @@ class Township:
         lines = {c: [(a, -b_, c_, -d) for a, b_, c_, d in v] for c, v in lines.items()}
         for c_ in conn.values():
             c_["pt"] = (c_["pt"][0], -c_["pt"][1])
+        far = []                                                 # every other stand number within FAR_REACH, so the export frame can carry the numbers of all stands inside it
+        seen_ = {o["no"] for o in nb if o.get("no")} | {str(number).strip()}
+        for s_, x_, y_, lay_ in self.texts:
+            sn_ = stand_no(s_)
+            if not sn_ or not 2 <= len(sn_) <= 6 or sn_ in seen_ or self.cat_of(lay_) == "off":
+                continue
+            X, Y = x_ * k, y_ * k
+            if math.hypot(X - pc[0], Y - pc[1]) > FAR_REACH:
+                continue
+            f = self._poly_at((x_, y_))
+            Q = [(x * k, -y * k) for x, y in site_dxf._clean(f["pts"])] if f else []
+            if len(Q) < 3:
+                Q = []
+            seen_.add(sn_)
+            far.append({"no": sn_, "c": (X, -Y), "poly": Q})
         return {"no": str(number).strip(), "poly": P, "connections": conn, "neighbours": nb, "lines": lines, "street_edge": edge, "road_known": known, "corner": corner,
-                "label": label, "matches": len(hits)}
+                "label": label, "matches": len(hits), "far": far}
 
     @staticmethod
     def strip_symbols(lines, max_ext=4.0, min_ext=0.3):
