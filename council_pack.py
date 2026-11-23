@@ -28,6 +28,7 @@ ITEMS = [
     ("Ownership and land", "Company or trust resolution", None, "If the owner is a company or trust."),
     ("Ownership and land", "Servitude, HOA or body corporate consent", None, "If it applies."),
     ("Drawings", "Site plan with the building lines", "site", "Made from Building lines."),
+    ("Drawings", "Site plan with services (house placing: sewer, water, electrical)", "svc", "Made from House placing."),
     ("Drawings", "Floor plans", None, ""),
     ("Drawings", "Elevations", None, ""),
     ("Drawings", "Sections", None, ""),
@@ -205,7 +206,7 @@ class CouncilPage(ToolBase):
             sp = getattr(w, "site_page", None)
             return bool(sp is not None and sp.encroachments())
         attr = {"site": "site_page", "reg": "register_page", "xa": "_write_xa_pdf", "lv": "_write_report_pdf", "cov": "_write_cov_pdf",
-                "area": "area_page", "rd": "_write_rd_pdf"}.get(key)
+                "area": "area_page", "rd": "_write_rd_pdf", "svc": "services_page"}.get(key)
         return bool(attr) and getattr(w, attr, None) is not None
 
     def refresh_table(self, *_a):
@@ -357,6 +358,8 @@ class CouncilPage(ToolBase):
             w.area_page.write_report(path)
         elif key == "site":
             w.site_page.write_report(path)
+        elif key == "svc":
+            w.services_page.write_pdf(path)
         elif key == "dep":
             w.site_page.write_motivation_pdf(path)
         elif key == "reg":
@@ -573,6 +576,10 @@ class CouncilPage(ToolBase):
         saved = d.get("items")
         if saved:
             self.items = [dict(self._new_item("Other", "", None, ""), **it) for it in saved]
+            have = {it.get("auto") for it in self.items if it.get("auto")}
+            for sec, what, auto, hint in ITEMS:                         # items added in later versions come into older projects too
+                if auto and auto not in have:
+                    self.items.append(self._new_item(sec, what, auto, hint))
         else:
             self.items = [self._new_item(s, w, a, h) for s, w, a, h in ITEMS]
         self.refresh_table()

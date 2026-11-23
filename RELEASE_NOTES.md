@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.175**
+Current version: **1.86.176**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Council submission pack carries the House placing plan:** the checklist has a new line "Site plan with services (house placing: sewer, water, electrical)", made from House placing as an A3 PDF and joined into the pack with the other sheets. Projects saved earlier get the new line too.
 - **Light and ventilation, light on the whole opening:** a new tick "Light on the whole opening" counts daylight on the full window or door opening including its frame, as SANS 10400-O 4.2.1.1.3 words it. Off (as before) counts the glass only. The glazing limit of SANS 10400-XA still uses the glass, the report says which basis was used, and the choice is saved with the project.
 - **Rational design, shade from a building next door, on or off:** the simulation window has a tick "A building next to this one throws shade on it": type the compass bearing it lies in, its distance, height and width facing the house, and its shade is taken off the sun's beam hour by hour. It works with the neighbours' skyline sent from House placing (both can be on together), and a second tick decides whether the reference building gets the same shade or only the design does. Untick them all for no shade. The result page says which was used.
 - **House placing hands over to the energy tools:** "Send to the energy tools" (in the zoning box) passes the stand number, area, coverage, the compass bearing of the house's long side (from the sheet's north arrow, road side and turn) and the skyline of the neighbouring houses to the report and the rational design. The simulation window has a new tick "Shade from the neighbouring houses": the neighbours' eaves (height typed in House placing, 3.5 m to start with) hide the sun's beam in the hours it is below their skyline, in the design and in the reference building alike. The north angle of the IFC is left as it is.
