@@ -766,7 +766,7 @@ class AnimIcon(QLabel):
         q.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         q.drawPixmap(QRectF(0, 0, side.width(), side.height()), pm, QRectF(pm.rect()))
         q.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-        q.fillRect(side.rect(), QColor(self._accent).darker(120))
+        q.fillRect(side.rect(), QColor(self._accent).darker(110))
         q.end()
         self._side = side
         self._side_rect = QRectF(side.rect())
@@ -843,7 +843,7 @@ class AnimIcon(QLabel):
             ca, sa = math.cos(ang), math.sin(ang)
             if abs(ca) < 0.08:
                 ca = 0.08 if ca >= 0 else -0.08                  # edge-on it still shows the thickness
-            D, N = 14.0, 9
+            D, N = 5.0, 5
             dst, src = QRectF(-w / 2.0, -hh / 2.0, w, hh), QRectF(self._pm.rect())
             base = p.transform()
             sh = QRadialGradient(QPointF(0.0, hh / 2.0 + 9.0), w * 0.42)                  # a soft floor shadow that narrows as the icon turns
@@ -889,17 +889,18 @@ def _spin_clock():
     el.start()
     tm = QTimer(QApplication.instance())
     tm.setTimerType(Qt.TimerType.PreciseTimer)
-    tm.setInterval(22)
+    tm.setInterval(33)
 
     def tick():
-        if QApplication.applicationState() != Qt.ApplicationState.ApplicationActive:
-            return
         t = el.elapsed() / 1000.0
         for w in list(_SPINNERS):
             try:
                 if w.isVisible() and not w.visibleRegion().isEmpty():
                     w._spin_t = t
-                    w.update()
+                    a_ = 0.68 * math.sin(t / w._spin_period * 2.0 * math.pi + w._spin_off)
+                    if abs(a_ - w.__dict__.get("_spin_last", 9.0)) > 0.003:        # nothing to redraw while it hardly moves (the ends of the sway)
+                        w._spin_last = a_
+                        w.update()
             except RuntimeError:
                 _SPINNERS.remove(w)
     tm.timeout.connect(tick)

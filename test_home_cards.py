@@ -167,3 +167,26 @@ _ic._spin_off = 0.0; _ic._spin_t = 0.0; a_ = _ic.grab().toImage()
 _ic._spin_t = _ic._spin_period / 8.0; b_ = _ic.grab().toImage()
 assert a_ != b_
 print("ok icons turn")
+
+# the real path: a project with an IFC picked for its card -> triangles -> turntable pictures AND the triangles kept for the big preview
+import tempfile as _tf
+_dummy = os.path.join(_tf.mkdtemp(), "m.ifc")
+open(_dummy, "w").write("x")
+_old_mesh, _old_cache = M.MainWindow._thumb_mesh, M.MainWindow._ifc_cache
+M.MainWindow._thumb_mesh = staticmethod(lambda ifc: [list(t) for t in tri_] if ifc == _dummy else None)
+M.MainWindow._ifc_cache = staticmethod(lambda ifc, ext: None)
+M.SETTINGS.setdefault("card_ifc", {})[pj] = _dummy
+M.MainWindow._THUMBS.clear(); M.MainWindow._SPIN.clear(); M.MainWindow._MESH.clear()
+w._thumb_worker = None
+w._load_thumbs([pj])
+_k2 = w._thumb_key(pj)
+_t = time.time()
+while time.time() - _t < 8 and _k2 not in M.MainWindow._SPIN: app.processEvents()
+assert _k2 in M.MainWindow._SPIN and len(M.MainWindow._SPIN[_k2]) == 90
+assert _k2 in M.MainWindow._MESH, "the triangles must be kept for the big preview"
+M.MainWindow._thumb_mesh, M.MainWindow._ifc_cache = _old_mesh, _old_cache
+M.SETTINGS["card_ifc"].pop(pj, None)
+print("ok real thumbs path")
+
+for _wk in list(M._BG_LIVE):                      # leave no thread running when the test ends
+    _wk.wait(8000)

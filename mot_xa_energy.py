@@ -4273,6 +4273,9 @@ def extract_schedule_images(images):
     return list(found.values()), skipped, "\n\n".join(raw)
 
 
+_BG_LIVE = set()
+
+
 class BgWorker(QThread):
     """Runs a slow function off the screen thread so the window stays alive."""
     done = Signal(object, str)
@@ -4280,6 +4283,11 @@ class BgWorker(QThread):
     def __init__(self, fn):
         super().__init__()
         self.fn = fn
+        self.finished.connect(lambda: _BG_LIVE.discard(self))
+
+    def start(self, *a):
+        _BG_LIVE.add(self)                  # held until the thread has really ended: dropping it earlier crashes Qt ("destroyed while running")
+        super().start(*a)
 
     def run(self):
         try:
@@ -11846,6 +11854,14 @@ class MainWindow(QMainWindow):
             try:
                 arr = np.stack([np.frombuffer(bytes(im.constBits()), np.uint8)[:pw * ph * 4].reshape(ph, pw, 4) for im in fr])
                 np.save(cf, arr)
+                d_ = os.path.dirname(cf)                                  # keep the picture folder small: the oldest files go first
+                fs_ = sorted(((os.path.getmtime(os.path.join(d_, x)), os.path.getsize(os.path.join(d_, x)), os.path.join(d_, x)) for x in os.listdir(d_)))
+                tot_ = sum(s_ for _m, s_, _p in fs_)
+                while tot_ > 300 * 1024 * 1024 and len(fs_) > 2:
+                    _m, s_, p_ = fs_.pop(0)
+                    if p_ != cf:
+                        os.remove(p_)
+                        tot_ -= s_
             except Exception:
                 pass
         return fr
@@ -12132,7 +12148,7 @@ class MainWindow(QMainWindow):
                         self._SPIN[k] = fr
                         try:
                             import numpy as np_
-                            self._MESH[k] = np.asarray(data[3], np_.float32)       # for the bigger picture when the mouse rests on a card
+                            self._MESH[k] = np_.asarray(data[3], np_.float32)       # for the bigger picture when the mouse rests on a card
                         except Exception:
                             pass
                     data = data[:3] + (bool(fr),)            # the triangles are not kept once the pictures exist
@@ -12482,6 +12498,15 @@ class MainWindow(QMainWindow):
             self._autosave_clear()
         except Exception:
             pass
+        for wk_ in list(_BG_LIVE):                                # a picture still being made must not crash the program on the way out
+            try:
+                if wk_.isRunning():
+                    wk_.wait(400)
+                    if wk_.isRunning():
+                        wk_.terminate()
+                        wk_.wait(300)
+            except Exception:
+                pass
         ev.accept()
         try:
             QApplication.quit()
