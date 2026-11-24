@@ -34,6 +34,8 @@ ALLOW = {
     "kitchen_base_m": ("Kitchen base units per kitchen", "m", 4.0),
     "kitchen_wall_m": ("Kitchen wall units per kitchen", "m", 3.0),
     "bic_m_per_bedroom": ("Built-in cupboard per bedroom", "m", 2.4),
+    "handrail_extra_m": ("Handrail / balustrade length added by hand (steel or timber), on top of the IFC railings", "m", 0.0),
+    "handrail_ss_m": ("Stainless steel handrail / balustrade length, by hand", "m", 0.0),
     "plaster_brick_walls": ("Plaster the plain 'Brick' walls too (1 = yes)", "0/1", 0.0),
     # how the price is built up
     "breakage_pct": ("Breakage, theft and wastage allowance, on all materials", "%", 3.0),
@@ -91,6 +93,8 @@ RATES = {
     "cup_wall": ("Kitchen wall units", "m", 1500.0, 600.0, EST_NOTE),
     "countertop": ("Kitchen countertop", "m", 1200.0, 450.0, EST_NOTE),
     "bic": ("Built-in bedroom cupboard", "m", 2500.0, 800.0, EST_NOTE),
+    "handrail": ("Handrail and balustrade, steel or timber, supplied and fixed (per metre run)", "m", 850.0, 300.0, EST_NOTE),
+    "handrail_ss": ("Handrail and balustrade, stainless steel, supplied and fixed (per metre run)", "m", 1900.0, 450.0, EST_NOTE),
     "accessories": ("Bathroom accessories (roll holder, towel rail, mirror)", "per bathroom", 600.0, 120.0, EST_NOTE),
 }
 # installation labour for each sanitary fixture (the fixture itself is priced on the fixtures tab)
@@ -157,7 +161,7 @@ def read_ifc_quantities(path):
     sc = UU.calculate_unit_scale(f)
     q = dict(brick110=0.0, brick220=0.0, cavity=0.0, plaster_area=0.0, plain_brick_area=0.0, footing_vol=0.0, footing_len=0.0,
              slab_vol=0.0, slab_area=0.0, tile_area=0.0, dpm_area=0.0, roof_slab_vol=0.0, roof_area=0.0, beam_vol=0.0, win_area=0.0,
-             win_n=0, door_n=0, gate_n=0, names={}, levels={}, slab_levels={})
+             win_n=0, door_n=0, gate_n=0, rail_m=0.0, rail_n=0, names={}, levels={}, slab_levels={})
 
     def shape_stats(e):
         s = ifcopenshell.geom.create_shape(st, e)
@@ -255,6 +259,17 @@ def read_ifc_quantities(path):
                     pass
         except Exception:
             pass
+    for e in f.by_type("IfcRailing"):                           # handrails and balustrades: the run length of each
+        try:
+            ln = _axis_length(e, sc)
+            if ln <= 0:
+                v = shape_stats(e)[3]
+                ext = v.max(axis=0) - v.min(axis=0)
+                ln = float(((ext[0] ** 2 + ext[1] ** 2) ** 0.5) if ext[2] < 0.5 * max(ext[0], ext[1]) else (ext ** 2).sum() ** 0.5)
+            q["rail_m"] += ln
+            q["rail_n"] += 1
+        except Exception:
+            continue
     for e in f.by_type("IfcWindow"):
         try:
             w, h = float(e.OverallWidth or 0) * sc, float(e.OverallHeight or 0) * sc
@@ -378,11 +393,100 @@ def bom(q, rates, allow, facts, fixtures=None):
     add("Cupboards and fittings", "Kitchen countertops", "m", k * A("kitchen_base_m"), "countertop")
     add("Cupboards and fittings", "Built-in bedroom cupboards", "m", facts["bedrooms"] * A("bic_m_per_bedroom"), "bic")
     add("Cupboards and fittings", "Bathroom accessories", "no.", float(facts["baths"]), "accessories")
+    # stairs, balconies and ramps: handrails priced per metre run
+    add("Handrails and balustrades", "Handrail and balustrade (per metre run)", "m", float(q.get("rail_m", 0.0)) + A("handrail_extra_m"), "handrail")
+    add("Handrails and balustrades", "Handrail and balustrade, stainless steel (per metre run)", "m", A("handrail_ss_m"), "handrail_ss")
     # sanitary ware installation (labour; the fixtures are added from the fixtures tab)
     for cat, n in (fixtures or {}).items():
         key = "inst:" + cat if ("inst:" + cat) in RATES else "inst:Other"
         add("Sanitary ware", "Install " + cat.lower(), "no.", float(n), key)
     return rows
+
+
+
+# ---------------- import of a quantity surveyor's bill (Excel exported from CCS Candy or similar) ----------------
+_QS_HEAD = {"desc": ("description", "item description", "descr", "particulars", "work", "details"),
+            "item": ("item", "item no", "item no.", "ref", "ref.", "no", "no.", "nr", "bill ref"),
+            "unit": ("unit", "uom", "units", "u/m"),
+            "qty": ("qty", "quantity", "quant", "qnty", "qty."),
+            "rate": ("rate", "unit rate", "rate (r)", "price", "unit price"),
+            "amount": ("amount", "total", "value", "amount (r)", "cost", "extended")}
+_QS_SKIP = re.compile(r"^\s*(total|sub-?total|grand total|carried|brought|collection|summary|page|to collection|carried forward|brought forward)\b", re.I)
+
+
+def qs_number(x):
+    """A number from a spreadsheet cell: 1 234,50 / 1,234.50 / R 1234.5 / (12.5). None when it is not a number."""
+    t = str(x if x is not None else "").strip().replace("R", "").replace("\u00a0", "").replace(" ", "")
+    if not t:
+        return None
+    neg = t.startswith("(") and t.endswith(")")
+    t = t.strip("()")
+    if re.search(r"[A-Za-z]", t):
+        return None
+    if "," in t and "." in t:
+        t = t.replace(",", "") if t.rfind(".") > t.rfind(",") else t.replace(".", "").replace(",", ".")
+    elif "," in t:
+        t = t.replace(",", ".") if re.search(r",\d{1,2}$", t) and t.count(",") == 1 else t.replace(",", "")
+    try:
+        v = float(t)
+    except ValueError:
+        return None
+    return -v if neg else v
+
+
+def parse_qs_sheet(rows):
+    """Items of a quantity surveyor's bill from the rows of one sheet.
+    Returns (items, notes); items = [{"group", "item", "unit", "qty", "rate"}]. Section headings become the group; a line with a quantity
+    and a rate (or an amount) is an item; a line with only an amount is a lump sum; a text line right under an item continues its description."""
+    rows = [[str(c if c is not None else "").strip() for c in r] for r in rows]
+    hdr, cols = None, {}
+    for ri, r in enumerate(rows[:60]):
+        found = {}
+        for ci, c in enumerate(r):
+            k = c.lower().strip(" :")
+            for key, names in _QS_HEAD.items():
+                if k in names and key not in found:
+                    found[key] = ci
+        if "desc" in found and ("qty" in found or "amount" in found) and len(found) >= 3:
+            hdr, cols = ri, found
+            break
+    if hdr is None:
+        return [], ["No header row found: the sheet needs columns like Description, Unit, Quantity, Rate and Amount."]
+    items, notes, group, last = [], [], "QS bill", None
+    unpriced = 0
+    g = lambda r, k: r[cols[k]] if k in cols and cols[k] < len(r) else ""
+    for r in rows[hdr + 1:]:
+        desc = g(r, "desc")
+        ino = g(r, "item")
+        unit = g(r, "unit")
+        qty, rate, amt = qs_number(g(r, "qty")), qs_number(g(r, "rate")), qs_number(g(r, "amount"))
+        if not desc and not ino and qty is None and amt is None:
+            continue
+        if _QS_SKIP.match(desc or ino):
+            last = None
+            continue
+        if qty is None and amt is None and rate is None:
+            if not desc:
+                continue
+            if last is not None and not ino and not unit:
+                last["item"] = (last["item"] + " " + desc)[:240]
+                continue
+            group = desc[:70].title() if desc.isupper() else desc[:70]
+            last = None
+            continue
+        if qty is None:
+            qty, rate = 1.0, (amt if rate is None else rate)
+            unit = unit or "sum"
+        elif rate is None:
+            rate = (amt / qty) if (amt is not None and qty) else 0.0
+        if rate == 0 and not amt:
+            unpriced += 1
+        it = {"group": group, "item": ((ino + " " if ino else "") + (desc or "(no description)"))[:240], "unit": unit or "no.", "qty": qty, "rate": rate or 0.0}
+        items.append(it)
+        last = it
+    if unpriced:
+        notes.append("%d line(s) have a quantity but no rate: they are in the list at rate 0 for you to price." % unpriced)
+    return items, notes
 
 
 def buildup(mat, lab, allow):
@@ -492,7 +596,8 @@ class MaterialsPage(QWidget):
         ev = QVBoxLayout(ew)
         ev.setContentsMargins(0, 0, 0, 0)
         eb = QHBoxLayout()
-        for text, fn in (("Add item", self.add_extra), ("Remove item", self.remove_extra)):
+        for text, fn in (("Add item", self.add_extra), ("Add handrail (per metre)", self.add_handrail), ("Import QS Excel (Candy)...", self.import_qs),
+                         ("Remove item", self.remove_extra)):
             b = QPushButton(text)
             b.clicked.connect(fn)
             eb.addWidget(b)
@@ -830,6 +935,53 @@ class MaterialsPage(QWidget):
         self.custom.append({"group": "Extra items", "item": "New item", "unit": "sum", "qty": 1, "mat": 0, "lab": 0})
         self.refresh()
         self.tabs.setCurrentIndex(4)
+
+    def add_handrail(self):
+        """A handrail line priced per metre run: type the length in the Quantity column."""
+        m_, l_ = RATES["handrail"][2], RATES["handrail"][3]
+        rv = self.rate_vals().get("handrail")
+        if rv:
+            m_, l_ = rv
+        self.custom.append({"group": "Handrails and balustrades", "item": "Handrail and balustrade, per metre run", "unit": "m", "qty": 1, "mat": m_, "lab": l_})
+        self.refresh()
+        self.tabs.setCurrentIndex(4)
+
+    def import_qs(self, path=None, incl_vat=None):
+        """Bring in the items of a quantity surveyor's Excel bill (CCS Candy export or similar) as extra items. Earlier QS imports are replaced."""
+        if not path:
+            path, _ = QFileDialog.getOpenFileName(self, "Quantity surveyor's bill (Excel)", "", "Excel (*.xlsx *.xlsm);;All files (*)")
+        if not path:
+            return
+        try:
+            from mail_inbox import _xlsx_rows
+            with open(path, "rb") as fh:
+                sheets = _xlsx_rows(fh.read())
+        except Exception as ex:
+            QMessageBox.warning(self, "QS bill", "The file could not be read:\n%s" % ex)
+            return
+        best, notes = [], ["No sheet had a table with Description, Quantity and Rate columns."]
+        for sh in sheets:
+            it, nt = parse_qs_sheet(sh)
+            if len(it) > len(best):
+                best, notes = it, nt
+            elif not best:
+                notes = nt
+        if not best:
+            QMessageBox.information(self, "QS bill", "Nothing could be imported.\n" + "\n".join(notes))
+            return
+        if incl_vat is None:
+            incl_vat = QMessageBox.question(self, "QS bill", "Do the rates in this bill include VAT?\n\nYes = VAT is taken out first (it is added once on the final price).",
+                                            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes
+        vd = 1.15 if incl_vat else 1.0
+        self.custom = [c for c in self.custom if c.get("src") != "QS"]
+        for it in best:
+            self.custom.append({"group": it["group"], "item": it["item"], "unit": it["unit"], "qty": it["qty"], "mat": 0.0, "lab": round(it["rate"] / vd, 2), "src": "QS"})
+        self.refresh()
+        self.tabs.setCurrentIndex(4)
+        msg = ("%d items imported from the quantity surveyor's bill, as extra items. The surveyor's rate is taken as an all-in rate (no breakage is added and no VAT "
+               "is stripped again). Preliminaries, profit and contingency from the Allowances tab still go on top: set them to 0 there if the bill already carries them."
+               % len(best))
+        QMessageBox.information(self, "QS bill", msg + ("\n\n" + "\n".join(notes) if notes else ""))
 
     def remove_extra(self):
         r = self.extrat.currentRow()

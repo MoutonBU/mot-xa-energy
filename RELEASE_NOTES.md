@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.254**
+Current version: **1.86.255**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Costing, Building materials: new "Import QS Excel (Candy)..." button on the Extra items tab. It reads a quantity surveyor's bill from an Excel file (Description, Unit, Quantity, Rate, Amount columns; section headings become groups, lump sums and unpriced lines are kept), asks whether the rates include VAT, and replaces any earlier QS import. Handrails and balustrades are now priced per metre run: rates for steel/timber and stainless steel, the length of every railing in the IFC, a length typed by hand on the Allowances tab, and an "Add handrail (per metre)" button on the Extra items tab.
 - Rational design checked against SANS 10400-XA:2026 annex B: every occupancy group now uses its own table B.2 schedule (A, E, F, G1, H1/H5 and H2-H4, not only houses), and the hot water litres follow table B.3 for the occupancy (category 1 house 64, other house 115, hotels 140 and so on). The reference building, clause numbers, tables 1, 2 and 4 and the model rules were already on the 2026 text. Not built in: the 30 W hot meal gain for dining rooms (B.2 b), and the standard prints two different G1 plug-load blocks (first used for lights, second for plug load).
 - Home tile icons: no more jagged edges while turning (picture sized to the screen, solid edge layers).
 - Home tile icons: smooth edges again (sharper picture, edge drawn at full sharpness and smoothed).
