@@ -6,7 +6,7 @@ import math
 import sys
 
 from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPoint, QPointF, QRectF, QSize, QTimer, Qt, QUrl, QVariantAnimation
-from PySide6.QtGui import QColor, QDesktopServices, QIcon, QCursor, QPalette, QPainter, QPen, QRadialGradient
+from PySide6.QtGui import QBrush, QColor, QDesktopServices, QIcon, QCursor, QPalette, QPainter, QPen, QRadialGradient
 from PySide6.QtWidgets import (QAbstractButton, QApplication, QGraphicsDropShadowEffect, QGraphicsOpacityEffect, QTabWidget, QToolTip, QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QTextBrowser, QVBoxLayout, QWidget)
 
 GREEN, AMBER, GREY, RED = "#2e9e5b", "#d9a21b", "#8a8f98", "#C8102E"
@@ -1016,40 +1016,52 @@ def install_icon_motion():
     app.installEventFilter(app._icon_motion)
 
 
-class _Zoom(QWidget):
-    """the picture of a card that grows to fill the window, like an app opening on a Mac: the card melts into the window colour as it grows"""
-    def __init__(self, parent, pm, bg):
+class _Wipe(QWidget):
+    """A round wash of the tool's colour that spreads from the click, with the tool's mark in the middle: drawn by hand, no pictures scaled."""
+    def __init__(self, parent, col, pm, origin):
         super().__init__(parent)
-        self.pm, self.bg, self.t = pm, QColor(bg), 0.0
+        self.col, self.pm, self.o = QColor(col), pm, origin
+        self.k, self.a = 0.0, 1.0
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        w, h = parent.width(), parent.height()
+        self.R = max(((w - origin.x()) ** 2 + (h - origin.y()) ** 2) ** 0.5, (origin.x() ** 2 + (h - origin.y()) ** 2) ** 0.5,
+                     ((w - origin.x()) ** 2 + origin.y() ** 2) ** 0.5, (origin.x() ** 2 + origin.y() ** 2) ** 0.5) + 6
 
     def paintEvent(self, _e):
         p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        r = self.rect()
-        rad = max(0.0, 14.0 * (1.0 - self.t))
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(self.bg)
-        p.drawRoundedRect(r, rad, rad)
-        p.setOpacity(max(0.0, 1.0 - self.t * 0.95))
-        p.drawPixmap(r, self.pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setOpacity(self.a)
+        r = self.R * self.k
+        fill = self.col.darker(185)
+        edge = QColor(self.col.lighter(130))
+        g = QRadialGradient(self.o, max(r, 1.0))
+        g.setColorAt(0.0, self.col.darker(150))
+        g.setColorAt(0.8, fill)
+        g.setColorAt(1.0, fill)
+        p.setPen(QPen(edge, 3))
+        p.setBrush(QBrush(g))
+        p.drawEllipse(self.o, r, r)
+        if self.pm is not None and self.k > 0.25:
+            p.setOpacity(self.a * min(1.0, (self.k - 0.25) / 0.4))
+            sz = self.pm.deviceIndependentSize()
+            c = self.rect().center()
+            p.drawPixmap(int(c.x() - sz.width() / 2), int(c.y() - sz.height() / 2), self.pm)
         p.end()
 
 
-def zoom_open(win, src, on_covered, ms=300):
-    """Click a card: its picture grows from where it sits to fill the window (ease-out), then `on_covered` runs under it
-    (the slow work: opening the project) and the picture fades away to show the result."""
-    from PySide6.QtCore import QRect, QPoint, QPropertyAnimation
+def wipe_open(win, src, col, on_covered, pm=None, ms=230):
+    """Open a tool or a project: the tool's colour spreads from the click until the window is covered, `on_covered` runs under it
+    (the page changes, the project loads) and the colour fades away to show the result. About 0.45 s in all, nothing heavy is drawn."""
     top = win.centralWidget() or win
     try:
-        pm = src.grab()
-        r0 = QRect(src.mapTo(top, QPoint(0, 0)), src.size())
+        o = top.mapFromGlobal(QCursor.pos())
+        if not top.rect().contains(o):
+            o = src.mapTo(top, src.rect().center())
     except Exception:
         on_covered()
         return
-    r1 = top.rect()
-    ov = _Zoom(top, pm, top.palette().window().color())
-    ov.setGeometry(r0)
+    ov = _Wipe(top, col, pm, o)
+    ov.setGeometry(top.rect())
     ov.show()
     ov.raise_()
     an = QVariantAnimation(ov)
@@ -1058,27 +1070,26 @@ def zoom_open(win, src, on_covered, ms=300):
     an.setEndValue(1.0)
     an.setEasingCurve(QEasingCurve.Type.OutCubic)
 
-    def lerp(a, b, t):
-        return int(a + (b - a) * t)
-
     def step(v):
-        t = float(v)
-        ov.t = t
-        ov.setGeometry(lerp(r0.x(), r1.x(), t), lerp(r0.y(), r1.y(), t), lerp(r0.width(), r1.width(), t), lerp(r0.height(), r1.height(), t))
+        ov.k = float(v)
         ov.update()
 
     def covered():
+        ov.k = 1.0
+        ov.repaint()
         try:
             on_covered()
         finally:
-            ov.setGeometry(top.rect())
-            eff = QGraphicsOpacityEffect(ov)
-            ov.setGraphicsEffect(eff)
-            fa = QPropertyAnimation(eff, b"opacity", ov)
-            fa.setDuration(260)
+            fa = QVariantAnimation(ov)
+            fa.setDuration(220)
             fa.setStartValue(1.0)
             fa.setEndValue(0.0)
-            fa.setEasingCurve(QEasingCurve.Type.InOutQuad)
+            fa.setEasingCurve(QEasingCurve.Type.InQuad)
+
+            def fade(v):
+                ov.a = float(v)
+                ov.update()
+            fa.valueChanged.connect(fade)
             fa.finished.connect(ov.deleteLater)
             fa.start()
             ov._fa = fa

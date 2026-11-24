@@ -2689,6 +2689,27 @@ def _accent_rules(col):
     return r
 
 
+_APP_BASE = ("QMainWindow, QWidget#glassInner, QTabWidget, QStackedWidget { background: transparent; }\n"
+             "QTabWidget::pane { border: none; background: transparent; top: 6px; }\nQTabBar { background: transparent; }")
+
+
+def theme_widget(w, extra=""):
+    """Put the current look on one widget (and what is inside it) unless it already wears it: a theme switch only restyles what is on screen."""
+    key = ("light" if light() else "dark", extra)
+    if w is None or w.__dict__.get("_thk") == key:
+        return False
+    w._thk = key
+    raw_ = w.__dict__.get("_raw_ss")
+    if raw_ is None:
+        if "_th_base" not in w.__dict__:
+            w._th_base = w.styleSheet()
+        raw_ = w._th_base
+    else:
+        raw_ = _lt(raw_)
+    _orig_setSS(w, raw_ + "\n" + _final_qss() + ("\n" + extra if extra else ""))
+    return True
+
+
 def _final_qss():
     key_ = "light" if light() else "dark"
     qc_ = _QSS_CACHE.get(key_)
@@ -11677,13 +11698,29 @@ class MainWindow(QMainWindow):
         if card is None:
             go()
         else:
-            ux_.zoom_open(self, card, go)
+            ux_.wipe_open(self, card, "#d8132b", go, icon_pixmap("plan", "#ffffff", 84))
 
-    _THUMBS = {}                  # (path, file time) -> the stand outline and buildings, or None
+    _THUMBS = {}                  # (path, file time, IFC path, IFC file time) -> the stand outline and buildings, or None
 
     @staticmethod
-    def _thumb_read(path):
-        """the stand corners and buildings from a project file (runs off the screen thread; no Qt in here)"""
+    def _thumb_ifc(path, ifc):
+        """the outline of an IFC model seen from above, for the card picture (runs off the screen thread; None if it cannot be read)"""
+        try:
+            if not ifc or not os.path.exists(ifc) or os.path.getsize(ifc) > 200 * 1024 * 1024:
+                return None
+            import site_import as si_
+            polys = si_.ifc_footprint(ifc, False, True)[:8]
+            polys = [[tuple(q[:2]) for q in pl] for pl in polys if len(pl) >= 3]
+            return polys or None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _thumb_read(path, ifc=None):
+        """the stand corners and buildings from a project file (runs off the screen thread; no Qt in here)
+        With an IFC model (picked for the card, or the one the project uses) the picture is the building itself from above."""
+        if ifc is None or ifc == "":
+            ifc = ""
         try:
             if os.path.getsize(path) > 25 * 1024 * 1024:
                 return None
@@ -11692,6 +11729,13 @@ class MainWindow(QMainWindow):
         except Exception:
             return None
         site = d.get("site") or {}
+        ifc = ifc or ((d.get("ifc") or {}).get("path") if isinstance(d.get("ifc"), dict) else "") or ""
+        if ifc:
+            polys = MainWindow._thumb_ifc(path, ifc)
+            if polys:
+                pts = [q for pl in polys for q in pl]
+                xs, ys = [q[0] for q in pts], [q[1] for q in pts]
+                return ([(min(xs), min(ys)), (max(xs), min(ys)), (max(xs), max(ys)), (min(xs), max(ys))], polys, True)
         verts = [tuple(v[:2]) for v in (site.get("verts") or []) if len(v) >= 2]
         blds = []
         for b in (site.get("buildings") or [])[:6]:
@@ -11712,7 +11756,8 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _thumb_pixmap(data, w=120, h=70):
         from PySide6.QtGui import QPixmap
-        verts, blds = data
+        verts, blds = data[0], data[1]
+        from_ifc = len(data) > 2
         xs, ys = [v[0] for v in verts], [v[1] for v in verts]
         x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
         sc = min((w - 12) / max(x1 - x0, 1e-6), (h - 12) / max(y1 - y0, 1e-6))
@@ -11722,9 +11767,10 @@ class MainWindow(QMainWindow):
         pm.fill(QColor(0, 0, 0, 0))
         q = QPainter(pm)
         q.setRenderHint(QPainter.RenderHint.Antialiasing)
-        q.setPen(QPen(QColor(150, 160, 175), 1.4))
-        q.setBrush(QColor(110, 130, 110, 70))
-        q.drawPolygon(QPolygonF([P(v) for v in verts]))
+        if not from_ifc:
+            q.setPen(QPen(QColor(150, 160, 175), 1.4))
+            q.setBrush(QColor(110, 130, 110, 70))
+            q.drawPolygon(QPolygonF([P(v) for v in verts]))
         q.setPen(QPen(QColor(255, 64, 86), 1.2))
         q.setBrush(QColor(255, 64, 86, 90))
         for pl in blds:
@@ -11732,10 +11778,20 @@ class MainWindow(QMainWindow):
         q.end()
         return pm
 
+    def _card_ifc(self, path):
+        return (SETTINGS.get("card_ifc") or {}).get(path, "")
+
+    def _thumb_key(self, path):
+        i_ = self._card_ifc(path)
+        try:
+            return (path, os.path.getmtime(path), i_, os.path.getmtime(i_) if i_ else 0)
+        except OSError:
+            return (path, os.path.getmtime(path), "", 0)
+
     def _thumb(self, path):
         """the picture for a card if its data is already known (None otherwise); never reads a file on the screen thread"""
         try:
-            data = self._THUMBS.get((path, os.path.getmtime(path)), "?")
+            data = self._THUMBS.get(self._thumb_key(path), "?")
         except OSError:
             return None
         if data == "?" or data is None:
@@ -11747,8 +11803,8 @@ class MainWindow(QMainWindow):
         todo = []
         for p in paths:
             try:
-                if (p, os.path.getmtime(p)) not in self._THUMBS:
-                    todo.append((p, os.path.getmtime(p)))
+                if self._thumb_key(p) not in self._THUMBS:
+                    todo.append(self._thumb_key(p))
             except OSError:
                 pass
         if not todo:
@@ -11758,7 +11814,7 @@ class MainWindow(QMainWindow):
             return
 
         def work():
-            return [(k, self._thumb_read(k[0])) for k in todo]
+            return [(k, self._thumb_read(k[0], k[2])) for k in todo]
 
         wk = BgWorker(work)
         self._thumb_worker = wk
@@ -11771,6 +11827,31 @@ class MainWindow(QMainWindow):
             self._rebuild_home_cards(reload=again)
         wk.done.connect(done)
         wk.start()
+
+    def _card_menu(self, path, where):
+        """right-click a card: show an IFC model of the building on it"""
+        m = QMenu(self)
+        a1 = m.addAction("Show an IFC model on this card...")
+        a2 = m.addAction("Back to the stand outline") if self._card_ifc(path) else None
+        pick = m.exec(where)
+        if pick is None:
+            return
+        cur = dict(SETTINGS.get("card_ifc") or {})
+        if pick is a1:
+            f, _ = QFileDialog.getOpenFileName(self, "Pick the IFC model", os.path.dirname(path), "IFC model (*.ifc *.ifczip)")
+            if not f:
+                return
+            try:
+                import ifcopenshell                      # noqa: F401
+            except Exception:
+                QMessageBox.information(self, APP_NAME, "The IFC reader is not installed on this computer yet, so the model cannot be shown here.")
+                return
+            cur[path] = f
+        elif pick is a2:
+            cur.pop(path, None)
+        SETTINGS["card_ifc"] = cur
+        save_settings()
+        self._rebuild_home_cards()
 
     def _rebuild_home_cards(self, reload=True):
         """the cards on the start screen: the last eight projects, newest first, four to a row; click one and it opens with a zoom"""
@@ -11824,6 +11905,8 @@ class MainWindow(QMainWindow):
                 t_.setTextFormat(Qt.TextFormat.RichText)
                 cv.addWidget(t_)
             c.clicked.connect(lambda _=False, pp=p, cc=c: self._open_recent_card(pp, cc))
+            c.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            c.customContextMenuRequested.connect(lambda pos, pp=p, cc=c: self._card_menu(pp, cc.mapToGlobal(pos)))
             box.addWidget(c, k_ // 4, k_ % 4)
         if reload and hasattr(self, "_load_thumbs"):
             self._load_thumbs(lst)
@@ -12640,24 +12723,27 @@ class MainWindow(QMainWindow):
         if dn_ is not None and hasattr(dn_, "LIGHT"):
             dn_.LIGHT[0] = bool(light())
         self.setUpdatesEnabled(False)                # one repaint at the end instead of one per widget
-        key_ = "light" if light() else "dark"
-        qc_ = _QSS_CACHE.get(key_)
-        if qc_ is None:
-            qc_ = light_qss(STUDIO_QSS) if light() else STUDIO_QSS
-            qc_ = _QSS_CACHE[key_] = qc_.replace("@TICK@", _tick_png()).replace("@UP@", _arrow_png(True)).replace("@DOWN@", _arrow_png(False))
-        app.setStyleSheet(qc_)
+        if studio():
+            pass                                     # the look is on each page: only the one on screen is restyled now
+        else:
+            app.setStyleSheet(_final_qss())
         for w_ in app.allWidgets():                 # colours written inside labels and style sheets
             try:
                 d_ = w_.__dict__
                 if d_.get("_raw_txt") is not None and isinstance(w_, QLabel):
                     _QtW.QLabel.setText(w_, _lt(d_["_raw_txt"]))
                 raw_ = d_.get("_raw_ss")
-                if raw_:
+                if raw_ and studio() and not w_.isVisible():
+                    d_["_ss_stale"] = True               # restyled when it is shown
+                elif raw_:
                     new_ = _lt(raw_)
                     if new_ != w_.styleSheet():          # restyling is the slow part: skip what did not change
                         _orig_setSS(w_, new_)
+                        d_.pop("_thk", None)
             except Exception:
                 pass
+        if studio():
+            self.theme_now()
         try:
             apply_icons(self, True)
             for m_ in self.findChildren(QMenu):
@@ -12699,6 +12785,36 @@ class MainWindow(QMainWindow):
         save_settings()
         self.restart_app(seamless=True)
 
+    def theme_now(self):
+        """The window's frame and the page on screen get the current look; the other pages get it when they are opened."""
+        try:
+            from PySide6.QtWidgets import QToolTip
+            pal_ = QToolTip.palette()
+            pal_.setColor(pal_.ColorRole.ToolTipBase, QColor("#ffffff" if light() else "#1f2125"))
+            pal_.setColor(pal_.ColorRole.ToolTipText, QColor("#1c1f23" if light() else "#eceef0"))
+            QToolTip.setPalette(pal_)
+        except Exception:
+            pass
+        for w_ in (self.menuBar(), self.statusBar(), self.main_tabs.tabBar()):
+            w_.__dict__.pop("_thk", None)
+            theme_widget(w_)
+        def _frame(c_):                              # the parts around the tabs; whatever holds the tabs is not restyled as a whole
+            lay_ = c_.layout() if c_ is not None else None
+            for i_ in range(lay_.count() if lay_ is not None else 0):
+                it_ = lay_.itemAt(i_).widget()
+                if it_ is None or it_ is self.main_tabs:
+                    continue
+                if it_.isAncestorOf(self.main_tabs):
+                    _frame(it_)
+                else:
+                    it_.__dict__.pop("_thk", None)
+                    theme_widget(it_)
+        _frame(self.centralWidget())
+        pg_ = self.main_tabs.currentWidget()
+        if pg_ is not None:
+            pg_.__dict__.pop("_thk", None)
+            self.set_accent(getattr(self, "_accent_ctx", None))
+
     def set_accent(self, ctx):
         """Every tool wears its own colour: buttons, bars, table headers, selections and the icons' hover tint follow the tool that is open.
         Only the open tool's page gets the coloured rules (once), so switching tools does not restyle the whole program."""
@@ -12725,8 +12841,11 @@ class MainWindow(QMainWindow):
                 fn_ = getattr(self, "shell_restyle", None)
                 if fn_:
                     fn_()
+            self._accent_ctx = ctx
             page = self.main_tabs.currentWidget()
-            if page is not None and col:
+            if page is not None and studio():
+                theme_widget(page, _accent_rules(col) if col else "")
+            elif page is not None and col:
                 key = (col, bool(light()))
                 if page.__dict__.get("_acc_key") != key:
                     if "_acc_base" not in page.__dict__:
@@ -13982,7 +14101,10 @@ class MainWindow(QMainWindow):
             bl.addWidget(icl, 0, Qt.AlignmentFlag.AlignHCenter)
             bl.addWidget(lab, 0)
             bl.addStretch(1)
-            b.clicked.connect(lambda _=False, t=target: self.main_tabs.setCurrentIndex(self._tab_index(t)))
+            def opened(_=False, t=target, c_=tcol, i_=ico):
+                import ui_extras as ux_o
+                ux_o.wipe_open(self, b, c_, lambda: self.main_tabs.setCurrentIndex(self._tab_index(t)), icon_pixmap(i_, "#ffffff", 84))
+            b.clicked.connect(opened)
             return b
 
         def page(title, back=None):
@@ -20903,6 +21025,13 @@ class _HeaderMarker(QObject):
     """Application-wide: gives every table heading its resize markers the first time it is shown, and centres the cell text under the headings."""
 
     def eventFilter(self, obj, ev):
+        if ev.type() == QEvent.Type.Show and obj.__dict__.get("_ss_stale"):
+            obj._ss_stale = False
+            if "_thk" not in obj.__dict__ and obj.__dict__.get("_raw_ss"):
+                _orig_setSS(obj, _lt(obj._raw_ss))
+        if ev.type() == QEvent.Type.Show and obj.isWidgetType() and obj.isWindow() \
+                and isinstance(obj, (QDialog, QMenu, QMainWindow)) and studio() and not isinstance(obj, MainWindow):
+            theme_widget(obj)
         if ev.type() == QEvent.Type.Show and isinstance(obj, QTableView) and not obj.property("mot_centre"):
             obj.setProperty("mot_centre", True)
             try:
@@ -21243,7 +21372,11 @@ class GlassCard(QFrame):
 
 def apply_glass_theme(app, win):
     app.setStyle("Fusion")
-    app.setStyleSheet((light_qss(STUDIO_QSS) if light() else STUDIO_QSS if studio() else GLASS_QSS).replace("@TICK@", _tick_png()).replace("@UP@", _arrow_png(True)).replace("@DOWN@", _arrow_png(False)))
+    if studio():
+        app.setStyleSheet(_APP_BASE)         # the look itself sits on the window's parts, so light/dark can switch at once
+        win.theme_now()
+    else:
+        app.setStyleSheet(GLASS_QSS.replace("@TICK@", _tick_png()).replace("@UP@", _arrow_png(True)).replace("@DOWN@", _arrow_png(False)))
     _install_header_marks(app)
     app.setWindowIcon(app_icon())
     win.setWindowIcon(app_icon())

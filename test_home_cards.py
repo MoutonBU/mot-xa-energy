@@ -72,5 +72,24 @@ w._open_recent_card(ps8[5], cards[5])
 t_ = time.time()
 while time.time() - t_ < 1.8: app.processEvents()
 assert w.main_tabs.currentIndex() == 0 and w.current_file == ps8[5]
-assert not [c for c in w.findChildren(M.QWidget) if type(c).__name__ == "_Zoom"]                   # the zoom picture is gone
+assert not [c for c in w.findChildren(M.QWidget) if type(c).__name__ == "_Wipe"]                   # the opening wash is gone
 print("ok zoom")
+t0_ = w._tab_index("Costing")
+tile_ = [b for b in w.launch_page.findChildren(M.QPushButton) if b.toolTip().startswith("Open Costing")][0]
+w.main_tabs.setCurrentIndex(w.launcher_idx[0])
+tile_.click()
+t_ = time.time()
+while time.time() - t_ < 1.2: app.processEvents()
+assert w.main_tabs.currentIndex() == t0_, w.main_tabs.currentIndex()
+assert not [c for c in w.findChildren(M.QWidget) if type(c).__name__ == "_Wipe"]
+print("ok tile wipe")
+import shutil
+ifc_ = os.path.join(d, "m.ifc")
+open(ifc_, "w").write("x")
+M.MainWindow._thumb_ifc = staticmethod(lambda path, ifc: [[(0, 0), (10, 0), (10, 6), (0, 6)]] if ifc else None)
+dd_ = M.MainWindow._thumb_read(pj2, ifc_)
+assert len(dd_) == 3 and M.MainWindow._thumb_pixmap(dd_).width() == 120
+M.SETTINGS["card_ifc"] = {ps8[0]: ifc_}
+assert w._thumb_key(ps8[0])[2] == ifc_ and w._thumb_key(ps8[1])[2] == ""
+M.SETTINGS["card_ifc"] = {}
+print("ok ifc card")
