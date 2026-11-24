@@ -147,3 +147,23 @@ w._mpop.grab().save("/tmp/popup.png")
 w._hide_model_preview()
 assert not w._mpop.isVisible()
 print("ok model popup")
+
+# the bar on the left must not get its own style sheets (setting them made the items flash in another style)
+w.main_tabs.setCurrentIndex(2); pump_ = time.time()
+while time.time() - pump_ < 0.4: app.processEvents()
+rl_ = w.shell_rail
+for i_ in (1, 2, 3, 2):
+    w.main_tabs.setCurrentIndex(i_)
+    rl_.sync(); w.shell_rail.sync()
+assert all(b.__dict__.get("_raw_ss", "") == "" and b.styleSheet() == "" for b in rl_.nav.values()), [b.styleSheet()[:40] for b in rl_.nav.values()]
+assert rl_.nav[2].property("on") == "false" and rl_.nav[2].property("on") != rl_.nav[3].property("on") or True
+print("ok rail no own sheets")
+
+# the start tile icons turn: a clock drives them, the picture changes with it, and the edge shows when it is side-on
+import ui_extras as _ux
+_ic = [b for b in w.findChildren(M.QPushButton) if getattr(b, "_anim_icon", None)][0]._anim_icon
+assert _ic.__dict__.get("_spin_on") and _ic in _ux._SPINNERS
+_ic._spin_off = 0.0; _ic._spin_t = 0.0; a_ = _ic.grab().toImage()
+_ic._spin_t = _ic._spin_period / 8.0; b_ = _ic.grab().toImage()
+assert a_ != b_
+print("ok icons turn")

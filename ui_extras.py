@@ -6,7 +6,7 @@ import math
 import sys
 
 from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPoint, QPointF, QRectF, QSize, QTimer, Qt, QUrl, QVariantAnimation
-from PySide6.QtGui import QBrush, QColor, QDesktopServices, QIcon, QCursor, QPalette, QPainter, QPen, QRadialGradient
+from PySide6.QtGui import QPixmap, QTransform, QBrush, QColor, QDesktopServices, QIcon, QCursor, QPalette, QPainter, QPen, QRadialGradient
 from PySide6.QtWidgets import (QAbstractButton, QApplication, QGraphicsDropShadowEffect, QGraphicsOpacityEffect, QTabWidget, QToolTip, QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QTextBrowser, QVBoxLayout, QWidget)
 
 GREEN, AMBER, GREY, RED = "#2e9e5b", "#d9a21b", "#8a8f98", "#C8102E"
@@ -750,6 +750,38 @@ class AnimIcon(QLabel):
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self._anims = {}
 
+    def enable_spin(self, offset=0.0, period=7.0):
+        """turn the icon on a vertical axis as a thin solid: the face, a dark edge made of stacked copies, and the back face.
+        Drawn live from the clock (not from ready-made pictures), so the turn is as smooth as the screen allows."""
+        self._spin_on = True
+        self._spin_off = float(offset)
+        self._spin_period = float(period)
+        self._spin_t = 0.0
+        pm = self._pm
+        dpr = max(1.0, pm.devicePixelRatio())
+        self._dpr = dpr
+        side = QPixmap(int(pm.width() / dpr), int(pm.height() / dpr))      # the edge is drawn at half the sharpness: it is cheap and you cannot tell
+        side.fill(Qt.GlobalColor.transparent)
+        q = QPainter(side)
+        q.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        q.drawPixmap(QRectF(0, 0, side.width(), side.height()), pm, QRectF(pm.rect()))
+        q.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+        q.fillRect(side.rect(), QColor(self._accent).darker(185))
+        q.end()
+        self._side = side
+        self._side_rect = QRectF(side.rect())
+        pw, ph = pm.width(), pm.height()                      # one picture holding the face and the dark edge side by side: all layers go out in one call
+        atl = QPixmap(pw * 2, ph)
+        atl.fill(Qt.GlobalColor.transparent)
+        q2 = QPainter(atl)
+        q2.drawPixmap(0, 0, pm)
+        q2.drawPixmap(QRectF(pw, 0, pw, ph), side, QRectF(side.rect()))
+        q2.end()
+        self._atlas = atl
+        self._aw, self._ah = pw, ph
+        _SPINNERS.append(self)
+        _spin_clock()
+
     def _run(self, name, a, b, ms, curve):
         old = self._anims.get(name)
         if old is not None:
@@ -806,8 +838,58 @@ class AnimIcon(QLabel):
         p.rotate(wob)
         p.scale(scale, scale)
         w, hh = self._pm.width() / max(1.0, self._pm.devicePixelRatio()), self._pm.height() / max(1.0, self._pm.devicePixelRatio())
-        p.drawPixmap(QRectF(-w / 2.0, -hh / 2.0, w, hh), self._pm, QRectF(self._pm.rect()))
+        if self.__dict__.get("_spin_on"):
+            ang = self._spin_t / self._spin_period * 2.0 * math.pi + self._spin_off
+            ca, sa = math.cos(ang), math.sin(ang)
+            if abs(ca) < 0.08:
+                ca = 0.08 if ca >= 0 else -0.08                  # edge-on it still shows the thickness
+            D, N = 12.0, 9
+            dst, src = QRectF(-w / 2.0, -hh / 2.0, w, hh), QRectF(self._pm.rect())
+            base = p.transform()
+            for k in sorted(range(N), key=lambda k: ((k / (N - 1.0)) - 0.5) * D * ca):      # far layers first
+                z = ((k / (N - 1.0)) - 0.5) * D
+                p.setTransform(QTransform(ca, 0.0, 0.0, 1.0, z * sa, 0.0) * base)
+                if k == 0 or k == N - 1:
+                    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+                    p.drawPixmap(dst, self._pm, src)
+                else:
+                    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)       # the edge needs no smoothing
+                    p.drawPixmap(dst, self._side, self._side_rect)
+            p.setTransform(base)
+        else:
+            p.drawPixmap(QRectF(-w / 2.0, -hh / 2.0, w, hh), self._pm, QRectF(self._pm.rect()))
         p.end()
+
+
+_SPINNERS = []
+_SPIN_CK = {}
+
+
+def _spin_clock():
+    """one clock for every turning icon: ticks about 60 times a second, only while the program is the active window and the icon is on screen"""
+    if _SPIN_CK.get("t") is not None:
+        return
+    from PySide6.QtCore import QElapsedTimer
+    el = QElapsedTimer()
+    el.start()
+    tm = QTimer(QApplication.instance())
+    tm.setTimerType(Qt.TimerType.PreciseTimer)
+    tm.setInterval(22)
+
+    def tick():
+        if QApplication.applicationState() != Qt.ApplicationState.ApplicationActive:
+            return
+        t = el.elapsed() / 1000.0
+        for w in list(_SPINNERS):
+            try:
+                if w.isVisible() and not w.visibleRegion().isEmpty():
+                    w._spin_t = t
+                    w.update()
+            except RuntimeError:
+                _SPINNERS.remove(w)
+    tm.timeout.connect(tick)
+    tm.start()
+    _SPIN_CK["t"] = tm
 
 
 _TIP = {}

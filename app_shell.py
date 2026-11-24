@@ -267,7 +267,8 @@ class Rail(QFrame):
         if hasattr(w_, "set_accent"):
             w_.set_accent(ctx)
         col_ = TOOL_COL.get(ctx, "#d8132b")
-        if hasattr(self, "stripe"):
+        if hasattr(self, "stripe") and self.__dict__.get("_stripe_col") != col_:
+            self._stripe_col = col_
             self.stripe.setStyleSheet("background:%s;border-radius:1px;" % col_)
         for idx, b in self.nav.items():
             on = "true" if idx == cur else "false"
@@ -275,7 +276,6 @@ class Rail(QFrame):
                 b.setProperty("on", on)
                 b.style().unpolish(b)
                 b.style().polish(b)
-            b.setStyleSheet(("QPushButton#railNav[on=\"true\"]{border-left:3px solid %s;}" % col_) if idx == cur else "")
         lvi = self.win.tabs.currentIndex()
         for i, sb in self.subs.items():
             on = "true" if (cur == 1 and i == lvi) else "false"

@@ -14453,6 +14453,8 @@ class MainWindow(QMainWindow):
             tcol = TILE_COL.get(title.replace("&&", "&"), "#ff4056")
             icl = ux_m.AnimIcon(icon_pixmap(ico, tcol, 72), tcol, 104)        # lifts, wobbles and glows when pointed at, squeezes and rings when pressed
             b._anim_icon = icl
+            icl.enable_spin(len(getattr(self, '_tile_n', [])) * 0.9)
+            self.__dict__.setdefault('_tile_n', []).append(1)
             b.setStyleSheet("QPushButton{border:1px solid transparent;border-radius:14px;} QPushButton:hover{border:1px solid %s;}" % tcol)
             b.setProperty("glow", tcol)
             bl = QVBoxLayout(b)
