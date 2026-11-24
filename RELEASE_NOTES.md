@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.250**
+Current version: **1.86.251**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Home tiles: the icon edge now glows in each tool's own colour, and the opening title cards are gone (tools and recent projects open straight away).
 - **1.86.250** Fixed the left bar and ribbon looking like loose cards the first time you open a tool (and right the second time). The start-up theming put the general look on top of their own; now it leaves them alone. Switching dark/light also updates the bar at once instead of up to a second and a half later.
 - **1.86.249** The tile icons are much thinner while they sway (a thin 3D edge, not a thick slab) and they now keep moving when the mouse is elsewhere or another program is in front. Cheaper to run: 30 pictures a second and no redraw while the icon hardly moves (home screen load down by about a third). Fixes: the big 3D preview on a card never got its model data (a typo hid it), a picture still loading could crash the program when it closed, and the picture cache folder is now kept under 300 MB.
 - **1.86.248** The start tile icons now rock gently about 40 degrees each way (no full turn), with a thicker edge in the tool's own colour, a touch of perspective and a soft shadow under the icon that narrows as it turns.

@@ -766,7 +766,7 @@ class AnimIcon(QLabel):
         q.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         q.drawPixmap(QRectF(0, 0, side.width(), side.height()), pm, QRectF(pm.rect()))
         q.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-        q.fillRect(side.rect(), QColor(self._accent).darker(110))
+        q.fillRect(side.rect(), QColor(self._accent).lighter(135))
         q.end()
         self._side = side
         self._side_rect = QRectF(side.rect())
@@ -845,6 +845,17 @@ class AnimIcon(QLabel):
                 ca = 0.08 if ca >= 0 else -0.08                  # edge-on it still shows the thickness
             D, N = 5.0, 5
             dst, src = QRectF(-w / 2.0, -hh / 2.0, w, hh), QRectF(self._pm.rect())
+            gl = QRadialGradient(QPointF(0.0, 0.0), w * 0.62)                          # the edge glows: a soft halo in the tool's colour, brighter as the icon tilts
+            gc = QColor(self._accent)
+            gc.setAlpha(int(34 + 70 * abs(sa)))
+            gl.setColorAt(0.0, gc)
+            gc.setAlpha(0)
+            gl.setColorAt(1.0, gc)
+            p.save()
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(gl)
+            p.drawEllipse(QPointF(0.0, 0.0), w * 0.62, w * 0.62)
+            p.restore()
             base = p.transform()
             sh = QRadialGradient(QPointF(0.0, hh / 2.0 + 9.0), w * 0.42)                  # a soft floor shadow that narrows as the icon turns
             sc_ = QColor(0, 0, 0, 70)

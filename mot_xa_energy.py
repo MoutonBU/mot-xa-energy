@@ -11770,10 +11770,7 @@ class MainWindow(QMainWindow):
             self.main_tabs.setCurrentIndex(0)
             QTimer.singleShot(120, lambda: ux_.cascade(self.main_tabs.widget(0)))
             self.statusBar().showMessage("Opened %s" % os.path.basename(path), 6000)
-        if card is None:
-            go()
-        else:
-            ux_.wipe_open(self, card, "#d8132b", go, icon_pixmap("plan", "#ffffff", 168), title=os.path.basename(path).replace(".mcplv.json", "").replace(".json", ""), sub="Opening your project")
+        go()                                                          # no title card in between: the project just opens
 
     _INFO = {}                    # path -> what is set up in the project (for the badges on the card)
     _THUMBS = {}                  # (path, file time, IFC path, IFC file time) -> the stand outline and buildings, or None
@@ -14497,10 +14494,8 @@ class MainWindow(QMainWindow):
             bl.addWidget(icl, 0, Qt.AlignmentFlag.AlignHCenter)
             bl.addWidget(lab, 0)
             bl.addStretch(1)
-            def opened(_=False, t=target, c_=tcol, i_=ico):
-                import ui_extras as ux_o
-                ux_o.wipe_open(self, b, c_, lambda: self.main_tabs.setCurrentIndex(self._tab_index(t)), icon_pixmap(i_, "#ffffff", 168),
-                               title=title.replace("&&", "&").upper(), sub=re.sub(r"<[^>]+>", " ", sub).replace("&&", "&").strip()[:90])
+            def opened(_=False, t=target):
+                self.main_tabs.setCurrentIndex(self._tab_index(t))              # straight in, no title card
             b.clicked.connect(opened)
             return b
 
