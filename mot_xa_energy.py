@@ -11662,24 +11662,29 @@ class MainWindow(QMainWindow):
             return "%d days ago" % days
         return t.strftime("%d %b %Y")
 
-    def _open_recent_card(self, path):
-        """Open a project from the start screen and land on the Project page, whose boxes come in one after another."""
-        self.open_project_path(path)
-        if getattr(self, "current_file", None) != path:
-            return                                            # it did not open: stay where we are
+    def _open_recent_card(self, path, card=None):
+        """Open a project from the start screen: the card grows to fill the window like an app opening, the project loads under it,
+        the program lands on the Project page and its boxes come in one after another."""
         import ui_extras as ux_
-        self.main_tabs.setCurrentIndex(0)
-        QTimer.singleShot(60, lambda: ux_.cascade(self.main_tabs.widget(0)))
-        self.statusBar().showMessage("Opened %s" % os.path.basename(path), 6000)
 
-    _THUMBS = {}
+        def go():
+            self.open_project_path(path)
+            if getattr(self, "current_file", None) != path:
+                return                                            # it did not open: stay where we are
+            self.main_tabs.setCurrentIndex(0)
+            QTimer.singleShot(120, lambda: ux_.cascade(self.main_tabs.widget(0)))
+            self.statusBar().showMessage("Opened %s" % os.path.basename(path), 6000)
+        if card is None:
+            go()
+        else:
+            ux_.zoom_open(self, card, go)
 
-    def _thumb(self, path, w=120, h=70):
-        """a small picture of the stand (and its buildings) read from the project file, cached by file time; None when the file has no site"""
+    _THUMBS = {}                  # (path, file time) -> the stand outline and buildings, or None
+
+    @staticmethod
+    def _thumb_read(path):
+        """the stand corners and buildings from a project file (runs off the screen thread; no Qt in here)"""
         try:
-            key = (path, os.path.getmtime(path))
-            if key in self._THUMBS:
-                return self._THUMBS[key]
             if os.path.getsize(path) > 25 * 1024 * 1024:
                 return None
             with open(path, encoding="utf-8") as f:
@@ -11687,45 +11692,88 @@ class MainWindow(QMainWindow):
         except Exception:
             return None
         site = d.get("site") or {}
-        verts = [tuple(v) for v in (site.get("verts") or []) if len(v) >= 2]
-        blds = [b for b in (site.get("buildings") or []) if isinstance(b, dict)]
+        verts = [tuple(v[:2]) for v in (site.get("verts") or []) if len(v) >= 2]
+        blds = []
+        for b in (site.get("buildings") or [])[:6]:
+            try:
+                if isinstance(b, dict) and b.get("poly"):
+                    blds.append([tuple(pp[:2]) for pp in b["poly"]])
+                elif isinstance(b, dict):
+                    bx, by, bw, bd = float(b["x"]), float(b["y"]), float(b["w"]), float(b["d"])
+                    blds.append([(bx, by), (bx + bw, by), (bx + bw, by + bd), (bx, by + bd)])
+            except Exception:
+                pass
         if len(verts) < 3:
             sv = ((d.get("services") or {}).get("stand") or {}).get("corners") or []
-            verts = [tuple(v) for v in sv if len(v) >= 2]
+            verts = [tuple(v[:2]) for v in sv if len(v) >= 2]
             blds = []
-        pm = None
-        if len(verts) >= 3:
-            xs, ys = [v[0] for v in verts], [v[1] for v in verts]
-            x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
-            sc = min((w - 12) / max(x1 - x0, 1e-6), (h - 12) / max(y1 - y0, 1e-6))
-            ox, oy = (w - (x1 - x0) * sc) / 2.0, (h - (y1 - y0) * sc) / 2.0
-            P = lambda x, y: QPointF(ox + (x - x0) * sc, h - (oy + (y - y0) * sc))
-            from PySide6.QtGui import QPixmap
-            pm = QPixmap(w, h)
-            pm.fill(QColor(0, 0, 0, 0))
-            q = QPainter(pm)
-            q.setRenderHint(QPainter.RenderHint.Antialiasing)
-            q.setPen(QPen(QColor(150, 160, 175), 1.4))
-            q.setBrush(QColor(110, 130, 110, 70))
-            q.drawPolygon(QPolygonF([P(*v[:2]) for v in verts]))
-            q.setPen(QPen(QColor(255, 64, 86), 1.2))
-            q.setBrush(QColor(255, 64, 86, 90))
-            for b in blds[:6]:
-                try:
-                    pl = b.get("poly")
-                    if pl:
-                        q.drawPolygon(QPolygonF([P(*pp[:2]) for pp in pl]))
-                    else:
-                        bx, by, bw, bd = float(b["x"]), float(b["y"]), float(b["w"]), float(b["d"])
-                        q.drawPolygon(QPolygonF([P(bx, by), P(bx + bw, by), P(bx + bw, by + bd), P(bx, by + bd)]))
-                except Exception:
-                    pass
-            q.end()
-        self._THUMBS[key] = pm
+        return (verts, blds) if len(verts) >= 3 else None
+
+    @staticmethod
+    def _thumb_pixmap(data, w=120, h=70):
+        from PySide6.QtGui import QPixmap
+        verts, blds = data
+        xs, ys = [v[0] for v in verts], [v[1] for v in verts]
+        x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
+        sc = min((w - 12) / max(x1 - x0, 1e-6), (h - 12) / max(y1 - y0, 1e-6))
+        ox, oy = (w - (x1 - x0) * sc) / 2.0, (h - (y1 - y0) * sc) / 2.0
+        P = lambda pt: QPointF(ox + (pt[0] - x0) * sc, h - (oy + (pt[1] - y0) * sc))
+        pm = QPixmap(w, h)
+        pm.fill(QColor(0, 0, 0, 0))
+        q = QPainter(pm)
+        q.setRenderHint(QPainter.RenderHint.Antialiasing)
+        q.setPen(QPen(QColor(150, 160, 175), 1.4))
+        q.setBrush(QColor(110, 130, 110, 70))
+        q.drawPolygon(QPolygonF([P(v) for v in verts]))
+        q.setPen(QPen(QColor(255, 64, 86), 1.2))
+        q.setBrush(QColor(255, 64, 86, 90))
+        for pl in blds:
+            q.drawPolygon(QPolygonF([P(pp) for pp in pl]))
+        q.end()
         return pm
 
-    def _rebuild_home_cards(self):
-        """the cards on the start screen: the last few projects, newest first, click to open"""
+    def _thumb(self, path):
+        """the picture for a card if its data is already known (None otherwise); never reads a file on the screen thread"""
+        try:
+            data = self._THUMBS.get((path, os.path.getmtime(path)), "?")
+        except OSError:
+            return None
+        if data == "?" or data is None:
+            return None
+        return self._thumb_pixmap(data)
+
+    def _load_thumbs(self, paths):
+        """read the project files that are not known yet in a background thread, then put their pictures on the cards"""
+        todo = []
+        for p in paths:
+            try:
+                if (p, os.path.getmtime(p)) not in self._THUMBS:
+                    todo.append((p, os.path.getmtime(p)))
+            except OSError:
+                pass
+        if not todo:
+            return
+        if getattr(self, "_thumb_worker", None) is not None:
+            self._thumb_more = True                          # one is still running: go again when it is done
+            return
+
+        def work():
+            return [(k, self._thumb_read(k[0])) for k in todo]
+
+        wk = BgWorker(work)
+        self._thumb_worker = wk
+
+        def done(res, err):
+            self._thumb_worker = None
+            for k, data in (res or []):
+                self._THUMBS[k] = data
+            again = self.__dict__.pop("_thumb_more", False)
+            self._rebuild_home_cards(reload=again)
+        wk.done.connect(done)
+        wk.start()
+
+    def _rebuild_home_cards(self, reload=True):
+        """the cards on the start screen: the last eight projects, newest first, four to a row; click one and it opens with a zoom"""
         box = getattr(self, "home_cards", None)
         if box is None:
             return
@@ -11733,14 +11781,15 @@ class MainWindow(QMainWindow):
             it = box.takeAt(0)
             if it.widget() is not None:
                 it.widget().deleteLater()
-        lst = [p for p in self._recent_load() if os.path.exists(p)][:4]
+        lst = [p for p in self._recent_load() if os.path.exists(p)][:8]
+        for col_ in range(4):
+            box.setColumnStretch(col_, 1)
         if not lst:
             lab = QLabel("Your projects show here once you have opened or saved one.")
             lab.setStyleSheet("color:#8a93a3;")
-            box.addWidget(lab)
-            box.addStretch(1)
+            box.addWidget(lab, 0, 0, 1, 4)
             return
-        for p in lst:
+        for k_, p in enumerate(lst):
             name = os.path.basename(p)
             for suf in (".mcplv.json", ".mcplv", ".json"):
                 if name.lower().endswith(suf):
@@ -11774,10 +11823,10 @@ class MainWindow(QMainWindow):
                 t_.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
                 t_.setTextFormat(Qt.TextFormat.RichText)
                 cv.addWidget(t_)
-            c.clicked.connect(lambda _=False, pp=p: self._open_recent_card(pp))
-            box.addWidget(c, 1)
-        for _k in range(4 - len(lst)):
-            box.addStretch(1)
+            c.clicked.connect(lambda _=False, pp=p, cc=c: self._open_recent_card(pp, cc))
+            box.addWidget(c, k_ // 4, k_ % 4)
+        if reload and hasattr(self, "_load_thumbs"):
+            self._load_thumbs(lst)
 
     def _rebuild_recent_menu(self):
         self._rebuild_home_cards()
@@ -13981,7 +14030,7 @@ class MainWindow(QMainWindow):
             rb_.clicked.connect(lambda _=False, f=fn_: f())
             rh_.addWidget(rb_)
         v.addLayout(rh_)
-        self.home_cards = QHBoxLayout()
+        self.home_cards = QGridLayout()
         self.home_cards.setSpacing(14)
         v.addLayout(self.home_cards)
         self._rebuild_home_cards()

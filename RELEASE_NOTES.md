@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.227**
+Current version: **1.86.228**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Eight recent projects, a Mac-style open, and less lag:** "Jump back in" shows eight projects (two rows of four). Click one and its card grows to fill the window like an app opening, the project loads under it and the Project page comes in. The card pictures are now read in the background so the start screen never waits for the files, and switching tools restyles only what is on screen (about half the work it did before).
 - **Three visual touches:** (1) the "Jump back in" cards show a small picture of each job's stand and buildings; (2) the sewer on the services plan gets a soft halo for its fall: green when it is 1:60 or steeper, amber when it needs the council's special permission, red when it is flatter than allowed or steeper than 1:10 (switch it off under the plan options); (3) the step buttons wear the open tool's colour and a thin line under them fills as you go through the steps.
 - **Opening a recent project plays a short animation:** click a card under "Jump back in" and the project opens, the program goes to the Project page by itself, and its boxes rise in and fade in one after another.
 - **Site and areas opens Building lines straight away:** the tile on the start screen no longer goes through a page with one tile.

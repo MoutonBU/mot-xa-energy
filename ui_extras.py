@@ -1016,6 +1016,78 @@ def install_icon_motion():
     app.installEventFilter(app._icon_motion)
 
 
+class _Zoom(QWidget):
+    """the picture of a card that grows to fill the window, like an app opening on a Mac: the card melts into the window colour as it grows"""
+    def __init__(self, parent, pm, bg):
+        super().__init__(parent)
+        self.pm, self.bg, self.t = pm, QColor(bg), 0.0
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        r = self.rect()
+        rad = max(0.0, 14.0 * (1.0 - self.t))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(self.bg)
+        p.drawRoundedRect(r, rad, rad)
+        p.setOpacity(max(0.0, 1.0 - self.t * 0.95))
+        p.drawPixmap(r, self.pm)
+        p.end()
+
+
+def zoom_open(win, src, on_covered, ms=300):
+    """Click a card: its picture grows from where it sits to fill the window (ease-out), then `on_covered` runs under it
+    (the slow work: opening the project) and the picture fades away to show the result."""
+    from PySide6.QtCore import QRect, QPoint, QPropertyAnimation
+    top = win.centralWidget() or win
+    try:
+        pm = src.grab()
+        r0 = QRect(src.mapTo(top, QPoint(0, 0)), src.size())
+    except Exception:
+        on_covered()
+        return
+    r1 = top.rect()
+    ov = _Zoom(top, pm, top.palette().window().color())
+    ov.setGeometry(r0)
+    ov.show()
+    ov.raise_()
+    an = QVariantAnimation(ov)
+    an.setDuration(ms)
+    an.setStartValue(0.0)
+    an.setEndValue(1.0)
+    an.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+    def lerp(a, b, t):
+        return int(a + (b - a) * t)
+
+    def step(v):
+        t = float(v)
+        ov.t = t
+        ov.setGeometry(lerp(r0.x(), r1.x(), t), lerp(r0.y(), r1.y(), t), lerp(r0.width(), r1.width(), t), lerp(r0.height(), r1.height(), t))
+        ov.update()
+
+    def covered():
+        try:
+            on_covered()
+        finally:
+            ov.setGeometry(top.rect())
+            eff = QGraphicsOpacityEffect(ov)
+            ov.setGraphicsEffect(eff)
+            fa = QPropertyAnimation(eff, b"opacity", ov)
+            fa.setDuration(260)
+            fa.setStartValue(1.0)
+            fa.setEndValue(0.0)
+            fa.setEasingCurve(QEasingCurve.Type.InOutQuad)
+            fa.finished.connect(ov.deleteLater)
+            fa.start()
+            ov._fa = fa
+    an.valueChanged.connect(step)
+    an.finished.connect(covered)
+    ov._an = an
+    an.start()
+
+
 def cascade(page, step_ms=95, rise=34, dur=480):
     """The boxes of a page come in one after another: each rises a little and fades in."""
     from PySide6.QtWidgets import QGroupBox

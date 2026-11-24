@@ -291,6 +291,7 @@ class Ribbon(QFrame):
         super().__init__()
         self.win, self.make_icon, self.light_fn = win, make_icon, light_fn
         self.setObjectName("shellRibbon")
+        self.acc_q, self.acc_key = "", None
         self.setFixedHeight(92)
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
@@ -588,11 +589,18 @@ class Ribbon(QFrame):
             p.ensureWidgetVisible(gb, 0, 20)
             p.verticalScrollBar().setValue(max(0, gb.mapTo(p.widget(), gb.rect().topLeft()).y() - 8))
 
+    def apply_acc(self, page):
+        """the tool's colour is put on the ribbon page that is showing (a few widgets), not on all of them at once"""
+        if page is not None and page.property("_acc_key") != self.acc_key:
+            page.setStyleSheet(self.acc_q)
+            page.setProperty("_acc_key", self.acc_key)
+
     def show_for(self, idx):
         sp_ = getattr(self.win, "site_page", None)
         if idx == 8 and sp_ is not None and getattr(getattr(sp_, "steps", None), "i", 0) == 3:
             idx = 7                                   # the area schedule step of Building lines has the area schedule's ribbon
         self.stack.setCurrentIndex(idx if idx in self.pages else 0)
+        self.apply_acc(self.stack.currentWidget())
         self.setVisible(True)
 
 
@@ -632,13 +640,18 @@ def install_shell(win, make_icon, light_fn):
             body.setStyleSheet(_qss(_palette0(is_l)))
             rail.setStyleSheet("")
             ribbon.setStyleSheet("")
+            ribbon.acc_q, ribbon.acc_key = "", None
+            for pg_ in ribbon.pages.values():
+                pg_.setStyleSheet("")
+                pg_.setProperty("_acc_key", None)
             ribbon.icon_names()
             rail.icons()
         if state.get("acc") != (is_l, ACC[0]):                    # the open tool's colour: only the rail and the ribbon are restyled
             state["acc"] = (is_l, ACC[0])
             q = _qss(_palette(is_l)) if ACC[0] else ""
             rail.setStyleSheet(q)
-            ribbon.setStyleSheet(q)
+            ribbon.acc_q, ribbon.acc_key = q, state["acc"]
+            ribbon.apply_acc(ribbon.stack.currentWidget())
 
     def refresh():
         restyle()

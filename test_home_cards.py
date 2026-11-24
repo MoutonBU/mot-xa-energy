@@ -1,7 +1,7 @@
 """The start screen's 'Jump back in' cards: newest projects, click to open, and a plain 'edited' phrase."""
 import os, sys, time, tempfile
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-from PySide6.QtWidgets import QApplication, QHBoxLayout, QWidget, QPushButton
+from PySide6.QtWidgets import QApplication, QGridLayout, QWidget, QPushButton
 import mot_xa_energy as M
 app = QApplication.instance() or QApplication([])
 d = tempfile.mkdtemp()
@@ -11,13 +11,13 @@ for n in ("Alpha.mcplv.json", "Beta.mcplv", "Gamma.json"):
 old = time.time() - 3 * 86400
 os.utime(files[2], (old, old))
 opened = []
-w = QWidget(); box = QHBoxLayout(w)
+w = QWidget(); box = QGridLayout(w)
 class _F:
     pass
 fake = _F()
 fake.home_cards = box
 fake._recent_load = lambda: files + ["/nowhere/x.json"]
-fake._open_recent_card = lambda p: opened.append(p)
+fake._open_recent_card = lambda p, c=None: opened.append(p)
 fake._ago = M.MainWindow._ago
 fake._thumb = lambda p: None
 M.MainWindow._rebuild_home_cards(fake)
@@ -47,10 +47,30 @@ print("ok cascade")
 # the card shows a small picture of the stand; the step bar has a progress line
 pj2 = os.path.join(d, "Site.mcplv.json")
 json.dump({"site": {"verts": [[0, 0], [20, 0], [20, 30], [0, 30]], "buildings": [{"x": 3, "y": 4, "w": 10, "d": 12}]}}, open(pj2, "w"))
-assert w._thumb(pj2) is not None and w._thumb(pj) is None
+assert M.MainWindow._thumb_read(pj2) is not None and M.MainWindow._thumb_read(pj) is None
+assert M.MainWindow._thumb_pixmap(M.MainWindow._thumb_read(pj2)).width() == 120
 w.main_tabs.setCurrentIndex(8)
 w.site_page.steps.go(1)
 t_ = time.time()
 while time.time() - t_ < 0.6: app.processEvents()
 assert abs(w.site_page.steps.prog.v - 0.5) < 0.01, w.site_page.steps.prog.v
 print("ok thumb")
+
+# eight cards, four to a row; the card zooms open; the thumbnails are read off the screen thread
+ps8 = []
+for n in range(9):
+    p_ = os.path.join(d, "P%d.mcplv.json" % n)
+    json.dump({"site": {"verts": [[0, 0], [20, 0], [20, 30], [0, 30]], "buildings": []}}, open(p_, "w")); ps8.append(p_)
+w._recent_load = lambda: ps8
+w.main_tabs.setCurrentIndex(w.launcher_idx[0])
+w._rebuild_home_cards()
+t_ = time.time()
+while time.time() - t_ < 1.2: app.processEvents()
+cards = [w.home_cards.itemAt(i).widget() for i in range(w.home_cards.count())]
+assert len(cards) == 8 and w.home_cards.itemAtPosition(1, 3) is not None, len(cards)
+w._open_recent_card(ps8[5], cards[5])
+t_ = time.time()
+while time.time() - t_ < 1.8: app.processEvents()
+assert w.main_tabs.currentIndex() == 0 and w.current_file == ps8[5]
+assert not [c for c in w.findChildren(M.QWidget) if type(c).__name__ == "_Zoom"]                   # the zoom picture is gone
+print("ok zoom")
