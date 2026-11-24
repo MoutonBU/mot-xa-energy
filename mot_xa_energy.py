@@ -193,12 +193,12 @@ def glazing_summary(results):
 
 # --------------------------------------------------------------------------
 # SANS 10400-XA (energy efficiency) - envelope data and calculations
-# Figures: SANS 10400-XA:2021 as summarised in the TIPSA thermal insulation guide
+# Figures: SANS 10400-XA:2026 (edition 3; the tables are the same as edition 2 of 2021 except where noted) with the TIPSA thermal insulation guide
 # (walls, roofs, floors, pipes) and SANS 204:2011 Table 5 (fenestration constants).
 # Always confirm against the published standard before submitting to a council.
 # --------------------------------------------------------------------------
 XA_ZONES = ["1", "2", "3", "4", "5", "5H", "6", "7"]
-XA_PROVINCES = {   # SANS 10400-XA:2021 Annex C, Table C.1 (province -> {town: energy zone})
+XA_PROVINCES = {   # SANS 10400-XA:2026 Annex C, Table C.1 (province -> {town: energy zone})
     'Eastern Cape': {
         'Aberdeen': '1', 'Adelaide': '2', 'Adendorp': '1', 'Addo': '5', 'Algoa Bay': '5', 'Alice': '4',
         'Alicedale': '4', 'Aliwal North': '2', 'Baroe': '1', 'Barkly East': '6', 'Bathurst': '5', 'Bedford': '2',
@@ -299,7 +299,7 @@ XA_EXTRA = {
         "Tergniet": "Mosselbaai", "Hartenbos": "Mosselbaai", "Little Brak River": "Mosselbaai",
         "Great Brak River": "Mosselbaai", "Klein Brak": "Mosselbaai", "Dana Bay": "Mosselbaai",
         "Reebok": "Mosselbaai", "Glentana": "Mosselbaai", "Outeniqua Strand": "George",
-        "Stilbaai": "Riversdale", "Albertinia": "Riversdale", "Gouritsmond": "Gourits", "Witsand": "Heidelberg (Western Cape)",
+        "Stilbaai": "Riversdale", "Gouritsmond": "Gourits", "Witsand": "Heidelberg (Western Cape)",
         "Swellendam": "Riversdale", "Montagu": "Robertson", "McGregor": "Robertson", "Bonnievale": "Robertson",
         "Franschhoek": "Paarl", "Wellington": "Paarl", "Pniel": "Stellenbosch", "Somerset West": "Cape Town",
         "Strand": "Cape Town", "Gordon's Bay": "Cape Town", "Bellville": "Cape Town", "Durbanville": "Cape Town",
@@ -345,9 +345,14 @@ XA_EXTRA = {
         "Hartbeespoort": "Brits", "Mafikeng": "Mahikeng", "Sun City": "Rustenburg", "Stilfontein": "Klerksdorp",
         "Mogwase": "Rustenburg", "Taung": "Vryburg"},
     "Northern Cape": {
-        "Colesberg": "Hanover", "Kathu": "Sishen", "Kleinzee": "Port Nolloth", "Aggeneys": "Pofadder",
+        "Kathu": "Sishen", "Kleinzee": "Port Nolloth", "Aggeneys": "Pofadder",
         "Richmond (Northern Cape)": "Victoria West", "Sutherland (Northern Cape)": "Fraserburg"},
 }
+# SANS 10400-XA:2026 Annex C, Table C.1 added these towns (before, they were worked out from a near town)
+for _p, _d in {'Western Cape': {'Albertinia': '4'}, 'Eastern Cape': {'Alexandria': '4'}, 'Northern Cape': {'Colesberg': '1'}, 'KwaZulu-Natal': {'Ubombo': '5'}}.items():
+    XA_PROVINCES.setdefault(_p, {}).update(_d)
+XA_SCCP = frozenset(['Addo', 'Albertinia', 'Alexandria', 'Alicedale', 'Bathurst', 'Bredasdorp', 'Caledon', 'Cape Agulhas', 'Cape Town', 'Ceres', 'Gamtoos', 'George', 'Gourits', 'Hebertsdale', 'Hermanus', 'Klipdale', 'Malmesbury', 'Moorreesburg', 'Mosselbaai', 'Paarl', 'Port Alfred', 'Port Elizabeth', 'Porterville', 'Quoin Point', 'Riversdale', 'Robertson', 'Simonstown', 'Stellenbosch', 'Touws', 'Tulbagh', 'Uitenhage', 'Wolseley'])     # towns in the Southern Cape Condensation Problem Area (Annex C, column 6; clause 5.3.7)
+XA_COORDS = {'Aberdeen': (24.062, 32.476), 'Acornhoek': (31.005, 24.597), 'Addo': (25.69, 33.541), 'Adelaide': (26.293, 32.706), 'Adendorp': (25.551, 32.301), 'Albertinia': (21.568, 34.197), 'Alexander Bay': (16.491, 28.609), 'Alexandria': (26.412, 33.654), 'Algoa Bay': (25.795, 33.826), 'Alice': (26.828, 32.778), 'Alicedale': (26.082, 33.317), 'Aliwal North': (26.709, 30.688), 'Allanridge': (26.644, 27.754), 'Amatikulu': (31.532, 29.043), 'Amersfoort': (29.87, 27.005), 'Arlington': (27.852, 28.029), 'Asbesberge': (23.167, 28.812), 'Ashton': (20.053, 33.835), 'Askham': (20.782, 26.983), 'Augrabies Falls': (20.34, 28.591), 'Barberton': (31.055, 25.79), 'Barkly East': (27.594, 30.967), 'Barkly West': (24.524, 28.537), 'Baroe': (24.566, 33.225), 'Bathurst': (26.821, 33.503), 'Beaufort West': (22.586, 33.341), 'Bedford': (26.078, 32.678), 'Beestekraal': (27.597, 25.375), 'Belfast': (31.569, 24.491), 'Bergville': (29.345, 28.731), 'Bethal': (29.463, 26.454), 'Bethlehem': (28.303, 28.231), 'Bethulie': (25.976, 30.495), 'Biesiesfontein': (17.883, 31.016), 'Bisho': (27.441, 32.848), 'Bitterfontein': (18.265, 31.041), 'Bizana': (29.854, 30.858), 'Bloemfontein': (26.218, 29.113), 'Bloemhof': (25.602, 27.652), 'Boshof': (25.24, 28.54), 'Bothaville': (26.567, 27.394), 'Brandfort': (26.455, 28.702), 'Brandvlei': (20.479, 30.466), 'Bredasdorp': (20.04, 34.532), 'Breyten': (29.989, 26.302), 'Brits': (27.781, 25.63), 'Britstown': (23.502, 30.59), 'Bronkhorstspruit': (28.743, 25.809), 'Bultfontein': (26.147, 28.287), 'Burgersdorp': (26.331, 30.996), 'Butterworth': (28.141, 32.33), 'Caledon': (19.429, 34.231), 'Calitzdorp': (21.688, 33.53), 'Calvinia': (19.775, 31.473), 'Campbell': (23.723, 28.799), 'Cape Agulhas': (20.041, 34.531), 'Cape Town': (18.423, 33.915), 'Carletonville': (27.395, 26.368), 'Carnarvon': (22.127, 30.969), 'Cathcart': (27.141, 32.297), 'Cedarville': (29.038, 30.387), 'Ceres': (19.311, 33.369), 'Charlestown': (29.877, 27.407), 'Christiana': (25.167, 27.913), 'Citrusdal': (19.016, 32.594), 'Clanwilliam': (18.891, 32.175), 'Clocolan': (27.568, 28.915), 'Colenso': (29.823, 28.745), 'Colesberg': (25.108, 30.707), 'Coligny': (26.319, 26.311), 'Cookhouse': (25.803, 32.748), 'Cradock': (25.618, 32.17), 'Danielskuil': (23.548, 28.186), 'Dannhauser': (30.06, 28.014), 'Darlington': (25.547, 32.463), 'Darnall': (31.349, 29.268), 'De Aar': (24.011, 30.65), 'Dealesville': (25.767, 28.674), 'Delareyville': (25.444, 26.688), 'Derdepoort': (26.387, 24.639), 'Dewetsdorp': (26.664, 29.582), 'Dimabaza': (27.223, 32.837), 'Donnybrook': (29.879, 29.928), 'Dordrecht': (27.047, 313.377), 'Doringbos': (19.22, 31.971), 'Douglas': (23.773, 29.052), 'Duiwelskloof': (30.144, 23.695), 'Dullstroom': (30.102, 25.417), 'Durban': (31.026, 29.847), 'East London': (27.903, 33.014), 'Edenburg': (28.061, 26.051), 'Edenville': (27.668, 27.555), 'Elliot': (27.883, 31.333), 'Elliotdale': (28.684, 31.966), 'Emalahleni': (29.211, 25.872), 'Emmaus': (29.401, 28.86), 'Empangeni': (31.889, 28.741), 'Engcobo': (28.002, 31.673), 'Erfenisdam': (26.782, 28.502), 'Ermelo': (29.987, 26.525), 'Eshowe': (31.475, 28.89), 'Estcourt': (29.872, 29.006), 'False Bay': (32.397, 27.968), 'Fauresmith': (25.315, 29.748), 'Ficksburg': (27.88, 28.876), 'Fort Beaufort': (26.627, 32.78), 'Fouriesburg': (28.209, 28.621), 'Frankfort': (28.493, 27.277), 'Fraserburg': (21.513, 31.016), 'Gamtoos': (25.028, 33.961), 'Gariep': (16.454, 28.627), 'Garies': (17.99, 30.565), 'Gatyana': (28.25, 32.401), 'Gcuwa': (28.15, 32.331), 'George': (22.458, 33.951), 'Germiston': (28.158, 26.209), 'Gingindlovu': (31.586, 29.031), 'Glencoe': (30.153, 28.179), 'Gourits': (21.88, 34.337), 'Graaff-Reinet': (24.535, 32.251), 'Grahamstown': (26.525, 33.307), 'Graskop': (30.84, 24.934), 'Greytown': (30.588, 29.064), 'Griekwastad': (23.249, 28.848), 'Groblersdal': (29.396, 25.168), 'Grootdrink': (22.279, 26.495), 'Groot-Kei': (28.384, 32.68), 'Grootvloer': (20.75, 31.146), 'Hanover': (24.444, 31.072), 'Harding': (29.882, 30.572), 'Harrismith': (29.126, 28.271), 'Hartbees': (20.526, 28.759), 'Hartswater': (24.81, 27.754), 'Hebertsdale': (21.763, 34.015), 'Heidelberg (Gauteng)': (28.356, 26.499), 'Heidelberg (Western Cape)': (20.956, 34.089), 'Heilbron': (27.973, 27.294), 'Hennenman': (27.022, 27.972), 'Hermanus': (19.239, 34.42), 'Hertzogville': (25.508, 28.128), 'Hlobane': (30.987, 27.711), 'Hluhluwe': (32.271, 28.021), 'Hondeklipbaai': (17.277, 30.318), 'Hoopstad': (25.91, 27.833), 'Hopefield': (18.349, 33.058), 'Hopetown': (24.087, 29.624), 'Hotazel': (22.962, 27.203), 'Houtkraal': (24.094, 30.393), 'Idutywa': (28.305, 32.099), 'Ingwavuma': (31.996, 27.133), 'Ixopo': (30.061, 30.153), 'Jagersfontein': (25.424, 29.761), 'Jamestown': (26.804, 31.131), 'Johannesburg': (28.039, 26.202), 'Kakamas': (20.616, 28.768), 'Kamieskroon': (17.931, 30.212), 'Kareeberge': (21.165, 30.714), 'Keimoes': (20.98, 28.722), 'Kendrew': (24.486, 32.493), 'Kenhardt': (21.152, 29.348), 'Kestell': (28.702, 28.307), 'Kimberley': (24.761, 28.741), 'Kirkwood': (25.446, 33.401), 'Klawer': (18.626, 31.779), 'Klerksdorp': (26.665, 26.867), 'Klipdale': (19.966, 34.306), 'Klipplaat': (24.39, 33.016), 'Knysna': (23.05, 34.035), 'Koffiefontein': (25.003, 29.407), 'Kokstad': (29.418, 30.539), 'Komatipoort': (31.95, 25.43), 'Kompasberg': (24.541, 31.765), 'Komsberg': (20.78, 32.692), 'Koppies': (27.573, 27.242), 'Koster': (26.898, 25.869), 'Kraai': (24.013, 32.484), 'Kranskop': (30.862, 28.967), 'Krugersdorp': (27.771, 26.103), 'Kruisfontein': (24.739, 34.007), 'Kuruman': (23.357, 27.433), 'Kwabhaca': (28.994, 30.901), 'Kwadukuza': (31.289, 29.328), 'KwaMashu': (30.962, 29.751), 'Kwa-Nobuhle': (25.388, 33.818), 'Ladismith': (21.268, 33.498), 'Lady Grey': (27.216, 30.711), 'Ladysmith': (29.782, 28.559), 'Laingsburg': (20.854, 33.193), "Lambert's Bay": (18.305, 32.095), 'Langebaan': (8.037, 33.081), 'Langeberg': (20.13, 33.782), 'Langklip': (20.329, 28.213), 'Leeu Gamka': (21.977, 32.777), 'Lepalale': (27.717, 23.687), 'Letaba': (30.067, 23.9), 'Letjiesbos': (22.271, 32.563), 'Libode': (22.248, 32.553), 'Lichtenburg': (26.16, 26.151), 'Loeriesfontein': (19.445, 30.953), 'Loskop Dam': (29.329, 25.429), 'Lothair': (30.438, 26.391), 'Louis Trichardt': (29.904, 23.046), 'Louwsburg': (21.283, 27.576), 'Loxton': (19.405, 30.941), 'Luckhoff': (24.787, 29.748), 'Lutzputs': (20.666, 28.387), 'Luvuvhu': (31.268, 22.402), 'Maclear': (28.35, 31.07), 'Madadeni': (30.072, 27.752), 'Mahikeng': (25.632, 25.857), 'Magaliesburg': (27.542, 25.989), 'Makwassie': (25.996, 27.319), 'Malmesbury': (18.724, 33.463), 'Mangaung': (26.496, 29.322), 'Maretsane': (25.421, 26.142), 'Margate': (30.376, 30.854), 'Marquard': (27.428, 28.665), 'Matatiele': (28.815, 30.346), 'Matjiesfontein': (20.58, 33.228), 'Matroosberg': (19.655, 33.374), 'Maxesibenj': (28.83, 30.855), 'Mbashe': (28.327, 31.728), 'Mdantsane': (27.709, 32.968), 'Memel': (29.568, 27.681), 'Middelburg (Eastern Cape)': (25.006, 31.493), 'Middelburg (Mpumalanga)': (29.456, 25.763), 'Middelwit': (27.036, 24.852), 'Mkomazi': (29.472, 29.633), 'Mkuze': (32.038, 27.617), 'Mmabatho': (25.615, 25.834), 'Modderrivier': (24.638, 29.022), 'Modimolle': (28.404, 24.701), 'Mogalakwena': (29.011, 24.193), 'Molteno': (26.351, 31.393), 'Mbombela': (30.962, 25.469), 'Mooi River': (29.997, 29.207), 'Moorreesburg': (18.664, 33.138), 'Mopane': (29.852, 22.623), 'Morgenzon': (29.617, 26.731), 'Mosselbaai': (22.11, 34.129), 'Mount Fletcher': (28.504, 30.69), 'Mqanduli': (28.762, 31.819), 'Mtubatuba': (32.185, 28.416), 'Mtwalume': (30.63, 30.491), 'Murraysburg': (23.766, 31.967), 'Musina': (30.037, 22.33), 'Mzimvubu': (29.544, 31.615), 'Nababeep': (17.784, 29.589), 'Nelspoort': (23.003, 32.116), 'New Hanover': (30.527, 29.354), 'Newcastle': (29.926, 27.755), 'Niekerkshoop': (22.837, 29.327), 'Nieuwoudtville': (19.1, 31.372), 'Nigel': (28.471, 26.423), 'Nkandla': (31.057, 28.586), 'Nongoma': (31.634, 27.896), 'Northam': (27.263, 24.953), 'Noupoort': (24.952, 31.178), 'Nqutu': (30.681, 28.206), 'Nuwerus': (18.357, 31.149), 'Odendaalsrus': (26.701, 27.88), 'Okiep': (17.874, 29.594), 'Olifantshoek': (22.737, 27.941), 'Orkney': (26.689, 27.008), 'Osizweni': (30.119, 27.786), 'Ottosdal': (26.006, 26.812), 'Paarl': (18.97, 33.764), 'Pakhuis': (18.989, 32.139), 'Pampoenpoort': (22.657, 31.061), 'Park Rynie': (30.737, 30.317), 'Parys': (27.46, 26.898), 'Patensie': (24.813, 33.758), 'Paulpietersburg': (30.819, 27.428), 'Peddie': (27.119, 33.198), 'Pella': (19.155, 29.034), 'Pepani': (23.78, 26.251), 'Petrus Steyn': (28.129, 27.649), 'Petrusburg': (25.414, 29.115), 'Philippolis': (25.274, 30.266), 'Philipstown': (24.473, 30.437), 'Pienaarsrivier': (28.295, 25.208), 'Piet Retief': (30.808, 27.005), 'Pietermaritzburg': (30.377, 29.601), 'Piketberg': (18.757, 32.908), "Pilgrim's Rest": (30.756, 24.907), 'Pinetown': (30.861, 29.813), 'Pofadder': (19.392, 29.125), 'Polokwane': (29.453, 23.909), 'Port Alfred': (26.893, 33.588), 'Port Elizabeth': (25.622, 33.962), 'Port Nolloth': (16.882, 29.257), 'Port Shepstone': (30.453, 30.739), 'Port St Johns': (29.543, 31.621), 'Porterville': (18.993, 33.015), 'Postmasburg': (23.063, 28.331), 'Potchefstroom': (27.096, 26.719), 'Pretoria': (28.19, 25.744), 'Prieska': (22.747, 29.666), 'Prince Albert': (22.027, 33.214), 'Punda Maria': (31.016, 22.691), 'Queenstown': (26.868, 31.895), 'Qumbu': (28.869, 31.16), 'Quoin Point': (19.638, 34.781), 'Randfontein': (27.706, 26.173), 'Reddersburg': (26.178, 29.651), 'Reitz': (28.428, 27.801), 'Reivilo': (24.182, 27.565), 'Richards Bay': (32.053, 28.75), 'Riebeek-Oos': (26.149, 33.202), 'Riversdale': (21.255, 34.042), 'Robertson': (19.888, 33.799), 'Roodepoort': (27.869, 26.16), 'Rosmead': (25.119, 31.491), 'Rouxville': (26.835, 30.416), 'Rustenburg': (27.278, 25.635), 'Sakrivier': (20.438, 30.882), 'Saldanha Bay': (17.943, 33.007), 'Sannaspos': (26.548, 29.16), 'Sannieshof': (25.808, 26.531), 'Seekoei': (25.016, 30.308), 'Senekal': (27.618, 28.321), 'Settlers': (28.542, 24.957), 'Simonstown': (18.435, 34.193), 'Sishen': (22.983, 27.783), 'Smithfield': (26.53, 30.212), 'Soekmekaar': (29.928, 24.493), 'Springbok': (17.886, 29.665), 'Springs': (28.441, 26.256), 'Standerton': (29.226, 26.954), 'Stellenbosch': (18.866, 33.931), 'Tarkastad': (26.26, 32.006), 'Theunissen': (26.714, 28.4), 'Thohoyandou': (30.458, 22.977), 'Tom Burke': (27.988, 23.07), 'Tongaat': (31.141, 29.543), 'Touws': (21.153, 33.79), 'Tsineng': (23.078, 27.088), 'Tsolo': (28.753, 31.309), 'Tulbagh': (19.141, 33.284), 'Tzaneen': (30.169, 23.821), 'Ubombo': (32.083, 27.563), 'Ugie': (28.236, 31.194), 'Uitenhage': (25.397, 33.757), 'Ulco': (24.22, 28.335), 'Umkomaas': (30.796, 30.207), 'Umtata': (28.789, 31.592), 'Umzimvubu': (28.993, 30.902), 'Uniondale': (23.123, 33.659), 'Upington': (21.217, 28.459), 'Utrecht': (30.322, 27.656), 'Vaalwater': (28.111, 24.299), 'Vanderbijlpark': (27.839, 26.697), 'Vanrhynsdorp': (18.743, 31.609), 'Vanwyksvlei': (21.825, 30.366), 'Ventersburg': (27.136, 28.086), 'Venterstad': (25.799, 30.778), 'Vereeniging': (27.928, 26.675), 'Verneukpan': (21.067, 30.133), 'Victoria West': (23.121, 31.404), 'Villiers': (28.599, 27.028), 'Virginia': (26.874, 28.098), 'Volksrust': (29.886, 27.367), 'Vredefort': (27.365, 27.006), 'Vredenburg': (17.987, 32.906), 'Vredendal': (18.505, 31.664), 'Vryburg': (24.731, 26.955), 'Vryheid': (30.795, 27.767), 'Wakkerstroom': (30.149, 27.349), 'Warden': (28.965, 27.854), 'Warrenton': (24.845, 28.109), 'Wasbank': (30.103, 28.314), 'Waterberge': (28.311, 24.331), 'Waterval-Boven': (30.328, 25.643), 'Waterval-Onder': (30.383, 25.648), 'Weenen': (30.084, 28.851), 'Welkom': (26.732, 27.978), 'Wepener': (27.039, 29.729), 'Wilge': (28.987, 25.976), 'Williston': (20.919, 31.34), 'Willowmore': (23.487, 33.295), 'Windsorton': (24.713, 28.331), 'Wolmaransstad': (25.985, 27.2), 'Wolseley': (19.198, 33.414), 'Worcester': (19.444, 33.646), 'Xora': (28.656, 31.953), 'Zebediela': (29.249, 24.301), 'Zeerust': (26.086, 25.544)}              # town -> (longitude E, latitude S) from Table C.1
 XA_NEAREST = {}      # "Oudtshoorn *" -> "Calitzdorp"
 for _p, _d in XA_EXTRA.items():
     for _t, _ref in _d.items():
@@ -357,13 +362,21 @@ for _p, _d in XA_EXTRA.items():
             XA_NEAREST[f"{_t} *"] = _ref
 
 
+def xa_sccp(t):
+    """True when the town is in the Southern Cape Condensation Problem Area (clause 5.3.7). A town worked out from a near town takes that town's answer."""
+    t = (t or "").strip()
+    return t in XA_SCCP or (t in XA_NEAREST and XA_NEAREST[t] in XA_SCCP)
+
+
 def xa_town_note(t):
     """Text for a chosen town: its zone and where that zone came from."""
     if t in XA_NEAREST:
         return (f"{t[:-2]} is not in SANS 10400-XA Annex C. Zone {XA_TOWNS[t]} is taken from the nearest listed "
-                f"town, {XA_NEAREST[t]}. Confirm the zone with your municipality or competent person.")
+                f"town, {XA_NEAREST[t]}. Confirm the zone with your municipality or competent person."
+                + (" The nearest town is in the Southern Cape Condensation Problem Area (clause 5.3.7): no single low-E glass for the U-value." if xa_sccp(t) else ""))
     if t in XA_TOWNS:
-        return f"{t}: energy zone {XA_TOWNS[t]} (SANS 10400-XA Annex C)."
+        return (f"{t}: energy zone {XA_TOWNS[t]} (SANS 10400-XA Annex C)."
+                + (" <b>Southern Cape Condensation Problem Area:</b> the window U-values must not rely on single low-E glass (clause 5.3.7)." if xa_sccp(t) else ""))
     return ""
 
 
@@ -374,19 +387,19 @@ for _p, _d in XA_PROVINCES.items():
     XA_REGIONS[_p] = sorted(_d)
     if _p == "Western Cape":
         XA_REGIONS["Southern Cape"] = sorted(
-            [t for t in ("Calitzdorp", "George", "Gourits", "Hebertsdale", "Knysna", "Ladismith", "Mosselbaai",
+            [t for t in ("Albertinia", "Calitzdorp", "George", "Gourits", "Hebertsdale", "Knysna", "Ladismith", "Mosselbaai",
                          "Riversdale", "Uniondale") if t in _d]
             + [f"{t} *" for t in ("Oudtshoorn", "De Rust", "Dysselsdorp", "Plettenberg Bay", "Sedgefield",
                                   "Buffelsbaai", "Brenton-on-Sea", "The Heads", "Wilderness", "Hoekwil",
                                   "Herolds Bay", "Tergniet", "Hartenbos", "Little Brak River", "Great Brak River",
                                   "Klein Brak", "Dana Bay", "Reebok", "Glentana", "Outeniqua Strand", "Stilbaai",
-                                  "Albertinia", "Gouritsmond", "Swellendam", "Barrydale") if f"{t} *" in _d])
+                                  "Gouritsmond", "Swellendam", "Barrydale") if f"{t} *" in _d])
 XA_HEAVY_WALL_R = {"1": 0.60, "2": 0.60, "3": 0.40, "4": 0.60, "5": 0.40, "5H": 0.40, "6": 0.60, "7": 0.60}
 XA_LIGHT_WALL_R = {"1": 2.2, "2": 2.2, "6": 2.2, "7": 2.2, "3": 1.9, "4": 1.9, "5": 1.9, "5H": 1.9}
 XA_ROOF_R = {z: (2.7 if z == "5H" else 3.7) for z in XA_ZONES}
 XA_SUSP_FLOOR_R = {"1": 1.5, "2": 1.5, "6": 1.5, "7": 1.5, "3": 1.0, "4": 1.0, "5": 1.0, "5H": 1.0}
 XA_ZONE_COLS = ["1", "2", "3", "4", "5", "5H", "6", "7"]
-# SANS 10400-XA:2021 Table 1 (max annual consumption, kWh/m2/a) and Table 2 (max demand intensity, VA/m2),
+# SANS 10400-XA:2026 Table 1 (max annual consumption, kWh/m2/a) and Table 2 (max demand intensity, VA/m2),
 # by occupancy class and energy zone. A3 = places of instruction (general), G1 = large multi-storey offices.
 XA_MAX_CONS = {
     "A1": [75, 75, 95, 70, 95, 95, 80, 80], "A2": [95, 95, 110, 90, 110, 110, 105, 105],
@@ -908,6 +921,48 @@ def element_description(el):
     return f"{noun} comprised of {lst}."
 
 
+# ---- SANS 10400-XA:2026 rules that are new or restated in edition 3 -------------------------------------------------
+def xa_rooflight_limits(ratio_pct):
+    """Clause 5.3.9 and table 5: roof lights as a percentage of the floor area of the space they serve -> (max U, max SHGC, text).
+    Up to 1,5 % there is no limit."""
+    r = float(ratio_pct or 0.0)
+    if r <= 1.5 + 1e-9:
+        return None, None, "Up to 1,5 % of the floor area: any roof light is acceptable (5.3.9 a)."
+    for top, u, g in ((3.0, 5.8, 0.75), (5.0, 5.8, 0.50), (10.0, 2.7, 0.25)):
+        if r <= top + 1e-9:
+            return u, g, "%.1f %% of the floor area: U not more than %.1f W/m2.K and SHGC not more than %.2f (table 5)." % (r, u, g)
+    return 2.0, 0.25, "%.1f %% of the floor area: U not more than 2,0 W/m2.K and SHGC not more than 0,25 (5.3.9 c, table 5)." % r
+
+
+def xa_thatch_min(zone, water_reed=False):
+    """Clause 5.6.6: (minimum thickness in mm, text) for a thatched roof."""
+    if water_reed:
+        return 300.0, "Water reed: 300 mm (5.6.6 c)."
+    if str(zone) == "5H":
+        return 175.0, "Fine thatching grass or reed in zone 5H: 175 mm or R 2,7 m2.K/W (5.6.6 b)."
+    return 210.0, "Fine thatching grass or reed: 210 mm or R 3,7 m2.K/W (5.6.6 a)."
+
+
+XA_AC_COP = [   # table 11: (equipment type, capacity range kW, minimum COP cooling, minimum COP heating or None)
+    ("Through-the-wall console", "< 7", 2.8, 1.0), ("Unitary split", "< 7", 3.0, 3.2), ("Unitary split", "7 to < 19", 2.9, 3.0),
+    ("Air-cooled packaged or split", "19 to < 40", 2.9, 3.0), ("Air-cooled packaged or split", "40 to < 70", 2.8, 2.9),
+    ("Air-cooled packaged or split", "> 70", 2.7, 2.8), ("Water-cooled packaged", "< 19", 3.3, 3.5),
+    ("Water-cooled packaged", "19 to < 40", 3.3, 3.5), ("Water-cooled packaged", "40 to < 70", 3.2, 3.3),
+    ("Water-cooled packaged", "70 to < 223", 3.2, 3.3), ("Air-cooled water chiller", "all", 2.8, None),
+    ("Air-cooled heat pump chiller", "all", 2.8, 3.0), ("Water-cooled positive displacement chiller", "< 264", 4.3, None),
+    ("Water-cooled positive displacement chiller", "264 to < 528", 4.4, None), ("Water-cooled positive displacement chiller", "528 to < 1 055", 4.9, None),
+    ("Water-cooled positive displacement chiller", "> 1 055", 5.4, None), ("Water-cooled centrifugal chiller", "< 1 055", 5.3, None),
+    ("Water-cooled centrifugal chiller", "1 055 to 2 110", 5.9, None), ("Water-cooled centrifugal chiller", "> 2 110", 5.9, None)]
+XA_SENSOR_MAX_M2 = 100.0       # 6.2.3: occupancy and daylight sensors (not in H3 and H4) so that no sensor serves more than this area
+XA_CAT1_MIN_WALL_MM = 140      # 5.5.2: single-leaf masonry walls of category 1 buildings
+XA_THERMAL_BREAK_R = 0.2       # 5.5.4: between metal studs, tracks and battens
+
+
+def xa_cat1_wall_note(thick_mm):
+    """Clause 5.5.2 for a single-leaf masonry wall of a category 1 building (80 m2 at most, 6 m between supports)."""
+    return None if float(thick_mm or 0) + 1e-9 >= XA_CAT1_MIN_WALL_MM else "A single-leaf masonry wall of a category 1 building must be at least 140 mm thick (5.5.2)."
+
+
 def xa_check_element(el, zone):
     req = xa_required_r(zone, el.get("type", ""))
     total = element_total_r(el)
@@ -947,7 +1002,17 @@ def xa_check_element(el, zone):
         notes.append(el["note"])
     if el.get("type", "").startswith("Wall - light") and el.get("metal_frame"):
         if not any(l.get("thermal_break") for l in layers):
-            notes.append("Metal framing needs a thermal break of R >= 0.2 between metal elements.")
+            notes.append("Metal framing needs a thermal break of R >= 0.2 between metal elements (5.5.4).")
+    if el.get("type", "").startswith("Roof"):
+        for l in layers:                                              # clause 5.6.6: thatch
+            m_ = str(l.get("mat", "")).lower()
+            if "thatch" in m_ or "reed" in m_:
+                need_, txt_ = xa_thatch_min(zone, "water" in m_)
+                try:
+                    t_ = float(l.get("t") or 0)
+                except (TypeError, ValueError):
+                    t_ = 0.0
+                notes.append(txt_ + ("" if t_ + 1e-9 >= need_ else " This layer is only %.0f mm." % t_))
     return {"name": el.get("name", ""), "type": el.get("type", ""), "total": total,
             "req": req, "ok": ok, "notes": " ".join(notes)}
 
@@ -1196,14 +1261,14 @@ XA_AVAIL = {
     "Steel - no thermal break (U 5.9)": "Common in South Africa (steel windows and doors).",
     "Steel - thermally broken (U 3.5)": "Check: no South African supplier found for a thermally broken steel system; imported systems exist. Confirm before specifying.",
     "Fibreglass / composite (U 1.6)": "Check: no South African window-frame manufacturer found. Confirm before specifying.",
-    "Single low-E coated (U 3.7, S 0.65)": "Not a normal product, and SANS 10400-XA 5.3.6 does not allow single low-E glass to meet the U-value in the Southern Cape Condensation Problem Area (Garden Route). Use double glazing instead.",
+    "Single low-E coated (U 3.7, S 0.65)": "Not a normal product, and SANS 10400-XA 5.3.7 does not allow single low-E glass to meet the U-value in the Southern Cape Condensation Problem Area (SCCP, Garden Route and the towns marked in Annex C). Use double glazing instead.",
     "Double glazed low-E, air (U 1.9, S 0.60)": "Available: South African double low-E units exist (for example McCoy's All Seasons Glass, made in South Africa, quoted U 1.66, S 0.38 to 0.40). Use the supplier's figures under Custom.",
     "Double glazed low-E, argon (U 1.5, S 0.58)": "Check: argon fill is not stated by the South African suppliers found. Ask for a certified U-value.",
     "Double glazed low-E solar control, argon (U 1.4, S 0.35)": "Check: argon fill not confirmed locally; ask the glazier for a certified U and S.",
     "Triple glazed low-E, argon (U 0.8, S 0.50)": "Check: no South African triple glazing supplier found (imported, specialist). Not normally needed for SANS 204.",
 }
 MIN_DOOR_W, MIN_WIN = 750, 450          # same limits as fen_headroom
-XA_AVAIL_NOTE = ("Certification (SANS 10400-XA:2021 clause 5.3): glass and frame are assessed as one window; the U-value must come from ANSI/NFRC 100 "
+XA_AVAIL_NOTE = ("Certification (SANS 10400-XA:2026 clause 5.3): glass and frame are assessed as one window; the U-value must come from ANSI/NFRC 100 "
                  "and the solar heat gain from ANSI/NFRC 200, certified by the glazier or a competent person. Windows and doors must meet the air leakage "
                  "requirements of SANS 613. Values here are typical, so use the supplier's certified figures (Custom). "
                  "Hover over a frame or glass choice to see whether it is available in South Africa.")
@@ -1227,7 +1292,7 @@ def fenestration_storey(nfa, openings, zone2011):
 
 
 # --------------------------------------------------------------------------
-# Orientation (SANS 10400-XA:2021 clauses 5.1, 5.2, 5.3.4, 5.3.5, tables 3 and 4)
+# Orientation (SANS 10400-XA:2026 clauses 5.1, 5.2, 5.3.4, 5.3.5, tables 3 and 4)
 # --------------------------------------------------------------------------
 FACE_SECTORS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
 FACE_GROUP_A = {"W", "NW", "N", "NE", "E"}          # solar heat gain AND U-value limits apply
@@ -1444,7 +1509,7 @@ def house_totals(results):
 # --------------------------------------------------------------------------
 RD_CERT_HTML = (
     "<h3>What 'certified' means</h3>"
-    "<p>SANS 10400-XA:2021 clause 3.3: software certified by the <b>Board of Agrement South Africa</b> under its Energy Software Protocols as fit for thermal modelling. "
+    "<p>SANS 10400-XA:2026 clause 3.3: software certified by the <b>Board of Agrement South Africa</b> under its Energy Software Protocols as fit for thermal modelling. "
     "Certification is not a promise of exact numbers. It says the software was tested against international test cases and meets the protocol's modelling requirements. "
     "No simulation is '100% accurate'; certified software is checked to be inside accepted ranges.</p>"
     "<h3>The protocol (Agrement SA, second edition, September 2011)</h3><ol>"
@@ -1468,14 +1533,14 @@ RD_CERT_HTML = (
     "<li>Add absorptance and emissivity inputs, and write the method description and manual.</li>"
     "<li>Contact Agrement South Africa (agrement.co.za) for the current application form, fees and timelines. They are not in the protocol, and the 2012 experience of another applicant was a wait of more than two years.</li>"
     "<li>Until then, run the submission in software that already holds the certificate (for example Bsimac, which the rational design example used).</li></ol>"
-    "<p style='color:#555'>Source: Agrement South Africa, Protocol for the Certification of Energy Simulation Software, second edition, September 2011; SANS 10400-XA:2021 clauses 3.3 and 4.3.</p>")
+    "<p style='color:#555'>Source: Agrement South Africa, Protocol for the Certification of Energy Simulation Software, second edition, September 2011; SANS 10400-XA:2026 clauses 3.3 and 4.4.</p>")
 
-RD_ROUTES = ["Deemed-to-satisfy (SANS 10400-XA:2021 clause 4.4) - envelope and fenestration",
-             "Rational design (SANS 10400-XA:2021 clause 4.3) - reference building, certified thermal calculation software"]
+RD_ROUTES = ["Deemed-to-satisfy (SANS 10400-XA:2026 clause 4.2) - envelope and fenestration",
+             "Rational design (SANS 10400-XA:2026 clause 4.4) - reference building, certified thermal calculation software"]
 
 
 def rd_route(r):
-    """The route text in the 2021 wording; projects saved with the 2011 clause numbers (4.2.1 b / c) map to the same route."""
+    """The route text in the 2026 wording; projects saved with the 2021 or 2011 clause numbers map to the same route."""
     r = str(r or "")
     return RD_ROUTES[1] if ("rational" in r.lower() or "4.2.1 c" in r) else RD_ROUTES[0] if r else RD_ROUTES[0]
 RD_DEFAULTS = {
@@ -1486,7 +1551,7 @@ RD_DEFAULTS = {
     "route": RD_ROUTES[0], "sim_software": "", "sim_cert": "",
     "ref_demand": "", "act_demand": "", "ref_cons": "", "act_cons": "",
     "reg_no": "", "notes": "", "lon": "", "epw": "", "has_ifc": "", "ifc_loaded": "", "lv_ifc": "", "lv_ifc_rooms": "",
-    "t12_kwh": "", "t12_va": "",   # clause 4.2: the limits typed in from Tables 1 and 2 for this occupancy and energy zone
+    "t12_kwh": "", "t12_va": "",   # clause 4.3: the limits typed in from Tables 1 and 2 for this occupancy and energy zone
     "site_no": "", "site_area": "", "site_cov": "", "site_axis": "", "site_horizon": "",   # handed over by the House placing tool
     "skip_xa": "", "skip_lv": "",   # window / door tags the user left out of Energy XA (fenestration) / of Light & ventilation, comma separated
 }
@@ -7600,10 +7665,10 @@ LT_DEFAULT_RULES = [
     ["Laundry, stores, garage", "laundry|utility|store|garage|linen|cupboard|closet|wardrobe|dress|cellar|plant|meter|bin", 1.0, 7.0, 6.0],
     ["Covered outdoor (patio, stoep)", "patio|stoep|veranda|verandah|balcony|porch|deck|braai|carport|terrace", 3.0, 7.0, 6.0],
     ["All other rooms", ".*", 3.0, 7.0, 5.0]]
-# SANS 10400-XA:2021 table 12: maximum lighting power density by occupancy class (W per m2)
+# SANS 10400-XA:2026 table 10: maximum lighting power density by occupancy class (W per m2)
 LT_LPD_TABLE = {"A1": 2, "A2": 8, "A3": 10, "A4": 4, "C1": 10, "C2": 4, "E1": 4, "E2": 8, "E3": 8, "E4": 8, "F1": 20,
                 "F2": 8, "F3": 8, "G1": 8, "H1": 4, "H2": 4, "H3": 4, "H4": 4, "H5": 4}
-LT_LPD = 4.0     # SANS 10400-XA:2021 table 12: maximum lighting power density for H2, H3 and H4 (W per m2 of net floor area)
+LT_LPD = 4.0     # SANS 10400-XA:2026 table 10: maximum lighting power density for H2, H3 and H4 (W per m2 of net floor area)
 LT_EXT_PRESETS = [("Door or entrance light", 7.0, 4.0), ("Security / flood light", 20.0, 10.0), ("Garden or path light", 5.0, 8.0),
                   ("Driveway or parking light", 10.0, 10.0), ("Patio / stoep light", 7.0, 4.0)]
 
@@ -7811,7 +7876,7 @@ def hw_pv_calc(persons, system, cyl_l, coll_m2, ghi_year, light_kwh, lit_pp=115.
     solar = _hw_is_solar(system)
     if system.startswith("Heat pump"):
         sys_ok, share, elec = True, 100.0, e_th / cop
-        note = f"Heat pump: a permitted technology (XA 6.1.3). Electricity at COP {cop:.1f}."
+        note = f"Heat pump: a permitted technology (XA2, 6.1.2). Electricity at COP {cop:.1f}."
     elif solar:
         f = min(0.90, coll_m2 * yield_m2 / e_th) if e_th > 0 and coll_m2 > 0 else 0.0
         share, elec = f * 100.0, e_th * (1.0 - f)
@@ -7821,11 +7886,11 @@ def hw_pv_calc(persons, system, cyl_l, coll_m2, ghi_year, light_kwh, lit_pp=115.
             note = ("The electric geyser is the main heater and solar is the supplement: solar covers about %.0f %% of the hot water. "
                     "Clause 6.1 needs the solar share to reach 50 %%, so the collectors must be big enough for that." % share)
         else:
-            note = ("Solar covers about %.0f %% of the hot water; the electric element may supply at most 50 %% (XA 6.1.2)." % share)
+            note = ("Solar covers about %.0f %% of the hot water; the electric element may supply at most 50 %% (XA2, note to 6.1)." % share)
     elif system.startswith("Gas"):
         sys_ok, share, elec = True, 100.0, 0.0
         o["gas_kwh"] = e_th / 0.85
-        note = "Gas: a permitted technology (XA 6.1.4 and 6.1.5)."
+        note = "Gas: a permitted technology (XA2)."
     elif system.startswith("Heat recovery"):
         sys_ok, share, elec = True, 100.0, 0.0
         note = "Heat recovery or renewable fuel: a permitted technology (XA 6.1)."
@@ -14397,7 +14462,7 @@ class MainWindow(QMainWindow):
         self.zone_towns.itemClicked.connect(self._zone_item_clicked)
         right.addWidget(self.zone_towns)
         right.addSpacing(8)
-        right.addWidget(QLabel("<b>Energy zones</b> (SANS 10400-XA:2021)"))
+        right.addWidget(QLabel("<b>Energy zones</b> (SANS 10400-XA:2026)"))
         leg = QLabel("<br>".join(
             f"<span style='color:{ZA_ZONE_COLOURS[z]}'>&#9632;</span> <b>{z}</b> &nbsp;{self.ZONE_NAMES[z]}"
             for z in XA_ZONES))
@@ -15618,7 +15683,7 @@ class MainWindow(QMainWindow):
         self._xa_link_selection()
         heading("6. Windows and glazed doors (fenestration)",
                 "XA lets you skip the calculation when glazing is within the limit of the net floor area "
-                "of each storey (20% in the 2021 edition, 15% in 2011) and orientation and shading comply. "
+                "of each storey (20% in the 2021 and 2026 editions, 15% in 2011) and orientation and shading comply. "
                 "Above the limit, the SANS 204 calculation is needed. In per-unit mode each unit is checked separately.")
         row = QHBoxLayout()
         row.addWidget(QLabel("Glazing limit % of net floor area:"))
@@ -16838,7 +16903,7 @@ class MainWindow(QMainWindow):
         row.addWidget(self.lt_lamp)
         row.addWidget(QLabel("Annual limit (kWh per m\u00b2, 0 = not shown):"))
         self.lt_kwh_m2 = QDoubleSpinBox(); self.lt_kwh_m2.setRange(0, 100); self.lt_kwh_m2.setDecimals(1); self.lt_kwh_m2.setValue(4.0)
-        self.lt_kwh_m2.setToolTip("Used by some council lighting sheets. SANS 10400-XA:2021 itself has no lighting-only annual limit: set 0 to leave this line out.")
+        self.lt_kwh_m2.setToolTip("Used by some council lighting sheets. SANS 10400-XA:2026 itself has no lighting-only annual limit: set 0 to leave this line out.")
         row.addWidget(self.lt_kwh_m2)
         row.addStretch()
         v.addLayout(row)
@@ -17069,7 +17134,7 @@ class MainWindow(QMainWindow):
         else:
             st_w = cell("NOT compliant", "center", badc, True)
         srows = [
-            [cell("Allowable - Max. Energy Demand:", bold=True), cell(f"{t['allow_w']:.1f} W ({self._lt_lpd():g} W/m2 x {t['nfa']:.1f} m2, table 12)"), cell("", "center")],
+            [cell("Allowable - Max. Energy Demand:", bold=True), cell(f"{t['allow_w']:.1f} W ({self._lt_lpd():g} W/m2 x {t['nfa']:.1f} m2, table 10)"), cell("", "center")],
         ]
         if t["kwh_m2"] > 0:
             allow_k = t["kwh_m2"] * t["nfa"]
@@ -17163,7 +17228,7 @@ class MainWindow(QMainWindow):
         self.hw_lbl.setWordWrap(True)
         self.hw_lbl.setTextFormat(Qt.RichText)
         v.addWidget(self.hw_lbl)
-        v.addWidget(QLabel("SANS 10400-XA:2021 clause 6.1: at least 50 % of the annual hot water must come from solar, a heat pump, gas, heat "
+        v.addWidget(QLabel("SANS 10400-XA:2026 clause 6.1: at least 50 % of the annual hot water must come from solar, a heat pump, gas, heat "
                            "recovery or renewable fuel (electric resistance may only supplement). Storage per person and the solar "
                            "storage factor follow table 10. Choose one system for the whole building, one per unit, or one per floor. "
                            "The solar and PV figures are estimates from the site's sun data and are not a design: confirm them with the supplier."))
@@ -17804,7 +17869,7 @@ class MainWindow(QMainWindow):
         rows.append([cell("Solar PV (not an XA requirement)", bold=True), cell(f"{c['persons']:g}", "center"),
                      cell(f"For hot water and lighting ({c['elec_tot']:,.0f} kWh a year): about {c['kwp']:.1f} kWp, {c['panels']} panels of {self._hw_panel_w():.0f} W, "
                           f"roughly {c['roof_m2']:.0f} m2 of roof."), cell("estimate", "center")])
-        intro = ("SANS 10400-XA:2021 clause 6.1: at least 50 % of the annual hot water must come from something other than electric resistance "
+        intro = ("SANS 10400-XA:2026 clause 6.1: at least 50 % of the annual hot water must come from something other than electric resistance "
                  f"(solar, heat pump, gas, heat recovery or renewable fuel). Hot water is supplied by {what}; each line is checked on its own. "
                  "Storage follows table 10 (115 L per person a day and 50 L storage; Category 1 dwellings of 80 m2 or less 64 L and 45 L). Sun figures come from "
                  + ("the loaded weather file" if self._weather_for_report() is not None else "a clear-sky estimate for the site")
@@ -17928,7 +17993,7 @@ class MainWindow(QMainWindow):
                      if glz_d else "-", "ok" if glz_d else "na"))
         rows.append(("Roof lights and skylights", lst(sky) if sky else "None found in the model",
                      "Sealed, or capable of being sealed; openable ones need a compressible seal (SANS 204 4.4.3.3)",
-                     ("Roof lights " + lst(sky) + ": sealed, openable ones with a compressible seal.") if sky else "-",
+                     ("Roof lights " + lst(sky) + ": sealed, openable ones with a compressible seal. Over 1,5 % of the floor area they also need the U-value and SHGC of table 5 (5.3.9).") if sky else "-",
                      "ok" if sky else "na"))
         rows.append(("Chimneys and flues",
                      ("Open solid-fuel fireplace" + (" (" + lst(air.get("fire") or [], 3) + ")" if air.get("fire") else ""))
@@ -18161,7 +18226,7 @@ class MainWindow(QMainWindow):
                          [[cell(b), cell(f"{v[0]:.2f}", "center"), cell(f"{v[1]:.2f}", "center"),
                            cell(f"{v[2]:.2f}", "center")] for b, v in zip(bands, vals)], [34, 22, 22, 22])
         mc = [h1("6. MODELLING CONDITIONS (SANS 10400-XA ANNEX B)"),
-              para("The following modelling conditions are used in accordance with SANS 10400-XA:2021 Annex B."),
+              para("The following modelling conditions are used in accordance with SANS 10400-XA:2026 Annex B."),
               h2("6.1 Population data"),
               para(f"Simulation population density: 2 persons per bedroom, therefore {F['persons']} persons "
                    f"({F['beds']} bedroom{'s' if F['beds'] != 1 else ''}). As per SANS 10400 A21.2."),
@@ -18176,12 +18241,12 @@ class MainWindow(QMainWindow):
                   [cell("Comfort design duration", bold=True), cell(f"{A['share']:.0f}% of occupied hours (Annex B section B.1)")]],
                     [45, 55]),
               h2("6.3 Internal loading values"),
-              para(f"Lighting energy demand: {A['light_w_m2']:.2f} W/m² (SANS 10400-XA section 6.2.1 and table 12). Lighting schedule:"),
+              para(f"Lighting energy demand: {A['light_w_m2']:.2f} W/m² (SANS 10400-XA section 6.2.1 and table 10). Lighting schedule:"),
               sched(ANNEX_B_BANDS, ANNEX_B_LIGHT),
               para(f"Hot water heating: heat pump, COP {A['cop']:.1f}. Average annual usage {A['hotw_l']:.1f} litres per capita per day; "
                    f"hot water storage {A['store_l']:.1f} litres per capita. Hot water schedule:"),
               sched(ANNEX_B_HOTW_BANDS, ANNEX_B_HOTW),
-              ref("SANS 10400-XA:2021 Annex B; hot water loading in accordance with SANS 10252-1.")]
+              ref("SANS 10400-XA:2026 Annex B; hot water loading in accordance with SANS 10252-1.")]
         # ---- geometry, sun, solar, water ----
         n = F["north"]
         sm = [h1("7. BUILDING GEOMETRY, SUN AND WATER (INDICATIVE)"),
@@ -18484,6 +18549,13 @@ class MainWindow(QMainWindow):
                     it.setData(Qt.ItemDataRole.UserRole, "pass" if calc["agg_s"] <= calc["max_s"] + 1e-9 else "fail")
                 ft.setItem(r, c, it)
         rows_o, by_sector, notes_o = xa_orientation_check(orient_groups, north, lat)
+        try:
+            if xa_sccp(self.xa_town.currentText()):
+                bad_ = sorted(t_ for t_, g_ in self.xa_glass.items() if "single low" in str(g_.get("type", "")).lower())
+                notes_o.append("Southern Cape Condensation Problem Area (clause 5.3.7): the window U-values must be met without single low-E glass."
+                               + (" Single low-E glass is used on: %s." % ", ".join(bad_) if bad_ else ""))
+        except Exception:
+            pass
         bld = building_orientation(by_sector)
         zone = self.xa_zone.currentText()
         if zone == "5H":        # clause 5.1: in zone 5H orientation is the facade with the largest ventilation openings
@@ -18800,21 +18872,21 @@ class MainWindow(QMainWindow):
                 "weather": si["loc"]["name"], "lpd": self._lt_lpd(), "floor": floor, "glass": glz, "wall_type": wall_t,
                 "skipped": si["geo"]["skipped"], "unplaced": si["model"]["unplaced"], "occ": occ, "pop": pop, "hw_sys": hw_sys}
 
-    T12_OCC = ("A1", "A2", "A3", "A4", "E2", "E3", "F1", "F2", "F3", "G1", "H1", "H2", "H3", "H4", "H5")      # clause 4.2: the occupancies that have data in Tables 1 and 2
+    T12_OCC = ("A1", "A2", "A3", "A4", "E2", "E3", "F1", "F2", "F3", "G1", "H1", "H2", "H3", "H4", "H5")      # clause 4.3: the occupancies that have data in Tables 1 and 2
 
     def _t12_dialog(self, parent, ri):
-        """clause 4.2 of SANS 10400-XA:2021: the limits of Tables 1 (kWh/m2/year) and 2 (VA/m2) for this occupancy and energy zone, typed in from the standard"""
+        """clause 4.3 of SANS 10400-XA:2026: the limits of Tables 1 (kWh/m2/year) and 2 (VA/m2) for this occupancy and energy zone, typed in from the standard"""
         d = QDialog(parent)
         d.setWindowTitle("Clause 4.2 - Tables 1 and 2")
         v = QVBoxLayout(d)
-        lab = QLabel("Clause 4.2 of SANS 10400-XA:2021 accepts a building whose theoretical yearly energy use (Table 1, kWh/m2/year) and demand (Table 2, VA/m2) are not more than the table values for its "
+        lab = QLabel("Clause 4.3 of SANS 10400-XA:2026 accepts a building whose theoretical yearly energy use (Table 1, kWh/m2/year) and demand (Table 2, VA/m2) are not more than the table values for its "
                      "occupancy and energy zone. The tables are copyright of SABS and are not built into the program: read the two numbers for <b>%s, %s</b> in your copy of the standard and type them in. "
                      "They are saved with the project." % (ri.get("occ") or "this occupancy", self.xa_zone.currentText()))
         lab.setWordWrap(True)
         lab.setTextFormat(Qt.TextFormat.RichText)
         v.addWidget(lab)
         if ri.get("occ") and ri["occ"] not in self.T12_OCC:
-            w_ = QLabel("Tables 1 and 2 have no data for occupancy %s: use clause 4.3 (the reference building) instead." % ri["occ"])
+            w_ = QLabel("Tables 1 and 2 have no data for occupancy %s: use clause 4.4 (the reference building) instead." % ri["occ"])
             w_.setStyleSheet("color:#b3202f;")
             w_.setWordWrap(True)
             v.addWidget(w_)
@@ -18843,7 +18915,7 @@ class MainWindow(QMainWindow):
         return True
 
     def _t12_html(self, res, ri):
-        """the clause 4.2 verdict under the simulation result, when the two table limits have been typed in"""
+        """the clause 4.3 verdict under the simulation result, when the two table limits have been typed in"""
         try:
             lk, lv = float(str(self.rd.get("t12_kwh", "") or 0)), float(str(self.rd.get("t12_va", "") or 0))
         except ValueError:
@@ -18859,7 +18931,7 @@ class MainWindow(QMainWindow):
             h.append("<br>Yearly energy: design %.1f, Table 1 limit %.1f kWh/m2/year (%s)." % (c, lk, "ok" if okc else "%.1f too much" % (c - lk)))
         if lv > 0:
             h.append("<br>Demand: design %.1f, Table 2 limit %.1f VA/m2 (%s)." % (dm, lv, "ok" if okd else "%.1f too much" % (dm - lv)))
-        h.append("<br><span style='font-size:90%%'>The design is run with the Annex B conditions, as clause 4.2 note 1 asks. The built-in model is not certified: the final figures must come from certified software and be signed by a competent person (A19).</span></div>")
+        h.append("<br><span style='font-size:90%%'>The design is run with the Annex B conditions, as clause 4.3 note 1 asks. The built-in model is not certified: the final figures must come from certified software and be signed by a competent person (A19).</span></div>")
         if ri.get("occ") and ri["occ"] not in self.T12_OCC:
             h.append("<p style='color:#b3202f'>Tables 1 and 2 have no data for occupancy %s.</p>" % ri["occ"])
         return "".join(h)
@@ -19011,10 +19083,10 @@ class MainWindow(QMainWindow):
         d.setWindowTitle("Rational design - energy simulation (built in)")
         d.resize(980, 780)
         v = QVBoxLayout(d)
-        intro = QLabel("The design is simulated hour by hour for a whole year and compared with the REFERENCE building of SANS 10400-XA:2021 clause 3.16 "
+        intro = QLabel("The design is simulated hour by hour for a whole year and compared with the REFERENCE building of SANS 10400-XA:2026 clause 3.17 "
                        "(same rooms, shape, orientation and glass area, with the deemed-to-satisfy insulation of zone %s and the glass of table 4). "
-                       "Annex B conditions: %s, 75 W per person, lights at table 12, 19 to 25 C, hot water at 60 C. It passes when its yearly energy and its demand are not more than the reference's. "
-                       "<b style='color:#b3202f'>Clause 4.3 requires thermal software certified by Agrement South Africa. This built-in model is not certified: use it to design and pre-check, "
+                       "Annex B conditions: %s, 75 W per person, lights at table 10, 19 to 25 C, hot water at 60 C. It passes when its yearly energy and its demand are not more than the reference's. "
+                       "<b style='color:#b3202f'>Clause 4.4 requires thermal software certified by Agrement South Africa. This built-in model is not certified: use it to design and pre-check, "
                        "and run the final submission in certified software.</b>" % (self.xa_zone.currentText(), ri["occ"] or "occupancy"))
         intro.setWordWrap(True)
         intro.setTextFormat(Qt.TextFormat.RichText)
@@ -19087,8 +19159,8 @@ class MainWindow(QMainWindow):
         use = QPushButton("Put these results in the report")
         use.setEnabled(False)
         cert = QPushButton("How to get this certified")
-        t12 = QPushButton("Tables 1 and 2 (clause 4.2)...")
-        t12.setToolTip("The other route of SANS 10400-XA:2021: the building's yearly energy and demand against the limits of Tables 1 and 2, with no reference building.")
+        t12 = QPushButton("Tables 1 and 2 (clause 4.3)...")
+        t12.setToolTip("The other route of SANS 10400-XA:2026: the building's yearly energy and demand against the limits of Tables 1 and 2, with no reference building.")
         close = QPushButton("Close")
         btns.addWidget(run); btns.addWidget(use); btns.addWidget(cert); btns.addWidget(t12); btns.addStretch(); btns.addWidget(close)
         v.addLayout(btns)
@@ -19140,7 +19212,7 @@ class MainWindow(QMainWindow):
             if not res:
                 return
             self.rd["route"] = RD_ROUTES[1]
-            self.rd["sim_software"] = "MCP Architecture & Interiors built-in hourly model (EN ISO 13790 5R1C, 8760 h, ideal loads), SANS 10400-XA:2021 Annex B conditions"
+            self.rd["sim_software"] = "MCP Architecture & Interiors built-in hourly model (EN ISO 13790 5R1C, 8760 h, ideal loads), SANS 10400-XA:2026 Annex B conditions"
             self.rd["sim_cert"] = ("NOT certified by Agrement South Africa (clause 3.3 / 4.3). Pre-check only: re-run in certified software for submission. Weather: %s." % ri["weather"])
             self.rd["ref_demand"] = "%.1f" % res["ref_demand"]
             self.rd["act_demand"] = "%.1f" % res["act_demand"]
@@ -19220,7 +19292,7 @@ class MainWindow(QMainWindow):
                     h.append("<tr><td>%s</td><td align=right>%+.1f kWh/m2</td><td align=right>%+.1f VA/m2</td><td align=center>%s</td></tr>" % (
                         sg["text"], sg["dcons"], sg["ddemand"], "<b style='color:#1f7a3d'>yes</b>" if sg["passes"] else "no"))
                 h.append("</table>")
-        h.append("<p style='color:#b3202f'><b>Not certified:</b> SANS 10400-XA:2021 clause 4.3 needs thermal software certified by Agrement South Africa. Use this as a pre-check; run the submission in certified software.</p>")
+        h.append("<p style='color:#b3202f'><b>Not certified:</b> SANS 10400-XA:2026 clause 4.4 needs thermal software certified by Agrement South Africa. Use this as a pre-check; run the submission in certified software.</p>")
         rg = res.get("ref_glass") or {}
         if rg:
             h.append("<p>Reference glass (table 4): " + "; ".join("%s: %.0f%% glass, U %.2f, SHGC %.2f" % (k_, v_["pct"], v_["U"], v_["g"]) for k_, v_ in rg.items()) + ".</p>")
@@ -19255,7 +19327,7 @@ class MainWindow(QMainWindow):
         h.append("<h3>How it was worked out</h3><p style='color:#555'>Hourly 5R1C model of EN ISO 13790 (annex C), one zone per room, 8760 hours of the weather file, ideal heating and cooling between the two set-points. "
                  "Sun on every wall and window from the hourly direct and diffuse sun, with the angle of the sun on the glass and overhang shading from the P and H you entered. "
                  "Walls and roof take the sun-heated outside temperature; the slab is held at the yearly mean air temperature. Both buildings have the same air leakage, people and hours. "
-                 "Annex B: 75 W per person, lights at table 12 with the table B.2 hours (dwellings; the first day of the year is taken as a Monday, holidays are not marked), no appliance gain except G1 and F1, "
+                 "Annex B: 75 W per person, lights at table 10 with the table B.2 hours (dwellings; the first day of the year is taken as a Monday, holidays are not marked), no appliance gain except G1 and F1, "
                  "hot water per table 10 at 60 C with the cold water taken as the monthly air temperature (10 to 22 C); the reference has half of it from electric elements and half from a heat pump. "
                  "Demand is the highest hour of each month averaged over the year (the standard does not define the period). Rooms are boxes with flat ceilings. "
                  "The model was checked against the plain heat-loss sum (UA x temperature difference). It is NOT certified by Agrement South Africa.</p>")
@@ -19613,10 +19685,10 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
             if k not in vals and k in self._auto_vals and self._xa_bd_map[k].text().strip() == self._auto_vals[k]:
                 self._xa_bd_map[k].setText("")
                 self._auto_vals.pop(k, None)
-        for k, tip in (("max_demand", "SANS 10400-XA:2021 Table 2 for the occupancy class and energy zone. "
+        for k, tip in (("max_demand", "SANS 10400-XA:2026 Table 2 for the occupancy class and energy zone. "
                         "Filled in automatically; check it against your copy of the standard. "
                         "A3 uses 'general' and G1 uses 'large multi-storey' rows. Type over it to change."),
-                       ("max_cons", "SANS 10400-XA:2021 Table 1 for the occupancy class and energy zone. "
+                       ("max_cons", "SANS 10400-XA:2026 Table 1 for the occupancy class and energy zone. "
                         "Filled in automatically; check it against your copy of the standard."),
                        ("hrs", "A typical starting value for this occupancy. Type over it to change."),
                        ("days", "A typical starting value for this occupancy. Type over it to change."),
@@ -19993,24 +20065,25 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
         if route_c:
             s1.append(para(
                 f'The building{(" at " + e(rd["details"])) if rd["details"] else ""} has been assessed by '
-                'rational design (SANS 10400-XA:2021, clause 4.3): a competent person demonstrates, with certified '
+                'rational design (SANS 10400-XA:2026, clause 4.4): a competent person demonstrates, with certified '
                 'thermal calculation software, that the theoretical annual energy usage and demand of the building are '
-                'less than or equal to those of a reference building which complies with clause 4.4.'))
+                'less than or equal to those of a reference building which complies with clause 4.2.'))
         else:
             s1.append(para(
                 f'The building{(" at " + e(rd["details"])) if rd["details"] else ""} has been assessed against the '
-                'deemed-to-satisfy requirements of SANS 10400-XA:2021 (clause 4.4): orientation and shading, external walls, roof assembly, '
+                'deemed-to-satisfy requirements of SANS 10400-XA:2026 (clause 4.2): orientation and shading, external walls, roof assembly, '
                 'floors and hot water pipes against the minimum total R-values for the energy zone, and '
                 'fenestration against the limit or calculation of SANS 204.'))
         s1.append(boxed(
-            '<b>SANS 10400-XA:2021, CLAUSE 4 (summary)</b><br>'
+            '<b>SANS 10400-XA:2026, CLAUSE 4 (summary)</b><br>'
             'The functional regulation XA1 is deemed to be satisfied where the building uses energy efficiently by any of: '
-            '4.2) a competent person certifies that the theoretical annual energy consumption and demand are not more than '
-            'the values in tables 1 and 2 (modelling conditions in Annex B); 4.3) a competent person shows, using certified '
+            '4.2) orientation (5.1), shading (5.2), fenestration (5.3), floors (5.4), '
+            'external walls (5.5), roof and ceiling assemblies (5.6), building sealing (5.7) and services (clause 6) comply; '
+            '4.3) a competent person certifies that the theoretical annual energy consumption and demand are not more than '
+            'the values in tables 1 and 2 (modelling conditions in Annex B); 4.4) a competent person shows, using certified '
             'thermal calculation software, that the theoretical energy usage and demand are not more than those of a reference '
-            'building that complies with 4.4 (Annex B); 4.4) orientation (5.1), shading (5.2), fenestration (5.3), floors (5.4), '
-            'external walls (5.5), roof and ceiling assemblies (5.6), building sealing (5.7) and services (clause 6) comply.'))
-        s1.append(ref("SANS 10400-XA:2021 (edition 2), clause 4 - summarised, confirm the wording against the published standard. Certified thermal calculation software is defined in clause 3.3 as software certified by the Board of Agrement South Africa."))
+            'building that complies with 4.2 (Annex B).'))
+        s1.append(ref("SANS 10400-XA:2026 (edition 3), clause 4 - summarised, confirm the wording against the published standard. Certified thermal calculation software is defined in clause 3.3 as software certified by the Board of Agrement South Africa."))
         s1.append(h2("1.2 Method used in this report"))
         s1.append(para(
             ("The reference building is the actual building built to the minimum XA requirements. Its demand and "
@@ -20043,7 +20116,7 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
                   [cell("Max energy demand / consumption of the building (per m2 x gross floor area)", bold=True),
                    cell(self._bld_pdf_text())],
               ], [38, 62]),
-              ref("SANS 10400-XA:2021 energy zones; SANS 204:2011 Annex A and Table 5.")]
+              ref("SANS 10400-XA:2026 energy zones; SANS 204:2011 Annex A and Table 5.")]
 
         # ---------- section 3: assembly requirements ----------
         s3_head = [h1("3. ENVELOPE ASSEMBLIES"),
@@ -20139,7 +20212,7 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
             s4.append(para(e(XA_AVAIL_NOTE.rsplit(" Hover", 1)[0]), "8pt"))
         op_ = self._orient_report_parts(cell, OKC, BADC)
         if op_:
-            s4.append(h2("Orientation and shading (SANS 10400-XA:2021 clause 5)"))
+            s4.append(h2("Orientation and shading (SANS 10400-XA:2026 clause 5)"))
             s4.append(para(e(op_[0])))
             if op_[2]:
                 s4.append(table(op_[1], op_[2], op_[3], hbg=ACTBG))

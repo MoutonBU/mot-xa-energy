@@ -20,7 +20,7 @@ FILMS = {"ext_wall": (0.13, 0.04), "roof": (0.10, 0.04), "floor_exp": (0.17, 0.0
 GROUND_SOIL_R = 1.0                # m2K/W of soil below a slab on grade (same in both buildings, so it cancels in the comparison)
 DOOR_LEAF_R = 0.25
 ABSORPT = {"ext_wall": 0.6, "roof": 0.6, "floor_exp": 0.6}
-# SANS 10400-XA:2021 Annex B: 75 W sensible per person; lights at table 12; appliance gain 15 W/m2 (G1), 5 W/m2 (F1), none for any other occupancy;
+# SANS 10400-XA:2026 Annex B: 75 W sensible per person; lights at table 10; appliance gain 15 W/m2 (G1), 5 W/m2 (F1), none for any other occupancy;
 # 19-25 C; hot water at 60 C per table 10; schedules from table B.2 (H3 / H4 loaded; other occupancies use the simple hours given).
 DEFAULTS = {"ach": 0.5, "heat_sp": 19.0, "cool_sp": 25.0, "cop_heat": 1.0, "cop_cool": 3.0,
             "lpd": 4.0, "light_hours": 4.0, "persons_m2": 0.04, "pop": 0.0, "person_w": 75.0, "equip_w_m2": 0.0, "hours": 0.0, "days": 7, "sky_dt": 11.0,
@@ -277,7 +277,7 @@ def simulate(zones, cons, w, sun, opts=None, label="building"):
         Am[i] = (Cm[i] ** 2 / sk2) if sk2 > 0 else 2.5 * z["area"]
         Atot[i] = max(Atot[i], 2.0 * z["area"])
         Am[i] = min(Am[i], Atot[i])
-        # internal gains (Annex B): people at 75 W sensible, lights at the table 12 power, appliances only for G1 / F1
+        # internal gains (Annex B): people at 75 W sensible, lights at the table 10 power, appliances only for G1 / F1
         h34 = str(o["occ"]).startswith(("H3", "H4"))
         if h34:
             occ = occ_b2
@@ -412,10 +412,10 @@ def table4_row(table, pct):
 
 
 def make_reference(zones, cons, required_r, table4, clear_glass, lpd, light_hours=4.0):
-    """Reference zones and constructions (SANS 10400-XA:2021 clause 3.16 and 4.4): same rooms, shape and orientation, the deemed-to-satisfy insulation, and
+    """Reference zones and constructions (SANS 10400-XA:2026 clause 3.17 and 4.2): same rooms, shape and orientation, the deemed-to-satisfy insulation, and
     the same glass AREA as the design (clause 5.3 lets the area go above 20% when table 4 is met) with the table 4 U-value and SHGC for each storey's
     glass share (no limit up to 20%: plain clear glass). The SHGC used is the table's stricter column (no shading credit), and no shading is modelled.
-    Lights at the table 12 power. required_r: {'ext_wall': total R, 'roof': total R, 'floor_exp': total R}."""
+    Lights at the table 10 power. required_r: {'ext_wall': total R, 'roof': total R, 'floor_exp': total R}."""
     rc = {k: dict(v) for k, v in cons.items()}
     for key, r in (required_r or {}).items():
         if key in rc and r and r > 0:
