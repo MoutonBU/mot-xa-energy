@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.218**
+Current version: **1.86.219**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Start screen shows your recent projects:** under the tiles, a "Jump back in" row of cards for your last four projects, newest first, each with its name, when it was last edited and its folder. Click a card to open it. "New project" and "Open a project..." buttons sit beside it.
 - **The sewer follows the ground fall you turned:** when you set the fall direction yourself (and there are no contours), the ground level at the other end of the sewer is worked out from how far the pipe runs along that direction, so the depth, drops and long section change with it. With contours the real ground is still used.
 - **Turn the ground fall where you want it:** three new buttons in the plan look options: "Show which way the ground falls" (click the downhill direction), "Turn the fall 15°" and "Fall: automatic". The arrows, label and water streaks follow your direction and keep the steepness from the contours or typed levels.
 - **Ground-fall arrows also work without contours:** if there is no contour file, the arrows, label and water streaks use the two ground levels you typed in the sewer section (at the house and at the main). The label then says "from the typed levels". With only one level typed there is nothing to show.

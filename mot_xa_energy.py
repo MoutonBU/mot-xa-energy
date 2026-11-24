@@ -11606,7 +11606,68 @@ class MainWindow(QMainWindow):
         self._recent_save([])
         self._rebuild_recent_menu()
 
+    @staticmethod
+    def _ago(ts):
+        """a plain 'edited ...' phrase for a file time"""
+        now = datetime.datetime.now()
+        t = datetime.datetime.fromtimestamp(ts)
+        days = (now.date() - t.date()).days
+        if days <= 0:
+            return "today " + t.strftime("%H:%M")
+        if days == 1:
+            return "yesterday " + t.strftime("%H:%M")
+        if days < 14:
+            return "%d days ago" % days
+        return t.strftime("%d %b %Y")
+
+    def _rebuild_home_cards(self):
+        """the cards on the start screen: the last few projects, newest first, click to open"""
+        box = getattr(self, "home_cards", None)
+        if box is None:
+            return
+        while box.count():
+            it = box.takeAt(0)
+            if it.widget() is not None:
+                it.widget().deleteLater()
+        lst = [p for p in self._recent_load() if os.path.exists(p)][:4]
+        if not lst:
+            lab = QLabel("Your projects show here once you have opened or saved one.")
+            lab.setStyleSheet("color:#8a93a3;")
+            box.addWidget(lab)
+            box.addStretch(1)
+            return
+        for p in lst:
+            name = os.path.basename(p)
+            for suf in (".mcplv.json", ".mcplv", ".json"):
+                if name.lower().endswith(suf):
+                    name = name[:-len(suf)]
+                    break
+            try:
+                when = self._ago(os.path.getmtime(p))
+            except OSError:
+                when = ""
+            c = QPushButton()
+            c.setCursor(Qt.CursorShape.PointingHandCursor)
+            c.setMinimumHeight(86)
+            c.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            c.setToolTip(p)
+            c.setStyleSheet("QPushButton{border-left:4px solid #ff4056; text-align:left;}")
+            cl = QVBoxLayout(c)
+            cl.setContentsMargins(16, 10, 10, 10)
+            cl.setSpacing(2)
+            t1 = QLabel("<b style='font-size:14px'>%s</b>" % html.escape(name))
+            t2 = QLabel("<span style='color:#8a93a3'>Edited %s<br>%s</span>" % (when, html.escape(os.path.basename(os.path.dirname(p)))))
+            for t_ in (t1, t2):
+                t_.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+                t_.setTextFormat(Qt.TextFormat.RichText)
+                cl.addWidget(t_)
+            c.clicked.connect(lambda _=False, pp=p: self.open_project_path(pp))
+            box.addWidget(c, 1)
+        for _k in range(4 - len(lst)):
+            box.addStretch(1)
+
     def _rebuild_recent_menu(self):
+        self._rebuild_home_cards()
         menu = getattr(self, "recent_menu", None)
         if menu is None:
             return
@@ -13754,6 +13815,20 @@ class MainWindow(QMainWindow):
         for k in (0, 1, 2):
             g.setColumnStretch(k, 1)
         v.addLayout(g, 1)
+        rh_ = QHBoxLayout()
+        rt_ = QLabel("<span style='font-size:15px; font-weight:700;'>Jump back in</span>")
+        rh_.addWidget(rt_)
+        rh_.addStretch(1)
+        for txt_, fn_ in (("New project", lambda: self.new_project()), ("Open a project...", lambda: self.open_project())):
+            rb_ = QPushButton(txt_)
+            rb_.setCursor(Qt.CursorShape.PointingHandCursor)
+            rb_.clicked.connect(lambda _=False, f=fn_: f())
+            rh_.addWidget(rb_)
+        v.addLayout(rh_)
+        self.home_cards = QHBoxLayout()
+        self.home_cards.setSpacing(14)
+        v.addLayout(self.home_cards)
+        self._rebuild_home_cards()
         self.sans_page, v = page("SANS", back="Start")
         g = QGridLayout()
         g.setSpacing(24)
