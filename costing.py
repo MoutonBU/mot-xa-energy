@@ -353,16 +353,35 @@ COST_DIR = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "M
 
 
 
-def report_cover(doc, win, title, sub, subject=None):
+def report_cover(doc, win, title, sub, subject=None, details=None):
     """The same front page as the other PDF reports (logo, title bar, project, site, client, who compiled it), followed by a page break.
-    Adds the logo to the document. Returns '' when the window has no cover."""
+    details: the costing's own project details (they replace the open project's where filled in). Adds the logo to the document.
+    Returns '' when the window has no cover."""
     try:
         from PySide6.QtCore import QUrl
         from PySide6.QtGui import QTextDocument
         doc.addResource(QTextDocument.ResourceType.ImageResource, QUrl("logo"), win._dark_logo())
-        return win._report_cover(title, sub, subject) + '<div style="page-break-before:always;"></div>'
+        ro, lo = detail_overrides(details)
+        return win._report_cover(title, sub, subject, ro, lo) + '<div style="page-break-before:always;"></div>'
     except Exception:
         return ""
+
+
+DETAIL_FIELDS = [("project", "Project / house"), ("site", "Site (erf or stand number)"), ("town", "Town"), ("province", "Province"),
+                 ("zone", "Energy zone"), ("owner", "Client / property owner"), ("architect", "Architecture firm"), ("prepared", "Compiled by")]
+
+
+def detail_overrides(details):
+    """(report details that replace the project's, location text or None) from a costing's own details."""
+    d = {k: str(v).strip() for k, v in (details or {}).items() if str(v).strip()}
+    ro = {}
+    for src, dst in (("project", "project"), ("site", "details"), ("owner", "owner"), ("architect", "architect"), ("prepared", "prepared_by")):
+        if d.get(src):
+            ro[dst] = d[src]
+    loc = None
+    if d.get("town") or d.get("province") or d.get("zone"):
+        loc = ", ".join(x for x in (d.get("town"), d.get("province")) if x) + (("  (energy zone %s)" % d["zone"]) if d.get("zone") else "")
+    return ro, loc
 
 
 def cost_list():
@@ -427,6 +446,7 @@ class CostingPage(QWidget):
         self.contingency = 0.0
         self.vat = False
         self._busy = False
+        self.details = {}           # this costing's own project details (it can stand without a project)
         self.cid, self.cname, self._loaded, self._saving = "", "", False, False
         self.what, self.linked, self.link_ok, self.host = "costing", False, True, win
         v = QVBoxLayout(self)
@@ -438,7 +458,8 @@ class CostingPage(QWidget):
         self.cbox.setToolTip("Every costing is kept by the program and saves itself. It does not depend on the project that is open, but you can still pull rooms, fixtures and sizes from the open project.")
         self.cbox.activated.connect(self._cost_picked)
         cb.addWidget(self.cbox)
-        for txt, tip, fn in (("+ New costing...", "Starts a new, empty costing, for example for a new job.", self.cost_new),
+        for txt, tip, fn in (("Save", "Saves this costing now. It also saves itself a moment after every change.", self.save_now),
+                             ("+ New costing...", "Starts a new, empty costing, for example for a new job.", self.cost_new),
                              ("Rename...", "Changes the name of this costing.", self.cost_rename),
                              ("Delete", "Removes this costing (asks first).", self.cost_delete),
                              ("Save a copy...", "Writes this costing to a file, as a backup or to open on another computer.", self.cost_export),
@@ -452,6 +473,40 @@ class CostingPage(QWidget):
         from ui_extras import LinkBar
         self.link_bar = LinkBar(self)
         v.addWidget(self.link_bar)
+        self.saved_lbl = QLabel("")
+        self.saved_lbl.setStyleSheet("color: gray;")
+        v.addWidget(self.saved_lbl)
+        from PySide6.QtWidgets import QToolButton, QGridLayout
+        self.det_btn = QToolButton()
+        self.det_btn.setText("Project details of this costing  (stand, location, client ...)")
+        self.det_btn.setCheckable(True)
+        self.det_btn.setArrowType(Qt.ArrowType.RightArrow)
+        self.det_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        v.addWidget(self.det_btn)
+        self.det_box = QWidget()
+        dg = QGridLayout(self.det_box)
+        dg.setContentsMargins(0, 0, 0, 0)
+        self.det_edits = {}
+        for i, (k, lbl) in enumerate(DETAIL_FIELDS):
+            if k == "zone":
+                w_ = QComboBox()
+                w_.addItems(["", "1", "2", "3", "4", "5", "5H", "6", "7"])
+                w_.currentIndexChanged.connect(lambda _i, k_=k: self._detail_changed(k_))
+            else:
+                w_ = QLineEdit()
+                w_.setPlaceholderText(lbl)
+                w_.editingFinished.connect(lambda k_=k: self._detail_changed(k_))
+            self.det_edits[k] = w_
+            dg.addWidget(QLabel(lbl), (i // 4) * 2, i % 4)
+            dg.addWidget(w_, (i // 4) * 2 + 1, i % 4)
+        cp = QPushButton("Copy from the open project")
+        cp.setToolTip("Fills these in from the project that is open (project, site, client, architect, town and energy zone).")
+        cp.clicked.connect(self.details_from_project)
+        dg.addWidget(cp, 4, 0, 1, 2)
+        dg.addWidget(QLabel("These go on the cover of the costing PDFs. Left empty, the open project's details are used."), 4, 2, 1, 2)
+        self.det_box.setVisible(False)
+        v.addWidget(self.det_box)
+        self.det_btn.toggled.connect(lambda on: (self.det_box.setVisible(on), self.det_btn.setArrowType(Qt.ArrowType.DownArrow if on else Qt.ArrowType.RightArrow)))
         QTimer.singleShot(0, lambda: None if self._loaded else self.set_state({}))
         from PySide6.QtWidgets import QTabWidget
         self.main = QTabWidget()
@@ -610,6 +665,7 @@ class CostingPage(QWidget):
     def _state(self):
         return {"products": self.products, "defaults": self.defaults, "lines": self.lines,
                 "contingency": self.contingency, "vat": self.vat,
+                "details": self.details,
                 "materials": self.materials.state() if getattr(self, "materials", None) else None,
                 "budget": self.summary_page.state() if getattr(self, "summary_page", None) else None}
 
@@ -671,6 +727,62 @@ class CostingPage(QWidget):
                 cost_save(self.cid, self.cname, self._state())
             finally:
                 self._saving = False
+
+    def save_now(self):
+        self.save_costing()
+        try:
+            self.win._mark_dirty()
+        except Exception:
+            pass
+        self.saved_lbl.setText("Saved %s." % time.strftime("%H:%M:%S"))
+
+    def _fill_details(self):
+        for k, w_ in getattr(self, "det_edits", {}).items():
+            w_.blockSignals(True)
+            v_ = self.details.get(k, "")
+            if hasattr(w_, "setCurrentText"):
+                w_.setCurrentText(v_)
+            else:
+                w_.setText(v_)
+            w_.blockSignals(False)
+
+    def _detail_changed(self, k):
+        w_ = self.det_edits[k]
+        self.details[k] = (w_.currentText() if hasattr(w_, "currentText") else w_.text()).strip()
+        if k == "town" and not self.details.get("zone"):             # a town in the energy tables brings its zone and province
+            try:
+                M = sys.modules[type(self.win).__module__]
+                t_ = self.details["town"]
+                if t_ in M.XA_TOWNS:
+                    self.details["zone"] = str(M.XA_TOWNS[t_])
+                    pv = next((p_ for p_, tw in M.XA_PROVINCES.items() if t_ in tw), "")
+                    if pv and not self.details.get("province"):
+                        self.details["province"] = pv
+                    self._fill_details()
+            except Exception:
+                pass
+        self._dirty()
+
+    def details_from_project(self):
+        rd = self.det_rd()
+        d = {"project": rd.get("project", ""), "site": rd.get("details", ""), "owner": rd.get("owner", ""), "architect": rd.get("architect", ""),
+             "prepared": rd.get("prepared_by", "")}
+        try:
+            d["town"] = self.win.xa_town.currentText().replace(" *", "")
+            d["province"] = self.win.xa_prov.currentText()
+            d["zone"] = self.win.xa_zone.currentText()
+        except Exception:
+            pass
+        self.details.update({k: v for k, v in d.items() if v})
+        self._fill_details()
+        self._dirty()
+        self.det_btn.setChecked(True)
+
+    def det_rd(self):
+        """The project's report details with this costing's own details on top."""
+        rd = dict(getattr(self.win, "rd", {}) or {})
+        rd.update(detail_overrides(self.details)[0])
+        return rd
 
     def _autosave(self):
         if not getattr(self, "_save_timer", None):
@@ -755,6 +867,8 @@ class CostingPage(QWidget):
         self.lines = [dict(x) for x in d.get("lines", []) if isinstance(x, dict)]
         self.contingency = float(d.get("contingency", 0) or 0)
         self.vat = bool(d.get("vat", False))
+        self.details = {k: str(v) for k, v in (d.get("details") or {}).items()}
+        self._fill_details()
         if getattr(self, "materials", None):
             self.materials.set_state(d.get("materials"))
         if getattr(self, "summary_page", None):
@@ -1156,7 +1270,7 @@ class CostingPage(QWidget):
         import datetime
         e = lambda x: _html.escape(str(x))
         RED, DARK = "#C8102E", "#DCDCDC"
-        rd = getattr(self.win, "rd", {}) or {}
+        rd = self.det_rd()
         out = ['<h2 style="color:%s;">Sanitary ware and fixtures schedule</h2>' % RED,
                '<p style="font-size:9pt;color:#444;">%s &nbsp;|&nbsp; %s</p>' % (e(rd.get("project") or "Project"), datetime.date.today().strftime("%d %B %Y"))]
         n = 0
@@ -1216,7 +1330,7 @@ class CostingPage(QWidget):
         import datetime
         e = lambda x: _html.escape(str(x))
         RED = "#C8102E"
-        rd = getattr(self.win, "rd", {}) or {}
+        rd = self.det_rd()
         out = ['<h1 style="color:%s;">Costing report</h1>' % RED,
                '<p style="font-size:9pt;color:#444;">%s%s &nbsp;|&nbsp; %s</p>' % (
                    e(" | ".join(dict.fromkeys(x for x in (rd.get("project"), self.cname) if x)) or "Project"), "", datetime.date.today().strftime("%d %B %Y"))]
@@ -1245,7 +1359,7 @@ class CostingPage(QWidget):
         w.setTitle("Costing report")
         d = QTextDocument()
         d.setDefaultFont(QFont("Arial", 9))
-        d.setHtml('<html><body style="font-family:Arial;color:#111;">' + report_cover(d, self.win, "COSTING REPORT", "Cost estimate", self.cname or None) + self.cost_report_html(d) + "</body></html>")
+        d.setHtml('<html><body style="font-family:Arial;color:#111;">' + report_cover(d, self.win, "COSTING REPORT", "Cost estimate", self.cname or None, self.details) + self.cost_report_html(d) + "</body></html>")
         d.print_(w)
 
     def cost_report_preview(self):
@@ -1271,7 +1385,7 @@ class CostingPage(QWidget):
         w.setTitle("Fixture schedule")
         d = QTextDocument()
         d.setDefaultFont(QFont("Arial", 9))
-        d.setHtml('<html><body style="font-family:Arial;color:#111;">' + report_cover(d, self.win, "FIXTURE SCHEDULE", "Costing", self.cname or None) + self.report_html(d) + "</body></html>")
+        d.setHtml('<html><body style="font-family:Arial;color:#111;">' + report_cover(d, self.win, "FIXTURE SCHEDULE", "Costing", self.cname or None, self.details) + self.report_html(d) + "</body></html>")
         d.print_(w)
 
     # ----- building materials (the ribbon calls these) -----

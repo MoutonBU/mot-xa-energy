@@ -19121,11 +19121,12 @@ class MainWindow(QMainWindow):
         self.main_tabs.setCurrentWidget(self.xa_page)
 
     # ---- XA report (one A4 portrait page) ----
-    def _report_cover(self, title, sub, subject=None):
-        """Front page for the PDF reports: logo at the top, then the project, site, owner and who compiled it."""
+    def _report_cover(self, title, sub, subject=None, rd_over=None, loc_over=None):
+        """Front page for the PDF reports: logo at the top, then the project, site, owner and who compiled it.
+        rd_over / loc_over: details that replace the open project's (a costing that stands on its own)."""
         import datetime, html as _h
         e = lambda x: _h.escape(str(x))
-        rd = {**RD_DEFAULTS, **getattr(self, "rd", {})}
+        rd = {**RD_DEFAULTS, **getattr(self, "rd", {}), **(rd_over or {})}
         RED, DARK = "#C8102E", "#DCDCDC"
         date = rd.get("date") or datetime.date.today().strftime("%d %B %Y")
         town = self.xa_town.currentText() if hasattr(self, "xa_town") else ""
@@ -19134,6 +19135,8 @@ class MainWindow(QMainWindow):
             loc = f"{town}, {self.xa_prov.currentText()}  (energy zone {self.xa_zone.currentText()})".replace(" *,", ",")
         elif hasattr(self, "xa_zone") and self.xa_zone.currentText():
             loc = f"Energy zone {self.xa_zone.currentText()}"
+        if loc_over is not None:
+            loc = loc_over
         h = (f'<p style="font-size:40pt;">&nbsp;</p>'
              f'<p align="center"><img src="logo" height="90"></p>'
              f'<p align="center" style="font-size:11pt; color:#444444;">{e(rd["company"])}</p>'

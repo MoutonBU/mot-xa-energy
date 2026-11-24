@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.262**
+Current version: **1.86.263**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Costing on its own: a "Save" button next to Save a copy (it also still saves itself after every change), and a "Project details of this costing" panel under the costing bar: project, site (erf or stand), town, province, energy zone (filled from the town where it is in the energy tables), client, architecture firm and compiled by. They are saved inside the costing and used on the cover and heading of the costing PDFs instead of the open project's, so a costing can be done without a project, and "Copy from the open project" fills them in when you want the same details.
 - Costing, Professional fees tab: new "Council building plan fee" worked from a municipality's tariff book: rate per m2 of floor area with a minimum (and a higher rate over 400 m2), swimming pool, carport and pergola per m2, boundary wall over 1.3 m by erf size, and the completion certificate. George Municipality 2026/27 is built in; for any other municipality choose "My municipality" and type its tariff (the figures are editable and saved with the project). The floor area comes from the blocks and the pool, carport, pergola and high boundary wall from the Site works tab. The fee is part of the one "Professional fees and council costs" line and is not itemised in the PDFs.
 - Professional fees are private: the itemised table (who gets what, the scales and the percentages) is no longer in any PDF. The reports only carry the one combined "Professional fees and council costs" line in the price build-up. The itemised fees stay on the Professional fees tab inside the program.
 - Professional fees: every professional (architect, engineers, project manager ...) can now be worked out either from the guideline scale or as a percentage of the building cost that you type (for example architect 8 %, structural engineer 4 %). The choice is a drop-down in the new "How the fee is worked out" column; the report names the percentage used.

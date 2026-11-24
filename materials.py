@@ -1857,7 +1857,7 @@ class MaterialsPage(QWidget):
     def report_html(self):
         e = lambda x: _html.escape(str(x))
         RED, DARK = "#C8102E", "#DCDCDC"
-        rd = getattr(self.host.win, "rd", {}) or {}
+        rd = self.host.det_rd() if hasattr(self.host, "det_rd") else (getattr(self.host.win, "rd", {}) or {})
         th = lambda t, w: '<th bgcolor="%s" width="%d%%" style="padding:3px;">%s</th>' % (DARK, w, t)
         td = lambda t, a="left": '<td style="padding:3px;text-align:%s;">%s</td>' % (a, t)
         out = ['<h2 style="color:%s;">Building cost estimate</h2>' % RED,
@@ -1907,7 +1907,7 @@ class MaterialsPage(QWidget):
         d = QTextDocument()
         d.setDefaultFont(QFont("Arial", 9))
         from costing import report_cover
-        d.setHtml('<html><body style="font-family:Arial;color:#111;">' + report_cover(d, self.host.win, "BUILDING COST ESTIMATE", "Cost estimate") + self.report_html() + "</body></html>")
+        d.setHtml('<html><body style="font-family:Arial;color:#111;">' + report_cover(d, self.host.win, "BUILDING COST ESTIMATE", "Cost estimate", None, getattr(self.host, "details", None)) + self.report_html() + "</body></html>")
         d.print_(w)
 
     def preview_pdf(self):
