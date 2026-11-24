@@ -1549,7 +1549,7 @@ class ModelPopup(QWidget):
         self.W, self.H = 360, 230
         self.setFixedSize(self.W + 28, self.H + 58)
         self.t = QTimer(self)
-        self.t.setInterval(110)
+        self.t.setInterval(66)
         self.t.timeout.connect(self._tick)
 
     def set(self, title, frames, key):

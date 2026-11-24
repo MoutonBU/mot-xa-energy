@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.242**
+Current version: **1.86.243**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **1.86.243** The turning 3D models are smoother: 90 pictures per turn instead of 72, changing about 15 times a second instead of 9 (the big preview too).
 - **1.86.242** Rest the mouse on the 3D picture of a recent project and the model opens bigger in a floating card, still turning. It closes when the mouse moves off the picture. The big pictures are drawn in the background the first time and kept.
 - **1.86.241** The glow on the start tiles when you point at them now takes the tile's colour (green, yellow, purple and so on) instead of red.
 - **1.86.240** The 3D pictures on the recent project cards now turn slowly on a turntable, with no outlines. The frames are drawn once in the background, so the cards only swap pictures and the window stays smooth. The Project page now has the same numbered chips as the other pages (Project, Location, Details, Model, Building type, the two guides, Reports) instead of one long scroll.

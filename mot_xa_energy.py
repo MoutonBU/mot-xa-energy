@@ -11870,7 +11870,7 @@ class MainWindow(QMainWindow):
         return pm
 
     @staticmethod
-    def _spin_frames(tris, n=72, w=120, h=70, K=1.5, maxt=1800):
+    def _spin_frames(tris, n=90, w=120, h=70, K=1.5, maxt=1800):
         """the IFC building as n pictures of a turntable turn: red, flat shaded, no outlines.
         Made once in the background (numpy does the maths, QImage is safe off the screen thread); the card then only swaps pictures."""
         import math
@@ -11977,13 +11977,13 @@ class MainWindow(QMainWindow):
         if big is None and key in self._MESH and not self.__dict__.get("_big_busy"):
             self._big_busy = True
             tris = self._MESH[key]
-            wk = BgWorker(lambda: self._spin_frames(tris, 48, 360, 230, 1.25, 3500))
+            wk = BgWorker(lambda: self._spin_frames(tris, 72, 360, 230, 1.25, 3500))
             self._big_wk = wk
 
             def done(res, err, k=key):
                 self._big_busy = False
                 if res:
-                    while len(self._SPIN_BIG) >= 3:
+                    while len(self._SPIN_BIG) >= 2:
                         self._SPIN_BIG.pop(next(iter(self._SPIN_BIG)))
                     self._SPIN_BIG[k] = res
                     if pop.isVisible() and pop.key == k:
@@ -12112,7 +12112,7 @@ class MainWindow(QMainWindow):
         self._spin_labels = []
         if getattr(self, "_spin_timer", None) is None and hasattr(self, "_spin_tick"):
             self._spin_timer = QTimer(self)
-            self._spin_timer.setInterval(110)
+            self._spin_timer.setInterval(66)
             self._spin_timer.timeout.connect(self._spin_tick)
             self._spin_timer.start()
         while box.count():

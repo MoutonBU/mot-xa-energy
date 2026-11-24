@@ -141,7 +141,7 @@ w._show_model_preview(_c, _l, pj, "Erf test")
 assert w._mpop.isVisible() and w._mpop.key == _k
 _t = time.time()
 while time.time() - _t < 4 and _k not in M.MainWindow._SPIN_BIG: app.processEvents()
-assert _k in M.MainWindow._SPIN_BIG and len(M.MainWindow._SPIN_BIG[_k]) == 48
+assert _k in M.MainWindow._SPIN_BIG and len(M.MainWindow._SPIN_BIG[_k]) == 72
 assert w._mpop.frames is M.MainWindow._SPIN_BIG[_k]
 w._mpop.grab().save("/tmp/popup.png")
 w._hide_model_preview()
