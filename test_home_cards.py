@@ -70,7 +70,7 @@ cards = [w.home_cards.itemAt(i).widget() for i in range(w.home_cards.count())]
 assert len(cards) == 8 and w.home_cards.itemAtPosition(1, 3) is not None, len(cards)
 w._open_recent_card(ps8[5], cards[5])
 t_ = time.time()
-while time.time() - t_ < 1.8: app.processEvents()
+while time.time() - t_ < 2.6: app.processEvents()
 assert w.main_tabs.currentIndex() == 0 and w.current_file == ps8[5]
 assert not [c for c in w.findChildren(M.QWidget) if type(c).__name__ == "_Wipe"]                   # the opening wash is gone
 print("ok zoom")
@@ -79,7 +79,7 @@ tile_ = [b for b in w.launch_page.findChildren(M.QPushButton) if b.toolTip().sta
 w.main_tabs.setCurrentIndex(w.launcher_idx[0])
 tile_.click()
 t_ = time.time()
-while time.time() - t_ < 1.2: app.processEvents()
+while time.time() - t_ < 2.6: app.processEvents()
 assert w.main_tabs.currentIndex() == t0_, w.main_tabs.currentIndex()
 assert not [c for c in w.findChildren(M.QWidget) if type(c).__name__ == "_Wipe"]
 print("ok tile wipe")

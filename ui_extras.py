@@ -1113,9 +1113,9 @@ def _card_bg(w, h, col, dpr):
     return bg
 
 
-def wipe_open(win, src, col, on_covered, pm=None, ms=300, title="", sub=""):
+def wipe_open(win, src, col, on_covered, pm=None, ms=700, title="", sub=""):
     """Open a tool or a project with a title card: it slides up over the window while its icon, name and line come in one after another
-    (300 ms), `on_covered` runs under it (the page changes, the project loads) and the card lifts away (220 ms)."""
+    (700 ms), `on_covered` runs under it (the page changes, the project loads), it holds a moment and lifts away (380 ms)."""
     top = win.centralWidget() or win
     try:
         dpr = float(top.devicePixelRatioF())
@@ -1133,7 +1133,7 @@ def wipe_open(win, src, col, on_covered, pm=None, ms=300, title="", sub=""):
 
     def step(v):
         v = float(v)
-        ov.y = (1.0 - min(1.0, v / 0.55)) ** 3          # the card arrives in the first half, then the words finish
+        ov.y = (1.0 - min(1.0, v / 0.32)) ** 3          # the card arrives in the first third, then the words take their time
         ov.t = v
         ov.update()
 
@@ -1144,10 +1144,10 @@ def wipe_open(win, src, col, on_covered, pm=None, ms=300, title="", sub=""):
             on_covered()
         finally:
             fa = QVariantAnimation(ov)
-            fa.setDuration(220)
+            fa.setDuration(380)
             fa.setStartValue(0.0)
             fa.setEndValue(1.0)
-            fa.setEasingCurve(QEasingCurve.Type.InCubic)
+            fa.setEasingCurve(QEasingCurve.Type.InOutCubic)
 
             def out(v):
                 ov.a = 1.0 - float(v)
@@ -1155,7 +1155,7 @@ def wipe_open(win, src, col, on_covered, pm=None, ms=300, title="", sub=""):
                 ov.update()
             fa.valueChanged.connect(out)
             fa.finished.connect(ov.deleteLater)
-            QTimer.singleShot(90, fa.start)         # hold a moment: the new page paints once under the card
+            QTimer.singleShot(260, fa.start)        # hold a moment: the new page paints once under the card
             ov._fa = fa
     an.valueChanged.connect(step)
     an.finished.connect(covered)
