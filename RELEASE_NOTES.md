@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.245**
+Current version: **1.86.246**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **1.86.246** The big 3D preview on a card is now crisp: it is drawn at the sharpness of your screen, and the first picture is a sharp one right away (it used to be the small one stretched until the turning pictures were ready).
 - **1.86.245** The icon on a start tile is no longer cut off at the top when you point at it: it has room to lift, grow and wobble.
 - **1.86.244** Faster start with 3D cards. The program no longer reads the IFC models while it opens: the window comes first, then the pictures load at low priority. Each model is read once and the finished pictures are kept on disk, so the next start only loads them. The model is now read once (not twice) and on all cores, and the turning pictures are painted straight to the card and skipped while scrolled out of sight.
 - **1.86.243** The turning 3D models are smoother: 90 pictures per turn instead of 72, changing about 15 times a second instead of 9 (the big preview too).

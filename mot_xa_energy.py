@@ -12028,7 +12028,14 @@ class MainWindow(QMainWindow):
         if pop is None:
             pop = self._mpop = ux_p.ModelPopup()
         big = self._SPIN_BIG.get(key)
-        pop.set(name, big or small, key)
+        Kp = min(2.0, max(1.5, float(pic.devicePixelRatioF())))        # drawn at the screen's own sharpness
+        first = None
+        if big is None and key in self._MESH:
+            try:
+                first = self._spin_frames(self._MESH[key], 1, 360, 230, Kp, 3500)       # one sharp picture at once, the turning ones follow
+            except Exception:
+                first = None
+        pop.set(name, big or first or small, key)
         pop.i = getattr(self, "_spin_i", 0)
         g = pic.mapToGlobal(QPoint(pic.width() + 14, -10))
         scr = QGuiApplication.screenAt(g) or QGuiApplication.primaryScreen()
@@ -12043,13 +12050,13 @@ class MainWindow(QMainWindow):
         if big is None and key in self._MESH and not self.__dict__.get("_big_busy"):
             self._big_busy = True
             tris = self._MESH[key]
-            wk = BgWorker(lambda: self._spin_frames(tris, 72, 360, 230, 1.25, 3500))
+            wk = BgWorker(lambda: self._spin_frames(tris, 60, 360, 230, Kp, 3500))
             self._big_wk = wk
 
             def done(res, err, k=key):
                 self._big_busy = False
                 if res:
-                    while len(self._SPIN_BIG) >= 2:
+                    while len(self._SPIN_BIG) >= 1:
                         self._SPIN_BIG.pop(next(iter(self._SPIN_BIG)))
                     self._SPIN_BIG[k] = res
                     if pop.isVisible() and pop.key == k:
