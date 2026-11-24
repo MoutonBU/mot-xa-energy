@@ -12362,10 +12362,13 @@ class MainWindow(QMainWindow):
                 try:
                     self._gh_install()
                 except Exception as ex:
-                    self._upd_log("error: %r" % ex)
+                    import traceback
+                    tb_ = traceback.extract_tb(ex.__traceback__)
+                    where_ = "%s line %d, %s" % (os.path.basename(tb_[-1].filename), tb_[-1].lineno, tb_[-1].name) if tb_ else "?"
+                    self._upd_log("error: %r at %s\n%s" % (ex, where_, traceback.format_exc()))
                     self.update_btn.setEnabled(True)
                     self.update_btn.setText("\u27F3  Update failed - click to retry")
-                    QMessageBox.warning(self, APP_NAME, "The update failed:\n%s" % ex)
+                    QMessageBox.warning(self, APP_NAME, "The update failed:\n%s\n\nWhere: %s\nIf this program now shows a newer version under Menu > Version, the update was installed: close the program and open it again." % (ex, where_))
             else:
                 QMessageBox.information(self, APP_NAME, "No update information yet. Use Menu > Check for updates now.")
             return
