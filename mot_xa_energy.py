@@ -14529,6 +14529,10 @@ class MainWindow(QMainWindow):
         try:
             return abs(float(self.xa_lat.text().replace(",", ".")))
         except ValueError:
+            t_ = self.xa_town.currentText() if hasattr(self, "xa_town") else ""
+            c_ = XA_COORDS.get(t_) or XA_COORDS.get(XA_NEAREST.get(t_, "")) or XA_COORDS.get((t_ or "").rstrip(" *"))
+            if c_:
+                return c_[1]                    # the town's latitude from SANS 10400-XA:2026 Table C.1
             return self.PROV_LAT.get(self.xa_prov.currentText(), 30.0)
 
     def _weather_dir(self):
@@ -19933,6 +19937,12 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
             if c_["all_ok"] is not None:
                 names = sorted({o["system"].split(" (")[0].split(" with")[0] for o in c_["groups"] if o["sys_ok"] is not None})
                 rows.append(("SANS 10400-XA", "Hot water supply (clause 6.1)", ", ".join(names), bool(c_["all_ok"])))
+        except Exception:
+            pass
+        try:
+            for n_, i_, _r, k_, t_ in self.x26_rows():                # the 2026 additions that were filled in
+                if k_ != "na":
+                    rows.append(("SANS 10400-XA", n_, i_, k_ == "ok"))
         except Exception:
             pass
         try:

@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.231**
+Current version: **1.86.232**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **XA 2026 finished:** the roof light, category 1 wall, air conditioner and sensor checks now count in the compliance summary (a failing one shows as not compliant), and the shading multiplier uses the chosen town's latitude from Annex C Table C.1 when no latitude is typed.
 - **Energy XA 2026 inputs, and a lighter opening:** the Energy XA page has a new section 10 with roof lights (table 5), the category 1 wall, air conditioner COP (table 11) and the sensor limit; each line shows its result at once, is saved in the project and appears in the XA report. Tiles and cards now open with a flat colour curtain that sweeps in and out (about 0.3 s), which is much lighter to draw than the round wash.
 - **SANS 10400-XA 2026 (edition 3):** the energy tool now follows the new edition. The tables (1, 2, 4, wall, roof and floor R-values, lighting) are the same as 2021, but the route clauses are renumbered (4.2 deemed-to-satisfy, 4.3 Tables 1 and 2, 4.4 reference building and certified software) and every report and label says so. New: the Southern Cape Condensation Problem Area from Annex C (32 towns, incl. George, Mosselbaai, Albertinia, Riversdale) shows on the zone card and warns in the glazing check that single low-E glass cannot be used for the U-value (5.3.7); Albertinia, Alexandria, Colesberg and Ubombo are now listed towns; roof light limits (table 5), thatch thickness (5.6.6), the 140 mm category 1 wall, the air-conditioner COP table (table 11) and the 100 m2 sensor limit are built in.
 - **Quicker light and dark, a new opening, IFC on the cards** - the light/dark switch now restyles only what is on screen (the rest follows when you open it) instead of the whole program, so it no longer hangs. Tiles and recent-project cards open with a round wash of the tool's colour that spreads from your click. Right-click a recent project card to show an IFC model of the building on it.

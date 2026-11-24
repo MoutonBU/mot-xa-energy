@@ -49,3 +49,15 @@ st = w.x26_state(); w.x26_rl_a.setValue(0); w.x26_set_state(st)
 assert abs(w.x26_rl_a.value() - 6.0) < 1e-9 and w.x26_c1.isChecked()
 assert w.project_data()["xa"]["x26"]["wall"] == 110
 print("ok x26 inputs")
+# the town's latitude from Table C.1 drives the shading multiplier when no latitude is typed
+w.xa_lat.setText("")
+w.xa_prov.setCurrentText("Western Cape"); w.xa_town.setCurrentText("George")
+assert abs(w._xa_latitude() - 33.963) < 0.1, w._xa_latitude()
+assert M.xa_shade_multiplier(w._xa_latitude()) == 0.54
+w.xa_lat.setText("27")
+assert w._xa_latitude() == 27.0
+w.x26_c1.setChecked(True); w.x26_wall.setValue(110)
+rows_ = w._summary_rows()
+cw_ = [r for r in rows_ if r[1].startswith("Category 1 wall")]
+assert cw_ and cw_[0][3] is False, rows_              # a thin category 1 wall now fails the overall summary
+print("ok latitude and summary")
