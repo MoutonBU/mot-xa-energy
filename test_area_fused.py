@@ -17,4 +17,5 @@ assert M.ACCENT_COL[0] == "#c08e5c", M.ACCENT_COL[0]
 assert w.shell_ribbon.stack.currentWidget() is w.shell_ribbon.pages[7]          # the area schedule's own buttons show
 w.site_page.steps.go(0); pump()
 assert w.shell_ribbon.stack.currentWidget() is w.shell_ribbon.pages[8]
+assert '"land", "Building lines"),' in open(M.__file__, encoding="utf-8").read()   # the Site and areas tile opens Building lines straight away
 print("ok")

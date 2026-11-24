@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.224**
+Current version: **1.86.225**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Site and areas opens Building lines straight away:** the tile on the start screen no longer goes through a page with one tile.
 - **Area schedule is now part of Building lines:** it is the last step ("4 Area schedule") of Building lines, with its own rooms, totals and reports inside, and its buttons show in the ribbon when you open it. The separate Area schedule tab and tile are gone, and everything that used to open it lands there. Site and areas now has the beige colour of its home tile all the way through.
 - **Button glow follows the tool colour:** the soft glow under buttons is now purple in Costing, green in Invoicing, amber in Orders, blue in the Detail tool, teal in the Drawing register and brown in Site, and red on the start screen and in the SANS tools.
 - **Switching tools is fast again:** the tool colours (1.86.221) restyled the whole program on every tab change, which made Invoicing, Costing and the other tools freeze for a moment. Now only the open tool's page, the side bar and the ribbon are restyled, once per tool.

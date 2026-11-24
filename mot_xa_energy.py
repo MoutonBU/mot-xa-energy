@@ -13888,7 +13888,7 @@ class MainWindow(QMainWindow):
                 ("Detail tool", "Add notes to an Archicad detail, or describe a detail in words (typed or spoken) and have it drawn.", "ruler", "Detail tool"),
                 ("Costing", "Fixtures, materials and the budget for a job.", "calc", "Costing"),
                 ("SANS", "Light and ventilation, energy and coverage checks for the building regulations.", "sun", "SANS"),
-                ("Site and areas", "Building lines on the stand, the sewer, water and electrical lines to the house, and the area schedule with unit mix and floor area ratio.", "land", "Site and"),
+                ("Site and areas", "Building lines on the stand, the sewer, water and electrical lines to the house, and the area schedule with unit mix and floor area ratio.", "land", "Building lines"),
                 ("Guidelines review", "Check the plans against the estate's architectural guidelines and the council's or state's checklist.", "shield", "Guidelines review"))):
             g.addWidget(tile(title, sub, ico, tgt), i // 3, i % 3)
         for k in (0, 1, 2):
