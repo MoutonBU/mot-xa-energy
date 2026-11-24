@@ -4446,6 +4446,8 @@ TAB_KEYS = [
     ("costing", "calc"), ("start", "home"), ("sans", "building"), ("rates", "tag"), ("windows", "window"),
     ("area schedule", "layers"), ("building lines", "land"), ("council", "folder"), ("site and areas", "land"),
     ("doors", "door"), ("rooms", "room"), ("results", "results"), ("plan", "plan"),
+    ("1  project", "folder"), ("location", "pin"), ("3  details", "building"), ("4  model", "cube"),
+    ("building type", "building"), ("reports", "clipboard"),
 ]
 
 
@@ -11767,6 +11769,7 @@ class MainWindow(QMainWindow):
 
     _INFO = {}                    # path -> what is set up in the project (for the badges on the card)
     _THUMBS = {}                  # (path, file time, IFC path, IFC file time) -> the stand outline and buildings, or None
+    _SPIN = {}                    # the same key -> the turntable pictures of an IFC model
 
     @staticmethod
     def _thumb_ifc(path, ifc):
@@ -11842,7 +11845,7 @@ class MainWindow(QMainWindow):
         from PySide6.QtGui import QPixmap
         verts, blds = data[0], data[1]
         from_ifc = len(data) > 2
-        if from_ifc and len(data) > 3 and data[3]:
+        if from_ifc and len(data) > 3 and isinstance(data[3], list):
             return MainWindow._thumb_pixmap3d(data[3], w, h)
         xs, ys = [v[0] for v in verts], [v[1] for v in verts]
         x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
@@ -11865,55 +11868,93 @@ class MainWindow(QMainWindow):
         return pm
 
     @staticmethod
-    def _thumb_pixmap3d(tris, w=120, h=70):
-        """the IFC building as a red graphic 3D picture (corner view, flat shading, thin dark edges), drawn at twice the size so it stays crisp"""
+    def _spin_frames(tris, n=72, w=120, h=70, K=1.5):
+        """the IFC building as n pictures of a turntable turn: red, flat shaded, no outlines.
+        Made once in the background (numpy does the maths, QImage is safe off the screen thread); the card then only swaps pictures."""
         import math
+        import time
+        import numpy as np
+        from PySide6.QtGui import QImage
+        T = np.asarray(tris, float).reshape(-1, 3, 3)
+        nrm = np.cross(T[:, 1] - T[:, 0], T[:, 2] - T[:, 0])
+        area = np.linalg.norm(nrm, axis=1)
+        ok = area > 1e-9
+        T, nrm, area = T[ok], nrm[ok], area[ok]
+        if len(T) == 0:
+            return []
+        if len(T) > 1800:                                   # keep the biggest faces; the small ones are not seen at card size
+            ix = np.argsort(-area)[:1800]
+            T, nrm, area = T[ix], nrm[ix], area[ix]
+        nu = nrm / area[:, None]
+        X, Y, Z = T[:, :, 0], T[:, :, 1], T[:, :, 2]
+        tilt = math.radians(30)
+        ct, st_ = math.cos(tilt), math.sin(tilt)
+        r = float(np.sqrt(X * X + Y * Y).max()) or 1.0
+        zmax = float(Z.max()) or 1.0
+        ymin, ymax = -r * st_, zmax * ct + r * st_
+        sc = min((w - 10) / (2 * r), (h - 10) / max(ymax - ymin, 1e-6))
+        ox, oy = w / 2.0, (h - (ymax - ymin) * sc) / 2.0
+        Lv = np.array((-0.42, -0.55, 0.72))
+        Lv = Lv / np.linalg.norm(Lv)
+        top = np.abs(nu[:, 2])
+        base = (255, 70, 92)
+        LV = 24
+        brushes, pens = [], []
+        for q_ in range(LV):
+            k_ = 0.42 + 0.58 * q_ / (LV - 1)
+            c_ = QColor(int(base[0] * k_), int(base[1] * k_), int(base[2] * k_))
+            brushes.append(QBrush(c_))
+            pens.append(QPen(c_, 0.7))                       # same colour as the face: closes the hairline gaps between faces
+        frames = []
+        for f in range(n):
+            a = 2 * math.pi * f / n
+            ca, sa = math.cos(a), math.sin(a)
+            xr, yr = X * ca - Y * sa, X * sa + Y * ca
+            px = (ox + xr * sc).tolist()
+            py = (h - (oy + (Z * ct + yr * st_ - ymin) * sc)).tolist()
+            dep = (yr * ct - Z * st_).mean(axis=1)
+            order = np.argsort(-dep).tolist()
+            nx, ny = nu[:, 0] * ca - nu[:, 1] * sa, nu[:, 0] * sa + nu[:, 1] * ca
+            lt = np.abs(nx * Lv[0] + ny * Lv[1] + nu[:, 2] * Lv[2])
+            k = np.clip(0.45 + 0.55 * lt + 0.12 * (top > 0.8), 0, 1)
+            lv = np.minimum(((k - 0.42) / 0.58 * (LV - 1)).clip(0, LV - 1).astype(int), LV - 1).tolist()
+            img = QImage(int(w * K), int(h * K), QImage.Format.Format_ARGB32_Premultiplied)
+            img.fill(0)
+            img.setDevicePixelRatio(K)
+            q = QPainter(img)
+            q.setRenderHint(QPainter.RenderHint.Antialiasing)
+            for t in order:
+                l_ = lv[t]
+                q.setBrush(brushes[l_])
+                q.setPen(pens[l_])
+                a_, b_ = px[t], py[t]
+                q.drawPolygon(QPolygonF([QPointF(a_[0], b_[0]), QPointF(a_[1], b_[1]), QPointF(a_[2], b_[2])]))
+            q.end()
+            frames.append(img)
+            time.sleep(0.003)                                # lets the window breathe while this runs in the background
+        return frames
+
+    @staticmethod
+    def _thumb_pixmap3d(tris, w=120, h=70):
         from PySide6.QtGui import QPixmap
-        A, T = math.radians(-35), math.radians(32)
-        ca, sa, ct, st_ = math.cos(A), math.sin(A), math.cos(T), math.sin(T)
-        L = (-0.42, -0.55, 0.72)
-        n_ = math.sqrt(sum(c * c for c in L))
-        L = tuple(c / n_ for c in L)
-        items, xs, ys = [], [], []
-        for tri in tris:
-            pts = []
-            dep = 0.0
-            for (x, y, z) in tri:
-                xr, yr = x * ca - y * sa, x * sa + y * ca
-                pts.append((xr, z * ct + yr * st_))
-                dep += yr * ct - z * st_
-            ux, uy, uz = (tri[1][i] - tri[0][i] for i in range(3))
-            vx, vy, vz = (tri[2][i] - tri[0][i] for i in range(3))
-            nx, ny, nz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
-            ln = math.sqrt(nx * nx + ny * ny + nz * nz)
-            if ln < 1e-9:
-                continue
-            lt = abs((nx * L[0] + ny * L[1] + nz * L[2]) / ln)
-            items.append((dep, pts, lt, abs(nz) / ln))
-            for p_ in pts:
-                xs.append(p_[0])
-                ys.append(p_[1])
-        K = 2
-        pm = QPixmap(w * K, h * K)
-        pm.fill(QColor(0, 0, 0, 0))
-        pm.setDevicePixelRatio(K)
-        if not items:
-            return pm
-        x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
-        sc = min((w - 10) / max(x1 - x0, 1e-6), (h - 10) / max(y1 - y0, 1e-6))
-        ox, oy = (w - (x1 - x0) * sc) / 2.0, (h - (y1 - y0) * sc) / 2.0
-        items.sort(key=lambda t: -t[0])
-        q = QPainter(pm)
-        q.setRenderHint(QPainter.RenderHint.Antialiasing)
-        q.setPen(QPen(QColor(110, 14, 30, 150), 0.35))
-        for _, pts, lt, top in items:
-            k = 0.45 + 0.55 * lt
-            if top > 0.8:
-                k = min(1.0, k + 0.12)
-            q.setBrush(QColor(int(255 * k), int(70 * k), int(92 * k)))
-            q.drawPolygon(QPolygonF([QPointF(ox + (px - x0) * sc, h - (oy + (py - y0) * sc)) for px, py in pts]))
-        q.end()
-        return pm
+        fr = MainWindow._spin_frames(tris, 1, w, h)
+        return QPixmap.fromImage(fr[0]) if fr else QPixmap(w, h)
+
+    def _spin_tick(self):
+        """turn the 3D pictures on the recent cards; only while the start page is showing"""
+        labs = getattr(self, "_spin_labels", None)
+        if not labs or not self.isVisible() or self.isMinimized():
+            return
+        if self.main_tabs.currentIndex() != self.launcher_idx[0]:
+            return
+        self._spin_i = getattr(self, "_spin_i", 0) + 1
+        from PySide6.QtGui import QPixmap
+        for j, (lab, fr) in enumerate(labs):
+            try:
+                if lab.isVisible():
+                    lab.setPixmap(QPixmap.fromImage(fr[(self._spin_i + j * 11) % len(fr)]))
+            except RuntimeError:
+                pass
 
     def _card_ifc(self, path):
         return (SETTINGS.get("card_ifc") or {}).get(path, "")
@@ -11933,6 +11974,10 @@ class MainWindow(QMainWindow):
             return None
         if data == "?" or data is None:
             return None
+        fr = self._SPIN.get(self._thumb_key(path))
+        if fr:
+            from PySide6.QtGui import QPixmap
+            return QPixmap.fromImage(fr[0])
         return self._thumb_pixmap(data)
 
     def _load_thumbs(self, paths):
@@ -11951,7 +11996,19 @@ class MainWindow(QMainWindow):
             return
 
         def work():
-            return [(k, self._thumb_read(k[0], k[2])) for k in todo]
+            out = []
+            for k in todo:
+                data = self._thumb_read(k[0], k[2])
+                if data and len(data) > 3 and isinstance(data[3], list):
+                    try:
+                        fr = self._spin_frames(data[3])
+                    except Exception:
+                        fr = []
+                    if fr:
+                        self._SPIN[k] = fr
+                    data = data[:3] + (bool(fr),)            # the triangles are not kept once the pictures exist
+                out.append((k, data))
+            return out
 
         wk = BgWorker(work)
         self._thumb_worker = wk
@@ -11995,6 +12052,12 @@ class MainWindow(QMainWindow):
         box = getattr(self, "home_cards", None)
         if box is None:
             return
+        self._spin_labels = []
+        if getattr(self, "_spin_timer", None) is None and hasattr(self, "_spin_tick"):
+            self._spin_timer = QTimer(self)
+            self._spin_timer.setInterval(110)
+            self._spin_timer.timeout.connect(self._spin_tick)
+            self._spin_timer.start()
         while box.count():
             it = box.takeAt(0)
             if it.widget() is not None:
@@ -12036,6 +12099,12 @@ class MainWindow(QMainWindow):
                 tl.setPixmap(tm)
                 tl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
                 cl.addWidget(tl)
+                try:
+                    sp_ = self._SPIN.get(self._thumb_key(p))
+                except OSError:
+                    sp_ = None
+                if sp_:
+                    self._spin_labels.append((tl, sp_))
             cl.addLayout(cv, 1)
             t1 = QLabel("<b style='font-size:14px'>%s</b>" % html.escape(name))
             t2 = QLabel("<span style='color:#8a93a3'>Edited %s<br>%s</span>" % (when, html.escape(os.path.basename(os.path.dirname(p)))))
@@ -14374,6 +14443,19 @@ class MainWindow(QMainWindow):
         v.setSpacing(14)
         scroll.setWidget(inner)
 
+        self.home_tabs = ptabs = QTabWidget()           # the same numbered chips as the other pages
+        v.addWidget(ptabs)
+        _pt = iter(("1  Project", "2  Location", "3  Details", "4  Model", "5  Building type",
+                    "6  Light && Ventilation", "7  Energy (XA)", "8  Reports"))
+
+        def put(box):
+            pg = QWidget()
+            pv = QVBoxLayout(pg)
+            pv.setContentsMargins(0, 8, 0, 0)
+            pv.addWidget(box)
+            pv.addStretch(1)
+            ptabs.addTab(pg, next(_pt))
+
         def group(title, sub=""):
             box = IconGroupBox(title)
             box.setObjectName("xaGroup")
@@ -14385,7 +14467,7 @@ class MainWindow(QMainWindow):
                 lab.setWordWrap(True)
                 lab.setObjectName("xaSub")
                 vb.addWidget(lab)
-            v.addWidget(box)
+            put(box)
             return vb
 
         g1 = group("Your project", "Where is it and what is it? The town sets the energy zone. Save your work here too.")
@@ -14425,9 +14507,9 @@ class MainWindow(QMainWindow):
         self.home_proj_lbl = QLabel("")
         g1.addWidget(self.home_proj_lbl)
         if getattr(self, "_where_box", None) is not None:
-            v.addWidget(self._where_box)        # Location / energy zone, right under the project
+            put(self._where_box)        # Location / energy zone, right under the project
         if getattr(self, "_details_box", None) is not None:
-            v.addWidget(self._details_box)      # Building details live on the Home page, right under the project
+            put(self._details_box)      # Building details live on the Home page, right under the project
         gi = group("Your model (optional)", "Have an IFC export from Archicad? Tick the box and import it once. "
                    "The rooms, windows, doors, floor areas and north then feed Energy (XA) and the rational "
                    "design report. Light & Ventilation uses your screenshots, or tick \"Use IFC model for windows and doors\" there.")
@@ -14474,6 +14556,10 @@ class MainWindow(QMainWindow):
         rd_b.clicked.connect(self.rd_dialog)
         g.addWidget(rd_b)
 
+        for i_, n_ in enumerate(("folder", "pin", "building", "cube", "building", "lightvent", "bolt", "clipboard")):
+            if i_ < ptabs.count():
+                ptabs.setTabIcon(i_, make_icon(n_, "#eceef0", 17))
+        ptabs.setIconSize(QSize(17, 17))
         self._set_project_label()
         self._refresh_home_summary()
         v.addStretch()

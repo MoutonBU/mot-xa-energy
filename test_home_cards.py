@@ -111,6 +111,15 @@ print("ok badges and gauges")
 
 tri_ = [((0, 0, 0), (4, 0, 0), (4, 0, 3)), ((0, 0, 0), (4, 0, 3), (0, 0, 3)), ((0, 0, 3), (4, 0, 3), (4, 5, 3))]
 pm3_ = M.MainWindow._thumb_pixmap3d(tri_)
-assert pm3_.width() == 240 and pm3_.devicePixelRatio() == 2.0
-assert M.MainWindow._thumb_pixmap(([(0, 0), (1, 0), (1, 1)], [[(0, 0), (1, 0), (1, 1)]], True, tri_)).width() == 240
+assert pm3_.width() == 180
+assert M.MainWindow._thumb_pixmap(([(0, 0), (1, 0), (1, 1)], [[(0, 0), (1, 0), (1, 1)]], True, tri_)).width() == 180
 print("ok 3d card")
+
+import time as _t
+t0_ = _t.time()
+fr_ = M.MainWindow._spin_frames(tri_, 72)
+print("spin frames", len(fr_), round(_t.time() - t0_, 2), "s for 3 triangles")
+assert len(fr_) == 72 and fr_[0] != fr_[18]
+w._rebuild_home_cards()
+ps_ = [pj, pj2]
+print("ok spin")

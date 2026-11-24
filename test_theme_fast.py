@@ -13,6 +13,7 @@ assert len(app.styleSheet()) < 2000, "the whole look must not sit on the applica
 w.main_tabs.setCurrentIndex(w._tab_index("Costing")); pump(0.3)
 t = time.perf_counter(); w.toggle_mode(); dt = time.perf_counter() - t
 assert dt < 4.0, dt
+pump(0.4)
 pg = w.main_tabs.currentWidget()
 assert "#f" in pg.styleSheet().lower() and pg.__dict__["_thk"][0] == "light"
 inv = w.main_tabs.widget(w._tab_index("Invoicing"))

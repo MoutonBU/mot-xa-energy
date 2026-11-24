@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.239**
+Current version: **1.86.240**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **1.86.240** The 3D pictures on the recent project cards now turn slowly on a turntable, with no outlines. The frames are drawn once in the background, so the cards only swap pictures and the window stays smooth. The Project page now has the same numbered chips as the other pages (Project, Location, Details, Model, Building type, the two guides, Reports) instead of one long scroll.
 - **1.86.239** Recent project cards with an IFC model now show the building as a small 3D picture in red (corner view, flat shading, thin dark edges), instead of the flat outline.
 - **1.86.238** Recent project cards now show the zone and small dots for what is set up (Light, XA, Cost, IFC). The Energy XA page has four ring gauges (Envelope, Glazing, Services, Overall). Tiles get a hover edge in the tool colour and tabs fade a little faster.
 - **Slower title card:** the opening card now takes about 1.3 s in all (0.7 s to come in, a short hold, 0.4 s to lift away), so the icon and words can be seen.
