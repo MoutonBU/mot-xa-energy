@@ -11782,6 +11782,15 @@ class MainWindow(QMainWindow):
             return None
 
     @staticmethod
+    def _thumb_mesh(ifc):
+        """the triangles of an IFC model for the 3D card picture (background thread; None if it cannot be read)"""
+        try:
+            import site_import as si_
+            return si_.ifc_mesh(ifc) or None
+        except Exception:
+            return None
+
+    @staticmethod
     def _thumb_read(path, ifc=None):
         """the stand corners and buildings from a project file (runs off the screen thread; no Qt in here)
         With an IFC model (picked for the card, or the one the project uses) the picture is the building itself from above."""
@@ -11809,7 +11818,8 @@ class MainWindow(QMainWindow):
             if polys:
                 pts = [q for pl in polys for q in pl]
                 xs, ys = [q[0] for q in pts], [q[1] for q in pts]
-                return ([(min(xs), min(ys)), (max(xs), min(ys)), (max(xs), max(ys)), (min(xs), max(ys))], polys, True)
+                mesh = MainWindow._thumb_mesh(ifc)
+                return ([(min(xs), min(ys)), (max(xs), min(ys)), (max(xs), max(ys)), (min(xs), max(ys))], polys, True, mesh)
         verts = [tuple(v[:2]) for v in (site.get("verts") or []) if len(v) >= 2]
         blds = []
         for b in (site.get("buildings") or [])[:6]:
@@ -11832,6 +11842,8 @@ class MainWindow(QMainWindow):
         from PySide6.QtGui import QPixmap
         verts, blds = data[0], data[1]
         from_ifc = len(data) > 2
+        if from_ifc and len(data) > 3 and data[3]:
+            return MainWindow._thumb_pixmap3d(data[3], w, h)
         xs, ys = [v[0] for v in verts], [v[1] for v in verts]
         x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
         sc = min((w - 12) / max(x1 - x0, 1e-6), (h - 12) / max(y1 - y0, 1e-6))
@@ -11849,6 +11861,57 @@ class MainWindow(QMainWindow):
         q.setBrush(QColor(255, 64, 86, 90))
         for pl in blds:
             q.drawPolygon(QPolygonF([P(pp) for pp in pl]))
+        q.end()
+        return pm
+
+    @staticmethod
+    def _thumb_pixmap3d(tris, w=120, h=70):
+        """the IFC building as a red graphic 3D picture (corner view, flat shading, thin dark edges), drawn at twice the size so it stays crisp"""
+        import math
+        from PySide6.QtGui import QPixmap
+        A, T = math.radians(-35), math.radians(32)
+        ca, sa, ct, st_ = math.cos(A), math.sin(A), math.cos(T), math.sin(T)
+        L = (-0.42, -0.55, 0.72)
+        n_ = math.sqrt(sum(c * c for c in L))
+        L = tuple(c / n_ for c in L)
+        items, xs, ys = [], [], []
+        for tri in tris:
+            pts = []
+            dep = 0.0
+            for (x, y, z) in tri:
+                xr, yr = x * ca - y * sa, x * sa + y * ca
+                pts.append((xr, z * ct + yr * st_))
+                dep += yr * ct - z * st_
+            ux, uy, uz = (tri[1][i] - tri[0][i] for i in range(3))
+            vx, vy, vz = (tri[2][i] - tri[0][i] for i in range(3))
+            nx, ny, nz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
+            ln = math.sqrt(nx * nx + ny * ny + nz * nz)
+            if ln < 1e-9:
+                continue
+            lt = abs((nx * L[0] + ny * L[1] + nz * L[2]) / ln)
+            items.append((dep, pts, lt, abs(nz) / ln))
+            for p_ in pts:
+                xs.append(p_[0])
+                ys.append(p_[1])
+        K = 2
+        pm = QPixmap(w * K, h * K)
+        pm.fill(QColor(0, 0, 0, 0))
+        pm.setDevicePixelRatio(K)
+        if not items:
+            return pm
+        x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+        sc = min((w - 10) / max(x1 - x0, 1e-6), (h - 10) / max(y1 - y0, 1e-6))
+        ox, oy = (w - (x1 - x0) * sc) / 2.0, (h - (y1 - y0) * sc) / 2.0
+        items.sort(key=lambda t: -t[0])
+        q = QPainter(pm)
+        q.setRenderHint(QPainter.RenderHint.Antialiasing)
+        q.setPen(QPen(QColor(110, 14, 30, 150), 0.35))
+        for _, pts, lt, top in items:
+            k = 0.45 + 0.55 * lt
+            if top > 0.8:
+                k = min(1.0, k + 0.12)
+            q.setBrush(QColor(int(255 * k), int(70 * k), int(92 * k)))
+            q.drawPolygon(QPolygonF([QPointF(ox + (px - x0) * sc, h - (oy + (py - y0) * sc)) for px, py in pts]))
         q.end()
         return pm
 

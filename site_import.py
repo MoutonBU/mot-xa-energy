@@ -368,3 +368,38 @@ def ifc_footprint(path, include_slabs=True, include_roof=True, progress=None):
         out.append((p.area, clean(list(p.exterior.coords))))
     out.sort(key=lambda t: -t[0])
     return [c for _, c in out]
+
+
+def ifc_mesh(path, max_tris=9000):
+    """The building as triangles for a small 3D picture: walls, slabs, roofs, columns, stairs. Returns [(x,y,z)*3, ...] in metres, centred on the model."""
+    import ifcopenshell
+    import ifcopenshell.geom
+    import numpy as np
+    ifc = ifcopenshell.open(path)
+    st = ifcopenshell.geom.settings()
+    st.set(st.USE_WORLD_COORDS, True)
+    els = []
+    for c in ("IfcWall", "IfcWallStandardCase", "IfcColumn", "IfcStair", "IfcCurtainWall", "IfcSlab", "IfcRoof"):
+        try:
+            els += list(ifc.by_type(c))
+        except Exception:
+            pass
+    V, F, off = [], [], 0
+    for el in els:
+        try:
+            g = ifcopenshell.geom.create_shape(st, el).geometry
+            v = np.array(g.verts, float).reshape(-1, 3)
+            f = np.array(g.faces, int).reshape(-1, 3)
+        except Exception:
+            continue
+        V.append(v)
+        F.append(f + off)
+        off += len(v)
+    if not V:
+        return []
+    V = np.vstack(V)
+    F = np.vstack(F)
+    if len(F) > max_tris:
+        F = F[np.linspace(0, len(F) - 1, max_tris).astype(int)]
+    V = V - np.array([(V[:, 0].min() + V[:, 0].max()) / 2.0, (V[:, 1].min() + V[:, 1].max()) / 2.0, V[:, 2].min()])
+    return [tuple(map(tuple, V[t])) for t in F]

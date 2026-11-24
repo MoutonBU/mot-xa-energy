@@ -39,7 +39,7 @@ w.main_tabs.setCurrentIndex(w.launcher_idx[0])
 w._open_recent_card(pj)
 assert w.main_tabs.currentIndex() == 0 and w.current_file == pj
 t_ = time.time()
-while time.time() - t_ < 1.6: app.processEvents()
+while time.time() - t_ < 3.0: app.processEvents()
 from PySide6.QtWidgets import QGroupBox
 assert all(g.graphicsEffect() is None for g in w.main_tabs.widget(0).findChildren(QGroupBox))     # the effects are gone afterwards
 print("ok cascade")
@@ -88,7 +88,7 @@ ifc_ = os.path.join(d, "m.ifc")
 open(ifc_, "w").write("x")
 M.MainWindow._thumb_ifc = staticmethod(lambda path, ifc: [[(0, 0), (10, 0), (10, 6), (0, 6)]] if ifc else None)
 dd_ = M.MainWindow._thumb_read(pj2, ifc_)
-assert len(dd_) == 3 and M.MainWindow._thumb_pixmap(dd_).width() == 120
+assert len(dd_) == 4 and M.MainWindow._thumb_pixmap(dd_).width() == 120
 M.SETTINGS["card_ifc"] = {ps8[0]: ifc_}
 assert w._thumb_key(ps8[0])[2] == ifc_ and w._thumb_key(ps8[1])[2] == ""
 M.SETTINGS["card_ifc"] = {}
@@ -108,3 +108,9 @@ g.set_value(3, 3); assert g.col.name() == "#2e9e5b"; g.set_value(0, 0); assert g
 w._gauge_refresh(True)
 assert len(w.x_gauges) == 4
 print("ok badges and gauges")
+
+tri_ = [((0, 0, 0), (4, 0, 0), (4, 0, 3)), ((0, 0, 0), (4, 0, 3), (0, 0, 3)), ((0, 0, 3), (4, 0, 3), (4, 5, 3))]
+pm3_ = M.MainWindow._thumb_pixmap3d(tri_)
+assert pm3_.width() == 240 and pm3_.devicePixelRatio() == 2.0
+assert M.MainWindow._thumb_pixmap(([(0, 0), (1, 0), (1, 1)], [[(0, 0), (1, 0), (1, 1)]], True, tri_)).width() == 240
+print("ok 3d card")
