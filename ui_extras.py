@@ -1017,55 +1017,103 @@ def install_icon_motion():
 
 
 class _Wipe(QWidget):
-    """The old screen as one picture that slides away and fades while the new page is already underneath, with a thin line of the tool's
-    colour running along the top. One picture and one line are painted per frame, so it stays smooth."""
-    def __init__(self, parent, col, pm):
+    """A title card (the tool's colour, its mark and its name) drawn once as a picture, then only moved and faded: it slides up over the
+    window, the page changes under it, and it lifts away."""
+    def __init__(self, parent, card):
         super().__init__(parent)
-        self.col, self.pm = QColor(col), pm
-        self.k = 0.0                      # 0 = old screen in place, 1 = gone
+        self.card = card
+        self.y = 1.0                      # 1 = below the window, 0 = covering it
+        self.a = 1.0
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
     def paintEvent(self, _e):
         p = QPainter(self)
-        w, h = self.width(), self.height()
-        k = self.k
-        if self.pm is not None and k < 1.0:
-            p.setOpacity(1.0 - k)
-            p.drawPixmap(int(-70 * k), int(12 * k), self.pm)
-        p.setOpacity(1.0 - max(0.0, k - 0.6) / 0.4)
-        p.fillRect(0, 0, int(w * min(1.0, k * 1.6)), 3, self.col)          # the tool's colour runs along the top
+        p.setOpacity(self.a)
+        p.drawPixmap(0, int(self.y * self.height()), self.card)
         p.end()
 
 
-def wipe_open(win, src, col, on_covered, pm=None, ms=190):
-    """Open a tool or a project: a picture of the old screen slides away and fades (190 ms) while `on_covered` has already put the new page
-    underneath it. No waiting for a cover, no effects, one picture per frame."""
+def _title_card(w, h, col, title, sub, pm):
+    from PySide6.QtGui import QFont, QLinearGradient, QPixmap
+    dpr = 1.0
+    card = QPixmap(w, h)
+    card.fill(QColor("#14161a"))
+    q = QPainter(card)
+    q.setRenderHint(QPainter.RenderHint.Antialiasing)
+    c = QColor(col)
+    g = QLinearGradient(0, h, w, 0)
+    g.setColorAt(0.0, c.darker(260))
+    g.setColorAt(0.55, c.darker(190))
+    g.setColorAt(1.0, c.darker(130))
+    q.fillRect(0, 0, w, h, g)
+    q.setPen(Qt.PenStyle.NoPen)                       # two soft diagonal bands, like the MCP mark
+    q.setBrush(QColor(255, 255, 255, 14))
+    from PySide6.QtGui import QPolygonF
+    q.drawPolygon(QPolygonF([QPointF(w * 0.62, 0), QPointF(w * 0.78, 0), QPointF(w * 0.42, h), QPointF(w * 0.26, h)]))
+    q.setBrush(QColor(255, 255, 255, 9))
+    q.drawPolygon(QPolygonF([QPointF(w * 0.80, 0), QPointF(w * 0.90, 0), QPointF(w * 0.54, h), QPointF(w * 0.44, h)]))
+    cx, cy = w // 2, h // 2
+    if pm is not None:
+        sz = pm.deviceIndependentSize()
+        q.drawPixmap(int(cx - sz.width() / 2), int(cy - sz.height() - 34), pm)
+    q.setPen(QColor("#ffffff"))
+    f = QFont(); f.setPixelSize(max(30, min(64, w // 18))); f.setBold(True); f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 2)
+    q.setFont(f)
+    q.drawText(0, cy - 6, w, 70, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop, title)
+    q.fillRect(cx - 40, cy + 70, 80, 4, QColor("#d8132b"))
+    if sub:
+        f2 = QFont(); f2.setPixelSize(15); q.setFont(f2); q.setPen(QColor(255, 255, 255, 190))
+        q.drawText(w // 6, cy + 90, w * 2 // 3, 40, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop, sub)
+    f3 = QFont(); f3.setPixelSize(11); f3.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 3); q.setFont(f3)
+    q.setPen(QColor(255, 255, 255, 120))
+    q.drawText(0, h - 40, w, 20, Qt.AlignmentFlag.AlignHCenter, "MCP ARCHITECTURE & INTERIORS")
+    q.end()
+    return card
+
+
+def wipe_open(win, src, col, on_covered, pm=None, ms=170, title="", sub=""):
+    """Open a tool or a project with a title card: it slides up over the window (170 ms), `on_covered` runs under it (the page changes, the
+    project loads), it holds a moment and lifts away (220 ms). The card is drawn once; each frame only moves one picture."""
     top = win.centralWidget() or win
-    try:
-        snap = top.grab()
-    except Exception:
-        snap = None
-    ov = _Wipe(top, col, snap)
+    ov = _Wipe(top, _title_card(max(top.width(), 200), max(top.height(), 200), col, title, sub, pm))
     ov.setGeometry(top.rect())
     ov.show()
     ov.raise_()
-    ov.repaint()
-    try:
-        on_covered()
-    finally:
-        an = QVariantAnimation(ov)
-        an.setDuration(ms)
-        an.setStartValue(0.0)
-        an.setEndValue(1.0)
-        an.setEasingCurve(QEasingCurve.Type.OutCubic)
+    an = QVariantAnimation(ov)
+    an.setDuration(ms)
+    an.setStartValue(1.0)
+    an.setEndValue(0.0)
+    an.setEasingCurve(QEasingCurve.Type.OutCubic)
 
-        def step(v):
-            ov.k = float(v)
-            ov.update()
-        an.valueChanged.connect(step)
-        an.finished.connect(ov.deleteLater)
-        QTimer.singleShot(0, an.start)          # the new page paints once, then the old one leaves
-        ov._an = an
+    def step(v):
+        ov.y = float(v)
+        ov.update()
+
+    def covered():
+        ov.y = 0.0
+        ov.repaint()
+        try:
+            on_covered()
+        finally:
+            fa = QVariantAnimation(ov)
+            fa.setDuration(220)
+            fa.setStartValue(0.0)
+            fa.setEndValue(1.0)
+            fa.setEasingCurve(QEasingCurve.Type.InCubic)
+
+            def out(v):
+                ov.a = 1.0 - float(v)
+                ov.y = -0.06 * float(v)            # it lifts a little as it fades
+                ov.update()
+            fa.valueChanged.connect(out)
+            fa.finished.connect(ov.deleteLater)
+            QTimer.singleShot(90, fa.start)         # hold a moment: the new page paints once under the card
+            ov._fa = fa
+    an.valueChanged.connect(step)
+    an.finished.connect(covered)
+    ov._an = an
+    an.start()
+    ov._an = an
 
 
 def cascade(page, step_ms=95, rise=34, dur=480):

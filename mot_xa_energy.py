@@ -11763,7 +11763,7 @@ class MainWindow(QMainWindow):
         if card is None:
             go()
         else:
-            ux_.wipe_open(self, card, "#d8132b", go, icon_pixmap("plan", "#ffffff", 84))
+            ux_.wipe_open(self, card, "#d8132b", go, icon_pixmap("plan", "#ffffff", 84), title=os.path.basename(path).replace(".mcplv.json", "").replace(".json", ""), sub="Opening your project")
 
     _THUMBS = {}                  # (path, file time, IFC path, IFC file time) -> the stand outline and buildings, or None
 
@@ -14149,7 +14149,7 @@ class MainWindow(QMainWindow):
             b = QPushButton()
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-            b.setMinimumSize(220, 150)
+            b.setMinimumSize(220, 186)
             b.setToolTip("Open " + title.replace("&&", "&") + "\n" + re.sub(r"<[^>]+>", " ", sub).replace("&&", "&").strip())
             lab = QLabel("<div align='center'><b style='font-size:20px'>%s</b><br><br>%s</div>" % (title.replace("&&", "&"), sub), b)
             lab.setWordWrap(True)
@@ -14158,7 +14158,7 @@ class MainWindow(QMainWindow):
             import ui_extras as ux_m
             ux_m.install_icon_motion()
             tcol = TILE_COL.get(title.replace("&&", "&"), "#ff4056")
-            icl = ux_m.AnimIcon(icon_pixmap(ico, tcol, 72), tcol, 108)        # lifts, wobbles and glows when pointed at, squeezes and rings when pressed
+            icl = ux_m.AnimIcon(icon_pixmap(ico, tcol, 72), tcol, 80)        # lifts, wobbles and glows when pointed at, squeezes and rings when pressed
             b._anim_icon = icl
             bl = QVBoxLayout(b)
             bl.setContentsMargins(18, 18, 18, 18)
@@ -14169,12 +14169,29 @@ class MainWindow(QMainWindow):
             bl.addStretch(1)
             def opened(_=False, t=target, c_=tcol, i_=ico):
                 import ui_extras as ux_o
-                ux_o.wipe_open(self, b, c_, lambda: self.main_tabs.setCurrentIndex(self._tab_index(t)), icon_pixmap(i_, "#ffffff", 84))
+                ux_o.wipe_open(self, b, c_, lambda: self.main_tabs.setCurrentIndex(self._tab_index(t)), icon_pixmap(i_, "#ffffff", 84),
+                               title=title.replace("&&", "&").upper(), sub=re.sub(r"<[^>]+>", " ", sub).replace("&&", "&").strip()[:90])
             b.clicked.connect(opened)
             return b
 
-        def page(title, back=None):
+        def page(title, back=None, scroll=False):
             w = QWidget()
+            if scroll:                      # the start screen scrolls when the window is short, so nothing is squeezed on top of anything else
+                outer_ = QVBoxLayout(w)
+                outer_.setContentsMargins(0, 0, 0, 0)
+                sa_ = QScrollArea()
+                sa_.setWidgetResizable(True)
+                sa_.setFrameShape(QFrame.Shape.NoFrame)
+                sa_.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+                sa_.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
+                outer_.addWidget(sa_)
+                inner_ = QWidget()
+                sa_.setWidget(inner_)
+                w.scroll_area = sa_
+                v = QVBoxLayout(inner_)
+                v.setContentsMargins(36, 24, 36, 36)
+                v.setSpacing(18)
+                return w, v
             v = QVBoxLayout(w)
             v.setContentsMargins(36, 24, 36, 36)
             v.setSpacing(18)
@@ -14190,7 +14207,7 @@ class MainWindow(QMainWindow):
                 v.addLayout(top)
             return w, v
 
-        self.launch_page, v = page("")
+        self.launch_page, v = page("", scroll=True)
         g = QGridLayout()
         g.setSpacing(24)
         for i, (title, sub, ico, tgt) in enumerate((
