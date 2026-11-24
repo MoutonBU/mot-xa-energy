@@ -13188,6 +13188,8 @@ class MainWindow(QMainWindow):
                 it_ = lay_.itemAt(i_).widget()
                 if it_ is None or it_ is self.main_tabs:
                     continue
+                if it_ is getattr(self, "shell_rail", None) or it_ is getattr(self, "shell_ribbon", None):
+                    continue                         # the bar and the ribbon have their own look (app_shell): the general look on top of it made the bar's items look like loose cards
                 if it_.isAncestorOf(self.main_tabs):
                     _frame(it_)
                 else:
@@ -13198,6 +13200,12 @@ class MainWindow(QMainWindow):
         if pg_ is not None:
             pg_.__dict__.pop("_thk", None)
             self.set_accent(getattr(self, "_accent_ctx", None))
+        fn_ = getattr(self, "shell_restyle", None)
+        if fn_:
+            try:
+                fn_()                                # the bar and the ribbon follow the new look at once, not on the next timer tick
+            except Exception:
+                pass
 
     def set_accent(self, ctx):
         """Every tool wears its own colour: buttons, bars, table headers, selections and the icons' hover tint follow the tool that is open.

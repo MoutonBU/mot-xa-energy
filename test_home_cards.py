@@ -188,5 +188,15 @@ M.MainWindow._thumb_mesh, M.MainWindow._ifc_cache = _old_mesh, _old_cache
 M.SETTINGS["card_ifc"].pop(pj, None)
 print("ok real thumbs path")
 
+# the real start-up themes the window once (apply_glass_theme): the left bar and the ribbon must keep their own look, not get the general one on top
+M.SETTINGS["mode"] = "dark"
+M.apply_glass_theme(app, w)
+w.main_tabs.setCurrentIndex(1)
+_t = time.time()
+while time.time() - _t < 1.5: app.processEvents()
+assert w.shell_rail.styleSheet().count("QPushButton") < 3 and w.shell_rail.nav[1].height() == 40, (len(w.shell_rail.styleSheet()), w.shell_rail.nav[1].height())
+assert w.shell_ribbon.styleSheet().count("QPushButton") < 3
+print("ok bar keeps its look after start-up theming")
+
 for _wk in list(M._BG_LIVE):                      # leave no thread running when the test ends
     _wk.wait(8000)
