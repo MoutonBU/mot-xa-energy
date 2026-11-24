@@ -11662,6 +11662,16 @@ class MainWindow(QMainWindow):
             return "%d days ago" % days
         return t.strftime("%d %b %Y")
 
+    def _open_recent_card(self, path):
+        """Open a project from the start screen and land on the Project page, whose boxes come in one after another."""
+        self.open_project_path(path)
+        if getattr(self, "current_file", None) != path:
+            return                                            # it did not open: stay where we are
+        import ui_extras as ux_
+        self.main_tabs.setCurrentIndex(0)
+        QTimer.singleShot(60, lambda: ux_.cascade(self.main_tabs.widget(0)))
+        self.statusBar().showMessage("Opened %s" % os.path.basename(path), 6000)
+
     def _rebuild_home_cards(self):
         """the cards on the start screen: the last few projects, newest first, click to open"""
         box = getattr(self, "home_cards", None)
@@ -11703,7 +11713,7 @@ class MainWindow(QMainWindow):
                 t_.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
                 t_.setTextFormat(Qt.TextFormat.RichText)
                 cl.addWidget(t_)
-            c.clicked.connect(lambda _=False, pp=p: self.open_project_path(pp))
+            c.clicked.connect(lambda _=False, pp=p: self._open_recent_card(pp))
             box.addWidget(c, 1)
         for _k in range(4 - len(lst)):
             box.addStretch(1)

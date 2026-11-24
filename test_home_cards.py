@@ -17,7 +17,7 @@ class _F:
 fake = _F()
 fake.home_cards = box
 fake._recent_load = lambda: files + ["/nowhere/x.json"]
-fake.open_project_path = lambda p: opened.append(p)
+fake._open_recent_card = lambda p: opened.append(p)
 fake._ago = M.MainWindow._ago
 M.MainWindow._rebuild_home_cards(fake)
 btns = [box.itemAt(i).widget() for i in range(box.count()) if isinstance(box.itemAt(i).widget(), QPushButton)]
@@ -29,3 +29,16 @@ fake._recent_load = lambda: []
 M.MainWindow._rebuild_home_cards(fake); app.processEvents()
 assert not [1 for i in range(box.count()) if isinstance(box.itemAt(i).widget(), QPushButton)]
 print("ok")
+
+# a recent card opens the project, lands on the Project page and cascades its boxes in
+import json
+w = M.MainWindow(); w.resize(1300, 800); w.show()
+pj = os.path.join(d, "Demo.mcplv.json"); json.dump({}, open(pj, "w"))
+w.main_tabs.setCurrentIndex(w.launcher_idx[0])
+w._open_recent_card(pj)
+assert w.main_tabs.currentIndex() == 0 and w.current_file == pj
+t_ = time.time()
+while time.time() - t_ < 1.6: app.processEvents()
+from PySide6.QtWidgets import QGroupBox
+assert all(g.graphicsEffect() is None for g in w.main_tabs.widget(0).findChildren(QGroupBox))     # the effects are gone afterwards
+print("ok cascade")

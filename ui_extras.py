@@ -977,6 +977,54 @@ def install_icon_motion():
     app.installEventFilter(app._icon_motion)
 
 
+def cascade(page, step_ms=95, rise=34, dur=480):
+    """The boxes of a page come in one after another: each rises a little and fades in."""
+    from PySide6.QtWidgets import QGroupBox
+    from PySide6.QtCore import QPropertyAnimation, QPoint, QTimer
+    boxes = []
+    for g in page.findChildren(QGroupBox):
+        p, top = g.parentWidget(), True
+        while p is not None and p is not page:
+            if isinstance(p, QGroupBox):
+                top = False
+                break
+            p = p.parentWidget()
+        if top and g.isVisible():
+            boxes.append(g)
+    boxes.sort(key=lambda g: (g.mapTo(page, g.rect().topLeft()).y(), g.mapTo(page, g.rect().topLeft()).x()))
+    anims = []
+    for k, g in enumerate(boxes[:8]):
+        try:
+            end = g.pos()
+            eff = QGraphicsOpacityEffect(g)
+            eff.setOpacity(0.0)
+            g.setGraphicsEffect(eff)
+            g.move(end + QPoint(0, rise))
+            fa = QPropertyAnimation(eff, b"opacity", g)
+            fa.setDuration(dur)
+            fa.setStartValue(0.0)
+            fa.setEndValue(1.0)
+            fa.setEasingCurve(QEasingCurve.Type.OutCubic)
+            pa = QPropertyAnimation(g, b"pos", g)
+            pa.setDuration(dur + 120)
+            pa.setStartValue(end + QPoint(0, rise))
+            pa.setEndValue(end)
+            pa.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+            def fin(g=g, eff=eff, lay=g.parentWidget().layout() if g.parentWidget() else None):
+                if g.graphicsEffect() is eff:
+                    g.setGraphicsEffect(None)
+                if lay is not None:
+                    lay.activate()
+            fa.finished.connect(fin)
+            QTimer.singleShot(k * step_ms, fa.start)
+            QTimer.singleShot(k * step_ms, pa.start)
+            anims += [fa, pa]
+        except Exception:
+            pass
+    page._cascade = anims
+
+
 def fade_pages(tw):
     """a tab widget: the page you switch to fades in instead of snapping"""
     if tw is None or getattr(tw, "_mot_fade", False):
