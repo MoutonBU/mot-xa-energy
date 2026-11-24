@@ -25,16 +25,60 @@ ABSORPT = {"ext_wall": 0.6, "roof": 0.6, "floor_exp": 0.6}
 DEFAULTS = {"ach": 0.5, "heat_sp": 19.0, "cool_sp": 25.0, "cop_heat": 1.0, "cop_cool": 3.0,
             "lpd": 4.0, "light_hours": 4.0, "persons_m2": 0.04, "pop": 0.0, "person_w": 75.0, "equip_w_m2": 0.0, "hours": 0.0, "days": 7, "sky_dt": 11.0,
             "occ": "H4", "dhw_l_pd": 115.0, "dhw_kind": "resistance", "dhw_cop": 3.0, "dhw_solar": 0.0, "dhw_gas_eff": 0.85, "dhw_on": True}
-# Table B.2, H3 / H4: fractions for 0-8, 8-11, 11-18, 18-22, 22-24 h
+# Table B.2 (SANS 10400-XA:2026 annex B): utilisation fractions for 0-8, 8-11, 11-18, 18-22, 22-24 h, weekday / Saturday / Sunday and holiday.
+# Per occupancy group: people ("occ"), lighting ("light") and equipment plug load ("plug").
 B2_EDGES = [0, 8, 11, 18, 22, 24]
-B2 = {"occ": {"wd": [0.88, 0.37, 0.36, 0.73, 1.0], "sa": [1.0, 0.43, 0.43, 0.97, 1.0], "su": [1.0, 0.43, 0.43, 0.97, 1.0]},
-      "light": {"wd": [0.13, 0.13, 0.14, 0.24, 0.10], "sa": [0.09, 0.20, 0.14, 0.30, 0.18], "su": [0.09, 0.20, 0.14, 0.30, 0.18]},
-      "plug": {"wd": [0.53, 0.57, 0.59, 0.78, 0.60], "sa": [0.53, 0.57, 0.59, 0.78, 0.60], "su": [0.53, 0.57, 0.59, 0.78, 0.60]}}
+
+
+def _t(wd, sa, su):
+    return {"wd": wd, "sa": sa, "su": su}
+
+
+_A = {"occ": _t([0.48, 1, 0.66, 0.25, 0.05], [0.4, 0.15, 0.3, 0.2, 0.1], [0.2, 0.08, 0.15, 0.1, 0.05])}
+_A["light"] = _A["plug"] = _A["occ"]
+_E = {"occ": _t([0.35, 0.8, 0.8, 0.65, 0.2], [0.35, 0.8, 0.8, 0.65, 0.2], [0.23, 0.53, 0.53, 0.43, 0.13])}
+_E["light"] = _E["plug"] = _E["occ"]
+_F = {"occ": _t([0.03, 0.8, 0.8, 0.3, 0], [0.03, 0.8, 0.66, 0, 0], [0.01, 0.4, 0.33, 0, 0]),
+      "light": _t([0.07, 0.8, 0.8, 0.31, 0.05], [0.07, 0.8, 0.61, 0.05, 0.05], [0.07, 0.8, 0.61, 0.05, 0.05])}
+_F["plug"] = _F["light"]
+# G1: the standard prints two near-identical lighting / equipment blocks (they differ only in the weekday 08:00-11:00 figure, 0.8 or 0.35):
+# the first is used for lighting and the second for the plug load.
+_G = {"occ": _t([0.13, 0.8, 0.77, 0.23, 0], [0.08, 0.5, 0.37, 0, 0], [0.04, 0.25, 0.19, 0, 0]),
+      "light": _t([0.16, 0.8, 0.77, 0.24, 0.05], [0.11, 0.5, 0.38, 0.05, 0.05], [0.11, 0.5, 0.38, 0.05, 0.05]),
+      "plug": _t([0.16, 0.35, 0.77, 0.24, 0.05], [0.11, 0.5, 0.38, 0.05, 0.05], [0.11, 0.5, 0.38, 0.05, 0.05])}
+_H34 = {"occ": _t([0.88, 0.37, 0.36, 0.73, 1.0], [1.0, 0.43, 0.43, 0.97, 1.0], [1.0, 0.43, 0.43, 0.97, 1.0]),
+        "light": _t([0.13, 0.13, 0.14, 0.24, 0.10], [0.09, 0.20, 0.14, 0.30, 0.18], [0.09, 0.20, 0.14, 0.30, 0.18]),
+        "plug": _t([0.53, 0.57, 0.59, 0.78, 0.60], [0.53, 0.57, 0.59, 0.78, 0.60], [0.53, 0.57, 0.59, 0.78, 0.60])}
+_H15 = {"occ": _t([0.88, 0.27, 0.3, 0.7, 0.9], [0.8, 0.33, 0.34, 0.85, 0.75], [0.4, 0.17, 0.17, 0.43, 0.38]),
+        "light": _t([0.22, 0.35, 0.26, 0.78, 0.45], [0.18, 0.35, 0.26, 0.68, 0.45], [0.18, 0.35, 0.26, 0.68, 0.45]),
+        "plug": _t([0.53, 0.57, 0.59, 0.78, 0.60], [0.53, 0.57, 0.59, 0.78, 0.60], [0.53, 0.57, 0.59, 0.78, 0.60])}
+B2_ALL = {"A": _A, "E": _E, "F": _F, "G1": _G, "H234": _H34, "H15": _H15}
+B2 = _H34                                                            # kept for older callers
+B2_CLASS = {"A1": "A", "A2": "A", "A3": "A", "E1": "E", "E2": "E", "E3": "E", "F1": "F", "F2": "F", "F3": "F", "G1": "G1",
+            "H2": "H234", "H3": "H234", "H4": "H234", "H1": "H15", "H5": "H15"}
+# Table B.3: hot water at 60 C, litres per person per day: (default, category 1 / alternative)
+B3_LITRES = {"A1": (10.0, 40.0), "A2": (10.0, 40.0), "A3": (10.0, 10.0), "E1": (140.0, 52.0), "E2": (130.0, 130.0), "E3": (120.0, 120.0),
+             "E4": (120.0, 120.0), "F1": (10.0, 10.0), "F2": (10.0, 10.0), "F3": (10.0, 10.0), "G1": (10.0, 28.0), "H1": (140.0, 140.0),
+             "H2": (100.0, 100.0), "H3": (115.0, 64.0), "H4": (115.0, 64.0), "H5": (140.0, 140.0)}
+
+
+def b2_class(occ):
+    """Table B.2 group for an occupancy such as 'H4' (None when the table has no data for it: the simple hours are used instead)."""
+    return B2_CLASS.get(str(occ or "").strip().upper()[:2])
+
+
+def b3_litres(occ, cat1=False):
+    """Table B.3 hot water use, litres per person per day at 60 C (None where the table gives no figure)."""
+    r = B3_LITRES.get(str(occ or "").strip().upper()[:2])
+    return None if r is None else (r[1] if cat1 else r[0])
+
+
 APPLIANCE_W_M2 = {"G1": 15.0, "F1": 5.0}
 
 
-def b2_series(load, dow):
+def b2_series(load, dow, cls="H234"):
     """8760-hour utilisation series from table B.2 (day 1 of the year is taken as a Monday; public holidays are not marked)."""
+    tab = B2_ALL.get(cls) or B2_ALL["H234"]
     out = np.zeros(HOURS)
     for h in range(HOURS):
         d = dow[h]
@@ -42,7 +86,7 @@ def b2_series(load, dow):
         hr = h % 24
         for k in range(5):
             if B2_EDGES[k] <= hr < B2_EDGES[k + 1]:
-                out[h] = B2[load][key][k]
+                out[h] = tab[load][key][k]
                 break
     return out
 
@@ -213,7 +257,8 @@ def simulate(zones, cons, w, sun, opts=None, label="building"):
     ua = {"Walls": 0.0, "Roof": 0.0, "Floor": 0.0, "Windows": 0.0, "Doors": 0.0, "Air leakage": 0.0}
     sector_gain = {k: 0.0 for k in ("N", "NE", "E", "SE", "S", "SW", "W", "NW")}
     secnames = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
-    occ_b2, lig_b2, plug_b2 = b2_series("occ", dow), b2_series("light", dow), b2_series("plug", dow)
+    b2c = b2_class(o["occ"])
+    occ_b2, lig_b2, plug_b2 = b2_series("occ", dow, b2c), b2_series("light", dow, b2c), b2_series("plug", dow, b2c)
     pop_area = sum(z["area"] for z in zones if z.get("habitable", True))
     for i, z in enumerate(zones):
         Af[i] = z["area"]
@@ -278,8 +323,7 @@ def simulate(zones, cons, w, sun, opts=None, label="building"):
         Atot[i] = max(Atot[i], 2.0 * z["area"])
         Am[i] = min(Am[i], Atot[i])
         # internal gains (Annex B): people at 75 W sensible, lights at the table 10 power, appliances only for G1 / F1
-        h34 = str(o["occ"]).startswith(("H3", "H4"))
-        if h34:
+        if b2c:
             occ = occ_b2
             lfr = lig_b2
             pfr = plug_b2
@@ -349,7 +393,7 @@ def simulate(zones, cons, w, sun, opts=None, label="building"):
         if step >= 0:
             heat[t] = np.where(ph > 0, ph, 0.0)
             cool[t] = np.where(ph < 0, -ph, 0.0)
-    # ---- hot water (table 10 litres, stored at 60 C), same people and hours in both buildings
+    # ---- hot water (table B.3 litres, stored at 60 C), same people and hours in both buildings
     dhw_el = np.zeros(HOURS)
     dhw_gas = 0.0
     dhw_q = 0.0

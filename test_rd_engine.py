@@ -81,3 +81,14 @@ print("horizon ok")
 def test_horizon_ref():
     import rd_engine as E2
     assert E2.run_rational.__code__.co_names.count("horizon_ref") or "horizon_ref" in open(E2.__file__).read()
+
+# SANS 10400-XA:2026 annex B: every occupancy group has its own table B.2 schedule, hot water follows table B.3
+import numpy as _np
+import rd_engine as _E
+assert _E.b2_class("H4 - Dwelling house") == "H234" and _E.b2_class("G1") == "G1" and _E.b2_class("F2") == "F" and _E.b2_class("H5") == "H15" and _E.b2_class("C1") is None
+_dow = _np.array([(h // 24) % 7 for h in range(8760)])
+_s = _E.b2_series("occ", _dow, "G1")
+assert abs(_s[10] - 0.8) < 1e-9 and abs(_s[5 * 24 + 10] - 0.5) < 1e-9 and abs(_s[6 * 24 + 10] - 0.25) < 1e-9      # G1 weekday / Saturday / Sunday 08:00-11:00
+assert abs(_E.b2_series("light", _dow, "H15")[19] - 0.78) < 1e-9 and abs(_E.b2_series("occ", _dow, "A")[3] - 0.48) < 1e-9
+assert _E.b3_litres("H4") == 115.0 and _E.b3_litres("H4", True) == 64.0 and _E.b3_litres("G1") == 10.0 and _E.b3_litres("H1") == 140.0 and _E.b3_litres("C1") is None
+print("ok annex B 2026")

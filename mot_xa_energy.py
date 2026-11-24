@@ -19638,7 +19638,7 @@ class MainWindow(QMainWindow):
         spin(0, 1, "Cooling switches on above (C)", "cool_sp", 25.0, 20.0, 35.0, 1, 0.5)
         spin(1, 1, "Heating efficiency (COP; 1 = electric element)", "cop_heat", 1.0, 0.5, 6.0, 2, 0.1)
         spin(2, 1, "Cooling efficiency (COP)", "cop_cool", 3.0, 1.0, 8.0, 2, 0.1)
-        spin(0, 2, "Hot water (litres / person / day at 60 C)", "dhw_l_pd", 115.0, 0.0, 300.0, 0, 1.0, "Table 10: 115 for a dwelling house; 64 for a category 1 house.")
+        spin(0, 2, "Hot water (litres / person / day at 60 C)", "dhw_l_pd", (ri["E"].b3_litres(ri["occ"], ri["pop"] > 0 and sum(z["area"] for z in ri["zones"]) <= 80.0) or 115.0), 0.0, 300.0, 0, 1.0, "Table B.3 of SANS 10400-XA:2026: 115 for a dwelling house or other residential; 64 for category 1; the figure for the occupancy is filled in.")
         spin(1, 2, "Clear glass U for glass up to 20% (W/m2K)", "clear_u", 5.6, 0.5, 8.0, 2, 0.1, "Table 4 sets no limit up to 20%: the reference uses plain clear glass.")
         spin(2, 2, "Clear glass SHGC", "clear_g", 0.77, 0.1, 0.95, 2, 0.01)
         hwb = QComboBox()
