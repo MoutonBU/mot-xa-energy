@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.260**
+Current version: **1.86.261**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Professional fees are private: the itemised table (who gets what, the scales and the percentages) is no longer in any PDF. The reports only carry the one combined "Professional fees and council costs" line in the price build-up. The itemised fees stay on the Professional fees tab inside the program.
 - Professional fees: every professional (architect, engineers, project manager ...) can now be worked out either from the guideline scale or as a percentage of the building cost that you type (for example architect 8 %, structural engineer 4 %). The choice is a drop-down in the new "How the fee is worked out" column; the report names the percentage used.
 - Costing, whole-project price build-up: (1) new Site works tab for everything outside the blocks (paving, boundary walls, fences, retaining walls, gates, pool, garden, stormwater, services, solar, borehole, tank, braai, carport), with a pick list of starting rates (my estimates, replace with quotes). It counts in the price build-up and the professional fees. (2) New Professional fees tab: architect (SACAP 2026, low/medium/high complexity), structural, civil, electrical and mechanical engineers (ECSA 2025), project manager (SACPCMP, the 2022 proposed table: the latest I could find) worked from the guideline scales on the cost of works, with a share column to leave out stages, plus typed percentages for quantity surveyor, land surveyor, town planner, council and others. All of it is one "Professional fees" line in the price build-up, itemised in a table on the report. All fees are off until you switch them on. Not included: the quantity surveyor scale (the published table could not be read reliably).
 - Handrails and balustrades are in the normal bill of materials and labour (group "Handrails and balustrades", per metre run, always listed) and the metres are read from the IFC railings. Archicad draws a railing as many small parts, so the top rail is found and its lengths added up (tested on the Block D model: 4 railings, 11.4 m). Blocks read before this update are read again by themselves. The Quantities tab shows the railing metres and count; extra length can still be typed on the Allowances tab.

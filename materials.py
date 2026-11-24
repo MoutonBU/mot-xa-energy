@@ -1740,18 +1740,7 @@ class MaterialsPage(QWidget):
         rows = "".join("<tr>%s%s%s</tr>" % (td(e(l)), td(rand(a), "right"), td("%.1f %%" % (100.0 * a / total) if total else "", "right")) for l, a in steps)
         rows += "<tr>%s%s%s</tr>" % (td("<b>Total, all-in</b>"), td("<b>%s</b>" % rand(total), "right"), td("100 %", "right"))
         out.append('<table width="100%%" border="0.6" cellspacing="0" style="font-size:9pt;"><tr>%s%s%s</tr>%s</table>' % (th("", 60), th("Amount", 25), th("Share", 15), rows))
-        fl, works = self.fee_rows()
-        if fl or float(self.allow.get("fees_pct", 0) or 0):
-            out.append("<h3>Professional fees, on the cost of works of %s (excluding VAT)</h3>" % rand(works))
-            rows = "".join("<tr>%s%s%s%s</tr>" % (td(e(n)), td(e(sc_)), td(rand(a_), "right"), td("%.1f %%" % (100.0 * a_ / works) if works else "", "right")) for _k, n, sc_, a_, _sh in fl)
-            if float(self.allow.get("fees_pct", 0) or 0):
-                a_ = works * float(self.allow["fees_pct"]) / 100.0
-                rows += "<tr>%s%s%s%s</tr>" % (td("Other fees and council costs"), td("flat percentage"), td(rand(a_), "right"), td("%.1f %%" % (100.0 * a_ / works) if works else "", "right"))
-            tot_ = sum(x[3] for x in fl) + works * float(self.allow.get("fees_pct", 0) or 0) / 100.0
-            rows += "<tr>%s%s%s%s</tr>" % (td("<b>Total professional fees</b>"), td(""), td("<b>%s</b>" % rand(tot_), "right"), td("%.1f %%" % (100.0 * tot_ / works) if works else "", "right"))
-            out.append('<table width="100%%" border="0.6" cellspacing="0" style="font-size:8.5pt;"><tr>%s%s%s%s</tr>%s</table>' % (th("Professional", 32), th("Scale", 38), th("Fee", 16), th("Of works", 14), rows))
-            out.append('<p style="font-size:7.5pt;color:#666;">Guideline fees from the published scales of SACAP (architects, 2026), ECSA (engineers, 2025) and SACPCMP (project managers). They are guidelines, not compulsory: '
-                       'the fee is agreed with each professional.</p>')
+        # the itemised professional fees are for the user only: the report shows them as the one "Professional fees and council costs" line of the price build-up
         out.append("<h3>Cost by group, with the markups spread over them</h3>")
         gc = self.group_costs()
         rows = "".join("<tr>%s%s%s</tr>" % (td(e(g)), td(rand(c), "right"), td(rand(c / area) if area else "", "right")) for g, c in gc)

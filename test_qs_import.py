@@ -111,7 +111,7 @@ assert len(fl) == 3 and abs(sum(x[3] for x in fl) - (t2 - t1) / 1.15 * 1.0) < 1.
 assert abs(M.fee_scale_amount(M.FEE_SCALES["arch_medium"][2], 3_000_000) - 437851.25) < 0.01 and abs(M.fee_scale_amount(M.FEE_SCALES["struct"][2], 3_000_000) - 448500.0) < 0.01
 assert any(r[0] == "Site works" for r in p4.all_rows())
 p5 = M.MaterialsPage(H()); p5.set_state(p4.state()); assert p5.fees == p4.fees and len(p5.site) == 2 and abs(p5.grand()[1] - t2) < 1e-6
-h4 = p4.report_html(); assert "Professional fees, on the cost of works" in h4 and "Site works" in h4 and "Total professional fees" in h4
+h4 = p4.report_html(); assert "Site works" in h4 and "Total professional fees" not in h4 and "Architect" not in h4 and "SACAP" not in h4 and "Structural engineer" not in h4
 print("ok site works + fees")
 # a typed percentage of the building cost instead of the guideline scale
 p6 = M.MaterialsPage(H())
