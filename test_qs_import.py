@@ -47,3 +47,12 @@ p.add_handrail()
 assert p.custom[-1]["unit"] == "m"
 p.set_state(p.state())
 print("ok qs import page")
+# an unpriced "Bill for Candy": Item / Bill description / Unit / Bill quantity / Code, blank lines between items, sentences on their own
+bill = [["", "", "", "", "Price"], ["Item", "Bill description", "Unit", "Bill quantity", "Code"], ["", "SECTION 2: SHAFT", "", "", ""], [],
+        ["", "EARTHWORKS", "", "", ""], [], ["A", "Clear and strip site", "m2", "5400", "E1133"], [],
+        ["", "Supply and place the following", "", "", ""], [], ["B", "M20 bolts", "No.", "480", "M246"], [],
+        ["", "PROVISIONAL SUMS", "", "", ""], ["H", "Contractors attendance", "%", "0.025", "ZJ40a"]]
+it, nt = M.parse_qs_sheet(bill)
+assert len(it) == 3 and it[0]["item"] == "A [E1133] Clear and strip site" and it[0]["qty"] == 5400.0 and it[0]["group"] == "Earthworks"
+assert "Supply and place" in it[1]["item"] and it[2]["unit"] == "%" and len(nt) == 2
+print("ok candy bill layout")

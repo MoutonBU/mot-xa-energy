@@ -405,10 +405,11 @@ def bom(q, rates, allow, facts, fixtures=None):
 
 
 # ---------------- import of a quantity surveyor's bill (Excel exported from CCS Candy or similar) ----------------
-_QS_HEAD = {"desc": ("description", "item description", "descr", "particulars", "work", "details"),
+_QS_HEAD = {"desc": ("description", "bill description", "item description", "descr", "particulars", "work", "details"),
+            "code": ("code", "price code", "candy code", "rate code"),
             "item": ("item", "item no", "item no.", "ref", "ref.", "no", "no.", "nr", "bill ref"),
             "unit": ("unit", "uom", "units", "u/m"),
-            "qty": ("qty", "quantity", "quant", "qnty", "qty."),
+            "qty": ("qty", "quantity", "bill quantity", "quant", "qnty", "qty."),
             "rate": ("rate", "unit rate", "rate (r)", "price", "unit price"),
             "amount": ("amount", "total", "value", "amount (r)", "cost", "extended")}
 _QS_SKIP = re.compile(r"^\s*(total|sub-?total|grand total|carried|brought|collection|summary|page|to collection|carried forward|brought forward)\b", re.I)
@@ -452,40 +453,54 @@ def parse_qs_sheet(rows):
             break
     if hdr is None:
         return [], ["No header row found: the sheet needs columns like Description, Unit, Quantity, Rate and Amount."]
-    items, notes, group, last = [], [], "QS bill", None
-    unpriced = 0
+    items, notes, group, last, pre, gap = [], [], "QS bill", None, [], False
+    unpriced = pct = 0
     g = lambda r, k: r[cols[k]] if k in cols and cols[k] < len(r) else ""
     for r in rows[hdr + 1:]:
         desc = g(r, "desc")
         ino = g(r, "item")
         unit = g(r, "unit")
+        code = g(r, "code")
         qty, rate, amt = qs_number(g(r, "qty")), qs_number(g(r, "rate")), qs_number(g(r, "amount"))
         if not desc and not ino and qty is None and amt is None:
+            gap = True
             continue
         if _QS_SKIP.match(desc or ino):
-            last = None
+            last, pre, gap = None, [], False
             continue
         if qty is None and amt is None and rate is None:
             if not desc:
                 continue
-            if last is not None and not ino and not unit:
-                last["item"] = (last["item"] + " " + desc)[:240]
-                continue
-            group = desc[:70].title() if desc.isupper() else desc[:70]
-            last = None
+            if last is not None and not gap and not ino and not unit:
+                last["item"] = (last["item"] + " " + desc)[:240]          # the line right under an item continues it
+            elif desc.isupper() and len(desc) < 90:
+                group = desc[:70].title()                                 # CAPITALS: a section heading
+                last, pre = None, []
+            else:
+                pre.append(desc)                                          # a sentence on its own belongs to the item(s) that follow it
+                last = None
+            gap = False
             continue
         if qty is None:
             qty, rate = 1.0, (amt if rate is None else rate)
             unit = unit or "sum"
         elif rate is None:
             rate = (amt / qty) if (amt is not None and qty) else 0.0
+        if unit.strip() == "%":
+            pct += 1
         if rate == 0 and not amt:
             unpriced += 1
-        it = {"group": group, "item": ((ino + " " if ino else "") + (desc or "(no description)"))[:240], "unit": unit or "no.", "qty": qty, "rate": rate or 0.0}
+        text = ((ino + " " if ino else "") + (("[" + code + "] ") if code else "") + (desc or "(no description)"))
+        if pre:
+            text = text + " (" + " ".join(pre)[:120] + ")"
+            pre = []
+        it = {"group": group, "item": text[:260], "unit": unit or "no.", "qty": qty, "rate": rate or 0.0}
         items.append(it)
-        last = it
+        last, gap = it, False
     if unpriced:
-        notes.append("%d line(s) have a quantity but no rate: they are in the list at rate 0 for you to price." % unpriced)
+        notes.append("%d line(s) have a quantity but no rate (an unpriced bill): they are in the list at rate 0 for you to price." % unpriced)
+    if pct:
+        notes.append("%d line(s) are in %%, such as the contractor's attendance: their quantity is the percentage, so give them a rate that already includes the base amount." % pct)
     return items, notes
 
 
@@ -596,7 +611,7 @@ class MaterialsPage(QWidget):
         ev = QVBoxLayout(ew)
         ev.setContentsMargins(0, 0, 0, 0)
         eb = QHBoxLayout()
-        for text, fn in (("Add item", self.add_extra), ("Add handrail (per metre)", self.add_handrail), ("Import QS Excel (Candy)...", self.import_qs),
+        for text, fn in (("Add item", self.add_extra), ("Add handrail (per metre)", self.add_handrail), ("Import QS Excel (Candy)...", self.import_qs), ("Export priced bill...", self.export_qs),
                          ("Remove item", self.remove_extra)):
             b = QPushButton(text)
             b.clicked.connect(fn)
@@ -982,6 +997,33 @@ class MaterialsPage(QWidget):
                "is stripped again). Preliminaries, profit and contingency from the Allowances tab still go on top: set them to 0 there if the bill already carries them."
                % len(best))
         QMessageBox.information(self, "QS bill", msg + ("\n\n" + "\n".join(notes) if notes else ""))
+
+    def export_qs(self):
+        """The imported bill with the rates and amounts filled in, as an Excel file to send back to the quantity surveyor."""
+        rows = [c for c in self.custom if c.get("src") == "QS"]
+        if not rows:
+            QMessageBox.information(self, "QS bill", "Import a quantity surveyor's bill first.")
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Priced bill", "Priced bill.xlsx", "Excel (*.xlsx)")
+        if not path:
+            return
+        try:
+            import openpyxl
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.append(["Section", "Description", "Unit", "Quantity", "Rate", "Amount"])
+            tot = 0.0
+            for c in rows:
+                q_, r_ = float(c.get("qty", 0) or 0), float(c.get("mat", 0) or 0) + float(c.get("lab", 0) or 0)
+                ws.append([c.get("group", ""), c.get("item", ""), c.get("unit", ""), q_, round(r_, 2), round(q_ * r_, 2)])
+                tot += q_ * r_
+            ws.append(["", "Total (excluding VAT)", "", "", "", round(tot, 2)])
+            ws.column_dimensions["B"].width = 70
+            wb.save(path)
+        except Exception as ex:
+            QMessageBox.warning(self, "QS bill", "The file could not be written:\n%s" % ex)
+            return
+        QMessageBox.information(self, "QS bill", "Saved: %s" % path)
 
     def remove_extra(self):
         r = self.extrat.currentRow()
