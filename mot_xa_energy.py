@@ -14444,13 +14444,13 @@ class MainWindow(QMainWindow):
             import ui_extras as ux_m
             ux_m.install_icon_motion()
             tcol = TILE_COL.get(title.replace("&&", "&"), "#ff4056")
-            icl = ux_m.AnimIcon(icon_pixmap(ico, tcol, 72), tcol, 68)        # lifts, wobbles and glows when pointed at, squeezes and rings when pressed
+            icl = ux_m.AnimIcon(icon_pixmap(ico, tcol, 72), tcol, 104)        # lifts, wobbles and glows when pointed at, squeezes and rings when pressed
             b._anim_icon = icl
             b.setStyleSheet("QPushButton{border:1px solid transparent;border-radius:14px;} QPushButton:hover{border:1px solid %s;}" % tcol)
             b.setProperty("glow", tcol)
             bl = QVBoxLayout(b)
             bl.setContentsMargins(18, 18, 18, 18)
-            bl.setSpacing(6)
+            bl.setSpacing(-14)                 # the icon box has room to grow and wobble without being cut; this takes the extra gap back
             bl.addStretch(1)
             bl.addWidget(icl, 0, Qt.AlignmentFlag.AlignHCenter)
             bl.addWidget(lab, 0)
