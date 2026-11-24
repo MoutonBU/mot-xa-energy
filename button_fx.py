@@ -13,9 +13,16 @@ class _Fx:
 
     def __init__(self, btn):
         self.btn = btn
+        self.col = GLOW
+        try:
+            c_ = QColor(btn.property("glow") or "")            # a button can carry its own glow colour (the start tiles take their tool's colour)
+            if c_.isValid():
+                self.col = (c_.red(), c_.green(), c_.blue())
+        except Exception:
+            pass
         self.level = 0.0
         self.eff = QGraphicsDropShadowEffect(btn)
-        self.eff.setColor(QColor(*GLOW, 0))
+        self.eff.setColor(QColor(*self.col, 0))
         self.eff.setBlurRadius(0)
         self.eff.setOffset(QPointF(0, 0))
         btn.setGraphicsEffect(self.eff)
@@ -29,7 +36,7 @@ class _Fx:
             self.level = v
             self.eff.setBlurRadius(max(0.0, 24.0 * v))
             self.eff.setOffset(QPointF(0, max(0.0, 3.5 * v)))
-            self.eff.setColor(QColor(GLOW[0], GLOW[1], GLOW[2], int(max(0, min(255, 140 * v)))))
+            self.eff.setColor(QColor(self.col[0], self.col[1], self.col[2], int(max(0, min(255, 140 * v)))))
         except RuntimeError:
             pass
 

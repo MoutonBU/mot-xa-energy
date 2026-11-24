@@ -123,3 +123,10 @@ assert len(fr_) == 72 and fr_[0] != fr_[18]
 w._rebuild_home_cards()
 ps_ = [pj, pj2]
 print("ok spin")
+
+import button_fx as bfx_
+from PySide6.QtWidgets import QPushButton as _PB
+_b = _PB("x"); _b.setProperty("glow", "#2e9e5b")
+assert bfx_._Fx(_b).col == (46, 158, 91)
+assert bfx_._Fx(_PB("y")).col == bfx_.GLOW
+print("ok tile glow colour")
