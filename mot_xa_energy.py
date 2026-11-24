@@ -11769,6 +11769,8 @@ class MainWindow(QMainWindow):
 
     _INFO = {}                    # path -> what is set up in the project (for the badges on the card)
     _THUMBS = {}                  # (path, file time, IFC path, IFC file time) -> the stand outline and buildings, or None
+    _MESH = {}
+    _SPIN_BIG = {}
     _SPIN = {}                    # the same key -> the turntable pictures of an IFC model
 
     @staticmethod
@@ -11868,7 +11870,7 @@ class MainWindow(QMainWindow):
         return pm
 
     @staticmethod
-    def _spin_frames(tris, n=72, w=120, h=70, K=1.5):
+    def _spin_frames(tris, n=72, w=120, h=70, K=1.5, maxt=1800):
         """the IFC building as n pictures of a turntable turn: red, flat shaded, no outlines.
         Made once in the background (numpy does the maths, QImage is safe off the screen thread); the card then only swaps pictures."""
         import math
@@ -11882,8 +11884,8 @@ class MainWindow(QMainWindow):
         T, nrm, area = T[ok], nrm[ok], area[ok]
         if len(T) == 0:
             return []
-        if len(T) > 1800:                                   # keep the biggest faces; the small ones are not seen at card size
-            ix = np.argsort(-area)[:1800]
+        if len(T) > maxt:                                   # keep the biggest faces; the small ones are not seen at card size
+            ix = np.argsort(-area)[:maxt]
             T, nrm, area = T[ix], nrm[ix], area[ix]
         nu = nrm / area[:, None]
         X, Y, Z = T[:, :, 0], T[:, :, 1], T[:, :, 2]
@@ -11940,12 +11942,62 @@ class MainWindow(QMainWindow):
         fr = MainWindow._spin_frames(tris, 1, w, h)
         return QPixmap.fromImage(fr[0]) if fr else QPixmap(w, h)
 
+    def _hide_model_preview(self):
+        pop = getattr(self, "_mpop", None)
+        if pop is not None:
+            pop.hide()
+
+    def _show_model_preview(self, card, pic, path, name):
+        """the 3D picture bigger, in a floating card; the big pictures are drawn in the background the first time and kept"""
+        try:
+            key = self._thumb_key(path)
+        except OSError:
+            return
+        small = self._SPIN.get(key)
+        if not small:
+            return
+        import ui_extras as ux_p
+        from PySide6.QtGui import QGuiApplication
+        pop = getattr(self, "_mpop", None)
+        if pop is None:
+            pop = self._mpop = ux_p.ModelPopup()
+        big = self._SPIN_BIG.get(key)
+        pop.set(name, big or small, key)
+        pop.i = getattr(self, "_spin_i", 0)
+        g = pic.mapToGlobal(QPoint(pic.width() + 14, -10))
+        scr = QGuiApplication.screenAt(g) or QGuiApplication.primaryScreen()
+        ar = scr.availableGeometry()
+        x = g.x() if g.x() + pop.width() <= ar.right() else pic.mapToGlobal(QPoint(0, 0)).x() - pop.width() - 14
+        y = max(ar.top() + 4, min(g.y(), ar.bottom() - pop.height() - 4))
+        pop.move(max(ar.left() + 4, x), y)
+        pop.show()
+        h_ = card.__dict__.get("_hov")
+        if h_ is not None:
+            h_.mark_on()
+        if big is None and key in self._MESH and not self.__dict__.get("_big_busy"):
+            self._big_busy = True
+            tris = self._MESH[key]
+            wk = BgWorker(lambda: self._spin_frames(tris, 48, 360, 230, 1.25, 3500))
+            self._big_wk = wk
+
+            def done(res, err, k=key):
+                self._big_busy = False
+                if res:
+                    while len(self._SPIN_BIG) >= 3:
+                        self._SPIN_BIG.pop(next(iter(self._SPIN_BIG)))
+                    self._SPIN_BIG[k] = res
+                    if pop.isVisible() and pop.key == k:
+                        pop.set(pop.title, res, k)
+            wk.done.connect(done)
+            wk.start()
+
     def _spin_tick(self):
         """turn the 3D pictures on the recent cards; only while the start page is showing"""
         labs = getattr(self, "_spin_labels", None)
         if not labs or not self.isVisible() or self.isMinimized():
             return
         if self.main_tabs.currentIndex() != self.launcher_idx[0]:
+            self._hide_model_preview()
             return
         self._spin_i = getattr(self, "_spin_i", 0) + 1
         from PySide6.QtGui import QPixmap
@@ -12006,6 +12058,11 @@ class MainWindow(QMainWindow):
                         fr = []
                     if fr:
                         self._SPIN[k] = fr
+                        try:
+                            import numpy as np_
+                            self._MESH[k] = np.asarray(data[3], np_.float32)       # for the bigger picture when the mouse rests on a card
+                        except Exception:
+                            pass
                     data = data[:3] + (bool(fr),)            # the triangles are not kept once the pictures exist
                 out.append((k, data))
             return out
@@ -12105,6 +12162,12 @@ class MainWindow(QMainWindow):
                     sp_ = None
                 if sp_:
                     self._spin_labels.append((tl, sp_))
+                    try:
+                        import ui_extras as ux_h
+                        c._hov = ux_h.CardModelHover(c, tl, lambda cc, ll, pp=p, nn=name: self._show_model_preview(cc, ll, pp, nn),
+                                                     self._hide_model_preview)
+                    except Exception:
+                        pass
             cl.addLayout(cv, 1)
             t1 = QLabel("<b style='font-size:14px'>%s</b>" % html.escape(name))
             t2 = QLabel("<span style='color:#8a93a3'>Edited %s<br>%s</span>" % (when, html.escape(os.path.basename(os.path.dirname(p)))))

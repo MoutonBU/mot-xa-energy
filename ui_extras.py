@@ -1535,3 +1535,97 @@ def splash_close(w):
     an.finished.connect(w.close)
     w._out = an
     an.start()
+
+
+class ModelPopup(QWidget):
+    """A card that floats beside a recent project when the mouse rests on its 3D picture: the same model, bigger, still turning."""
+
+    def __init__(self):
+        super().__init__(None, Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.frames, self.title, self.key, self.i = [], "", None, 0
+        self.W, self.H = 360, 230
+        self.setFixedSize(self.W + 28, self.H + 58)
+        self.t = QTimer(self)
+        self.t.setInterval(110)
+        self.t.timeout.connect(self._tick)
+
+    def set(self, title, frames, key):
+        self.title, self.frames, self.key = title, frames, key
+        self.update()
+
+    def _tick(self):
+        self.i += 1
+        self.update()
+
+    def showEvent(self, e):
+        self.t.start()
+        super().showEvent(e)
+
+    def hideEvent(self, e):
+        self.t.stop()
+        super().hideEvent(e)
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        p.setPen(QPen(QColor(255, 64, 86, 140), 1.2))
+        p.setBrush(QColor(27, 29, 34, 246))
+        p.drawRoundedRect(r, 14, 14)
+        p.setPen(QColor(236, 238, 240))
+        f = p.font()
+        f.setBold(True)
+        f.setPointSizeF(10.5)
+        p.setFont(f)
+        p.drawText(QRectF(16, 10, self.W, 26), Qt.AlignmentFlag.AlignVCenter, self.title)
+        if self.frames:
+            img = self.frames[self.i % len(self.frames)]
+            dpr = img.devicePixelRatio() or 1.0
+            lw, lh = img.width() / dpr, img.height() / dpr
+            if abs(lw - self.W) > 2:                                  # the small pictures (until the big ones are ready) are stretched to fit
+                p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            p.drawImage(QRectF(14, 40, self.W, self.H), img)
+        p.end()
+
+
+class CardModelHover(QObject):
+    """Watches a recent-project card: when the mouse rests on its 3D picture, show it bigger."""
+
+    def __init__(self, card, pic, show, hide):
+        super().__init__(card)
+        self.card, self.pic, self._show, self._hide = card, pic, show, hide
+        self.t = QTimer(self)
+        self.t.setSingleShot(True)
+        self.t.setInterval(220)
+        self.t.timeout.connect(lambda: self._show(self.card, self.pic))
+        card.setMouseTracking(True)
+        card.installEventFilter(self)
+
+    def eventFilter(self, obj, ev):
+        t = ev.type()
+        try:
+            if t == QEvent.Type.MouseMove:
+                inside = self.pic.geometry().contains(ev.position().toPoint())
+                if inside and not self.t.isActive() and not self.__dict__.get("_on"):
+                    self.t.start()
+                elif not inside:
+                    self.t.stop()
+                    if self.__dict__.get("_on"):
+                        self._on = False
+                        self._hide()
+            elif t in (QEvent.Type.Leave, QEvent.Type.MouseButtonPress, QEvent.Type.Hide):
+                self.t.stop()
+                if self.__dict__.get("_on"):
+                    self._on = False
+                    self._hide()
+            elif t == QEvent.Type.Timer:
+                pass
+        except RuntimeError:
+            pass
+        return False
+
+    def mark_on(self):
+        self._on = True

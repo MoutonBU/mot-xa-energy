@@ -130,3 +130,20 @@ _b = _PB("x"); _b.setProperty("glow", "#2e9e5b")
 assert bfx_._Fx(_b).col == (46, 158, 91)
 assert bfx_._Fx(_PB("y")).col == bfx_.GLOW
 print("ok tile glow colour")
+
+import numpy as _np
+from PySide6.QtWidgets import QLabel as _QL
+_k = w._thumb_key(pj)
+M.MainWindow._SPIN[_k] = M.MainWindow._spin_frames(tri_, 6)
+M.MainWindow._MESH[_k] = _np.asarray(tri_, _np.float32)
+_c = _PB("card"); _l = _QL("pic"); _l.setParent(_c); _c.resize(300, 100); _l.resize(120, 70); _c.show()
+w._show_model_preview(_c, _l, pj, "Erf test")
+assert w._mpop.isVisible() and w._mpop.key == _k
+_t = time.time()
+while time.time() - _t < 4 and _k not in M.MainWindow._SPIN_BIG: app.processEvents()
+assert _k in M.MainWindow._SPIN_BIG and len(M.MainWindow._SPIN_BIG[_k]) == 48
+assert w._mpop.frames is M.MainWindow._SPIN_BIG[_k]
+w._mpop.grab().save("/tmp/popup.png")
+w._hide_model_preview()
+assert not w._mpop.isVisible()
+print("ok model popup")
