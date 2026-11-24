@@ -1017,28 +1017,71 @@ def install_icon_motion():
 
 
 class _Wipe(QWidget):
-    """A title card (the tool's colour, its mark and its name) drawn once as a picture, then only moved and faded: it slides up over the
-    window, the page changes under it, and it lifts away."""
-    def __init__(self, parent, card):
+    """A title card: the background is drawn once at the screen's own resolution and only moved; the icon, name and line are drawn live
+    as vector text, so they are crisp on any screen, and come in one after another."""
+    def __init__(self, parent, bg, col, title, sub, pm):
         super().__init__(parent)
-        self.card = card
+        self.bg, self.col, self.title, self.sub, self.pm = bg, QColor(col), title, sub, pm
         self.y = 1.0                      # 1 = below the window, 0 = covering it
-        self.a = 1.0
+        self.a = 1.0                      # opacity of everything while it leaves
+        self.t = 0.0                      # 0..1: the icon, name and line coming in
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
+    @staticmethod
+    def _ease(x):
+        x = max(0.0, min(1.0, x))
+        return 1.0 - (1.0 - x) ** 3
+
     def paintEvent(self, _e):
+        from PySide6.QtGui import QFont, QFontMetrics
         p = QPainter(self)
+        p.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.TextAntialiasing | QPainter.RenderHint.SmoothPixmapTransform)
+        w, h = self.width(), self.height()
+        oy = int(self.y * h)
         p.setOpacity(self.a)
-        p.drawPixmap(0, int(self.y * self.height()), self.card)
+        p.drawPixmap(0, oy, self.bg)
+        cx, cy = w // 2, h // 2 + oy
+        e_i, e_t, e_s = self._ease((self.t - 0.05) / 0.55), self._ease((self.t - 0.25) / 0.55), self._ease((self.t - 0.45) / 0.55)
+        if self.pm is not None:
+            sz = 84
+            p.setOpacity(self.a * e_i)
+            p.drawPixmap(int(cx - sz / 2), int(cy - sz - 40 + (1 - e_i) * 26), sz, sz, self.pm)
+        f = QFont()
+        f.setPixelSize(max(30, min(64, w // 18)))
+        f.setBold(True)
+        f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 2)
+        fm = QFontMetrics(f)
+        th = fm.height()
+        p.setFont(f)
+        p.setPen(QColor("#ffffff"))
+        p.setOpacity(self.a * e_t)
+        ty = cy - 14 + (1 - e_t) * 26
+        p.drawText(0, int(ty), w, th, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop, self.title)
+        lw = 90 * e_t
+        p.fillRect(int(cx - lw / 2), int(ty + th + 10), int(lw), 4, QColor("#d8132b"))
+        if self.sub:
+            f2 = QFont()
+            f2.setPixelSize(16)
+            p.setFont(f2)
+            p.setPen(QColor(255, 255, 255, 215))
+            p.setOpacity(self.a * e_s)
+            p.drawText(w // 6, int(ty + th + 28 + (1 - e_s) * 18), w * 2 // 3, 44, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop, self.sub)
+        f3 = QFont()
+        f3.setPixelSize(11)
+        f3.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 3)
+        p.setFont(f3)
+        p.setPen(QColor(255, 255, 255, 130))
+        p.setOpacity(self.a * e_s)
+        p.drawText(0, h - 40 + oy, w, 20, Qt.AlignmentFlag.AlignHCenter, "MCP ARCHITECTURE & INTERIORS")
         p.end()
 
 
-def _title_card(w, h, col, title, sub, pm):
-    from PySide6.QtGui import QFont, QLinearGradient, QPixmap
-    dpr = 1.0
-    card = QPixmap(w, h)
-    card.fill(QColor("#14161a"))
-    q = QPainter(card)
+def _card_bg(w, h, col, dpr):
+    from PySide6.QtGui import QLinearGradient, QPixmap, QPolygonF
+    from PySide6.QtCore import QPointF
+    bg = QPixmap(int(w * dpr), int(h * dpr))
+    bg.setDevicePixelRatio(dpr)
+    q = QPainter(bg)
     q.setRenderHint(QPainter.RenderHint.Antialiasing)
     c = QColor(col)
     g = QLinearGradient(0, h, w, 0)
@@ -1048,49 +1091,39 @@ def _title_card(w, h, col, title, sub, pm):
     q.fillRect(0, 0, w, h, g)
     q.setPen(Qt.PenStyle.NoPen)                       # two soft diagonal bands, like the MCP mark
     q.setBrush(QColor(255, 255, 255, 14))
-    from PySide6.QtGui import QPolygonF
     q.drawPolygon(QPolygonF([QPointF(w * 0.62, 0), QPointF(w * 0.78, 0), QPointF(w * 0.42, h), QPointF(w * 0.26, h)]))
     q.setBrush(QColor(255, 255, 255, 9))
     q.drawPolygon(QPolygonF([QPointF(w * 0.80, 0), QPointF(w * 0.90, 0), QPointF(w * 0.54, h), QPointF(w * 0.44, h)]))
-    cx, cy = w // 2, h // 2
-    if pm is not None:
-        sz = pm.deviceIndependentSize()
-        q.drawPixmap(int(cx - sz.width() / 2), int(cy - sz.height() - 34), pm)
-    q.setPen(QColor("#ffffff"))
-    f = QFont(); f.setPixelSize(max(30, min(64, w // 18))); f.setBold(True); f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 2)
-    q.setFont(f)
-    q.drawText(0, cy - 6, w, 70, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop, title)
-    q.fillRect(cx - 40, cy + 70, 80, 4, QColor("#d8132b"))
-    if sub:
-        f2 = QFont(); f2.setPixelSize(15); q.setFont(f2); q.setPen(QColor(255, 255, 255, 190))
-        q.drawText(w // 6, cy + 90, w * 2 // 3, 40, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop, sub)
-    f3 = QFont(); f3.setPixelSize(11); f3.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 3); q.setFont(f3)
-    q.setPen(QColor(255, 255, 255, 120))
-    q.drawText(0, h - 40, w, 20, Qt.AlignmentFlag.AlignHCenter, "MCP ARCHITECTURE & INTERIORS")
     q.end()
-    return card
+    return bg
 
 
-def wipe_open(win, src, col, on_covered, pm=None, ms=170, title="", sub=""):
-    """Open a tool or a project with a title card: it slides up over the window (170 ms), `on_covered` runs under it (the page changes, the
-    project loads), it holds a moment and lifts away (220 ms). The card is drawn once; each frame only moves one picture."""
+def wipe_open(win, src, col, on_covered, pm=None, ms=300, title="", sub=""):
+    """Open a tool or a project with a title card: it slides up over the window while its icon, name and line come in one after another
+    (300 ms), `on_covered` runs under it (the page changes, the project loads) and the card lifts away (220 ms)."""
     top = win.centralWidget() or win
-    ov = _Wipe(top, _title_card(max(top.width(), 200), max(top.height(), 200), col, title, sub, pm))
+    try:
+        dpr = float(top.devicePixelRatioF())
+    except Exception:
+        dpr = 1.0
+    ov = _Wipe(top, _card_bg(max(top.width(), 200), max(top.height(), 200), col, dpr), col, title, sub, pm)
     ov.setGeometry(top.rect())
     ov.show()
     ov.raise_()
     an = QVariantAnimation(ov)
     an.setDuration(ms)
-    an.setStartValue(1.0)
-    an.setEndValue(0.0)
-    an.setEasingCurve(QEasingCurve.Type.OutCubic)
+    an.setStartValue(0.0)
+    an.setEndValue(1.0)
+    an.setEasingCurve(QEasingCurve.Type.Linear)
 
     def step(v):
-        ov.y = float(v)
+        v = float(v)
+        ov.y = (1.0 - min(1.0, v / 0.55)) ** 3          # the card arrives in the first half, then the words finish
+        ov.t = v
         ov.update()
 
     def covered():
-        ov.y = 0.0
+        ov.y, ov.t = 0.0, 1.0
         ov.repaint()
         try:
             on_covered()
@@ -1112,6 +1145,7 @@ def wipe_open(win, src, col, on_covered, pm=None, ms=170, title="", sub=""):
     an.valueChanged.connect(step)
     an.finished.connect(covered)
     ov._an = an
+    an.start()
     an.start()
     ov._an = an
 

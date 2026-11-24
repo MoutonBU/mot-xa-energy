@@ -11763,7 +11763,7 @@ class MainWindow(QMainWindow):
         if card is None:
             go()
         else:
-            ux_.wipe_open(self, card, "#d8132b", go, icon_pixmap("plan", "#ffffff", 84), title=os.path.basename(path).replace(".mcplv.json", "").replace(".json", ""), sub="Opening your project")
+            ux_.wipe_open(self, card, "#d8132b", go, icon_pixmap("plan", "#ffffff", 168), title=os.path.basename(path).replace(".mcplv.json", "").replace(".json", ""), sub="Opening your project")
 
     _THUMBS = {}                  # (path, file time, IFC path, IFC file time) -> the stand outline and buildings, or None
 
@@ -14169,7 +14169,7 @@ class MainWindow(QMainWindow):
             bl.addStretch(1)
             def opened(_=False, t=target, c_=tcol, i_=ico):
                 import ui_extras as ux_o
-                ux_o.wipe_open(self, b, c_, lambda: self.main_tabs.setCurrentIndex(self._tab_index(t)), icon_pixmap(i_, "#ffffff", 84),
+                ux_o.wipe_open(self, b, c_, lambda: self.main_tabs.setCurrentIndex(self._tab_index(t)), icon_pixmap(i_, "#ffffff", 168),
                                title=title.replace("&&", "&").upper(), sub=re.sub(r"<[^>]+>", " ", sub).replace("&&", "&").strip()[:90])
             b.clicked.connect(opened)
             return b

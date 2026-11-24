@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.234**
+Current version: **1.86.235**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Sharper, animated title card:** the opening card is now drawn at your screen's full resolution (no more blur on sharp screens), the red line no longer clips the name, and the icon, name, line and subtitle come in one after another (about 0.3 s).
 - **Title-card opening:** opening a tool or a recent project now shows a full-window card in the tool's colour with its icon, name and a line about it. It slides up, the page loads underneath and it lifts away (about 0.5 s). The card is drawn once and only moved, so it stays smooth. The start screen now scrolls when the window is short, and the tile icons no longer overlap their titles.
 - **New opening style:** tiles and recent cards now open by sliding and fading the old screen away over the new page (190 ms), with a line of the tool's colour running along the top. The new page is put in place straight away, so there is no wait for a cover.
 - **XA 2026 finished:** the roof light, category 1 wall, air conditioner and sensor checks now count in the compliance summary (a failing one shows as not compliant), and the shading multiplier uses the chosen town's latitude from Annex C Table C.1 when no latitude is typed.
