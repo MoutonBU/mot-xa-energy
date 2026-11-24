@@ -26,8 +26,12 @@ assert len(rows_) == 1 and abs(rows_[0][3] - 10.0) < 1e-9 and rows_[0][2] == "m"
 print("ok qs/handrail data")
 from PySide6.QtWidgets import QApplication
 app = QApplication([])
+class _W:
+    rd = {}
+
+
 class H:
-    pass
+    win = _W()
 p = M.MaterialsPage(H())
 import tempfile, openpyxl
 wb = openpyxl.Workbook(); ws = wb.active
@@ -93,3 +97,19 @@ print("ok rates + budget fit")
 q0 = dict(q); q0["rail_m"] = 0.0
 assert any(r[0] == "Handrails and balustrades" and r[3] == 0.0 for r in M.bom(q0, {}, {}, facts))
 print("ok railing always listed")
+# site works and professional fees
+p4 = M.MaterialsPage(H())
+p4.custom = [{"group": "A", "item": "x", "unit": "sum", "qty": 1, "mat": 0, "lab": 2_000_000.0}]
+t0 = p4.grand()[1]
+p4.add_site(); p4.add_site()
+assert len(p4.site) == 2 and p4.grand()[1] > t0
+t1 = p4.grand()[1]
+p4.fees = {"arch": {"on": True, "cx": "medium", "share": 67.0}, "struct": {"on": True}, "qs": {"on": True, "pct": 2.0}}
+steps, t2, d2 = p4.grand()
+fl, works = p4.fee_rows()
+assert len(fl) == 3 and abs(sum(x[3] for x in fl) - (t2 - t1) / 1.15 * 1.0) < 1.0 and works > 2_000_000
+assert abs(M.fee_scale_amount(M.FEE_SCALES["arch_medium"][2], 3_000_000) - 437851.25) < 0.01 and abs(M.fee_scale_amount(M.FEE_SCALES["struct"][2], 3_000_000) - 448500.0) < 0.01
+assert any(r[0] == "Site works" for r in p4.all_rows())
+p5 = M.MaterialsPage(H()); p5.set_state(p4.state()); assert p5.fees == p4.fees and len(p5.site) == 2 and abs(p5.grand()[1] - t2) < 1e-6
+h4 = p4.report_html(); assert "Professional fees, on the cost of works" in h4 and "Site works" in h4 and "Total professional fees" in h4
+print("ok site works + fees")

@@ -42,7 +42,7 @@ ALLOW = {
     "prelim_pct": ("Preliminaries: site costs, supervision, insurance, scaffolding", "% of direct cost", 8.0),
     "profit_pct": ("Builder's overheads and profit", "%", 10.0),
     "contingency_pct": ("Contingency", "%", 5.0),
-    "fees_pct": ("Professional fees and council costs (0 = not included)", "%", 0.0),
+    "fees_pct": ("Other fees and council costs, as a flat % of the cost of works (the Professional fees tab has the guideline scales)", "%", 0.0),
     "rates_incl_vat": ("The material prices include VAT (1 = yes, VAT is taken out first)", "0/1", 1.0),
     "vat_pct": ("VAT added to the final price (0 = none)", "%", 15.0),
 }
@@ -618,7 +618,105 @@ def qs_rate_matches(items, cur_rates, incl_vat=False, vat_in_materials=True):
     return out
 
 
-def buildup(mat, lab, allow):
+# site works, for the whole project (not per block): description, unit, material, labour (starting figures, my estimates: check a quote)
+SITE_PRESETS = [
+    ("Site clearing and levelling, whole stand", "m2", 0.0, 22.0),
+    ("Interlocking concrete paving on compacted bed, laid", "m2", 330.0, 190.0),
+    ("Face-brick paving, laid", "m2", 420.0, 230.0),
+    ("Concrete driveway, 100 mm with mesh, finished", "m2", 520.0, 260.0),
+    ("Natural stone / cobble paving, laid", "m2", 700.0, 320.0),
+    ("Boundary wall: plastered and painted brick, 1.8 m high, with footing", "m", 1700.0, 900.0),
+    ("Boundary wall: precast concrete panels, 1.8 m high", "m", 1400.0, 450.0),
+    ("Boundary fence: steel palisade, 1.8 m", "m", 950.0, 280.0),
+    ("Retaining wall: concrete block, reinforced (per m2 of face)", "m2", 1900.0, 800.0),
+    ("Entrance gate, sliding, with motor", "each", 14500.0, 3500.0),
+    ("Pedestrian gate, steel", "each", 3800.0, 900.0),
+    ("Swimming pool: concrete, plastered, with pump and filter (per m2 of water)", "m2", 5200.0, 2300.0),
+    ("Pool deck and coping", "m2", 900.0, 400.0),
+    ("Garden: topsoil, lawn, planting and irrigation", "m2", 150.0, 90.0),
+    ("Stormwater pipe and drainage", "m", 380.0, 220.0),
+    ("Sewer and water pipe from the boundary to the house", "m", 260.0, 180.0),
+    ("Outdoor lighting point", "each", 650.0, 350.0),
+    ("Solar PV system, installed", "kWp", 16500.0, 4500.0),
+    ("Borehole with pump", "each", 38000.0, 12000.0),
+    ("Rain-water tank, 5 000 L, on base", "each", 7500.0, 1800.0),
+    ("Braai / outdoor kitchen, built", "each", 16000.0, 7000.0),
+    ("Carport or shade structure", "m2", 1400.0, 600.0),
+]
+
+# ---------------- professional fees: the published guideline scales ----------------
+# Each scale: bracket rows (lower limit of the cost of works, primary fee, add % on the balance over the lower limit), fee = primary + % x (works - lower limit).
+# Below the first row the first row's percentage is applied to the whole cost (the guidelines leave small projects to a lump sum or time basis).
+# Guideline fees are not compulsory. Amounts exclude VAT.
+_ARCH_L = [1, 200001, 650001, 2000001, 4000001, 6500001, 13000001, 40000001, 130000001, 260000001, 520000001, 1040000001]
+FEE_SCALES = {
+    "arch_low": ("Architect, low complexity", "SACAP guideline fees, Board Notice 885 of 2026 (Gazette 54218, 27 Feb 2026), table 1",
+                 [(1, 9073.48, 14.02), (200001, 37121.34, 11.73), (650001, 89897.22, 11.58), (2000001, 246281.11, 10.40), (4000001, 454281.00, 10.24),
+                  (6500001, 710280.90, 9.20), (13000001, 1308280.81, 8.62), (40000001, 3636760.72, 8.36), (130000001, 11160760.64, 8.10),
+                  (260000001, 21685560.56, 7.48), (520000001, 41133560.48, 7.22), (1040000001, 78656760.41, 7.04)]),
+    "arch_medium": ("Architect, medium complexity", "SACAP guideline fees, Board Notice 885 of 2026, table 2",
+                    [(1, 11341.85, 17.53), (200001, 46401.67, 14.66), (650001, 112371.53, 14.48), (2000001, 307851.38, 13.00), (4000001, 567851.25, 12.80),
+                     (6500001, 887851.13, 11.50), (13000001, 1635351.01, 10.78), (40000001, 4545950.90, 10.45), (130000001, 13950950.80, 10.12),
+                     (260000001, 27106950.70, 9.35), (520000001, 51416950.60, 9.02), (1040000001, 98320950.51, 8.80)]),
+    "arch_high": ("Architect, high complexity", "SACAP guideline fees, Board Notice 885 of 2026, table 3",
+                  [(1, 13610.22, 21.04), (200001, 55682.01, 17.59), (650001, 134845.83, 17.38), (2000001, 369421.66, 15.60), (4000001, 681421.50, 15.36),
+                   (6500001, 1065421.35, 13.80), (13000001, 1962421.21, 12.94), (40000001, 5455141.08, 12.54), (130000001, 16741140.96, 12.14),
+                   (260000001, 32528340.84, 11.22), (520000001, 61700340.72, 10.82), (1040000001, 117985140.62, 10.56)]),
+    "civil": ("Civil engineer, building project", "ECSA guideline fees 2025, Board Notice 783 of 2025 (Gazette 52691), table 3",
+              [(1050000, 178500.0, 17.0), (2100000, 336000.0, 12.5), (10500000, 1386000.0, 10.5), (21000000, 2488500.0, 9.5), (52500000, 5481000.0, 8.5)]),
+    "struct": ("Structural engineer, building project", "ECSA guideline fees 2025, Board Notice 783 of 2025, table 4",
+               [(1050000, 178500.0, 17.0), (2100000, 336000.0, 12.5), (10500000, 1386000.0, 10.5), (21000000, 2488500.0, 9.5), (52500000, 5481000.0, 8.5)]),
+    "mech": ("Mechanical engineer, building project", "ECSA guideline fees 2025, Board Notice 783 of 2025, table 7",
+             [(1050000, 210000.0, 20.0), (2100000, 399000.0, 15.0), (10500000, 1659000.0, 13.0), (21000000, 3024000.0, 11.5), (52500000, 6646500.0, 10.5),
+              (105000000, 12159000.0, 10.0)]),
+    "elec": ("Electrical engineer, building project", "ECSA guideline fees 2025, Board Notice 783 of 2025, table 8",
+             [(1050000, 210000.0, 20.0), (2100000, 399000.0, 15.0), (10500000, 1659000.0, 13.0), (21000000, 3024000.0, 11.5), (52500000, 6646500.0, 10.5),
+              (105000000, 12159000.0, 10.0)]),
+    "pm": ("Project / construction manager", "SACPCMP guideline fees: the 2022 proposed table (Board Notice 182 of 2022, call for comments), the latest scale I could find",
+           [(1, 18477.0, 7.89), (1100001, 105267.0, 7.89), (2200001, 192057.0, 7.78), (4500001, 370997.0, 7.75), (9000001, 719747.0, 7.70), (18000001, 1412747.0, 6.91),
+            (36000001, 2656547.0, 6.22), (72000001, 4895747.0, 5.52), (144000001, 8870147.0, 4.83), (287900001, 15820517.0, 4.18)]),
+}
+# the professionals as listed on the Professional fees tab: (key, name, scale key or None for a typed percentage)
+FEE_PROS = [("arch", "Architect", "arch_medium"), ("struct", "Structural engineer", "struct"), ("civil", "Civil engineer", "civil"),
+            ("elec", "Electrical engineer", "elec"), ("mech", "Mechanical engineer", "mech"), ("pm", "Project / construction manager", "pm"),
+            ("qs", "Quantity surveyor (type the % you agreed)", None), ("lsv", "Land surveyor", None), ("plan", "Town planner / council submission", None),
+            ("council", "Council plan and approval fees", None), ("other", "Other consultants", None)]
+ARCH_STAGES = "Architect work stages (share of the fee): 1 Inception 2%, 2 Concept and viability 15%, 3 Design development 20%, 4.1 Documentation 10%, 4.2 Procurement 20%, 5 Contract administration 30%, 6 Close-out 3%."
+FEE_DEFAULT = {k: {"on": False, "cx": "medium", "share": 100.0, "pct": 0.0} for k, _n, _s in FEE_PROS}
+
+
+def fee_scale_amount(rows, works):
+    """Guideline fee for a cost of works from one scale."""
+    if works <= 0:
+        return 0.0
+    if works < rows[0][0]:
+        return works * rows[0][2] / 100.0 if rows[0][0] > 1 else rows[0][1] + (works - 1) * rows[0][2] / 100.0
+    row = rows[0]
+    for r in rows:
+        if works >= r[0]:
+            row = r
+    return row[1] + (works - row[0]) * row[2] / 100.0
+
+
+def fee_lines(works, fees):
+    """[(key, name, scale name, fee, share or %)] for every professional switched on, on the cost of works (excluding VAT)."""
+    out = []
+    f_all = fees or {}
+    for key, name, scale in FEE_PROS:
+        f = {**FEE_DEFAULT[key], **(f_all.get(key) or {})}
+        if not f["on"]:
+            continue
+        if scale:
+            sk = ("arch_" + str(f.get("cx", "medium"))) if key == "arch" else scale
+            sk = sk if sk in FEE_SCALES else scale
+            amt = fee_scale_amount(FEE_SCALES[sk][2], works) * float(f["share"]) / 100.0
+            out.append((key, name, FEE_SCALES[sk][0], amt, float(f["share"])))
+        else:
+            out.append((key, name, "typed percentage of the cost of works", works * float(f["pct"]) / 100.0, float(f["pct"])))
+    return out
+
+
+def buildup(mat, lab, allow, fees=None):
     """The price build-up. mat, lab: material and labour totals as the rates give them. Returns ([(label, amount)], total, direct cost)."""
     A = lambda k: float(allow.get(k, ALLOW[k][2]))
     ex = mat / 1.15 if A("rates_incl_vat") else mat
@@ -627,17 +725,18 @@ def buildup(mat, lab, allow):
     pre = direct * A("prelim_pct") / 100.0
     oh = (direct + pre) * A("profit_pct") / 100.0
     con = (direct + pre + oh) * A("contingency_pct") / 100.0
-    fees = (direct + pre + oh + con) * A("fees_pct") / 100.0
-    net = direct + pre + oh + con + fees
+    works = direct + pre + oh + con                                  # the cost of works the professional fees are worked on
+    fees = works * A("fees_pct") / 100.0 + sum(x[3] for x in fee_lines(works, fees))
+    net = works + fees
     vat = net * A("vat_pct") / 100.0
     steps = [("Materials and sanitary ware", ex), ("Breakage and wastage", brk), ("Labour, all trades", lab), ("Preliminaries and site costs", pre),
              ("Builder's overheads and profit", oh), ("Contingency", con), ("Professional fees and council costs", fees), ("VAT", vat)]
     return steps, net + vat, direct
 
 
-def markup_factor(mat, lab, allow):
+def markup_factor(mat, lab, allow, fees=None):
     """How much a rand of direct cost becomes once breakage, preliminaries, profit, contingency, fees and VAT are added."""
-    steps, total, direct = buildup(mat, lab, allow)
+    steps, total, direct = buildup(mat, lab, allow, fees)
     return total / direct if direct else 1.0
 
 # ---------------- the tab ----------------
@@ -674,6 +773,8 @@ class MaterialsPage(QWidget):
         self.rates = {}         # key -> {"mat", "lab", "source"} overrides
         self.allow = {}         # key -> value overrides
         self.custom = []        # {group, item, unit, qty, mat, lab}
+        self.site = []          # site works for the whole project: {item, unit, qty, mat, lab}
+        self.fees = {}          # professional fees: {key: {on, cx, share, pct}}
         self.fit = {"on": False, "rate": 0.0, "area": 0.0, "cut": 0.0, "weights": {}}      # budget fit: every group is cut by cut x its weight
         self._busy = False
         v = QVBoxLayout(self)
@@ -712,12 +813,18 @@ class MaterialsPage(QWidget):
         self.allowt.setHorizontalHeaderLabels(["Allowance", "Unit", "Value"])
         self.qt_ = QTableWidget(0, 3)
         self.qt_.setHorizontalHeaderLabels(["Quantity read from the IFC", "Unit", "Value"])
+        self.sitet = QTableWidget(0, 6)
+        self.sitet.setHorizontalHeaderLabels(["Site work", "Unit", "Quantity", "Material rate", "Labour rate", "Cost"])
+        self.sitet.itemChanged.connect(self._site_edit)
+        self.feet = QTableWidget(len(FEE_PROS), 7)
+        self.feet.setHorizontalHeaderLabels(["Use", "Professional", "Guideline scale", "Share of the full service (%)", "Typed % of the cost of works", "Fee", "% of the cost of works"])
+        self.feet.itemChanged.connect(self._fee_edit)
         self.fitt = QTableWidget(0, 5)
         self.fitt.setHorizontalHeaderLabels(["Group", "Full price", "At the budget", "Cut", "Share of the cut (%): 0 protects the group"])
         self.fitt.itemChanged.connect(self._fit_edit)
         self.extrat = QTableWidget(0, 6)
         self.extrat.setHorizontalHeaderLabels(["Group", "Item", "Unit", "Quantity", "Material rate", "Labour rate"])
-        for t in (self.bomt, self.buildt, self.ratet, self.allowt, self.qt_, self.extrat, self.fitt):
+        for t in (self.bomt, self.buildt, self.ratet, self.allowt, self.qt_, self.extrat, self.fitt, self.sitet, self.feet):
             t.verticalHeader().setVisible(False)
             t.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         for t in (self.bomt, self.qt_, self.buildt):
@@ -743,6 +850,32 @@ class MaterialsPage(QWidget):
         self.tabs.addTab(self.ratet, "Rates")
         self.tabs.addTab(self.allowt, "Allowances")
         self.tabs.addTab(ew, "Extra items")
+        sw = QWidget()
+        sv = QVBoxLayout(sw)
+        sv.setContentsMargins(0, 0, 0, 0)
+        sb = QHBoxLayout()
+        from PySide6.QtWidgets import QComboBox
+        self.site_pick = QComboBox()
+        for d_, u_, m_, l_ in SITE_PRESETS:
+            self.site_pick.addItem("%s  (%s)" % (d_, u_))
+        sb.addWidget(self.site_pick, 1)
+        for text, fn in (("Add to site works", self.add_site), ("Add blank line", lambda: self.add_site(blank=True)), ("Remove line", self.remove_site)):
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            sb.addWidget(b)
+        sv.addLayout(sb)
+        sv.addWidget(QLabel("Work outside the blocks, for the whole project: paving, boundary walls, pools, gates, landscaping, services to the house, solar. The rates are my starting "
+                            "estimates, so replace them with your quotes. These costs go into the price build-up and the professional fees."))
+        sv.addWidget(self.sitet)
+        self.tabs.addTab(sw, "Site works")
+        fw = QWidget()
+        fv = QVBoxLayout(fw)
+        fv.setContentsMargins(0, 0, 0, 0)
+        self.fee_note = QLabel("")
+        self.fee_note.setWordWrap(True)
+        fv.addWidget(self.fee_note)
+        fv.addWidget(self.feet)
+        self.tabs.addTab(fw, "Professional fees")
         self.tabs.addTab(self.fitt, "Budget fit")
         self.tabs.addTab(self.qt_, "Quantities")
         v.addWidget(self.tabs, 1)
@@ -789,7 +922,7 @@ class MaterialsPage(QWidget):
 
     # ----- state -----
     def state(self):
-        return {"blocks": self.blocks, "rates": self.rates, "allow": self.allow, "custom": self.custom, "fit": self.fit}
+        return {"blocks": self.blocks, "rates": self.rates, "allow": self.allow, "custom": self.custom, "fit": self.fit, "site": self.site, "fees": self.fees}
 
     def set_state(self, d):
         d = d or {}
@@ -797,6 +930,8 @@ class MaterialsPage(QWidget):
         self.rates = dict(d.get("rates", {}) or {})
         self.allow = dict(d.get("allow", {}) or {})
         self.custom = [dict(c) for c in d.get("custom", []) if isinstance(c, dict)]
+        self.site = [dict(c) for c in d.get("site", []) if isinstance(c, dict)]
+        self.fees = {k: dict(v) for k, v in (d.get("fees") or {}).items() if isinstance(v, dict)}
         f_ = d.get("fit") or {}
         self._reread = any(b.get("q") and "rail_m" not in b["q"] for b in self.blocks)       # read before railings were measured
         self.fit = {"on": bool(f_.get("on")), "rate": float(f_.get("rate", 0) or 0), "area": float(f_.get("area", 0) or 0), "cut": float(f_.get("cut", 0) or 0),
@@ -1008,6 +1143,15 @@ class MaterialsPage(QWidget):
                 gf_ = self.gfactor(c.get("group") or "Extra items")
                 m_, l_ = m_ * gf_, l_ * gf_
                 rows.append([c.get("group") or "Extra items", c.get("item", ""), c.get("unit", ""), q_, m_, l_, q_ * m_, q_ * l_])
+        for c in self.site:
+            try:
+                q_, m_, l_ = float(c.get("qty", 0)), float(c.get("mat", 0)), float(c.get("lab", 0))
+            except ValueError:
+                continue
+            if q_:
+                gf_ = self.gfactor("Site works")
+                m_, l_ = m_ * gf_, l_ * gf_
+                rows.append(["Site works", c.get("item", ""), c.get("unit", ""), q_, m_, l_, q_ * m_, q_ * l_])
         return rows
 
     def sums(self, rows=None):
@@ -1016,19 +1160,22 @@ class MaterialsPage(QWidget):
 
     def grand(self):
         mat, lab = self.sums()
-        return buildup(mat, lab, self.allow)
+        return buildup(mat, lab, self.allow, self.fees)
 
     def block_cost(self, b):
         rows = [(g, i, u, q * 1, mr, lr) for g, i, u, q, mr, lr in self.block_rows(b)]
         mat = sum(r[3] * r[4] for r in rows)
         lab = sum(r[3] * r[5] for r in rows)
-        return buildup(mat, lab, self.allow)[1]
+        gm, gl = self.sums()
+        steps, total, direct = self.grand()
+        one = buildup(mat, lab, self.allow)[2]                      # the block's share of the whole price (fees and site works are for the project, not per block)
+        return total * one / direct if direct else 0.0
 
     def group_costs(self):
         """[(group, all-in cost)] with breakage, preliminaries, profit, contingency, fees and VAT spread over the groups."""
         rows = self.all_rows()
         mat, lab = self.sums(rows)
-        mf = markup_factor(mat, lab, self.allow)
+        mf = markup_factor(mat, lab, self.allow, self.fees)
         A = lambda k: float(self.allow.get(k, ALLOW[k][2]))
         vd = 1.15 if A("rates_incl_vat") else 1.0
         g = {}
@@ -1111,6 +1258,40 @@ class MaterialsPage(QWidget):
                 val = sum((b["q"] or {}).get(k, 0) * max(1, int(b.get("repeat", 1))) for b in self.blocks if b.get("q"))
                 for c, txt in enumerate((d, u, num(val, 1 if u != "no." else 0))):
                     qt.setItem(r, c, QTableWidgetItem(txt))
+            st = self.sitet
+            st.setRowCount(len(self.site))
+            for r, c_ in enumerate(self.site):
+                q_, m_, l_ = [float(c_.get(k, 0) or 0) for k in ("qty", "mat", "lab")]
+                for ci, txt in enumerate((c_.get("item", ""), c_.get("unit", ""), "%g" % q_, "%g" % m_, "%g" % l_, rand(q_ * (m_ + l_)))):
+                    it = QTableWidgetItem(txt)
+                    if ci == 5:
+                        it.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+                        it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    st.setItem(r, ci, it)
+            flines, works = self.fee_rows()
+            byk = {x[0]: x for x in flines}
+            ftt = self.feet
+            for r, (key, name, scale) in enumerate(FEE_PROS):
+                f = {**FEE_DEFAULT[key], **(self.fees.get(key) or {})}
+                ck = QTableWidgetItem("")
+                ck.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+                ck.setCheckState(Qt.CheckState.Checked if f["on"] else Qt.CheckState.Unchecked)
+                sc_txt = FEE_SCALES["arch_" + str(f.get("cx", "medium"))][0] if key == "arch" else (FEE_SCALES[scale][0] if scale else "typed percentage")
+                fee = byk[key][3] if key in byk else 0.0
+                vals = [None, name, sc_txt, ("%g" % f["share"]) if scale else "", ("%g" % f["pct"]) if not scale else "",
+                        rand(fee) if key in byk else "", ("%.1f %%" % (100.0 * fee / works)) if (key in byk and works) else ""]
+                ftt.setItem(r, 0, ck)
+                for ci in range(1, 7):
+                    it = QTableWidgetItem(vals[ci])
+                    if not (ci == 3 and scale) and not (ci == 4 and not scale):
+                        it.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+                    if ci >= 3:
+                        it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    ftt.setItem(r, ci, it)
+            ftot = sum(x[3] for x in flines)
+            self.fee_note.setText("Professional fees worked on the cost of works of %s (excluding VAT): %s in all, %s of the cost of works. They are one line in the price build-up. "
+                                  "Guideline fees (SACAP, ECSA and SACPCMP) are not compulsory: agree each fee with the professional. The share column lets you leave out stages "
+                                  "(the architect, for example, does stages 1 to 4.2 only = 67 %%). %s" % (rand(works), rand(ftot), ("%.1f %%" % (100.0 * ftot / works)) if works else "0 %", ARCH_STAGES))
             gcs = self.group_costs()
             ft = self.fitt
             ft.setRowCount(len(gcs))
@@ -1138,6 +1319,57 @@ class MaterialsPage(QWidget):
         if getattr(self, "_reread", False):                      # blocks read before the railings were measured: read them again once
             self._reread = False
             self.read_all()
+
+    def add_site(self, blank=False):
+        if blank:
+            self.site.append({"item": "New site work", "unit": "sum", "qty": 1, "mat": 0, "lab": 0})
+        else:
+            d_, u_, m_, l_ = SITE_PRESETS[max(0, self.site_pick.currentIndex())]
+            self.site.append({"item": d_, "unit": u_, "qty": 1, "mat": m_, "lab": l_})
+        self.refresh()
+        self.tabs.setCurrentIndex(self.tabs.indexOf(self.sitet.parentWidget()))
+
+    def remove_site(self):
+        r = self.sitet.currentRow()
+        if 0 <= r < len(self.site):
+            self.site.pop(r)
+            self.refresh()
+
+    def _site_edit(self, it):
+        if self._busy or not (0 <= it.row() < len(self.site)) or it.column() > 4:
+            return
+        k = ("item", "unit", "qty", "mat", "lab")[it.column()]
+        txt = it.text().strip()
+        if k in ("qty", "mat", "lab"):
+            try:
+                txt = float(txt.replace(" ", "").replace(",", "."))
+            except ValueError:
+                return
+        self.site[it.row()][k] = txt
+        QTimer.singleShot(0, self.refresh)
+
+    def _fee_edit(self, it):
+        if self._busy or not (0 <= it.row() < len(FEE_PROS)) or it.column() not in (0, 3, 4):
+            return
+        key = FEE_PROS[it.row()][0]
+        f = self.fees.setdefault(key, {})
+        if it.column() == 0:
+            f["on"] = it.checkState() == Qt.CheckState.Checked
+        else:
+            try:
+                v = float(it.text().replace(",", ".").replace(" ", ""))
+            except ValueError:
+                return
+            f["share" if it.column() == 3 else "pct"] = max(0.0, v)
+        QTimer.singleShot(0, self.refresh)
+
+    def fee_rows(self):
+        """The professional fees on the present cost of works: [(key, name, scale, fee, share)] and the cost of works."""
+        mat, lab = self.sums()
+        steps, total, direct = self.grand()
+        works = sum(a for l_, a in steps if l_ in ("Materials and sanitary ware", "Breakage and wastage", "Labour, all trades", "Preliminaries and site costs",
+                                                   "Builder's overheads and profit", "Contingency"))
+        return fee_lines(works, self.fees), works
 
     def _fit_click(self):
         if not self.fit_area_spin.value():
@@ -1488,6 +1720,18 @@ class MaterialsPage(QWidget):
         rows = "".join("<tr>%s%s%s</tr>" % (td(e(l)), td(rand(a), "right"), td("%.1f %%" % (100.0 * a / total) if total else "", "right")) for l, a in steps)
         rows += "<tr>%s%s%s</tr>" % (td("<b>Total, all-in</b>"), td("<b>%s</b>" % rand(total), "right"), td("100 %", "right"))
         out.append('<table width="100%%" border="0.6" cellspacing="0" style="font-size:9pt;"><tr>%s%s%s</tr>%s</table>' % (th("", 60), th("Amount", 25), th("Share", 15), rows))
+        fl, works = self.fee_rows()
+        if fl or float(self.allow.get("fees_pct", 0) or 0):
+            out.append("<h3>Professional fees, on the cost of works of %s (excluding VAT)</h3>" % rand(works))
+            rows = "".join("<tr>%s%s%s%s</tr>" % (td(e(n)), td(e(sc_)), td(rand(a_), "right"), td("%.1f %%" % (100.0 * a_ / works) if works else "", "right")) for _k, n, sc_, a_, _sh in fl)
+            if float(self.allow.get("fees_pct", 0) or 0):
+                a_ = works * float(self.allow["fees_pct"]) / 100.0
+                rows += "<tr>%s%s%s%s</tr>" % (td("Other fees and council costs"), td("flat percentage"), td(rand(a_), "right"), td("%.1f %%" % (100.0 * a_ / works) if works else "", "right"))
+            tot_ = sum(x[3] for x in fl) + works * float(self.allow.get("fees_pct", 0) or 0) / 100.0
+            rows += "<tr>%s%s%s%s</tr>" % (td("<b>Total professional fees</b>"), td(""), td("<b>%s</b>" % rand(tot_), "right"), td("%.1f %%" % (100.0 * tot_ / works) if works else "", "right"))
+            out.append('<table width="100%%" border="0.6" cellspacing="0" style="font-size:8.5pt;"><tr>%s%s%s%s</tr>%s</table>' % (th("Professional", 32), th("Scale", 38), th("Fee", 16), th("Of works", 14), rows))
+            out.append('<p style="font-size:7.5pt;color:#666;">Guideline fees from the published scales of SACAP (architects, 2026), ECSA (engineers, 2025) and SACPCMP (project managers). They are guidelines, not compulsory: '
+                       'the fee is agreed with each professional.</p>')
         out.append("<h3>Cost by group, with the markups spread over them</h3>")
         gc = self.group_costs()
         rows = "".join("<tr>%s%s%s</tr>" % (td(e(g)), td(rand(c), "right"), td(rand(c / area) if area else "", "right")) for g, c in gc)
