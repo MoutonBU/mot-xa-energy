@@ -89,3 +89,7 @@ assert p2.grand()[1] > full
 p2.clear_fit(); assert abs(p2.grand()[1] - full) < 1e-6
 p3 = M.MaterialsPage(H()); p3.set_state(p2.state()); p3.set_state(p3.state())
 print("ok rates + budget fit")
+# the railing line is always in the bill once a block is read, even with no railings
+q0 = dict(q); q0["rail_m"] = 0.0
+assert any(r[0] == "Handrails and balustrades" and r[3] == 0.0 for r in M.bom(q0, {}, {}, facts))
+print("ok railing always listed")

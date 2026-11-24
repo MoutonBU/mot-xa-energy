@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.257**
+Current version: **1.86.258**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Handrails and balustrades are in the normal bill of materials and labour (group "Handrails and balustrades", per metre run, always listed) and the metres are read from the IFC railings. Archicad draws a railing as many small parts, so the top rail is found and its lengths added up (tested on the Block D model: 4 railings, 11.4 m). Blocks read before this update are read again by themselves. The Quantities tab shows the railing metres and count; extra length can still be typed on the Allowances tab.
 - Costing: (1) "Take rates from QS bill..." reads a priced Candy bill and sets the program's material and labour rates from it (same kind of work and same unit; you see the list and untick what you do not want; the surveyor's rate is split material / labour in the program's own proportion; VAT is asked). (2) Budget: type a price per m2 and the area, press "Fit bill to budget" and the whole bill is cut (or raised) to that price. The new Budget fit tab shows each group's full price, price at the budget and the cut, and a share column where 0 protects a group. "Remove fit" puts the full price back. (3) The costing PDFs (cost report, building cost estimate, fixture schedule) now open with the same cover page as the other reports.
 - QS import now reads the unpriced "Bill for Candy" layout (Item, Bill description, Unit, Bill quantity, Code): the Candy code is kept in the item text, CAPITAL lines become sections, sentences on their own are attached to the items under them, and % lines are flagged. New "Export priced bill..." button on Extra items writes the bill back as Excel with your rates and amounts.
 - Costing, Building materials: new "Import QS Excel (Candy)..." button on the Extra items tab. It reads a quantity surveyor's bill from an Excel file (Description, Unit, Quantity, Rate, Amount columns; section headings become groups, lump sums and unpriced lines are kept), asks whether the rates include VAT, and replaces any earlier QS import. Handrails and balustrades are now priced per metre run: rates for steel/timber and stainless steel, the length of every railing in the IFC, a length typed by hand on the Allowances tab, and an "Add handrail (per metre)" button on the Extra items tab.

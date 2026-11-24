@@ -147,6 +147,40 @@ def _footing_volume(e, name, sc):
     return _axis_length(e, sc) * float(m.group(1)) / 1000.0 * float(m.group(2)) / 1000.0
 
 
+
+def _rail_run(e, st):
+    """Run length of a railing whose picture is in its parts (Archicad writes the posts and bars as separate parts). The top rail is the bars that
+    lie along the run at the highest level: their lengths added up are the metres of railing. With no such bars, the longest side of the footprint."""
+    import numpy as np
+    import ifcopenshell.geom
+    parts = []
+    for rel in getattr(e, "IsDecomposedBy", None) or []:
+        parts += list(rel.RelatedObjects)
+    boxes = []
+    for p in parts or [e]:
+        try:
+            v = np.array(ifcopenshell.geom.create_shape(st, p).geometry.verts, dtype=float).reshape(-1, 3)
+        except Exception:
+            continue
+        if len(v):
+            boxes.append((v.min(axis=0), v.max(axis=0)))
+    if not boxes:
+        return 0.0
+    zmax = max(b[1][2] for b in boxes)
+    zmin = min(b[0][2] for b in boxes)
+    height = zmax - zmin
+    top = []
+    for lo, hi in boxes:
+        d = hi - lo
+        along = float((d[0] ** 2 + d[1] ** 2) ** 0.5)
+        if along >= 0.25 and along > 2.0 * d[2] and hi[2] >= zmax - max(0.15, 0.2 * height):
+            top.append(along)
+    if top:
+        return float(sum(top))
+    lo = np.min([b[0] for b in boxes], axis=0)
+    hi = np.max([b[1] for b in boxes], axis=0)
+    return float(max(hi[0] - lo[0], hi[1] - lo[1]))
+
 def read_ifc_quantities(path):
     """Quantities of one IFC file (one block): wall face areas by type, slab, roof, beam and footing volumes, windows and doors.
     Takes a few seconds for a house. Raises if the file cannot be read."""
@@ -261,11 +295,16 @@ def read_ifc_quantities(path):
             pass
     for e in f.by_type("IfcRailing"):                           # handrails and balustrades: the run length of each
         try:
-            ln = _axis_length(e, sc)
+            ln = _rail_run(e, st)                                  # posts and bars are the railing's parts
             if ln <= 0:
-                v = shape_stats(e)[3]
-                ext = v.max(axis=0) - v.min(axis=0)
-                ln = float(((ext[0] ** 2 + ext[1] ** 2) ** 0.5) if ext[2] < 0.5 * max(ext[0], ext[1]) else (ext ** 2).sum() ** 0.5)
+                ln = _axis_length(e, sc)
+            if ln <= 0:
+                try:
+                    v = shape_stats(e)[3]
+                    ext = v.max(axis=0) - v.min(axis=0)
+                    ln = float(max(ext[0], ext[1]))
+                except Exception:
+                    ln = 0.0
             q["rail_m"] += ln
             q["rail_n"] += 1
         except Exception:
@@ -394,7 +433,8 @@ def bom(q, rates, allow, facts, fixtures=None):
     add("Cupboards and fittings", "Built-in bedroom cupboards", "m", facts["bedrooms"] * A("bic_m_per_bedroom"), "bic")
     add("Cupboards and fittings", "Bathroom accessories", "no.", float(facts["baths"]), "accessories")
     # stairs, balconies and ramps: handrails priced per metre run
-    add("Handrails and balustrades", "Handrail and balustrade (per metre run)", "m", float(q.get("rail_m", 0.0)) + A("handrail_extra_m"), "handrail")
+    m_, l_ = R("handrail")                                      # always listed, even at 0 m, so it can be seen and its length checked
+    rows.append(("Handrails and balustrades", "Handrail and balustrade (per metre run)", "m", float(q.get("rail_m", 0.0)) + A("handrail_extra_m"), m_, l_))
     add("Handrails and balustrades", "Handrail and balustrade, stainless steel (per metre run)", "m", A("handrail_ss_m"), "handrail_ss")
     # sanitary ware installation (labour; the fixtures are added from the fixtures tab)
     for cat, n in (fixtures or {}).items():
@@ -758,6 +798,7 @@ class MaterialsPage(QWidget):
         self.allow = dict(d.get("allow", {}) or {})
         self.custom = [dict(c) for c in d.get("custom", []) if isinstance(c, dict)]
         f_ = d.get("fit") or {}
+        self._reread = any(b.get("q") and "rail_m" not in b["q"] for b in self.blocks)       # read before railings were measured
         self.fit = {"on": bool(f_.get("on")), "rate": float(f_.get("rate", 0) or 0), "area": float(f_.get("area", 0) or 0), "cut": float(f_.get("cut", 0) or 0),
                     "weights": dict(f_.get("weights") or {})}
         self.refresh()
@@ -1063,7 +1104,7 @@ class MaterialsPage(QWidget):
                   ("Plain brick wall area, both faces", "m2", "plain_brick_area"), ("Footings", "m3", "footing_vol"),
                   ("Floor slabs", "m3", "slab_vol"), ("Floor slab area", "m2", "slab_area"), ("Tiled floor area", "m2", "tile_area"),
                   ("Roof slabs", "m3", "roof_slab_vol"), ("Roof area", "m2", "roof_area"), ("Beams, columns, stairs", "m3", "beam_vol"),
-                  ("Windows", "m2", "win_area"), ("Windows", "no.", "win_n"), ("Doors", "no.", "door_n"), ("Gates (not costed)", "no.", "gate_n")]
+                  ("Windows", "m2", "win_area"), ("Windows", "no.", "win_n"), ("Railings and handrails, length", "m", "rail_m"), ("Railings in the model", "no.", "rail_n"), ("Doors", "no.", "door_n"), ("Gates (not costed)", "no.", "gate_n")]
             qt = self.qt_
             qt.setRowCount(len(qs))
             for r, (d, u, k) in enumerate(qs):
@@ -1091,6 +1132,12 @@ class MaterialsPage(QWidget):
             self.total.setText(("Direct cost %s   >   all-in price %s (incl. profit, breakage, VAT)" % (rand(direct), rand(total))) if rows else "")
         finally:
             self._busy = False
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        if getattr(self, "_reread", False):                      # blocks read before the railings were measured: read them again once
+            self._reread = False
+            self.read_all()
 
     def _fit_click(self):
         if not self.fit_area_spin.value():
