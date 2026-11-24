@@ -1017,75 +1017,55 @@ def install_icon_motion():
 
 
 class _Wipe(QWidget):
-    """A flat curtain of the tool's colour that sweeps across the window and out again, with the tool's mark in the middle.
-    Only a few plain rectangles are painted, so it stays smooth on any computer."""
-    def __init__(self, parent, col, pm, origin):
+    """The old screen as one picture that slides away and fades while the new page is already underneath, with a thin line of the tool's
+    colour running along the top. One picture and one line are painted per frame, so it stays smooth."""
+    def __init__(self, parent, col, pm):
         super().__init__(parent)
-        self.col, self.pm = QColor(col).darker(170), pm
-        self.edge = QColor(col).lighter(125)
-        self.x0, self.x1 = 0.0, 0.0          # the covered strip, as fractions of the width
-        self.mark = 0.0
+        self.col, self.pm = QColor(col), pm
+        self.k = 0.0                      # 0 = old screen in place, 1 = gone
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
     def paintEvent(self, _e):
         p = QPainter(self)
         w, h = self.width(), self.height()
-        a, b = int(self.x0 * w), int(self.x1 * w)
-        if b > a:
-            p.fillRect(a, 0, b - a, h, self.col)
-            p.fillRect(max(a, b - 4), 0, 4, h, self.edge)           # a bright leading edge
-            if self.pm is not None and self.mark > 0:
-                sz = self.pm.deviceIndependentSize()
-                cx, cy = self.width() // 2, self.height() // 2
-                if a < cx < b:
-                    p.setOpacity(self.mark)
-                    p.drawPixmap(int(cx - sz.width() / 2), int(cy - sz.height() / 2), self.pm)
+        k = self.k
+        if self.pm is not None and k < 1.0:
+            p.setOpacity(1.0 - k)
+            p.drawPixmap(int(-70 * k), int(12 * k), self.pm)
+        p.setOpacity(1.0 - max(0.0, k - 0.6) / 0.4)
+        p.fillRect(0, 0, int(w * min(1.0, k * 1.6)), 3, self.col)          # the tool's colour runs along the top
         p.end()
 
 
-def wipe_open(win, src, col, on_covered, pm=None, ms=150):
-    """Open a tool or a project: the tool's colour sweeps in from the left (150 ms), `on_covered` runs under it (the page changes, the
-    project loads) and the colour sweeps out to the right (170 ms). One flat shape, no pictures scaled, no effects."""
+def wipe_open(win, src, col, on_covered, pm=None, ms=190):
+    """Open a tool or a project: a picture of the old screen slides away and fades (190 ms) while `on_covered` has already put the new page
+    underneath it. No waiting for a cover, no effects, one picture per frame."""
     top = win.centralWidget() or win
-    ov = _Wipe(top, col, pm, None)
+    try:
+        snap = top.grab()
+    except Exception:
+        snap = None
+    ov = _Wipe(top, col, snap)
     ov.setGeometry(top.rect())
     ov.show()
     ov.raise_()
-    an = QVariantAnimation(ov)
-    an.setDuration(ms)
-    an.setStartValue(0.0)
-    an.setEndValue(1.0)
-    an.setEasingCurve(QEasingCurve.Type.OutQuart)
+    ov.repaint()
+    try:
+        on_covered()
+    finally:
+        an = QVariantAnimation(ov)
+        an.setDuration(ms)
+        an.setStartValue(0.0)
+        an.setEndValue(1.0)
+        an.setEasingCurve(QEasingCurve.Type.OutCubic)
 
-    def step(v):
-        ov.x1 = float(v)
-        ov.mark = float(v)
-        ov.update()
-
-    def covered():
-        ov.x0, ov.x1, ov.mark = 0.0, 1.0, 1.0
-        ov.repaint()
-        try:
-            on_covered()
-        finally:
-            fa = QVariantAnimation(ov)
-            fa.setDuration(170)
-            fa.setStartValue(0.0)
-            fa.setEndValue(1.0)
-            fa.setEasingCurve(QEasingCurve.Type.InOutCubic)
-
-            def out(v):
-                ov.x0 = float(v)
-                ov.mark = max(0.0, 1.0 - float(v) * 2.0)
-                ov.update()
-            fa.valueChanged.connect(out)
-            fa.finished.connect(ov.deleteLater)
-            QTimer.singleShot(0, fa.start)          # let the new page paint once before the curtain leaves
-            ov._fa = fa
-    an.valueChanged.connect(step)
-    an.finished.connect(covered)
-    ov._an = an
-    an.start()
+        def step(v):
+            ov.k = float(v)
+            ov.update()
+        an.valueChanged.connect(step)
+        an.finished.connect(ov.deleteLater)
+        QTimer.singleShot(0, an.start)          # the new page paints once, then the old one leaves
+        ov._an = an
 
 
 def cascade(page, step_ms=95, rise=34, dur=480):
