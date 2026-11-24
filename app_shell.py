@@ -622,13 +622,20 @@ def install_shell(win, make_icon, light_fn):
     state = {"light": None}
 
     def restyle():
-        is_l = (bool(light_fn()), ACC[0])
+        is_l = bool(light_fn())
         if state["light"] != is_l:
             state["light"] = is_l
-            is_l = is_l[0]
-            body.setStyleSheet(_qss(_palette(is_l)))
+            state["acc"] = None
+            body.setStyleSheet(_qss(_palette0(is_l)))
+            rail.setStyleSheet("")
+            ribbon.setStyleSheet("")
             ribbon.icon_names()
             rail.icons()
+        if state.get("acc") != (is_l, ACC[0]):                    # the open tool's colour: only the rail and the ribbon are restyled
+            state["acc"] = (is_l, ACC[0])
+            q = _qss(_palette(is_l)) if ACC[0] else ""
+            rail.setStyleSheet(q)
+            ribbon.setStyleSheet(q)
 
     def refresh():
         restyle()

@@ -2675,13 +2675,27 @@ def accent_qss(qss, col):
     return qss
 
 
+_ACC_RULES = {}
+
+
+def _accent_rules(col):
+    """Only the rules of the program's style sheet that carry its red, in the tool's colour (cached per colour and theme)."""
+    k = (col, bool(light()))
+    r = _ACC_RULES.get(k)
+    if r is None:
+        base = _final_qss()
+        keep = [m for m in re.findall(r"[^{}]+\{[^{}]*\}", base) if any(h in m.lower() for h in ("#d8132b", "#ee1d36", "#ff4056", "#c4161c"))]
+        r = _ACC_RULES[k] = accent_qss("\n".join(keep), col)
+    return r
+
+
 def _final_qss():
     key_ = "light" if light() else "dark"
     qc_ = _QSS_CACHE.get(key_)
     if qc_ is None:
         qc_ = light_qss(STUDIO_QSS) if light() else STUDIO_QSS
         qc_ = _QSS_CACHE[key_] = qc_.replace("@TICK@", _tick_png()).replace("@UP@", _arrow_png(True)).replace("@DOWN@", _arrow_png(False))
-    return accent_qss(qc_, ACCENT_COL[0])
+    return qc_
 
 
 def _lt(txt):
@@ -12503,7 +12517,7 @@ class MainWindow(QMainWindow):
         if qc_ is None:
             qc_ = light_qss(STUDIO_QSS) if light() else STUDIO_QSS
             qc_ = _QSS_CACHE[key_] = qc_.replace("@TICK@", _tick_png()).replace("@UP@", _arrow_png(True)).replace("@DOWN@", _arrow_png(False))
-        app.setStyleSheet(accent_qss(qc_, ACCENT_COL[0]))
+        app.setStyleSheet(qc_)
         for w_ in app.allWidgets():                 # colours written inside labels and style sheets
             try:
                 d_ = w_.__dict__
@@ -12558,23 +12572,32 @@ class MainWindow(QMainWindow):
         self.restart_app(seamless=True)
 
     def set_accent(self, ctx):
-        """Every tool wears its own colour: buttons, bars, table headers, selections and the icons' hover tint all follow the tool that is open."""
+        """Every tool wears its own colour: buttons, bars, table headers, selections and the icons' hover tint follow the tool that is open.
+        Only the open tool's page gets the coloured rules (once), so switching tools does not restyle the whole program."""
         import app_shell as sh_
         col = sh_.TOOL_COL.get(ctx) if ctx else None
         if col and col.lower() == "#d8132b":
             col = None
-        if col == ACCENT_COL[0] or self.__dict__.get("_accent_busy"):
+        if self.__dict__.get("_accent_busy"):
             return
         self._accent_busy = True
         try:
-            ACCENT_COL[0] = col
             import ui_extras as ux_
+            ACCENT_COL[0] = col
             ux_.ACCENT[0] = QColor(col).lighter(135).name() if col else "#ff4056"
-            sh_.ACC[0] = col
-            QApplication.instance().setStyleSheet(_final_qss())
-            fn_ = getattr(self, "shell_restyle", None)
-            if fn_:
-                fn_()
+            if sh_.ACC[0] != col:
+                sh_.ACC[0] = col
+                fn_ = getattr(self, "shell_restyle", None)
+                if fn_:
+                    fn_()
+            page = self.main_tabs.currentWidget()
+            if page is not None and col:
+                key = (col, bool(light()))
+                if page.__dict__.get("_acc_key") != key:
+                    if "_acc_base" not in page.__dict__:
+                        page._acc_base = page.styleSheet()
+                    page._acc_key = key
+                    page.setStyleSheet(page._acc_base + "\n" + _accent_rules(col))
         finally:
             self._accent_busy = False
 
