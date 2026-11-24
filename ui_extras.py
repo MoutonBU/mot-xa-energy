@@ -525,6 +525,37 @@ def _step_icon(name, k):
     return ("land", "layers", "results", "folder")[k % 4]
 
 
+class _StepLine(QWidget):
+    """a thin line under the steps that fills as you go through them, in the open tool's colour"""
+    def __init__(self, bar):
+        super().__init__()
+        self.bar, self.v = bar, 0.0
+        self.setFixedHeight(4)
+        self._an = QVariantAnimation(self)
+        self._an.setDuration(320)
+        self._an.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._an.valueChanged.connect(lambda v: (setattr(self, "v", float(v)), self.update()))
+
+    def to(self, frac):
+        self._an.stop()
+        self._an.setStartValue(self.v)
+        self._an.setEndValue(float(frac))
+        self._an.start()
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = self.rect()
+        track = QColor(128, 128, 128, 45)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(track)
+        p.drawRoundedRect(r, 2, 2)
+        c = QColor(ACCENT_BASE[0] or "#d8132b")
+        p.setBrush(c)
+        p.drawRoundedRect(0, 0, int(r.width() * self.v), r.height(), 2, 2)
+        p.end()
+
+
 class StepBar(QObject):
     """The same guided look in every tool: numbered step buttons, a one-line hint for the step, and Back / Next buttons.
     `top` goes above the content, `bottom` below it. Connect `changed(int)` to show the step."""
@@ -562,6 +593,8 @@ class StepBar(QObject):
             fl.addWidget(b)
             self.btns.append(b)
         tv.addWidget(row)
+        self.prog = _StepLine(self)
+        tv.addWidget(self.prog)
         self.hint = QLabel("")
         self.hint.setWordWrap(True)
         self.hint.setStyleSheet("color: gray;")
@@ -592,6 +625,11 @@ class StepBar(QObject):
             self.next.setText("Next: %s  ›" % self.names[i + 1].lower())
         self.hint.setText(self.hints[i] if i < len(self.hints) else "")
         self.hint.setVisible(bool(self.hint.text()))
+        self.prog.to((i + 1.0) / max(1, len(self.names)))
+        if ACCENT_BASE[0]:                                             # the chosen step wears the open tool's colour
+            c_ = QColor(ACCENT_BASE[0])
+            for k_, b_ in enumerate(self.btns):
+                b_.setStyleSheet("QPushButton:checked{background:%s;color:#ffffff;font-weight:700;border:1px solid %s;}" % (c_.darker(150).name(), c_.name()))
         if emit:
             self.changed.emit(i)
 
@@ -693,7 +731,8 @@ class WelcomeTour(QDialog):
 
 
 # ---------------------------------------------------------------- icon motion
-ACCENT = ["#ff4056"]            # the colour of the tool that is open: icons take it on when pointed at
+ACCENT = ["#ff4056"]
+ACCENT_BASE = [None]             # the open tool's own colour (None on the start screen and in the SANS tools)            # the colour of the tool that is open: icons take it on when pointed at
 
 
 class AnimIcon(QLabel):

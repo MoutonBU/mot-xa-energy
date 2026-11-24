@@ -19,6 +19,7 @@ fake.home_cards = box
 fake._recent_load = lambda: files + ["/nowhere/x.json"]
 fake._open_recent_card = lambda p: opened.append(p)
 fake._ago = M.MainWindow._ago
+fake._thumb = lambda p: None
 M.MainWindow._rebuild_home_cards(fake)
 btns = [box.itemAt(i).widget() for i in range(box.count()) if isinstance(box.itemAt(i).widget(), QPushButton)]
 assert len(btns) == 3, len(btns)                                  # the missing file is left out
@@ -42,3 +43,14 @@ while time.time() - t_ < 1.6: app.processEvents()
 from PySide6.QtWidgets import QGroupBox
 assert all(g.graphicsEffect() is None for g in w.main_tabs.widget(0).findChildren(QGroupBox))     # the effects are gone afterwards
 print("ok cascade")
+
+# the card shows a small picture of the stand; the step bar has a progress line
+pj2 = os.path.join(d, "Site.mcplv.json")
+json.dump({"site": {"verts": [[0, 0], [20, 0], [20, 30], [0, 30]], "buildings": [{"x": 3, "y": 4, "w": 10, "d": 12}]}}, open(pj2, "w"))
+assert w._thumb(pj2) is not None and w._thumb(pj) is None
+w.main_tabs.setCurrentIndex(8)
+w.site_page.steps.go(1)
+t_ = time.time()
+while time.time() - t_ < 0.6: app.processEvents()
+assert abs(w.site_page.steps.prog.v - 0.5) < 0.01, w.site_page.steps.prog.v
+print("ok thumb")

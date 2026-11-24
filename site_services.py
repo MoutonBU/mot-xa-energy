@@ -381,6 +381,7 @@ class ServicesView(QWidget):
             self.draw_select(p)
             self.draw_setbacks(p)
             self.draw_dims(p)
+            self.draw_grade(p)
             self.draw_flow(p)
             self.draw_cover(p)
             self.draw_ruler(p)
@@ -567,6 +568,27 @@ class ServicesView(QWidget):
             c = QColor(40, 130, 220, int(190 * math.sin(math.pi * t) * (0.4 + 0.6 * w)))
             p.setPen(QPen(c, 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
             p.drawLine(S(a), S(b))
+        p.restore()
+
+    def draw_grade(self, p):
+        """a soft coloured halo along the sewer for its fall: green when it is steep enough (1:60 or steeper), amber when it needs the council's
+        special permission (flatter than 1:60), red when it is flatter than allowed or steeper than 1:10 (SANS 10252-2, table 13; clause 6.7.6.6)"""
+        pg = self.page
+        path = ((pg.res or {}).get("sewer") or {}).get("path")
+        if not path or len(path) < 2 or not self.sh or not (pg.st.get("look") or {}).get("grade", True):
+            return
+        par = pg.res.get("params") or {}
+        n = float(par.get("fall", 50.0))
+        fl, sp = float(par.get("fall_flat", 60.0)), float(par.get("fall_special", 120.0))
+        col = QColor(60, 170, 100) if 10.0 <= n <= fl + 1e-6 else QColor(232, 170, 40) if n <= sp + 1e-6 and n > fl else QColor(216, 19, 43)
+        S = self.sh.pt
+        p.save()
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        for w, al in ((13, 38), (7, 70)):
+            c = QColor(col)
+            c.setAlpha(al)
+            p.setPen(QPen(c, w, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+            p.drawPolyline(QPolygonF([S(q) for q in path]))
         p.restore()
 
     def draw_cover(self, p):
@@ -1882,7 +1904,7 @@ class SiteServicesPage(ToolBase):
         ml.addLayout(row)
         row = FlowLayout(None, 8, 6)
         self.look_cb = {}
-        for key, text in (("fill", "Green stand"), ("walls", "Boundary walls"), ("cutout", "Export frame (blue)"), ("storm", "Stormwater arrow"), ("wp_box", "WP / VV box and marks"), ("upright", "Names and numbers stay level when the plan is turned"), ("ground", "Colour the stand by height and show steep ground (needs contours)"), ("fall", "Arrows for which way the ground falls (from the contours, or from the two typed ground levels)"), ("flow", "Moving things on the screen: flow of the sewer, water and electrical, pulses at the eyes (not on the PDF)")):
+        for key, text in (("fill", "Green stand"), ("walls", "Boundary walls"), ("cutout", "Export frame (blue)"), ("storm", "Stormwater arrow"), ("wp_box", "WP / VV box and marks"), ("upright", "Names and numbers stay level when the plan is turned"), ("ground", "Colour the stand by height and show steep ground (needs contours)"), ("grade", "Colour the sewer by its fall (green fine, amber needs permission, red not allowed)"), ("fall", "Arrows for which way the ground falls (from the contours, or from the two typed ground levels)"), ("flow", "Moving things on the screen: flow of the sewer, water and electrical, pulses at the eyes (not on the PDF)")):
             cb_ = QCheckBox(text)
             cb_.setChecked(True)
             cb_.toggled.connect(lambda on, k=key: self.set_look(k, on))

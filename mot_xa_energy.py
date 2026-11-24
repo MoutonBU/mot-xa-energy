@@ -11672,6 +11672,58 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(60, lambda: ux_.cascade(self.main_tabs.widget(0)))
         self.statusBar().showMessage("Opened %s" % os.path.basename(path), 6000)
 
+    _THUMBS = {}
+
+    def _thumb(self, path, w=120, h=70):
+        """a small picture of the stand (and its buildings) read from the project file, cached by file time; None when the file has no site"""
+        try:
+            key = (path, os.path.getmtime(path))
+            if key in self._THUMBS:
+                return self._THUMBS[key]
+            if os.path.getsize(path) > 25 * 1024 * 1024:
+                return None
+            with open(path, encoding="utf-8") as f:
+                d = json.load(f)
+        except Exception:
+            return None
+        site = d.get("site") or {}
+        verts = [tuple(v) for v in (site.get("verts") or []) if len(v) >= 2]
+        blds = [b for b in (site.get("buildings") or []) if isinstance(b, dict)]
+        if len(verts) < 3:
+            sv = ((d.get("services") or {}).get("stand") or {}).get("corners") or []
+            verts = [tuple(v) for v in sv if len(v) >= 2]
+            blds = []
+        pm = None
+        if len(verts) >= 3:
+            xs, ys = [v[0] for v in verts], [v[1] for v in verts]
+            x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
+            sc = min((w - 12) / max(x1 - x0, 1e-6), (h - 12) / max(y1 - y0, 1e-6))
+            ox, oy = (w - (x1 - x0) * sc) / 2.0, (h - (y1 - y0) * sc) / 2.0
+            P = lambda x, y: QPointF(ox + (x - x0) * sc, h - (oy + (y - y0) * sc))
+            from PySide6.QtGui import QPixmap
+            pm = QPixmap(w, h)
+            pm.fill(QColor(0, 0, 0, 0))
+            q = QPainter(pm)
+            q.setRenderHint(QPainter.RenderHint.Antialiasing)
+            q.setPen(QPen(QColor(150, 160, 175), 1.4))
+            q.setBrush(QColor(110, 130, 110, 70))
+            q.drawPolygon(QPolygonF([P(*v[:2]) for v in verts]))
+            q.setPen(QPen(QColor(255, 64, 86), 1.2))
+            q.setBrush(QColor(255, 64, 86, 90))
+            for b in blds[:6]:
+                try:
+                    pl = b.get("poly")
+                    if pl:
+                        q.drawPolygon(QPolygonF([P(*pp[:2]) for pp in pl]))
+                    else:
+                        bx, by, bw, bd = float(b["x"]), float(b["y"]), float(b["w"]), float(b["d"])
+                        q.drawPolygon(QPolygonF([P(bx, by), P(bx + bw, by), P(bx + bw, by + bd), P(bx, by + bd)]))
+                except Exception:
+                    pass
+            q.end()
+        self._THUMBS[key] = pm
+        return pm
+
     def _rebuild_home_cards(self):
         """the cards on the start screen: the last few projects, newest first, click to open"""
         box = getattr(self, "home_cards", None)
@@ -11700,19 +11752,28 @@ class MainWindow(QMainWindow):
                 when = ""
             c = QPushButton()
             c.setCursor(Qt.CursorShape.PointingHandCursor)
-            c.setMinimumHeight(86)
+            c.setMinimumHeight(92)
             c.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             c.setToolTip(p)
             c.setStyleSheet("QPushButton{border-left:4px solid #ff4056; text-align:left;}")
-            cl = QVBoxLayout(c)
+            cl = QHBoxLayout(c)
             cl.setContentsMargins(16, 10, 10, 10)
-            cl.setSpacing(2)
+            cl.setSpacing(12)
+            cv = QVBoxLayout()
+            cv.setSpacing(2)
+            tm = self._thumb(p)
+            if tm is not None:
+                tl = QLabel()
+                tl.setPixmap(tm)
+                tl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+                cl.addWidget(tl)
+            cl.addLayout(cv, 1)
             t1 = QLabel("<b style='font-size:14px'>%s</b>" % html.escape(name))
             t2 = QLabel("<span style='color:#8a93a3'>Edited %s<br>%s</span>" % (when, html.escape(os.path.basename(os.path.dirname(p)))))
             for t_ in (t1, t2):
                 t_.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
                 t_.setTextFormat(Qt.TextFormat.RichText)
-                cl.addWidget(t_)
+                cv.addWidget(t_)
             c.clicked.connect(lambda _=False, pp=p: self._open_recent_card(pp))
             box.addWidget(c, 1)
         for _k in range(4 - len(lst)):
@@ -12603,6 +12664,7 @@ class MainWindow(QMainWindow):
             import ui_extras as ux_
             ACCENT_COL[0] = col
             ux_.ACCENT[0] = QColor(col).lighter(135).name() if col else "#ff4056"
+            ux_.ACCENT_BASE[0] = col
             try:
                 import button_fx as bf_
                 g_ = QColor(col) if col else QColor(216, 19, 43)
@@ -12622,6 +12684,9 @@ class MainWindow(QMainWindow):
                         page._acc_base = page.styleSheet()
                     page._acc_key = key
                     page.setStyleSheet(page._acc_base + "\n" + _accent_rules(col))
+            st_ = getattr(page, "steps", None) if page is not None else None
+            if st_ is not None and hasattr(st_, "go"):
+                st_.go(st_.i, emit=False)
         finally:
             self._accent_busy = False
 
