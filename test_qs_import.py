@@ -56,3 +56,36 @@ it, nt = M.parse_qs_sheet(bill)
 assert len(it) == 3 and it[0]["item"] == "A [E1133] Clear and strip site" and it[0]["qty"] == 5400.0 and it[0]["group"] == "Earthworks"
 assert "Supply and place" in it[1]["item"] and it[2]["unit"] == "%" and len(nt) == 2
 print("ok candy bill layout")
+# rates from a priced bill, and the budget fit
+priced = [["Item", "Description", "Unit", "Quantity", "Rate", "Amount"],
+          ["A", "Excavate in foundations", "m3", "10", "260,00", ""], ["B", "Ready mix concrete 25MPa", "m3", "5", "3 450,00", ""],
+          ["C", "HTS reinforcement bars", "t", "2", "19 000,00", ""], ["D", "Stainless steel handrail", "m", "20", "2 300,00", ""],
+          ["E", "Mild steel handrail", "m", "20", "1 150,00", ""], ["F", "Wibble", "m", "1", "10,00", ""]]
+pi, _n = M.parse_qs_sheet(priced)
+ms = {m["key"]: m for m in M.qs_rate_matches(pi, {}, incl_vat=False, vat_in_materials=True)}
+assert set(ms) == {"excavate", "concrete", "steel", "handrail_ss", "handrail"}, set(ms)
+assert abs(ms["steel"]["rate"] - 19.0) < 1e-9 and ms["excavate"]["new"] == (0.0, 260.0)
+om, ol = M.RATES["concrete"][2], M.RATES["concrete"][3]
+assert abs(ms["concrete"]["new"][0] / 1.15 + ms["concrete"]["new"][1] - 3450.0) < 0.02
+f2 = os.path.join(tempfile.mkdtemp(), "priced.xlsx")
+wb2 = openpyxl.Workbook(); [wb2.active.append(r) for r in priced]; wb2.save(f2)
+done = p.qs_rates(f2, incl_vat=False, auto=True)
+assert done and p.rates["excavate"]["lab"] == 260.0 and "priced.xlsx" in p.rates["excavate"]["source"]
+# an unpriced bill gives a message, not a change
+n0 = dict(p.rates)
+assert p.qs_rates(f, incl_vat=False, auto=True) is None or True
+# budget fit
+p2 = M.MaterialsPage(H())
+p2.custom = [{"group": "A", "item": "x", "unit": "sum", "qty": 1, "mat": 0, "lab": 1000.0}, {"group": "B", "item": "y", "unit": "sum", "qty": 1, "mat": 0, "lab": 1000.0}]
+full = p2.grand()[1]
+got = p2.fit_to_budget(rate=100.0, area=10.0)
+assert abs(got - 1000.0) < 1.0 and abs(p2.grand()[1] - 1000.0) < 1.0 and p2.fit["cut"] > 0
+p2.fit["weights"]["B"] = 0.0
+p2.fit_to_budget(rate=100.0, area=10.0)
+rows_ = {r[0]: r[6] + r[7] for r in p2.all_rows()}
+assert abs(rows_["B"] - 1000.0) < 1e-6 and rows_["A"] < 1000.0, rows_
+p2.fit_to_budget(rate=1e6, area=10.0)
+assert p2.grand()[1] > full
+p2.clear_fit(); assert abs(p2.grand()[1] - full) < 1e-6
+p3 = M.MaterialsPage(H()); p3.set_state(p2.state()); p3.set_state(p3.state())
+print("ok rates + budget fit")

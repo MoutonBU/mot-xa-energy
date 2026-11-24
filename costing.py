@@ -352,6 +352,19 @@ class ProductDialog(QDialog):
 COST_DIR = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "MCP_LightVent", "costings")
 
 
+
+def report_cover(doc, win, title, sub, subject=None):
+    """The same front page as the other PDF reports (logo, title bar, project, site, client, who compiled it), followed by a page break.
+    Adds the logo to the document. Returns '' when the window has no cover."""
+    try:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QTextDocument
+        doc.addResource(QTextDocument.ResourceType.ImageResource, QUrl("logo"), win._dark_logo())
+        return win._report_cover(title, sub, subject) + '<div style="page-break-before:always;"></div>'
+    except Exception:
+        return ""
+
+
 def cost_list():
     out = []
     try:
@@ -1232,7 +1245,7 @@ class CostingPage(QWidget):
         w.setTitle("Costing report")
         d = QTextDocument()
         d.setDefaultFont(QFont("Arial", 9))
-        d.setHtml('<html><body style="font-family:Arial;color:#111;">' + self.cost_report_html(d) + "</body></html>")
+        d.setHtml('<html><body style="font-family:Arial;color:#111;">' + report_cover(d, self.win, "COSTING REPORT", "Cost estimate", self.cname or None) + self.cost_report_html(d) + "</body></html>")
         d.print_(w)
 
     def cost_report_preview(self):
@@ -1258,7 +1271,7 @@ class CostingPage(QWidget):
         w.setTitle("Fixture schedule")
         d = QTextDocument()
         d.setDefaultFont(QFont("Arial", 9))
-        d.setHtml('<html><body style="font-family:Arial;color:#111;">' + self.report_html(d) + "</body></html>")
+        d.setHtml('<html><body style="font-family:Arial;color:#111;">' + report_cover(d, self.win, "FIXTURE SCHEDULE", "Costing", self.cname or None) + self.report_html(d) + "</body></html>")
         d.print_(w)
 
     # ----- building materials (the ribbon calls these) -----

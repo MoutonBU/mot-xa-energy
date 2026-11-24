@@ -504,6 +504,80 @@ def parse_qs_sheet(rows):
     return items, notes
 
 
+
+# ---------------- taking the program's rates from a priced QS bill ----------------
+# rate key -> (words in the QS description, units that mean the same thing as the program's unit)
+QS_RATE_MAP = {
+    "site_clear": (r"clear(ing)?\b.*\bstrip|site clear", {"m2"}),
+    "excavate": (r"excavat", {"m3"}),
+    "hardcore": (r"hardcore|filling|\bfill\b", {"m3"}),
+    "concrete": (r"concrete", {"m3"}),
+    "steel": (r"reinforc|high tensile|\bhts\b|mild steel bar", {"kg", "t"}),
+    "mesh": (r"\bmesh\b", {"m2"}),
+    "dpm": (r"\bdpm\b|damp.?proof|polythene", {"m2"}),
+    "waterproof": (r"waterproof", {"m2"}),
+    "plaster": (r"plaster", {"m2"}),
+    "tile": (r"\btiles?\b|\btiling", {"m2"}),
+    "skirting": (r"skirting", {"m"}),
+    "roof_cover": (r"roof(ing)? (cover|sheet|tile)|\bibr\b|corrugated", {"m2"}),
+    "roof_timber": (r"roof truss|roof timber|trusses", {"m2"}),
+    "gutter": (r"gutter", {"m"}),
+    "downpipe": (r"down.?pipe", {"m"}),
+    "ceiling": (r"ceiling", {"m2"}),
+    "window": (r"window", {"m2"}),
+    "door": (r"\bdoors?\b", {"each"}),
+    "handrail_ss": (r"(handrail|balustrade).*(stainless|\bss\b)|(stainless|\bss\b).*(handrail|balustrade)", {"m"}),
+    "handrail": (r"handrail|balustrade", {"m"}),
+    "light_point": (r"light point", {"each"}),
+    "socket": (r"socket", {"each"}),
+    "switch": (r"\bswitch", {"each"}),
+    "db": (r"distribution board|\bdb\b", {"each"}),
+    "geyser": (r"geyser|water heater", {"each"}),
+}
+
+
+def qs_unit(u):
+    """A unit written the way a surveyor does, in one plain spelling: m2, m3, m, kg, t, each."""
+    t = str(u or "").lower().replace("\u00b2", "2").replace("\u00b3", "3").replace(" ", "").replace(".", "")
+    if t in ("no", "nr", "ea", "each", "item", "nos"):
+        return "each"
+    if t in ("lm", "m", "mrun", "mrun."):
+        return "m"
+    return t
+
+
+def qs_rate_matches(items, cur_rates, incl_vat=False, vat_in_materials=True):
+    """Which of the program's rates the priced QS bill sets. items from parse_qs_sheet; cur_rates {key: (material, labour)}.
+    The surveyor's rate is split between material and labour in the same proportion as the program's own figures. Where the program takes material
+    prices with VAT, the material share is put back with VAT. Returns [{"key", "desc", "unit", "lines", "n", "rate", "old", "new": (mat, lab)}]."""
+    out = []
+    taken = set()
+    for key, (rx, units) in QS_RATE_MAP.items():
+        found = []
+        for it in items:
+            if it.get("rate", 0) <= 0 or it["item"] in taken:
+                continue
+            u = qs_unit(it["unit"])
+            if u not in units or not re.search(rx, it["item"], re.I):
+                continue
+            r = float(it["rate"]) / (1.15 if incl_vat else 1.0)
+            if u == "t" and key == "steel":
+                r /= 1000.0
+            found.append((r, it["item"]))
+        if not found:
+            continue
+        for _r, nm in found:
+            taken.add(nm)
+        rate = sum(r for r, _ in found) / len(found)
+        om, ol = cur_rates.get(key, (RATES[key][2], RATES[key][3]))
+        share = om / (om + ol) if (om + ol) > 0 else 1.0
+        new_m = rate * share * (1.15 if vat_in_materials else 1.0)
+        new_l = rate * (1.0 - share)
+        out.append({"key": key, "desc": RATES[key][0], "unit": RATES[key][1], "lines": [n for _, n in found][:3], "n": len(found), "rate": rate,
+                    "old": (om, ol), "new": (round(new_m, 2), round(new_l, 2))})
+    return out
+
+
 def buildup(mat, lab, allow):
     """The price build-up. mat, lab: material and labour totals as the rates give them. Returns ([(label, amount)], total, direct cost)."""
     A = lambda k: float(allow.get(k, ALLOW[k][2]))
@@ -535,7 +609,7 @@ import sys
 import threading
 
 from PySide6.QtCore import Qt, Signal, QTimer
-from PySide6.QtWidgets import (QAbstractItemView, QDialog, QFileDialog, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QMessageBox,
+from PySide6.QtWidgets import (QDoubleSpinBox, QAbstractItemView, QDialog, QFileDialog, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QMessageBox,
                                QPushButton, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
 
 
@@ -560,6 +634,7 @@ class MaterialsPage(QWidget):
         self.rates = {}         # key -> {"mat", "lab", "source"} overrides
         self.allow = {}         # key -> value overrides
         self.custom = []        # {group, item, unit, qty, mat, lab}
+        self.fit = {"on": False, "rate": 0.0, "area": 0.0, "cut": 0.0, "weights": {}}      # budget fit: every group is cut by cut x its weight
         self._busy = False
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 4, 0, 0)
@@ -597,9 +672,12 @@ class MaterialsPage(QWidget):
         self.allowt.setHorizontalHeaderLabels(["Allowance", "Unit", "Value"])
         self.qt_ = QTableWidget(0, 3)
         self.qt_.setHorizontalHeaderLabels(["Quantity read from the IFC", "Unit", "Value"])
+        self.fitt = QTableWidget(0, 5)
+        self.fitt.setHorizontalHeaderLabels(["Group", "Full price", "At the budget", "Cut", "Share of the cut (%): 0 protects the group"])
+        self.fitt.itemChanged.connect(self._fit_edit)
         self.extrat = QTableWidget(0, 6)
         self.extrat.setHorizontalHeaderLabels(["Group", "Item", "Unit", "Quantity", "Material rate", "Labour rate"])
-        for t in (self.bomt, self.buildt, self.ratet, self.allowt, self.qt_, self.extrat):
+        for t in (self.bomt, self.buildt, self.ratet, self.allowt, self.qt_, self.extrat, self.fitt):
             t.verticalHeader().setVisible(False)
             t.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         for t in (self.bomt, self.qt_, self.buildt):
@@ -611,7 +689,7 @@ class MaterialsPage(QWidget):
         ev = QVBoxLayout(ew)
         ev.setContentsMargins(0, 0, 0, 0)
         eb = QHBoxLayout()
-        for text, fn in (("Add item", self.add_extra), ("Add handrail (per metre)", self.add_handrail), ("Import QS Excel (Candy)...", self.import_qs), ("Export priced bill...", self.export_qs),
+        for text, fn in (("Add item", self.add_extra), ("Add handrail (per metre)", self.add_handrail), ("Take rates from QS bill...", self.qs_rates), ("Import QS Excel (Candy)...", self.import_qs), ("Export priced bill...", self.export_qs),
                          ("Remove item", self.remove_extra)):
             b = QPushButton(text)
             b.clicked.connect(fn)
@@ -625,11 +703,29 @@ class MaterialsPage(QWidget):
         self.tabs.addTab(self.ratet, "Rates")
         self.tabs.addTab(self.allowt, "Allowances")
         self.tabs.addTab(ew, "Extra items")
+        self.tabs.addTab(self.fitt, "Budget fit")
         self.tabs.addTab(self.qt_, "Quantities")
         v.addWidget(self.tabs, 1)
         bar = QHBoxLayout()
         for text, fn in (("Update prices with AI...", self.ai_prices), ("Preview PDF", self.preview_pdf), ("Export PDF", self.export_pdf),
                          ("Export CSV", self.export_csv)):
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            bar.addWidget(b)
+        bar.addWidget(QLabel("Budget:"))
+        self.fit_rate = QDoubleSpinBox()
+        self.fit_rate.setRange(0, 1_000_000)
+        self.fit_rate.setDecimals(0)
+        self.fit_rate.setPrefix("R ")
+        self.fit_rate.setSuffix(" per m2")
+        self.fit_rate.setToolTip("The price per square metre you want to build for. 'Fit bill to budget' cuts the whole bill to this.")
+        self.fit_area_spin = QDoubleSpinBox()
+        self.fit_area_spin.setRange(0, 10_000_000)
+        self.fit_area_spin.setDecimals(0)
+        self.fit_area_spin.setSuffix(" m2")
+        bar.addWidget(self.fit_rate)
+        bar.addWidget(self.fit_area_spin)
+        for text, fn in (("Fit bill to budget", lambda: self._fit_click()), ("Remove fit", self.clear_fit)):
             b = QPushButton(text)
             b.clicked.connect(fn)
             bar.addWidget(b)
@@ -653,7 +749,7 @@ class MaterialsPage(QWidget):
 
     # ----- state -----
     def state(self):
-        return {"blocks": self.blocks, "rates": self.rates, "allow": self.allow, "custom": self.custom}
+        return {"blocks": self.blocks, "rates": self.rates, "allow": self.allow, "custom": self.custom, "fit": self.fit}
 
     def set_state(self, d):
         d = d or {}
@@ -661,6 +757,9 @@ class MaterialsPage(QWidget):
         self.rates = dict(d.get("rates", {}) or {})
         self.allow = dict(d.get("allow", {}) or {})
         self.custom = [dict(c) for c in d.get("custom", []) if isinstance(c, dict)]
+        f_ = d.get("fit") or {}
+        self.fit = {"on": bool(f_.get("on")), "rate": float(f_.get("rate", 0) or 0), "area": float(f_.get("area", 0) or 0), "cut": float(f_.get("cut", 0) or 0),
+                    "weights": dict(f_.get("weights") or {})}
         self.refresh()
 
     def rate_vals(self):
@@ -786,6 +885,54 @@ class MaterialsPage(QWidget):
         self.refresh()
 
     # ----- sums -----
+    def gfactor(self, group):
+        """What the budget fit does to a group's price: 1 = untouched, 0.8 = 20 % cut."""
+        if not self.fit.get("on"):
+            return 1.0
+        w = float(self.fit["weights"].get(group, 100.0))
+        return max(0.05, 1.0 - self.fit["cut"] * w / 100.0)
+
+    def fit_area(self):
+        """The floor area the budget is worked on: the cost summary's area, else the slab area of the blocks."""
+        sp = getattr(self.host, "summary_page", None)
+        try:
+            a = float(sp.area()) if sp is not None else 0.0
+        except Exception:
+            a = 0.0
+        if a <= 0:
+            a = sum(float((b.get("q") or {}).get("slab_area", 0)) * max(1, int(b.get("repeat", 1))) for b in self.blocks)
+        return a
+
+    def fit_to_budget(self, rate=None, area=None):
+        """Cut (or raise) the prices of the groups so the all-in price equals rate x area. Groups with weight 0 are protected.
+        Returns the price reached, or None when nothing could be done."""
+        rate = float(self.fit_rate.value() if rate is None else rate)
+        area = float(self.fit_area_spin.value() if area is None else area)
+        if rate <= 0 or area <= 0 or not self.blocks and not self.custom:
+            return None
+        target = rate * area
+        self.fit.update({"on": True, "rate": rate, "area": area, "cut": 0.0})
+        lo, hi = -1.0, 0.95
+        if self.grand()[1] <= 0:
+            self.fit["on"] = False
+            return None
+        for _ in range(40):
+            mid = (lo + hi) / 2.0
+            self.fit["cut"] = mid
+            if self.grand()[1] > target:
+                lo = mid
+            else:
+                hi = mid
+        self.fit["cut"] = (lo + hi) / 2.0
+        got = self.grand()[1]
+        self.refresh()
+        return got
+
+    def clear_fit(self):
+        self.fit["on"] = False
+        self.fit["cut"] = 0.0
+        self.refresh()
+
     def block_rows(self, b):
         """Rows of one copy of a block: (group, item, unit, qty, material rate, labour rate)."""
         if not b.get("q"):
@@ -795,6 +942,8 @@ class MaterialsPage(QWidget):
         rows = bom(b["q"], self.rate_vals(), self.allow, self.facts(b), fx)
         if self.fx_cost():
             rows.append(("Sanitary ware", "Sanitary ware supplied (see Fixtures tab)", "sum", 1.0, self.fx_cost() * s, 0.0))
+        if self.fit.get("on"):
+            rows = [(g, i, u, q, m * self.gfactor(g), l * self.gfactor(g)) for g, i, u, q, m, l in rows]
         return rows
 
     def all_rows(self):
@@ -815,6 +964,8 @@ class MaterialsPage(QWidget):
             except ValueError:
                 continue
             if q_:
+                gf_ = self.gfactor(c.get("group") or "Extra items")
+                m_, l_ = m_ * gf_, l_ * gf_
                 rows.append([c.get("group") or "Extra items", c.get("item", ""), c.get("unit", ""), q_, m_, l_, q_ * m_, q_ * l_])
         return rows
 
@@ -919,9 +1070,115 @@ class MaterialsPage(QWidget):
                 val = sum((b["q"] or {}).get(k, 0) * max(1, int(b.get("repeat", 1))) for b in self.blocks if b.get("q"))
                 for c, txt in enumerate((d, u, num(val, 1 if u != "no." else 0))):
                     qt.setItem(r, c, QTableWidgetItem(txt))
+            gcs = self.group_costs()
+            ft = self.fitt
+            ft.setRowCount(len(gcs))
+            for r, (g_, c_) in enumerate(gcs):
+                gf_ = self.gfactor(g_)
+                full = c_ / gf_ if gf_ else c_
+                w_ = float(self.fit["weights"].get(g_, 100.0))
+                for ci, txt in enumerate((g_, rand(full), rand(c_), ("-" + rand(full - c_)) if full - c_ > 0.5 else "", "%g" % w_)):
+                    it = QTableWidgetItem(txt)
+                    if ci:
+                        it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                    if ci != 4:
+                        it.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+                    ft.setItem(r, ci, it)
+            if self.fit.get("rate"):
+                self.fit_rate.setValue(self.fit["rate"])
+            if not self.fit_area_spin.value():
+                self.fit_area_spin.setValue(self.fit.get("area") or self.fit_area())
             self.total.setText(("Direct cost %s   >   all-in price %s (incl. profit, breakage, VAT)" % (rand(direct), rand(total))) if rows else "")
         finally:
             self._busy = False
+
+    def _fit_click(self):
+        if not self.fit_area_spin.value():
+            self.fit_area_spin.setValue(self.fit_area())
+        got = self.fit_to_budget()
+        if got is None:
+            QMessageBox.information(self, "Budget", "Type a price per m2 and the area, and have a block or extra items in the bill.")
+            return
+        self.tabs.setCurrentIndex(self.tabs.indexOf(self.fitt))
+
+    def _fit_edit(self, it):
+        if self._busy or it.column() != 4 or not (0 <= it.row() < self.fitt.rowCount()):
+            return
+        try:
+            w = max(0.0, float(it.text().replace(",", ".")))
+        except ValueError:
+            return
+        self.fit["weights"][self.fitt.item(it.row(), 0).text()] = w
+        if self.fit.get("on"):
+            QTimer.singleShot(0, lambda: self.fit_to_budget(self.fit["rate"], self.fit["area"]))
+
+    def qs_rates(self, path=None, incl_vat=None, auto=False):
+        """Take the program's material and labour rates from a priced quantity surveyor's bill (Excel from CCS Candy)."""
+        if not path:
+            path, _ = QFileDialog.getOpenFileName(self, "Priced bill from the quantity surveyor (Excel)", "", "Excel (*.xlsx *.xlsm);;All files (*)")
+        if not path:
+            return None
+        try:
+            from mail_inbox import _xlsx_rows
+            with open(path, "rb") as fh:
+                sheets = _xlsx_rows(fh.read())
+        except Exception as ex:
+            QMessageBox.warning(self, "QS bill", "The file could not be read:\n%s" % ex)
+            return None
+        items = []
+        for sh in sheets:
+            it, _nt = parse_qs_sheet(sh)
+            if len(it) > len(items):
+                items = it
+        if not any(i["rate"] > 0 for i in items):
+            QMessageBox.information(self, "QS bill", "This bill has no rates in it (it looks unpriced), so there is nothing to take the rates from.\n"
+                                    "Use \"Import QS Excel\" to bring its quantities in as extra items.")
+            return None
+        if incl_vat is None:
+            incl_vat = QMessageBox.question(self, "QS bill", "Do the rates in this bill include VAT?",
+                                            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes
+        ms = qs_rate_matches(items, self.rate_vals(), incl_vat, bool(float(self.allow.get("rates_incl_vat", ALLOW["rates_incl_vat"][2]))))
+        if not ms:
+            QMessageBox.information(self, "QS bill", "None of the bill's lines matched one of the program's rates (same kind of work and same unit).")
+            return None
+        if not auto:
+            d = QDialog(self)
+            d.setWindowTitle("Rates from the quantity surveyor's bill")
+            d.resize(980, 520)
+            lay = QVBoxLayout(d)
+            lay.addWidget(QLabel("The bill's lines that match one of the program's rates. Untick what you do not want changed. The surveyor's rate is split between material and "
+                                 "labour in the same proportion as the program's figures."))
+            t = QTableWidget(len(ms), 5)
+            t.setHorizontalHeaderLabels(["Use", "Rate in the program", "Surveyor's lines (first shown)", "Was (material + labour)", "Becomes (material + labour)"])
+            t.verticalHeader().setVisible(False)
+            for r, m in enumerate(ms):
+                ck = QTableWidgetItem("")
+                ck.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+                ck.setCheckState(Qt.CheckState.Checked)
+                t.setItem(r, 0, ck)
+                for c, txt in enumerate(("%s (%s)" % (m["desc"], m["unit"]), ("%d line(s): " % m["n"]) + "; ".join(x[:50] for x in m["lines"][:1]),
+                                         "R %.2f + R %.2f" % m["old"], "R %.2f + R %.2f" % m["new"]), 1):
+                    t.setItem(r, c, QTableWidgetItem(txt))
+            t.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+            t.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+            t.setColumnWidth(0, 40)
+            lay.addWidget(t)
+            bb = QHBoxLayout()
+            ok, no = QPushButton("Apply the ticked rates"), QPushButton("Cancel")
+            ok.clicked.connect(d.accept)
+            no.clicked.connect(d.reject)
+            bb.addStretch(1)
+            bb.addWidget(ok)
+            bb.addWidget(no)
+            lay.addLayout(bb)
+            if not d.exec():
+                return None
+            ms = [m for r, m in enumerate(ms) if t.item(r, 0).checkState() == Qt.CheckState.Checked]
+        src = "QS bill %s, %s" % (os.path.basename(path), datetime.date.today().isoformat())
+        for m in ms:
+            self.rates[m["key"]] = {"mat": m["new"][0], "lab": m["new"][1], "source": src}
+        self.refresh()
+        return ms
 
     def _r_edit(self, it):
         if self._busy or it.column() not in (2, 3) or not (0 <= it.row() < len(RATES)):
@@ -1209,7 +1466,8 @@ class MaterialsPage(QWidget):
         w.setTitle("Building cost estimate")
         d = QTextDocument()
         d.setDefaultFont(QFont("Arial", 9))
-        d.setHtml('<html><body style="font-family:Arial;color:#111;">' + self.report_html() + "</body></html>")
+        from costing import report_cover
+        d.setHtml('<html><body style="font-family:Arial;color:#111;">' + report_cover(d, self.host.win, "BUILDING COST ESTIMATE", "Cost estimate") + self.report_html() + "</body></html>")
         d.print_(w)
 
     def preview_pdf(self):
