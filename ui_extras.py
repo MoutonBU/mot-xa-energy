@@ -1044,8 +1044,23 @@ class _Wipe(QWidget):
         e_i, e_t, e_s = self._ease((self.t - 0.05) / 0.55), self._ease((self.t - 0.25) / 0.55), self._ease((self.t - 0.45) / 0.55)
         if self.pm is not None:
             sz = 84
+            q = max(0.0, min(1.0, (self.t - 0.05) / 0.6))
+            back = 1.0 + 2.2 * (q - 1.0) ** 3 + 1.2 * (q - 1.0) ** 2            # ease-out-back: grows past its size and settles
+            ix, iy = cx, cy - sz // 2 - 40
+            p.save()
+            ring = (self.t - 0.1) / 0.7                                         # a ring pulses out behind the icon and fades
+            if 0.0 < ring < 1.0:
+                r = 34 + 62 * self._ease(ring)
+                p.setOpacity(self.a * 0.55 * (1.0 - ring))
+                p.setPen(QPen(QColor(255, 255, 255), 2.0))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawEllipse(QPointF(ix, iy), r, r)
             p.setOpacity(self.a * e_i)
-            p.drawPixmap(int(cx - sz / 2), int(cy - sz - 40 + (1 - e_i) * 26), sz, sz, self.pm)
+            p.translate(ix, iy + (1 - e_i) * 20)
+            p.rotate(-14.0 * (1.0 - e_i))                                       # a small turn as it lands
+            p.scale(max(0.01, 0.55 + 0.45 * back), max(0.01, 0.55 + 0.45 * back))
+            p.drawPixmap(int(-sz / 2), int(-sz / 2), sz, sz, self.pm)
+            p.restore()
         f = QFont()
         f.setPixelSize(max(30, min(64, w // 18)))
         f.setBold(True)
