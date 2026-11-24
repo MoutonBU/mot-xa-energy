@@ -644,6 +644,38 @@ SITE_PRESETS = [
     ("Carport or shade structure", "m2", 1400.0, 600.0),
 ]
 
+# ---------------- council building plan fee: each municipality's tariff book sets it ----------------
+# Fields: rate per m2 of floor area, minimum, rate when over 400 m2 (applied to the whole floor area), pool / carport / pergola rate per m2 (each with the same minimum),
+# boundary wall over 1.3 m (flat fee by erf size: up to 450 m2, 450-900 m2, over 900 m2), completion certificate for a new building.
+COUNCIL_FIELDS = [("rate", "Building plan fee per m2 of floor area (R)"), ("minimum", "Minimum fee per application (R)"), ("rate_over", "Rate per m2 when over 400 m2 (R)"),
+                  ("pool_rate", "Swimming pool, per m2 of water (R)"), ("carport_rate", "Carport / shade port, per m2 (R)"), ("pergola_rate", "Pergola, per m2 (R)"),
+                  ("wall_1", "Boundary wall over 1.3 m, erf up to 450 m2 (R)"), ("wall_2", "Boundary wall over 1.3 m, erf 450 to 900 m2 (R)"),
+                  ("wall_3", "Boundary wall over 1.3 m, erf over 900 m2 (R)"), ("completion", "Completion certificate, new building (R)")]
+COUNCIL_PRESETS = {
+    "George Municipality 2026/27 (tariff book, from 1 July 2026)": {"rate": 31.0, "minimum": 461.0, "rate_over": 47.0, "pool_rate": 31.0, "carport_rate": 31.0, "pergola_rate": 15.0,
+                                                                     "wall_1": 680.0, "wall_2": 1136.0, "wall_3": 1595.0, "completion": 375.0},
+    "My municipality (type its tariff)": {k: 0.0 for k, _l in COUNCIL_FIELDS},
+}
+COUNCIL_DEFAULT = {"on": False, "muni": "George Municipality 2026/27 (tariff book, from 1 July 2026)", "area": 0.0, "band": 0, "cc": True, "vals": {}}
+
+
+def council_plan_fee(c, area, pool_m2=0.0, carport_m2=0.0, pergola_m2=0.0, wall_high=False):
+    """The building plan submission fee from a tariff: [(what, amount)] and the total. area = floor area of the new building (m2)."""
+    v = {**COUNCIL_PRESETS.get(c.get("muni"), COUNCIL_PRESETS["My municipality (type its tariff)"]), **{k: float(x) for k, x in (c.get("vals") or {}).items()}}
+    out = []
+    if area > 0:
+        r = v["rate_over"] if (area > 400 and v["rate_over"] > 0) else v["rate"]
+        out.append(("New building, %.0f m2 at R%.2f" % (area, r), max(v["minimum"], area * r)))
+    for nm, m2, key in (("Swimming pool", pool_m2, "pool_rate"), ("Carport / shade port", carport_m2, "carport_rate"), ("Pergola", pergola_m2, "pergola_rate")):
+        if m2 > 0:
+            out.append(("%s, %.0f m2" % (nm, m2), max(v["minimum"], m2 * v[key])))
+    if wall_high:
+        out.append(("Boundary wall over 1.3 m", v["wall_%d" % (1 + max(0, min(2, int(c.get("band", 0)))))]))
+    if c.get("cc", True) and area > 0:
+        out.append(("Completion certificate", v["completion"]))
+    return out, sum(a for _n, a in out)
+
+
 # ---------------- professional fees: the published guideline scales ----------------
 # Each scale: bracket rows (lower limit of the cost of works, primary fee, add % on the balance over the lower limit), fee = primary + % x (works - lower limit).
 # Below the first row the first row's percentage is applied to the whole cost (the guidelines leave small projects to a lump sum or time basis).
@@ -708,6 +740,9 @@ def fee_lines(works, fees):
     """[(key, name, scale name, fee, share or %)] for every professional switched on, on the cost of works (excluding VAT)."""
     out = []
     f_all = fees or {}
+    pf = f_all.get("_plan")
+    if pf and pf.get("fixed", 0) > 0:
+        out.append(("_plan", "Council building plan fee", "municipal tariff book", float(pf["fixed"]), 0.0))
     for key, name, scale in FEE_PROS:
         f = {**FEE_DEFAULT[key], **(f_all.get(key) or {})}
         if not f["on"]:
@@ -781,6 +816,7 @@ class MaterialsPage(QWidget):
         self.custom = []        # {group, item, unit, qty, mat, lab}
         self.site = []          # site works for the whole project: {item, unit, qty, mat, lab}
         self.fees = {}          # professional fees: {key: {on, cx, share, pct}}
+        self.council = dict(COUNCIL_DEFAULT)      # the council's building plan fee
         self.fit = {"on": False, "rate": 0.0, "area": 0.0, "cut": 0.0, "weights": {}}      # budget fit: every group is cut by cut x its weight
         self._busy = False
         v = QVBoxLayout(self)
@@ -881,6 +917,37 @@ class MaterialsPage(QWidget):
         self.fee_note.setWordWrap(True)
         fv.addWidget(self.fee_note)
         fv.addWidget(self.feet)
+        from PySide6.QtWidgets import QComboBox as _CB2, QCheckBox as _CK
+        cg = QGroupBox("Council building plan fee (the municipality's tariff book)")
+        cv = QVBoxLayout(cg)
+        crow = QHBoxLayout()
+        self.c_on = _CK("Include the council plan fee")
+        self.c_muni = _CB2()
+        self.c_muni.addItems(list(COUNCIL_PRESETS))
+        self.c_area = QDoubleSpinBox()
+        self.c_area.setRange(0, 1_000_000)
+        self.c_area.setDecimals(0)
+        self.c_area.setSuffix(" m2")
+        self.c_area.setSpecialValueText("floor area: from the blocks")
+        self.c_band = _CB2()
+        self.c_band.addItems(["Erf up to 450 m2", "Erf 450 to 900 m2", "Erf over 900 m2"])
+        self.c_cc = _CK("Completion certificate")
+        for w_ in (self.c_on, self.c_muni, self.c_area, self.c_band, self.c_cc):
+            crow.addWidget(w_)
+        cv.addLayout(crow)
+        self.c_tab = QTableWidget(len(COUNCIL_FIELDS), 2)
+        self.c_tab.setHorizontalHeaderLabels(["Tariff", "Value"])
+        self.c_tab.verticalHeader().setVisible(False)
+        self.c_tab.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.c_tab.setMaximumHeight(230)
+        self.c_tab.itemChanged.connect(self._council_tab_edit)
+        cv.addWidget(self.c_tab)
+        self.c_note = QLabel("")
+        self.c_note.setWordWrap(True)
+        cv.addWidget(self.c_note)
+        fv.addWidget(cg)
+        for sig in (self.c_on.toggled, self.c_cc.toggled, self.c_muni.currentIndexChanged, self.c_band.currentIndexChanged, self.c_area.valueChanged):
+            sig.connect(lambda *_a: self._council_edit())
         self.tabs.addTab(fw, "Professional fees")
         self.tabs.addTab(self.fitt, "Budget fit")
         self.tabs.addTab(self.qt_, "Quantities")
@@ -928,7 +995,7 @@ class MaterialsPage(QWidget):
 
     # ----- state -----
     def state(self):
-        return {"blocks": self.blocks, "rates": self.rates, "allow": self.allow, "custom": self.custom, "fit": self.fit, "site": self.site, "fees": self.fees}
+        return {"blocks": self.blocks, "rates": self.rates, "allow": self.allow, "custom": self.custom, "fit": self.fit, "site": self.site, "fees": self.fees, "council": self.council}
 
     def set_state(self, d):
         d = d or {}
@@ -938,6 +1005,7 @@ class MaterialsPage(QWidget):
         self.custom = [dict(c) for c in d.get("custom", []) if isinstance(c, dict)]
         self.site = [dict(c) for c in d.get("site", []) if isinstance(c, dict)]
         self.fees = {k: dict(v) for k, v in (d.get("fees") or {}).items() if isinstance(v, dict)}
+        self.council = {**COUNCIL_DEFAULT, **(d.get("council") or {})}
         f_ = d.get("fit") or {}
         self._reread = any(b.get("q") and "rail_m" not in b["q"] for b in self.blocks)       # read before railings were measured
         self.fit = {"on": bool(f_.get("on")), "rate": float(f_.get("rate", 0) or 0), "area": float(f_.get("area", 0) or 0), "cut": float(f_.get("cut", 0) or 0),
@@ -1160,13 +1228,48 @@ class MaterialsPage(QWidget):
                 rows.append(["Site works", c.get("item", ""), c.get("unit", ""), q_, m_, l_, q_ * m_, q_ * l_])
         return rows
 
+    def council_inputs(self):
+        """Floor area, pool, carport, pergola and high boundary wall for the council fee, taken from the blocks and the site works unless the area is typed."""
+        c = self.council
+        area = float(c.get("area") or 0)
+        if area <= 0:
+            area = self.fit_area()
+        pool = carp = perg = 0.0
+        wall = False
+        for r in self.site:
+            nm = str(r.get("item", "")).lower()
+            q_ = float(r.get("qty", 0) or 0)
+            if "swimming pool" in nm and "deck" not in nm:
+                pool += q_
+            elif "carport" in nm or "shade" in nm:
+                carp += q_
+            elif "pergola" in nm:
+                perg += q_
+            elif nm.startswith("boundary wall") and q_ > 0:
+                wall = True
+        return area, pool, carp, perg, wall
+
+    def council_fee(self):
+        if not self.council.get("on"):
+            return [], 0.0
+        a, p, cp, pg, w = self.council_inputs()
+        return council_plan_fee(self.council, a, p, cp, pg, w)
+
+    def fees_all(self):
+        """The professional fees plus the council plan fee, as buildup() wants them."""
+        f = dict(self.fees)
+        tot = self.council_fee()[1]
+        if tot > 0:
+            f["_plan"] = {"fixed": tot}
+        return f
+
     def sums(self, rows=None):
         rows = self.all_rows() if rows is None else rows
         return sum(r[6] for r in rows), sum(r[7] for r in rows)
 
     def grand(self):
         mat, lab = self.sums()
-        return buildup(mat, lab, self.allow, self.fees)
+        return buildup(mat, lab, self.allow, self.fees_all())
 
     def block_cost(self, b):
         rows = [(g, i, u, q * 1, mr, lr) for g, i, u, q, mr, lr in self.block_rows(b)]
@@ -1181,7 +1284,7 @@ class MaterialsPage(QWidget):
         """[(group, all-in cost)] with breakage, preliminaries, profit, contingency, fees and VAT spread over the groups."""
         rows = self.all_rows()
         mat, lab = self.sums(rows)
-        mf = markup_factor(mat, lab, self.allow, self.fees)
+        mf = markup_factor(mat, lab, self.allow, self.fees_all())
         A = lambda k: float(self.allow.get(k, ALLOW[k][2]))
         vd = 1.15 if A("rates_incl_vat") else 1.0
         g = {}
@@ -1302,6 +1405,24 @@ class MaterialsPage(QWidget):
                     if ci >= 4:
                         it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                     ftt.setItem(r, ci, it)
+            c = self.council
+            self.c_on.setChecked(bool(c.get("on")))
+            self.c_muni.setCurrentText(c.get("muni", ""))
+            self.c_area.setValue(float(c.get("area") or 0))
+            self.c_band.setCurrentIndex(int(c.get("band", 0)))
+            self.c_cc.setChecked(bool(c.get("cc", True)))
+            base = COUNCIL_PRESETS.get(c.get("muni"), COUNCIL_PRESETS["My municipality (type its tariff)"])
+            for r, (k, lbl) in enumerate(COUNCIL_FIELDS):
+                a_ = QTableWidgetItem(lbl)
+                a_.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+                self.c_tab.setItem(r, 0, a_)
+                self.c_tab.setItem(r, 1, QTableWidgetItem("%g" % float((c.get("vals") or {}).get(k, base[k]))))
+            cl, ct = self.council_fee()
+            ai, pi_, ci_, gi, wi = self.council_inputs()
+            self.c_note.setText(("%s = %s. " % ("; ".join("%s %s" % (n_, rand(a_)) for n_, a_ in cl), rand(ct)) if cl else "") +
+                                "Floor area used: %.0f m2 (from the blocks unless typed). Pool, carport, pergola and a boundary wall over 1.3 m are taken from the Site works tab. "
+                                "The tariff is the municipality's: check it in its current tariff book (the over-400 m2 rate is applied to the whole floor area). The fee is part of the one "
+                                "\"Professional fees and council costs\" line and is not itemised in the PDFs." % ai)
             ftot = sum(x[3] for x in flines)
             self.fee_note.setText("Professional fees worked on the cost of works of %s (excluding VAT): %s in all, %s of the cost of works. They are one line in the price build-up. "
                                   "Choose for each professional: the guideline scale (the share column lets you leave out stages, for example the architect doing stages 1 to 4.2 only = 67 %%), "
@@ -1378,6 +1499,25 @@ class MaterialsPage(QWidget):
             f["share" if it.column() == 4 else "pct"] = max(0.0, v)
         QTimer.singleShot(0, self.refresh)
 
+    def _council_edit(self):
+        if self._busy:
+            return
+        c = self.council
+        newm = self.c_muni.currentText()
+        if newm != c.get("muni"):
+            c["vals"] = {}                                       # a different tariff: its own figures
+        c.update({"on": self.c_on.isChecked(), "muni": newm, "area": self.c_area.value(), "band": self.c_band.currentIndex(), "cc": self.c_cc.isChecked()})
+        QTimer.singleShot(0, self.refresh)
+
+    def _council_tab_edit(self, it):
+        if self._busy or it.column() != 1 or not (0 <= it.row() < len(COUNCIL_FIELDS)):
+            return
+        try:
+            self.council.setdefault("vals", {})[COUNCIL_FIELDS[it.row()][0]] = float(it.text().replace(",", ".").replace(" ", ""))
+        except ValueError:
+            return
+        QTimer.singleShot(0, self.refresh)
+
     def _fee_mode(self, row, idx):
         key = FEE_PROS[row][0]
         self.fees.setdefault(key, {})["mode"] = "pct" if idx == 1 else "scale"
@@ -1389,7 +1529,7 @@ class MaterialsPage(QWidget):
         steps, total, direct = self.grand()
         works = sum(a for l_, a in steps if l_ in ("Materials and sanitary ware", "Breakage and wastage", "Labour, all trades", "Preliminaries and site costs",
                                                    "Builder's overheads and profit", "Contingency"))
-        return fee_lines(works, self.fees), works
+        return fee_lines(works, self.fees_all()), works
 
     def _fit_click(self):
         if not self.fit_area_spin.value():

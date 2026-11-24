@@ -122,3 +122,17 @@ d6 = {x[0]: x for x in fl6}
 assert abs(d6["arch"][3] - w6 * 0.08) < 0.01 and abs(d6["struct"][3] - w6 * 0.04) < 0.01 and "8 %" in d6["arch"][2] and d6["pm"][3] > 0
 p6._fee_mode(0, 1); p6.refresh()
 print("ok fee percentages")
+# council plan fee
+cc_ = {"muni": "George Municipality 2026/27 (tariff book, from 1 July 2026)", "band": 1, "cc": True, "vals": {}}
+lines_, tot_ = M.council_plan_fee(cc_, 150.0, pool_m2=20.0, carport_m2=0.0, wall_high=True)
+assert abs(tot_ - (150 * 31 + 20 * 31 + 1136 + 375)) < 0.01, lines_
+assert abs(M.council_plan_fee(cc_, 10.0)[1] - (461 + 375)) < 0.01 and abs(M.council_plan_fee(cc_, 500.0)[1] - (500 * 47 + 375)) < 0.01
+p7 = M.MaterialsPage(H())
+p7.custom = [{"group": "A", "item": "x", "unit": "sum", "qty": 1, "mat": 0, "lab": 1_000_000.0}]
+t7 = p7.grand()[1]
+p7.council.update({"on": True, "area": 150.0}); p7.site.append({"item": "Swimming pool: x", "unit": "m2", "qty": 20, "mat": 0, "lab": 0})
+a7, pl7, *_r = p7.council_inputs(); assert a7 == 150.0 and pl7 == 20
+assert abs((p7.grand()[1] - t7) / 1.15 - p7.council_fee()[1]) < 0.01 and p7.council_fee()[1] > 4000
+p7.refresh(); p8 = M.MaterialsPage(H()); p8.set_state(p7.state()); assert p8.council["on"] and abs(p8.grand()[1] - p7.grand()[1]) < 1e-6
+assert "George" not in p7.report_html() and "plan fee" not in p7.report_html().lower()
+print("ok council fee")

@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.261**
+Current version: **1.86.262**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Costing, Professional fees tab: new "Council building plan fee" worked from a municipality's tariff book: rate per m2 of floor area with a minimum (and a higher rate over 400 m2), swimming pool, carport and pergola per m2, boundary wall over 1.3 m by erf size, and the completion certificate. George Municipality 2026/27 is built in; for any other municipality choose "My municipality" and type its tariff (the figures are editable and saved with the project). The floor area comes from the blocks and the pool, carport, pergola and high boundary wall from the Site works tab. The fee is part of the one "Professional fees and council costs" line and is not itemised in the PDFs.
 - Professional fees are private: the itemised table (who gets what, the scales and the percentages) is no longer in any PDF. The reports only carry the one combined "Professional fees and council costs" line in the price build-up. The itemised fees stay on the Professional fees tab inside the program.
 - Professional fees: every professional (architect, engineers, project manager ...) can now be worked out either from the guideline scale or as a percentage of the building cost that you type (for example architect 8 %, structural engineer 4 %). The choice is a drop-down in the new "How the fee is worked out" column; the report names the percentage used.
 - Costing, whole-project price build-up: (1) new Site works tab for everything outside the blocks (paving, boundary walls, fences, retaining walls, gates, pool, garden, stormwater, services, solar, borehole, tank, braai, carport), with a pick list of starting rates (my estimates, replace with quotes). It counts in the price build-up and the professional fees. (2) New Professional fees tab: architect (SACAP 2026, low/medium/high complexity), structural, civil, electrical and mechanical engineers (ECSA 2025), project manager (SACPCMP, the 2022 proposed table: the latest I could find) worked from the guideline scales on the cost of works, with a share column to leave out stages, plus typed percentages for quantity surveyor, land surveyor, town planner, council and others. All of it is one "Professional fees" line in the price build-up, itemised in a table on the report. All fees are off until you switch them on. Not included: the quantity surveyor scale (the published table could not be read reliably).
