@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.222**
+Current version: **1.86.223**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Button glow follows the tool colour:** the soft glow under buttons is now purple in Costing, green in Invoicing, amber in Orders, blue in the Detail tool, teal in the Drawing register and brown in Site, and red on the start screen and in the SANS tools.
 - **Switching tools is fast again:** the tool colours (1.86.221) restyled the whole program on every tab change, which made Invoicing, Costing and the other tools freeze for a moment. Now only the open tool's page, the side bar and the ribbon are restyled, once per tool.
 - **Each tool's colour runs through the whole tool:** open Costing and the buttons, table header lines, selected ribbon buttons, side-bar highlight and the icons' hover tint all turn purple; Invoicing goes green, Orders amber, Detail tool blue, Drawing register teal, Site brown. The start screen and the SANS tools keep the program's red.
 - **Clearer message when an update fails:** the box now says where in the program it failed and whether the update may still have been installed, and the details are written to the update log (mot_update.log in the Temp folder).

@@ -16,3 +16,15 @@ assert sh._palette(False)["hot"] != sh._palette0(False)["hot"] and sh._palette(T
 sh.ACC[0] = None
 assert sh._palette(False) == sh._palette0(False)
 print("ok")
+
+# the glow under the buttons follows the open tool
+import button_fx as bf
+from PySide6.QtGui import QColor as _QC
+w = M.MainWindow(); w.show()
+w.main_tabs.setCurrentIndex(w._tab_index("Costing"))
+for _ in range(10): app.processEvents()
+assert bf.GLOW == (139, 92, 246), bf.GLOW
+w.main_tabs.setCurrentIndex(w._tab_index("Start"))
+for _ in range(10): app.processEvents()
+assert bf.GLOW == (216, 19, 43), bf.GLOW
+print("ok glow")

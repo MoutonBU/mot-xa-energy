@@ -12585,6 +12585,12 @@ class MainWindow(QMainWindow):
             import ui_extras as ux_
             ACCENT_COL[0] = col
             ux_.ACCENT[0] = QColor(col).lighter(135).name() if col else "#ff4056"
+            try:
+                import button_fx as bf_
+                g_ = QColor(col) if col else QColor(216, 19, 43)
+                bf_.GLOW = (g_.red(), g_.green(), g_.blue())          # the glow under buttons takes the tool's colour
+            except Exception:
+                pass
             if sh_.ACC[0] != col:
                 sh_.ACC[0] = col
                 fn_ = getattr(self, "shell_restyle", None)
