@@ -693,6 +693,9 @@ class WelcomeTour(QDialog):
 
 
 # ---------------------------------------------------------------- icon motion
+ACCENT = ["#ff4056"]            # the colour of the tool that is open: icons take it on when pointed at
+
+
 class AnimIcon(QLabel):
     """A big icon that comes alive: on hover it lifts, grows, wobbles once and glows; on a press it squeezes and pops back with a ring."""
 
@@ -825,7 +828,7 @@ def _tip_show(b, ev):
         pal = QApplication.palette()
         dark = pal.color(QPalette.ColorRole.Window).lightness() < 128
         bg, fg, sub, bd = ("#1f2125", "#eceef0", "#9aa0a8", "#3a3f46") if dark else ("#ffffff", "#1c1f24", "#5b626b", "#d4d8de")
-        w.setStyleSheet("QFrame{background:%s;border:1px solid %s;border-left:3px solid #ff4056;border-radius:9px;} QLabel{border:none;background:transparent;}" % (bg, bd))
+        w.setStyleSheet("QFrame{background:%s;border:1px solid %s;border-left:3px solid %s;border-radius:9px;} QLabel{border:none;background:transparent;}" % (bg, bd, ACCENT[0]))
         ic = b.property("_ia_icon") or b.icon()
         if ic is not None and not ic.isNull():
             w._ic.setPixmap(ic.pixmap(QSize(24, 24)))
@@ -886,7 +889,7 @@ class IconMotion(QObject):
                         return
                     q = QPainter(pm)
                     q.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-                    q.fillRect(pm.rect(), QColor("#ff4056"))
+                    q.fillRect(pm.rect(), QColor(ACCENT[0]))
                     q.end()
                     b.setProperty("_ia_icon", ic)
                     b.setIcon(QIcon(pm))

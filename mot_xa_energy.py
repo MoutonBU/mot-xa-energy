@@ -2662,6 +2662,26 @@ _LIGHT_MAP = [("#16171a", "#f1f2f4"), ("#1f2125", "#ffffff"), ("#1b1d21", "#f8f9
 
 
 _QSS_CACHE = {}
+ACCENT_COL = [None]          # the colour of the tool that is open (None: the program's red)
+
+
+def accent_qss(qss, col):
+    """The style sheet with its reds swapped for the open tool's colour (a light and a dark shade of it)."""
+    if not col or col.lower() == "#d8132b":
+        return qss
+    c = QColor(col)
+    for a_, b_ in (("#d8132b", c.name()), ("#ee1d36", c.lighter(118).name()), ("#ff4056", c.lighter(135).name()), ("#c4161c", c.darker(110).name())):
+        qss = qss.replace(a_, b_)
+    return qss
+
+
+def _final_qss():
+    key_ = "light" if light() else "dark"
+    qc_ = _QSS_CACHE.get(key_)
+    if qc_ is None:
+        qc_ = light_qss(STUDIO_QSS) if light() else STUDIO_QSS
+        qc_ = _QSS_CACHE[key_] = qc_.replace("@TICK@", _tick_png()).replace("@UP@", _arrow_png(True)).replace("@DOWN@", _arrow_png(False))
+    return accent_qss(qc_, ACCENT_COL[0])
 
 
 def _lt(txt):
@@ -12483,7 +12503,7 @@ class MainWindow(QMainWindow):
         if qc_ is None:
             qc_ = light_qss(STUDIO_QSS) if light() else STUDIO_QSS
             qc_ = _QSS_CACHE[key_] = qc_.replace("@TICK@", _tick_png()).replace("@UP@", _arrow_png(True)).replace("@DOWN@", _arrow_png(False))
-        app.setStyleSheet(qc_)
+        app.setStyleSheet(accent_qss(qc_, ACCENT_COL[0]))
         for w_ in app.allWidgets():                 # colours written inside labels and style sheets
             try:
                 d_ = w_.__dict__
@@ -12536,6 +12556,27 @@ class MainWindow(QMainWindow):
         SETTINGS["theme"] = name
         save_settings()
         self.restart_app(seamless=True)
+
+    def set_accent(self, ctx):
+        """Every tool wears its own colour: buttons, bars, table headers, selections and the icons' hover tint all follow the tool that is open."""
+        import app_shell as sh_
+        col = sh_.TOOL_COL.get(ctx) if ctx else None
+        if col and col.lower() == "#d8132b":
+            col = None
+        if col == ACCENT_COL[0] or self.__dict__.get("_accent_busy"):
+            return
+        self._accent_busy = True
+        try:
+            ACCENT_COL[0] = col
+            import ui_extras as ux_
+            ux_.ACCENT[0] = QColor(col).lighter(135).name() if col else "#ff4056"
+            sh_.ACC[0] = col
+            QApplication.instance().setStyleSheet(_final_qss())
+            fn_ = getattr(self, "shell_restyle", None)
+            if fn_:
+                fn_()
+        finally:
+            self._accent_busy = False
 
     def restart_app(self, seamless=False):
         """Save the current work, relaunch the program and load the work back in.
@@ -21667,7 +21708,7 @@ def sign_in_gate(app):
         if u:
             return u
     app.setStyle("Fusion")
-    app.setStyleSheet((light_qss(STUDIO_QSS) if light() else STUDIO_QSS).replace("@TICK@", _tick_png()).replace("@UP@", _arrow_png(True)).replace("@DOWN@", _arrow_png(False)))
+    app.setStyleSheet(_final_qss())
     dlg = LoginDialog()
     if dlg.exec() == QDialog.DialogCode.Accepted:
         return dlg.user

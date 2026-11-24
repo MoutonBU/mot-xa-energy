@@ -17,7 +17,28 @@ PSUB_ICONS = {"Drawings": "clipboard", "Orders": "tag", "Client changes": "edit"
 LV_SUBS = [(0, "Windows", "window"), (1, "Doors", "door"), (2, "Rooms", "room"), (3, "Results", "results"), (4, "Plan", "plan")]
 
 
+ACC = [None]          # the colour of the tool that is open (None: the program's red)
+
+
+def _mix(c1, c2, t):
+    from PySide6.QtGui import QColor
+    a, b = QColor(c1), QColor(c2)
+    return QColor(int(a.red() * (1 - t) + b.red() * t), int(a.green() * (1 - t) + b.green() * t), int(a.blue() * (1 - t) + b.blue() * t)).name()
+
+
 def _palette(is_light):
+    p = _palette0(is_light)
+    if ACC[0]:
+        from PySide6.QtGui import QColor
+        c = QColor(ACC[0])
+        p["accent"] = c.darker(110).name() if is_light else c.lighter(115).name()
+        p["sel"] = _mix(p["rail"], ACC[0], 0.18 if not is_light else 0.14)
+        p["hot"] = _mix(p["ribbon"], ACC[0], 0.22 if not is_light else 0.16)
+        p["hotline"] = _mix(p["ribbon"], ACC[0], 0.55 if not is_light else 0.45)
+    return p
+
+
+def _palette0(is_light):
     if is_light:
         return dict(rail="#eceef1", ribbon="#f3f4f6", line="#d4d7dc", text="#1c1f24", muted="#59616b", hover="#e1e4e8",
                     sel="#fbe3e6", accent="#c4162a", hot="#fbe3e6", hotline="#e8a7af", card="#ffffff")
@@ -243,6 +264,8 @@ class Rail(QFrame):
                     sb.setProperty("on", on)
                     sb.style().unpolish(sb)
                     sb.style().polish(sb)
+        if hasattr(w_, "set_accent"):
+            w_.set_accent(ctx)
         col_ = TOOL_COL.get(ctx, "#d8132b")
         if hasattr(self, "stripe"):
             self.stripe.setStyleSheet("background:%s;border-radius:1px;" % col_)
@@ -595,12 +618,14 @@ def install_shell(win, make_icon, light_fn):
     mt.tabBar().hide()
     win.tabs.tabBar().hide()
     win.shell_rail, win.shell_ribbon, win.shell_body = rail, ribbon, body
+    win.shell_restyle = lambda: restyle()
     state = {"light": None}
 
     def restyle():
-        is_l = bool(light_fn())
+        is_l = (bool(light_fn()), ACC[0])
         if state["light"] != is_l:
             state["light"] = is_l
+            is_l = is_l[0]
             body.setStyleSheet(_qss(_palette(is_l)))
             ribbon.icon_names()
             rail.icons()
