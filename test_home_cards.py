@@ -93,3 +93,18 @@ M.SETTINGS["card_ifc"] = {ps8[0]: ifc_}
 assert w._thumb_key(ps8[0])[2] == ifc_ and w._thumb_key(ps8[1])[2] == ""
 M.SETTINGS["card_ifc"] = {}
 print("ok ifc card")
+# card badges and gauges
+import json as _j
+pz = os.path.join(d, "Z.mcplv.json")
+_j.dump({"xa": {"zone": "4", "town": "George", "elements": [{"name": "x"}]}, "costing": {"a": 1}, "site": {"verts": [[0, 0], [20, 0], [20, 30], [0, 30]], "buildings": []}}, open(pz, "w"))
+M.MainWindow._thumb_read(pz)
+assert M.MainWindow._INFO[pz] == {"zone": "4", "town": "George", "xa": True, "cost": True, "ifc": False, "lv": False}, M.MainWindow._INFO[pz]
+w._recent_load = lambda: [pz]
+w._rebuild_home_cards()
+assert any("Zone 4" in l.text() for l in w.home_cards.itemAt(0).widget().findChildren(M.QLabel))
+import ui_extras as ux2
+g = ux2.RingGauge("Envelope"); g.set_value(2, 3); assert g.total == 3 and g.col.name() == "#e0a030"
+g.set_value(3, 3); assert g.col.name() == "#2e9e5b"; g.set_value(0, 0); assert g.col.name() == "#8a93a3"
+w._gauge_refresh(True)
+assert len(w.x_gauges) == 4
+print("ok badges and gauges")

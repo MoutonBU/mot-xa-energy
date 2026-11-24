@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.237**
+Current version: **1.86.238**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **1.86.238** Recent project cards now show the zone and small dots for what is set up (Light, XA, Cost, IFC). The Energy XA page has four ring gauges (Envelope, Glazing, Services, Overall). Tiles get a hover edge in the tool colour and tabs fade a little faster.
 - **Slower title card:** the opening card now takes about 1.3 s in all (0.7 s to come in, a short hold, 0.4 s to lift away), so the icon and words can be seen.
 - **Animated icon on the title card:** the icon pops in with a small overshoot and a slight turn while a ring pulses out behind it and fades.
 - **Sharper, animated title card:** the opening card is now drawn at your screen's full resolution (no more blur on sharp screens), the red line no longer clips the name, and the icon, name, line and subtitle come in one after another (about 0.3 s).

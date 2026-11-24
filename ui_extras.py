@@ -1213,6 +1213,59 @@ def cascade(page, step_ms=95, rise=34, dur=480):
     page._cascade = anims
 
 
+class RingGauge(QWidget):
+    """A small ring that fills to ok/total, with the count in the middle and a label under it. Painted by hand; the fill eases to its value."""
+    def __init__(self, label="", parent=None):
+        super().__init__(parent)
+        self.label, self.ok, self.total, self.shown = label, 0, 0, 0.0
+        self.col = QColor("#2e9e5b")
+        self.setFixedHeight(118); self.setMinimumWidth(96)
+        self._an = QVariantAnimation(self)
+        self._an.setDuration(450)
+        self._an.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._an.valueChanged.connect(self._tick)
+
+    def _tick(self, v):
+        self.shown = float(v)
+        self.update()
+
+    def set_value(self, ok, total):
+        self.ok, self.total = int(ok), int(total)
+        self.col = QColor("#8a93a3") if not total else QColor("#2e9e5b") if ok >= total else QColor("#e0a030") if ok else QColor("#d8132b")
+        tgt = (ok / total) if total else 0.0
+        self._an.stop()
+        self._an.setStartValue(self.shown)
+        self._an.setEndValue(tgt)
+        self._an.start()
+        self.setToolTip("%s: %d of %d comply" % (self.label, ok, total) if total else "%s: nothing to check yet" % self.label)
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.TextAntialiasing)
+        d = min(self.width(), self.height() - 22) - 10
+        r = QRectF((self.width() - d) / 2.0, 4, d, d)
+        pen = QPen(QColor(138, 147, 163, 70), 7)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.drawArc(r, 0, 360 * 16)
+        if self.shown > 0.002:
+            pen2 = QPen(self.col, 7)
+            pen2.setCapStyle(Qt.PenCapStyle.RoundCap)
+            p.setPen(pen2)
+            p.drawArc(r, 90 * 16, -int(360 * 16 * min(1.0, self.shown)))
+        p.setPen(self.palette().windowText().color())
+        f = p.font()
+        f.setPixelSize(int(d * 0.30))
+        f.setBold(True)
+        p.setFont(f)
+        p.drawText(r, Qt.AlignmentFlag.AlignCenter, ("%d/%d" % (self.ok, self.total)) if self.total else "-")
+        f.setPixelSize(12)
+        f.setBold(False)
+        p.setFont(f)
+        p.drawText(QRectF(0, d + 8, self.width(), 18), Qt.AlignmentFlag.AlignCenter, self.label)
+        p.end()
+
+
 def fade_pages(tw):
     """a tab widget: the page you switch to fades in instead of snapping"""
     if tw is None or getattr(tw, "_mot_fade", False):
@@ -1230,7 +1283,7 @@ def fade_pages(tw):
             an = QVariantAnimation(eff)
             an.setStartValue(0.0)
             an.setEndValue(1.0)
-            an.setDuration(190)
+            an.setDuration(120)
             an.setEasingCurve(QEasingCurve.Type.OutCubic)
             an.valueChanged.connect(lambda v, e=eff: e.setOpacity(float(v)))
 

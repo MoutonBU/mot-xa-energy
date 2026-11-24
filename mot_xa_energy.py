@@ -11765,6 +11765,7 @@ class MainWindow(QMainWindow):
         else:
             ux_.wipe_open(self, card, "#d8132b", go, icon_pixmap("plan", "#ffffff", 168), title=os.path.basename(path).replace(".mcplv.json", "").replace(".json", ""), sub="Opening your project")
 
+    _INFO = {}                    # path -> what is set up in the project (for the badges on the card)
     _THUMBS = {}                  # (path, file time, IFC path, IFC file time) -> the stand outline and buildings, or None
 
     @staticmethod
@@ -11794,6 +11795,14 @@ class MainWindow(QMainWindow):
         except Exception:
             return None
         site = d.get("site") or {}
+        try:                                      # what the card shows beside the picture: zone, town, and what is set up in the project
+            xa_ = d.get("xa") or {}
+            MainWindow._INFO[path] = {"zone": str(xa_.get("zone") or ""), "town": str(xa_.get("town") or ""),
+                                      "xa": bool(xa_.get("elements")), "cost": bool(d.get("costing")),
+                                      "ifc": bool(isinstance(d.get("ifc"), dict) and d["ifc"].get("path")),
+                                      "lv": bool(d.get("rooms") or d.get("schedule"))}
+        except Exception:
+            pass
         ifc = ifc or ((d.get("ifc") or {}).get("path") if isinstance(d.get("ifc"), dict) else "") or ""
         if ifc:
             polys = MainWindow._thumb_ifc(path, ifc)
@@ -11926,6 +11935,8 @@ class MainWindow(QMainWindow):
         while box.count():
             it = box.takeAt(0)
             if it.widget() is not None:
+                it.widget().hide()
+                it.widget().setParent(None)
                 it.widget().deleteLater()
         lst = [p for p in self._recent_load() if os.path.exists(p)][:8]
         for col_ in range(4):
@@ -11947,7 +11958,7 @@ class MainWindow(QMainWindow):
                 when = ""
             c = QPushButton()
             c.setCursor(Qt.CursorShape.PointingHandCursor)
-            c.setMinimumHeight(92)
+            c.setMinimumHeight(112)
             c.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             c.setToolTip(p)
             c.setStyleSheet("QPushButton{border-left:4px solid #ff4056; text-align:left;}")
@@ -11969,6 +11980,17 @@ class MainWindow(QMainWindow):
                 t_.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
                 t_.setTextFormat(Qt.TextFormat.RichText)
                 cv.addWidget(t_)
+            inf_ = MainWindow._INFO.get(p)
+            if inf_:
+                zc_ = ZA_ZONE_COLOURS.get(inf_["zone"], "#8a93a3")
+                dots_ = "".join("<span style='color:%s'>&#9679;</span> %s " % ("#2e9e5b" if inf_[k_] else "#555b66", lab_)
+                                for k_, lab_ in (("lv", "Light"), ("xa", "XA"), ("cost", "Cost"), ("ifc", "IFC")))
+                bd_ = QLabel(("<span style='color:%s'>&#9632;</span> <b>Zone %s</b><br>" % (zc_, html.escape(inf_["zone"])) if inf_["zone"] else "")
+                             + "<span style='font-size:10px;color:#8a93a3'>%s</span>" % dots_)
+                bd_.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+                bd_.setTextFormat(Qt.TextFormat.RichText)
+                bd_.setToolTip("Zone and what is set up in this project: light and ventilation rooms, Energy XA elements, costing, IFC model")
+                cv.addWidget(bd_)
             c.clicked.connect(lambda _=False, pp=p, cc=c: self._open_recent_card(pp, cc))
             c.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
             c.customContextMenuRequested.connect(lambda pos, pp=p, cc=c: self._card_menu(pp, cc.mapToGlobal(pos)))
@@ -14149,7 +14171,7 @@ class MainWindow(QMainWindow):
             b = QPushButton()
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-            b.setMinimumSize(220, 186)
+            b.setMinimumSize(220, 168)
             b.setToolTip("Open " + title.replace("&&", "&") + "\n" + re.sub(r"<[^>]+>", " ", sub).replace("&&", "&").strip())
             lab = QLabel("<div align='center'><b style='font-size:20px'>%s</b><br><br>%s</div>" % (title.replace("&&", "&"), sub), b)
             lab.setWordWrap(True)
@@ -14158,8 +14180,9 @@ class MainWindow(QMainWindow):
             import ui_extras as ux_m
             ux_m.install_icon_motion()
             tcol = TILE_COL.get(title.replace("&&", "&"), "#ff4056")
-            icl = ux_m.AnimIcon(icon_pixmap(ico, tcol, 72), tcol, 80)        # lifts, wobbles and glows when pointed at, squeezes and rings when pressed
+            icl = ux_m.AnimIcon(icon_pixmap(ico, tcol, 72), tcol, 68)        # lifts, wobbles and glows when pointed at, squeezes and rings when pressed
             b._anim_icon = icl
+            b.setStyleSheet("QPushButton{border:1px solid transparent;border-radius:14px;} QPushButton:hover{border:1px solid %s;}" % tcol)
             bl = QVBoxLayout(b)
             bl.setContentsMargins(18, 18, 18, 18)
             bl.setSpacing(6)
@@ -15838,6 +15861,13 @@ class MainWindow(QMainWindow):
         self._build_x26_section(v)
         heading("Run the check and make the Energy XA report",
                 "Runs every check above (fenestration, orientation and shading, air leakage). The PDF carries all of it.")
+        import ui_extras as ux_g
+        gr_ = QHBoxLayout()
+        self.x_gauges = [ux_g.RingGauge(t_) for t_ in ("Envelope", "Glazing", "Services", "Overall")]
+        for g_ in self.x_gauges:
+            gr_.addWidget(g_)
+        gr_.addStretch(1)
+        v.addLayout(gr_)
         bot = QHBoxLayout()
         run = QPushButton("Run XA check")
         run.clicked.connect(self._run_xa)
@@ -18490,6 +18520,28 @@ class MainWindow(QMainWindow):
             out.append(("Occupancy and daylight sensors (6.2.3)", "not entered", "Needed outside H3 and H4; no sensor serves more than 100 m\u00b2", "na", "Not entered"))
         return out
 
+    def _gauge_refresh(self, full=True):
+        """The four rings on the Energy XA page: envelope R-values, glazing and orientation, services (hot water and the 2026 additions), overall."""
+        if not hasattr(self, "x_gauges"):
+            return
+        if full:
+            try:
+                rows = [r for r in self._summary_rows() if r[0] == "SANS 10400-XA" and isinstance(r[3], bool)]
+            except Exception:
+                rows = []
+            grp = {"Envelope": [], "Glazing": [], "Services": []}
+            for r in rows:
+                k = "Envelope" if "R-values" in r[1] else "Glazing" if ("Fenestration" in r[1] or "Orientation" in r[1]) else "Services"
+                grp[k].append(r[3])
+            self._gauge_base = grp
+        grp = {k: list(v) for k, v in (getattr(self, "_gauge_base", None) or {"Envelope": [], "Glazing": [], "Services": []}).items()}
+        allv = []
+        for g_, k in zip(self.x_gauges[:3], ("Envelope", "Glazing", "Services")):
+            vals = grp.get(k, [])
+            g_.set_value(sum(1 for b in vals if b), len(vals))
+            allv += vals
+        self.x_gauges[3].set_value(sum(1 for b in allv if b), len(allv))
+
     def _x26_update(self):
         if not hasattr(self, "x26_out"):
             return
@@ -18506,6 +18558,15 @@ class MainWindow(QMainWindow):
         return ("Requirements of SANS 10400-XA:2026 (edition 3) that are checked from the figures entered on the Energy XA page.", head, out, [26, 30, 30, 14])
 
     def _run_xa(self):
+        try:
+            self._run_xa_inner()
+        finally:
+            try:
+                self._gauge_refresh(True)
+            except Exception:
+                pass
+
+    def _run_xa_inner(self):
         self._xa_refresh()
         zone11 = self.xa_zone11.currentText()
         rooms = [rm for rm in self.xa_rooms() if not excluded_reason(rm.name)]
