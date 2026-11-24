@@ -758,8 +758,20 @@ class AnimIcon(QLabel):
         self._spin_period = float(period)
         self._spin_t = 0.0
         pm = self._pm
+        try:
+            from PySide6.QtGui import QGuiApplication
+            sdpr = max(1.0, float(QGuiApplication.primaryScreen().devicePixelRatio()))
+        except Exception:
+            sdpr = 2.0
+        lw = pm.width() / max(1.0, pm.devicePixelRatio())
+        want = int(round(lw * sdpr * 1.5))                          # one clean downsize to just above the screen's own pixels: turning then never skips pixels, so no stepping
+        if pm.width() != want:
+            pm = pm.scaled(want, want, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            pm.setDevicePixelRatio(want / lw)
+            self._pm = pm
         dpr = max(1.0, pm.devicePixelRatio())
         self._dpr = dpr
+        self._sdpr = sdpr
         side = QPixmap(pm.width(), pm.height())                            # the edge has the same sharpness as the face, so nothing looks stepped
         side.setDevicePixelRatio(dpr)
         side.fill(Qt.GlobalColor.transparent)
@@ -844,7 +856,8 @@ class AnimIcon(QLabel):
             ca, sa = math.cos(ang), math.sin(ang)
             if abs(ca) < 0.08:
                 ca = 0.08 if ca >= 0 else -0.08                  # edge-on it still shows the thickness
-            D, N = 5.0, 5
+            D = 5.0
+            N = max(5, min(14, int(D * abs(sa) * self.__dict__.get("_sdpr", 2.0) * 2.0) + 3))      # enough layers that the edge is solid, not stair-stepped
             dst, src = QRectF(-w / 2.0, -hh / 2.0, w, hh), QRectF(self._pm.rect())
             gl = QRadialGradient(QPointF(0.0, 0.0), w * 0.62)                          # the edge glows: a soft halo in the tool's colour, brighter as the icon tilts
             gc = QColor(self._accent)

@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.252**
+Current version: **1.86.253**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Home tile icons: no more jagged edges while turning (picture sized to the screen, solid edge layers).
 - Home tile icons: smooth edges again (sharper picture, edge drawn at full sharpness and smoothed).
 - Home tiles: the icon edge now glows in each tool's own colour, and the opening title cards are gone (tools and recent projects open straight away).
 - **1.86.250** Fixed the left bar and ribbon looking like loose cards the first time you open a tool (and right the second time). The start-up theming put the general look on top of their own; now it leaves them alone. Switching dark/light also updates the bar at once instead of up to a second and a half later.
