@@ -9457,10 +9457,18 @@ class MainWindow(QMainWindow):
             try:
                 pg_ = getattr(__import__(mod_), cls_)(self)
                 setattr(self, attr_, pg_)
-                self.main_tabs.addTab(pg_, tab_)
+                self.main_tabs.addTab(QWidget() if attr_ == "area_page" else pg_, tab_)      # the area schedule moves into Building lines; its tab number stays so nothing else shifts
             except Exception as e_:
                 print("tool not started:", mod_, e_)
                 setattr(self, attr_, None)
+        if getattr(self, "area_page", None) is not None and getattr(self, "site_page", None) is not None:
+            self.site_page.fuse_area(self.area_page)
+            self.main_tabs.setTabVisible(7, False)
+
+            def _area_redirect(i_):
+                if i_ == 7:                                 # anything that opens the old Area schedule tab lands on its step in Building lines
+                    QTimer.singleShot(0, lambda: (self.main_tabs.setCurrentIndex(8), self.site_page.steps.go(3)))
+            self.main_tabs.currentChanged.connect(_area_redirect)
         self.orders_page = None
         if getattr(self, "register_page", None) is not None:
             try:
@@ -13920,8 +13928,7 @@ class MainWindow(QMainWindow):
         g = QGridLayout()
         g.setSpacing(24)
         for i, (title, sub, ico, tgt) in enumerate((
-                ("Building lines", "Draw the stand and set the building lines<br><br>See what encroaches, coverage and floor area ratio, and write a departure motivation.", "land", "Building lines"),
-                ("Area schedule", "Every room by block, level and unit<br><br>Totals, unit mix and the floor area that counts toward FAR.", "layers", "Area schedule"))):
+                ("Building lines", "Draw the stand and set the building lines<br><br>See what encroaches, coverage and floor area ratio, write a departure motivation, and keep the area schedule: every room by block, level and unit.", "land", "Building lines"),)):
             t_ = tile(title, sub, ico, tgt)
             t_.setMinimumHeight(300)
             t_.setMaximumHeight(380)

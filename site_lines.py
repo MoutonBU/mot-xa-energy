@@ -683,10 +683,11 @@ def spin(lo, hi, val, dec=2, suffix=""):
 class SitePage(ToolBase):
     KEY = "site"
     TITLE = "Building lines"
-    STEP_NAMES = ["The stand", "The buildings", "The result"]
+    STEP_NAMES = ["The stand", "The buildings", "The result", "Area schedule"]
     STEP_HINTS = ["Describe the stand: its corners in metres and the building line on each boundary. A plain rectangle takes two numbers.",
                   "Place each building by its corner position and size, or drag it in the plan. Red means it goes over a building line.",
-                  "What complies, what encroaches and by how much, coverage and floor area ratio, and a departure motivation to adapt."]
+                  "What complies, what encroaches and by how much, coverage and floor area ratio, and a departure motivation to adapt.",
+                  "Every room by block, level and unit, the totals and unit mix, and the floor area that counts toward the floor area ratio."]
 
     def __init__(self, win):
         super().__init__(win)
@@ -882,10 +883,29 @@ class SitePage(ToolBase):
         v3.addWidget(bx)
         v3.addStretch(1)
         self._motiv_user = False
-        self.build_frame([p1, p2, p3], side=self._plan_panel())
+        self._area_host = QWidget()                      # the area schedule lives in the last step
+        QVBoxLayout(self._area_host).setContentsMargins(0, 0, 0, 0)
+        self.build_frame([p1, p2, p3, self._area_host], side=self._plan_panel())
         self.make_rect()
         self.restore()
         self._after_edit()
+
+    def fuse_area(self, area_page):
+        """The area schedule is the last step of Building lines: the page is kept as it was, it just sits in this tool."""
+        self._area_host.layout().addWidget(area_page)
+        self.area_page = area_page
+
+    def on_step(self, i):
+        sp = getattr(self, "split", None)             # the plan is not needed for the area schedule: it gets the whole width
+        if sp is None:
+            return
+        tot = max(sum(sp.sizes()), 1000)
+        if i == 3:
+            self._plan_hidden = True
+            sp.setSizes([tot, 0])
+        elif getattr(self, "_plan_hidden", False):
+            self._plan_hidden = False
+            sp.setSizes([int(tot * 0.6), int(tot * 0.4)])
 
     # ---- reading the tables
     def verts(self):

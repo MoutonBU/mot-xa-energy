@@ -9,9 +9,9 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton, QSizePo
 # main tab index -> (rail label, icon name); order of the main tabs in the window
 SUBJECTS = [(0, "Project", "home"), (6, "Drawing register", "clipboard"), (10, "Orders", "tag"), (11, "Invoicing", "pdf"), (1, "Light && ventilation", "lightvent"), (2, "Energy (XA)", "bolt"), (13, "Rational design", "shield"),
             (3, "Coverage && FAR", "building"), (4, "Detail notes", "ruler"), (5, "Costing", "calc"),
-            (7, "Area schedule", "layers"), (8, "Building lines", "compass"), (12, "House placing", "land"), (9, "Guidelines review", "check_circle")]
+            (8, "Building lines", "compass"), (12, "House placing", "land"), (9, "Guidelines review", "check_circle")]
 CTX = {13: "sans", 11: "invoicing", 10: "orders", 1: "sans", 2: "sans", 3: "sans", 4: "detail", 5: "costing", 6: "register", 7: "site", 8: "site", 9: "rules", 12: "site"}      # which tool a main tab belongs to
-TOOL_COL = {"sans": "#d8132b", "invoicing": "#2e9e6b", "orders": "#e0a020", "detail": "#3b82f6", "costing": "#8b5cf6", "register": "#14b8a6", "site": "#a0714a", "rules": "#8a9099"}      # each tool has its own colour
+TOOL_COL = {"sans": "#d8132b", "invoicing": "#2e9e6b", "orders": "#e0a020", "detail": "#3b82f6", "costing": "#8b5cf6", "register": "#14b8a6", "site": "#c08e5c", "rules": "#8a9099"}      # each tool has its own colour
 PSUB_ICONS = {"Drawings": "clipboard", "Orders": "tag", "Client changes": "edit", "Sent and revisions": "export",
               "Fixtures and sanitary ware": "drop", "Building materials": "layers", "Whole building and budget": "calc"}
 LV_SUBS = [(0, "Windows", "window"), (1, "Doors", "door"), (2, "Rooms", "room"), (3, "Results", "results"), (4, "Plan", "plan")]
@@ -220,7 +220,7 @@ class Rail(QFrame):
         col = "#1c1f24" if self.light_fn() else "#eceef0"
         for label, idx, ico in (("Drawing register", 6, "clipboard"), ("Orders", 10, "tag"), ("Invoicing", 11, "calc"), ("Detail tool", 4, "ruler"), ("Costing", 5, "calc"), (None, None, None),
                                 ("Light && Ventilation", 1, "lightvent"), ("Energy (XA)", 2, "bolt"), ("Coverage && FAR", 3, "building"), (None, None, None),
-                                ("Building lines", 8, "land"), ("House placing", 12, "land"), ("Area schedule", 7, "layers"), ("Guidelines review", 9, "clipboard"), (None, None, None),
+                                ("Building lines", 8, "land"), ("House placing", 12, "land"), ("Guidelines review", 9, "clipboard"), (None, None, None),
                                 ("Home (the four squares)", -1, "home")):
             if label is None:
                 m.addSeparator()
@@ -589,6 +589,9 @@ class Ribbon(QFrame):
             p.verticalScrollBar().setValue(max(0, gb.mapTo(p.widget(), gb.rect().topLeft()).y() - 8))
 
     def show_for(self, idx):
+        sp_ = getattr(self.win, "site_page", None)
+        if idx == 8 and sp_ is not None and getattr(getattr(sp_, "steps", None), "i", 0) == 3:
+            idx = 7                                   # the area schedule step of Building lines has the area schedule's ribbon
         self.stack.setCurrentIndex(idx if idx in self.pages else 0)
         self.setVisible(True)
 
@@ -659,6 +662,8 @@ def install_shell(win, make_icon, light_fn):
         rail.setVisible(win.width() >= 900 and not lp)
 
     mt.currentChanged.connect(lambda _i: refresh())
+    if getattr(win, "site_page", None) is not None:
+        win.site_page.steps.changed.connect(lambda _i: refresh())
     win.tabs.currentChanged.connect(lambda _i: refresh())
     t = QTimer(win)
     t.timeout.connect(refresh)
