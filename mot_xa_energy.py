@@ -4375,12 +4375,12 @@ def icon_svg(name, color="#eceef0", stroke=1.8):
 _ICON_CACHE = {}
 
 
-def icon_pixmap(name, color="#eceef0", size=18):
-    key = (name, color, size, light())
+def icon_pixmap(name, color="#eceef0", size=18, scale=2):
+    key = (name, color, size, light(), scale)
     if key in _ICON_CACHE:
         return _ICON_CACHE[key]
     from PySide6.QtGui import QPixmap
-    pm = QPixmap(size * 2, size * 2)
+    pm = QPixmap(size * scale, size * scale)
     pm.fill(Qt.GlobalColor.transparent)
     try:
         from PySide6.QtSvg import QSvgRenderer
@@ -4391,7 +4391,7 @@ def icon_pixmap(name, color="#eceef0", size=18):
         p.end()
     except Exception:
         pass
-    pm.setDevicePixelRatio(2.0)
+    pm.setDevicePixelRatio(float(scale))
     _ICON_CACHE[key] = pm
     return pm
 
@@ -14481,7 +14481,7 @@ class MainWindow(QMainWindow):
             import ui_extras as ux_m
             ux_m.install_icon_motion()
             tcol = TILE_COL.get(title.replace("&&", "&"), "#ff4056")
-            icl = ux_m.AnimIcon(icon_pixmap(ico, tcol, 72), tcol, 104)        # lifts, wobbles and glows when pointed at, squeezes and rings when pressed
+            icl = ux_m.AnimIcon(icon_pixmap(ico, tcol, 72, 4), tcol, 104)        # lifts, wobbles and glows when pointed at, squeezes and rings when pressed
             b._anim_icon = icl
             icl.enable_spin(len(getattr(self, '_tile_n', [])) * 0.9)
             self.__dict__.setdefault('_tile_n', []).append(1)

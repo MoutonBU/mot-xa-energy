@@ -760,11 +760,12 @@ class AnimIcon(QLabel):
         pm = self._pm
         dpr = max(1.0, pm.devicePixelRatio())
         self._dpr = dpr
-        side = QPixmap(int(pm.width() / dpr), int(pm.height() / dpr))      # the edge is drawn at half the sharpness: it is cheap and you cannot tell
+        side = QPixmap(pm.width(), pm.height())                            # the edge has the same sharpness as the face, so nothing looks stepped
+        side.setDevicePixelRatio(dpr)
         side.fill(Qt.GlobalColor.transparent)
         q = QPainter(side)
         q.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        q.drawPixmap(QRectF(0, 0, side.width(), side.height()), pm, QRectF(pm.rect()))
+        q.drawPixmap(0, 0, pm)
         q.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
         q.fillRect(side.rect(), QColor(self._accent).lighter(135))
         q.end()
@@ -876,11 +877,9 @@ class AnimIcon(QLabel):
                 z = ((k / (N - 1.0)) - 0.5) * D
                 p.setTransform(QTransform(ca, shy, 0.0, 1.0, z * sa, 0.0) * base)
                 if k == 0 or k == N - 1:
-                    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
                     p.drawPixmap(dst, self._pm, src)
                 else:
-                    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)       # the edge needs no smoothing
-                    p.drawPixmap(dst, self._side, self._side_rect)
+                    p.drawPixmap(dst, self._side, QRectF(self._side.rect()))
             p.setTransform(base)
         else:
             p.drawPixmap(QRectF(-w / 2.0, -hh / 2.0, w, hh), self._pm, QRectF(self._pm.rect()))
