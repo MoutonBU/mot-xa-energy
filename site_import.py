@@ -371,7 +371,8 @@ def ifc_footprint(path, include_slabs=True, include_roof=True, progress=None):
 
 
 def ifc_mesh(path, max_tris=9000):
-    """The building as triangles for a small 3D picture: walls, slabs, roofs, columns, stairs. Returns [(x,y,z)*3, ...] in metres, centred on the model."""
+    """The building as triangles for a small 3D picture: walls, slabs, roofs, columns, stairs. Returns [(x,y,z)*3, ...] in metres, centred on the model.
+    Uses every core of the computer through the IFC reader's own iterator; the plain one-by-one way is the fallback."""
     import ifcopenshell
     import ifcopenshell.geom
     import numpy as np
@@ -385,21 +386,40 @@ def ifc_mesh(path, max_tris=9000):
         except Exception:
             pass
     V, F, off = [], [], 0
-    for el in els:
-        try:
-            g = ifcopenshell.geom.create_shape(st, el).geometry
-            v = np.array(g.verts, float).reshape(-1, 3)
-            f = np.array(g.faces, int).reshape(-1, 3)
-        except Exception:
-            continue
+
+    def add(g):
+        nonlocal off
+        v = np.array(g.verts, float).reshape(-1, 3)
+        f = np.array(g.faces, int).reshape(-1, 3)
         V.append(v)
         F.append(f + off)
         off += len(v)
+
+    try:
+        it = ifcopenshell.geom.iterator(st, ifc, max(1, (os.cpu_count() or 2) - 1), include=els)
+        if it.initialize():
+            while True:
+                try:
+                    add(it.get().geometry)
+                except Exception:
+                    pass
+                if not it.next():
+                    break
+    except Exception:
+        V, F, off = [], [], 0
+    if not V:
+        for el in els:
+            try:
+                add(ifcopenshell.geom.create_shape(st, el).geometry)
+            except Exception:
+                continue
     if not V:
         return []
     V = np.vstack(V)
     F = np.vstack(F)
     if len(F) > max_tris:
-        F = F[np.linspace(0, len(F) - 1, max_tris).astype(int)]
+        P = V[F]
+        ar = np.linalg.norm(np.cross(P[:, 1] - P[:, 0], P[:, 2] - P[:, 0]), axis=1)
+        F = F[np.argsort(-ar)[:max_tris]]                   # the biggest faces are what shows at this size
     V = V - np.array([(V[:, 0].min() + V[:, 0].max()) / 2.0, (V[:, 1].min() + V[:, 1].max()) / 2.0, V[:, 2].min()])
     return [tuple(map(tuple, V[t])) for t in F]

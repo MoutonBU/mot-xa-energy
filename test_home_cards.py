@@ -88,7 +88,7 @@ ifc_ = os.path.join(d, "m.ifc")
 open(ifc_, "w").write("x")
 M.MainWindow._thumb_ifc = staticmethod(lambda path, ifc: [[(0, 0), (10, 0), (10, 6), (0, 6)]] if ifc else None)
 dd_ = M.MainWindow._thumb_read(pj2, ifc_)
-assert len(dd_) == 4 and M.MainWindow._thumb_pixmap(dd_).width() == 120
+assert len(dd_) == 5 and M.MainWindow._thumb_pixmap(dd_).width() == 120
 M.SETTINGS["card_ifc"] = {ps8[0]: ifc_}
 assert w._thumb_key(ps8[0])[2] == ifc_ and w._thumb_key(ps8[1])[2] == ""
 M.SETTINGS["card_ifc"] = {}

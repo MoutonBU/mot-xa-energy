@@ -11787,13 +11787,68 @@ class MainWindow(QMainWindow):
             return None
 
     @staticmethod
-    def _thumb_mesh(ifc):
-        """the triangles of an IFC model for the 3D card picture (background thread; None if it cannot be read)"""
+    def _ifc_cache(ifc, ext):
+        """where the finished 3D picture data of an IFC model is kept, so the next start does not read the model again"""
         try:
-            import site_import as si_
-            return si_.ifc_mesh(ifc) or None
+            st = os.stat(ifc)
+            ab = os.path.abspath(ifc)
+            key = "%s_%x_%x_%x_v3" % (re.sub(r"\W", "_", os.path.basename(ab))[:40], st.st_mtime_ns, st.st_size, sum(ord(c) * (i + 1) for i, c in enumerate(ab)))
+            d = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "MCP_XA_Energy", "cache")
+            os.makedirs(d, exist_ok=True)
+            return os.path.join(d, key + ext)
         except Exception:
             return None
+
+    @staticmethod
+    def _thumb_mesh(ifc):
+        """the triangles of an IFC model for the 3D card picture (background thread; None if it cannot be read). Kept on disk after the first time."""
+        import numpy as np
+        cf = MainWindow._ifc_cache(ifc, ".mesh.npy")
+        try:
+            if cf and os.path.exists(cf):
+                return np.load(cf).tolist() or None
+        except Exception:
+            pass
+        try:
+            import site_import as si_
+            tris = si_.ifc_mesh(ifc, 4000) or None
+        except Exception:
+            return None
+        if tris and cf:
+            try:
+                np.save(cf, np.asarray(tris, np.float32))
+            except Exception:
+                pass
+        return tris
+
+    @staticmethod
+    def _spin_cached(ifc, tris):
+        """the turntable pictures: from disk if made before, otherwise drawn now and kept"""
+        import numpy as np
+        from PySide6.QtGui import QImage
+        cf = MainWindow._ifc_cache(ifc, ".spin.npy")
+        W, H, K, N = 120, 70, 1.5, 90
+        pw, ph = int(W * K), int(H * K)
+        try:
+            if cf and os.path.exists(cf):
+                a = np.load(cf)
+                if a.shape == (N, ph, pw, 4):
+                    out = []
+                    for i in range(N):
+                        im = QImage(a[i].tobytes(), pw, ph, pw * 4, QImage.Format.Format_ARGB32_Premultiplied).copy()
+                        im.setDevicePixelRatio(K)
+                        out.append(im)
+                    return out
+        except Exception:
+            pass
+        fr = MainWindow._spin_frames(tris, N, W, H, K)
+        if fr and cf:
+            try:
+                arr = np.stack([np.frombuffer(bytes(im.constBits()), np.uint8)[:pw * ph * 4].reshape(ph, pw, 4) for im in fr])
+                np.save(cf, arr)
+            except Exception:
+                pass
+        return fr
 
     @staticmethod
     def _thumb_read(path, ifc=None):
@@ -11819,12 +11874,23 @@ class MainWindow(QMainWindow):
             pass
         ifc = ifc or ((d.get("ifc") or {}).get("path") if isinstance(d.get("ifc"), dict) else "") or ""
         if ifc:
-            polys = MainWindow._thumb_ifc(path, ifc)
+            mesh = None
+            polys = None
+            try:
+                if os.path.exists(ifc) and os.path.getsize(ifc) <= 200 * 1024 * 1024:
+                    mesh = MainWindow._thumb_mesh(ifc)
+            except OSError:
+                pass
+            if mesh:
+                xs_ = [q[0] for tri_ in mesh for q in tri_]
+                ys_ = [q[1] for tri_ in mesh for q in tri_]
+                polys = [[(min(xs_), min(ys_)), (max(xs_), min(ys_)), (max(xs_), max(ys_)), (min(xs_), max(ys_))]]
+            else:
+                polys = MainWindow._thumb_ifc(path, ifc)          # no 3D possible: the outline from above
             if polys:
                 pts = [q for pl in polys for q in pl]
                 xs, ys = [q[0] for q in pts], [q[1] for q in pts]
-                mesh = MainWindow._thumb_mesh(ifc)
-                return ([(min(xs), min(ys)), (max(xs), min(ys)), (max(xs), max(ys)), (min(xs), max(ys))], polys, True, mesh)
+                return ([(min(xs), min(ys)), (max(xs), min(ys)), (max(xs), max(ys)), (min(xs), max(ys))], polys, True, mesh, ifc)
         verts = [tuple(v[:2]) for v in (site.get("verts") or []) if len(v) >= 2]
         blds = []
         for b in (site.get("buildings") or [])[:6]:
@@ -12000,11 +12066,10 @@ class MainWindow(QMainWindow):
             self._hide_model_preview()
             return
         self._spin_i = getattr(self, "_spin_i", 0) + 1
-        from PySide6.QtGui import QPixmap
         for j, (lab, fr) in enumerate(labs):
             try:
-                if lab.isVisible():
-                    lab.setPixmap(QPixmap.fromImage(fr[(self._spin_i + j * 11) % len(fr)]))
+                if lab.isVisible() and not lab.visibleRegion().isEmpty():       # not while it is scrolled out of sight
+                    lab.show_img(fr[(self._spin_i + j * 11) % len(fr)])
             except RuntimeError:
                 pass
 
@@ -12053,7 +12118,7 @@ class MainWindow(QMainWindow):
                 data = self._thumb_read(k[0], k[2])
                 if data and len(data) > 3 and isinstance(data[3], list):
                     try:
-                        fr = self._spin_frames(data[3])
+                        fr = self._spin_cached(data[4], data[3]) if len(data) > 4 and data[4] else self._spin_frames(data[3])
                     except Exception:
                         fr = []
                     if fr:
@@ -12077,7 +12142,7 @@ class MainWindow(QMainWindow):
             again = self.__dict__.pop("_thumb_more", False)
             self._rebuild_home_cards(reload=again)
         wk.done.connect(done)
-        wk.start()
+        QTimer.singleShot(900, lambda: wk.start(QThread.Priority.LowPriority))      # the window opens first; the pictures come after, at low priority
 
     def _card_menu(self, path, where):
         """right-click a card: show an IFC model of the building on it"""
@@ -12152,14 +12217,18 @@ class MainWindow(QMainWindow):
             cv.setSpacing(2)
             tm = self._thumb(p)
             if tm is not None:
-                tl = QLabel()
-                tl.setPixmap(tm)
-                tl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-                cl.addWidget(tl)
                 try:
                     sp_ = self._SPIN.get(self._thumb_key(p))
                 except OSError:
                     sp_ = None
+                if sp_:
+                    import ui_extras as ux_sp
+                    tl = ux_sp.SpinPic(sp_[0])
+                else:
+                    tl = QLabel()
+                    tl.setPixmap(tm)
+                tl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+                cl.addWidget(tl)
                 if sp_:
                     self._spin_labels.append((tl, sp_))
                     try:

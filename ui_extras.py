@@ -1629,3 +1629,22 @@ class CardModelHover(QObject):
 
     def mark_on(self):
         self._on = True
+
+
+class SpinPic(QWidget):
+    """The turning picture on a card: paints the ready-made frame straight to the screen (no pixmap made per frame)."""
+
+    def __init__(self, img, w=120, h=70):
+        super().__init__()
+        self.img = img
+        self.setFixedSize(w, h)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+    def show_img(self, img):
+        self.img = img
+        self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.drawImage(self.rect(), self.img)
+        p.end()
