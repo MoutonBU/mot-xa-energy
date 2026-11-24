@@ -11655,7 +11655,7 @@ class MainWindow(QMainWindow):
             "combined": self.combined,
             "xa": {"province": self.xa_prov.currentText(), "town": self.xa_town.currentText(), "zone": self.xa_zone.currentText(),
                    "limit": self.xa_limit.value(), "zone11": self.xa_zone11.currentText(), "zone11_manual": bool(getattr(self, "_zone11_manual", False)),
-                   "elements": self.xa_elements, "glass": self.xa_glass, "air": self.air_state(), "hw": self.hw_state(), "lt": self.lt_state()},
+                   "elements": self.xa_elements, "glass": self.xa_glass, "air": self.air_state(), "hw": self.hw_state(), "lt": self.lt_state(), "x26": self.x26_state()},
             "rd": self.rd,
             "cov": self.cov_state(),
             "costing": (self.costing_page.state() if getattr(self, "costing_page", None) else None),
@@ -12475,6 +12475,7 @@ class MainWindow(QMainWindow):
             self.air_set_state(xa.get("air"))
             self.lt_set_state(xa.get("lt"))
             self.hw_set_state(xa.get("hw"))
+            self.x26_set_state(xa.get("x26"))
             self._xa_refresh()
         self.rd = dict(RD_DEFAULTS)
         self.rd.update({k: str(v) for k, v in (data.get("rd") or {}).items() if k in RD_DEFAULTS})
@@ -15810,6 +15811,10 @@ class MainWindow(QMainWindow):
                 "At least half of the annual hot water must come from solar, a heat pump, gas, heat recovery or renewable fuel. "
                 "Choose the system, enter the cylinder and collector, and the check, storage and an indicative PV size are worked out.")
         self._build_hw_section(v)
+        heading("10. Roof lights, category 1 walls, air conditioning and sensors (SANS 10400-XA:2026)",
+                "New or restated in the 2026 edition: roof lights over 1,5 % of the floor area (table 5), the 140 mm category 1 wall, "
+                "the air conditioner efficiency (table 11) and the 100 m\u00b2 sensor limit. Enter what the design has; each line shows its result at once.")
+        self._build_x26_section(v)
         heading("Run the check and make the Energy XA report",
                 "Runs every check above (fenestration, orientation and shading, air leakage). The PDF carries all of it.")
         bot = QHBoxLayout()
@@ -18356,6 +18361,129 @@ class MainWindow(QMainWindow):
                     self.xa_glass[t]["H"] = 0.0                   # and H goes back to the window height
                 self.xa_glass[t]["P"] = v
 
+    # ---------- SANS 10400-XA:2026 extra checks: roof lights, category 1 wall, air conditioning, sensors ----------
+    def _build_x26_section(self, v):
+        g = QGridLayout()
+        g.setHorizontalSpacing(10)
+        g.setVerticalSpacing(6)
+
+        def spin(lo, hi, dec, step, val=0.0, suf=""):
+            b = QDoubleSpinBox()
+            b.setRange(lo, hi)
+            b.setDecimals(dec)
+            b.setSingleStep(step)
+            b.setValue(val)
+            if suf:
+                b.setSuffix(suf)
+            b.valueChanged.connect(lambda *_: self._x26_update())
+            return b
+        self.x26_rl_a, self.x26_rl_f = spin(0, 5000, 2, 0.5, 0, " m\u00b2"), spin(0, 50000, 1, 1, 0, " m\u00b2")
+        self.x26_rl_u, self.x26_rl_s = spin(0, 12, 2, 0.1, 0), spin(0, 1, 2, 0.05, 0)
+        self.x26_c1 = QCheckBox("Category 1 building (80 m\u00b2 or less, 6 m between supporting walls)")
+        self.x26_c1.toggled.connect(lambda *_: self._x26_update())
+        self.x26_wall = spin(0, 600, 0, 10, 0, " mm")
+        self.x26_ac_t = QComboBox()
+        self.x26_ac_t.addItem("(no fixed air conditioning)")
+        for i_, (n_, cap_, _c, _h) in enumerate(XA_AC_COP):
+            self.x26_ac_t.addItem("%s, %s kW" % (n_, cap_))
+        self.x26_ac_t.currentIndexChanged.connect(lambda *_: self._x26_update())
+        self.x26_ac_c, self.x26_ac_h = spin(0, 12, 2, 0.1, 0), spin(0, 12, 2, 0.1, 0)
+        self.x26_sens = spin(0, 5000, 0, 10, 0, " m\u00b2")
+        self.x26_out = QLabel()
+        self.x26_out.setWordWrap(True)
+        self.x26_out.setTextFormat(Qt.TextFormat.RichText)
+        rows = [("Roof lights: total area", self.x26_rl_a), ("Floor area they serve", self.x26_rl_f), ("Roof light U-value (W/m\u00b2.K)", self.x26_rl_u),
+                ("Roof light SHGC", self.x26_rl_s), (None, self.x26_c1), ("Thickness of the single-leaf masonry wall", self.x26_wall),
+                ("Air conditioning (table 11)", self.x26_ac_t), ("Rated COP, cooling", self.x26_ac_c), ("Rated COP, heating", self.x26_ac_h),
+                ("Largest area one occupancy / daylight sensor serves", self.x26_sens)]
+        for r_, (lab, w_) in enumerate(rows):
+            if lab is None:
+                g.addWidget(w_, r_, 0, 1, 2)
+            else:
+                g.addWidget(QLabel(lab), r_, 0)
+                g.addWidget(w_, r_, 1)
+        g.setColumnStretch(2, 1)
+        v.addLayout(g)
+        v.addWidget(self.x26_out)
+        self._x26_update()
+
+    def x26_state(self):
+        if not hasattr(self, "x26_rl_a"):
+            return {}
+        return {"rl": [self.x26_rl_a.value(), self.x26_rl_f.value(), self.x26_rl_u.value(), self.x26_rl_s.value()], "c1": self.x26_c1.isChecked(),
+                "wall": self.x26_wall.value(), "ac": [self.x26_ac_t.currentIndex(), self.x26_ac_c.value(), self.x26_ac_h.value()], "sens": self.x26_sens.value()}
+
+    def x26_set_state(self, d):
+        if not hasattr(self, "x26_rl_a"):
+            return
+        d = d if isinstance(d, dict) else {}
+        rl = (list(d.get("rl") or []) + [0, 0, 0, 0])[:4]
+        ac = (list(d.get("ac") or []) + [0, 0, 0])[:3]
+        for w_, val in ((self.x26_rl_a, rl[0]), (self.x26_rl_f, rl[1]), (self.x26_rl_u, rl[2]), (self.x26_rl_s, rl[3]), (self.x26_wall, d.get("wall", 0)),
+                        (self.x26_ac_c, ac[1]), (self.x26_ac_h, ac[2]), (self.x26_sens, d.get("sens", 0))):
+            w_.blockSignals(True)
+            w_.setValue(float(val or 0))
+            w_.blockSignals(False)
+        self.x26_c1.blockSignals(True)
+        self.x26_c1.setChecked(bool(d.get("c1")))
+        self.x26_c1.blockSignals(False)
+        self.x26_ac_t.blockSignals(True)
+        self.x26_ac_t.setCurrentIndex(max(0, min(int(ac[0] or 0), self.x26_ac_t.count() - 1)))
+        self.x26_ac_t.blockSignals(False)
+        self._x26_update()
+
+    def x26_rows(self):
+        """[(item, what was entered, requirement, state 'ok'/'bad'/'na', verdict)] for the checks that are new in the 2026 edition."""
+        out = []
+        a, f = self.x26_rl_a.value(), self.x26_rl_f.value()
+        if a > 0 and f > 0:
+            ratio = a / f * 100.0
+            mu, mg, txt = xa_rooflight_limits(ratio)
+            ok = (mu is None) or (self.x26_rl_u.value() > 0 and self.x26_rl_s.value() > 0
+                                  and self.x26_rl_u.value() <= mu + 1e-9 and self.x26_rl_s.value() <= mg + 1e-9)
+            need_in = mu is not None and (self.x26_rl_u.value() <= 0 or self.x26_rl_s.value() <= 0)
+            out.append(("Roof lights (5.3.9, table 5)", "%.2f m\u00b2 of %.1f m\u00b2 = %.1f %%; U %.2f, SHGC %.2f" % (a, f, ratio, self.x26_rl_u.value(), self.x26_rl_s.value()),
+                        txt, "ok" if ok else "bad", "Enter the roof light U-value and SHGC" if need_in else ("Complies" if ok else "Does not comply")))
+        else:
+            out.append(("Roof lights (5.3.9, table 5)", "none entered", "Over 1,5 % of the floor area served they need the U-value and SHGC of table 5.", "na", "Not applicable"))
+        if self.x26_c1.isChecked():
+            n = xa_cat1_wall_note(self.x26_wall.value())
+            out.append(("Category 1 wall (5.5.2)", "%.0f mm" % self.x26_wall.value(), "Single-leaf masonry at least 140 mm (without plaster)", "bad" if n else "ok",
+                        "Does not comply" if n else "Complies"))
+        i = self.x26_ac_t.currentIndex()
+        if i > 0:
+            n_, cap_, cc, ch = XA_AC_COP[i - 1]
+            okc = self.x26_ac_c.value() + 1e-9 >= cc
+            okh = ch is None or self.x26_ac_h.value() + 1e-9 >= ch
+            out.append(("Air conditioning (6.3, table 11)", "%s, %s kW: COP cooling %.2f, heating %.2f" % (n_, cap_, self.x26_ac_c.value(), self.x26_ac_h.value()),
+                        "COP cooling at least %.1f%s" % (cc, (", heating at least %.1f" % ch) if ch is not None else ""),
+                        "ok" if (okc and okh) else "bad", "Complies" if (okc and okh) else "Does not comply"))
+        occ = (self.xa_occ.currentText() if hasattr(self, "xa_occ") else "")[:2]
+        if occ in ("H3", "H4"):
+            out.append(("Sensors (6.2.3)", occ, "Not required in H3 and H4", "na", "Not applicable"))
+        elif self.x26_sens.value() > 0:
+            ok = self.x26_sens.value() <= XA_SENSOR_MAX_M2 + 1e-9
+            out.append(("Occupancy and daylight sensors (6.2.3)", "%.0f m\u00b2 per sensor" % self.x26_sens.value(), "No sensor serves more than 100 m\u00b2",
+                        "ok" if ok else "bad", "Complies" if ok else "Does not comply"))
+        else:
+            out.append(("Occupancy and daylight sensors (6.2.3)", "not entered", "Needed outside H3 and H4; no sensor serves more than 100 m\u00b2", "na", "Not entered"))
+        return out
+
+    def _x26_update(self):
+        if not hasattr(self, "x26_out"):
+            return
+        col = {"ok": "#2e9e5b", "bad": "#d8132b", "na": "#8a93a3"}
+        self.x26_out.setText("<br>".join("<span style='color:%s'><b>%s</b></span> &nbsp;%s: %s" % (col[k], "\u2713" if k == "ok" else "\u2717" if k == "bad" else "-", html.escape(n), html.escape(t))
+                                         for n, _i, _r, k, t in self.x26_rows()))
+
+    def _x26_report_parts(self, cell, okc, badc):
+        rows = self.x26_rows()
+        if all(k == "na" for _n, _i, _r, k, _t in rows):
+            return None
+        head = ["Item", "Entered", "Requirement", "Result"]
+        out = [[cell(n, bold=True), cell(i), cell(r), cell(t, "center", okc if k == "ok" else badc if k == "bad" else None, True)] for n, i, r, k, t in rows]
+        return ("Requirements of SANS 10400-XA:2026 (edition 3) that are checked from the figures entered on the Energy XA page.", head, out, [26, 30, 30, 14])
+
     def _run_xa(self):
         self._xa_refresh()
         zone11 = self.xa_zone11.currentText()
@@ -19432,6 +19560,12 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
             body.append(f'<p style="font-size:12pt; font-weight:bold; color:{RED}; margin-left:10px; margin-top:12px;">Shading measured from the IFC model (SANS 10400-XA 5.2)</p>')
             body.append(f'<p style="font-size:8.5pt; color:#222222; margin-left:10px;">{e(sp_[0])}</p>')
             body.append(table(sp_[1], sp_[2], sp_[3]))
+        body.sec = 'SANS 10400-XA:2026 additional checks'
+        xp_ = self._x26_report_parts(cell, "#1B7F3B", RED)
+        if xp_:
+            body.append(f'<p style="font-size:12pt; font-weight:bold; color:{RED}; margin-left:10px; margin-top:12px;">Roof lights, walls, air conditioning and sensors (SANS 10400-XA:2026)</p>')
+            body.append(f'<p style="font-size:8.5pt; color:#222222; margin-left:10px;">{e(xp_[0])}</p>')
+            body.append(table(xp_[1], xp_[2], xp_[3]))
         body.sec = 'Air infiltration and leakage'
         ap_ = self._air_report_parts(cell, "#1B7F3B", RED)
         if ap_:
@@ -20223,6 +20357,11 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
             s4.append(h2("Shading measured from the IFC model (SANS 10400-XA 5.2)"))
             s4.append(para(e(sp_[0])))
             s4.append(table(sp_[1], sp_[2], sp_[3], hbg=ACTBG))
+        xp_ = self._x26_report_parts(cell, OKC, BADC)
+        if xp_:
+            s4.append(h2("Roof lights, walls, air conditioning and sensors (SANS 10400-XA:2026)"))
+            s4.append(para(e(xp_[0])))
+            s4.append(table(xp_[1], xp_[2], xp_[3], hbg=ACTBG))
         ap_ = self._air_report_parts(cell, OKC, BADC)
         if ap_:
             s4.append(h2("Air infiltration and leakage (SANS 204 clause 4.4)"))

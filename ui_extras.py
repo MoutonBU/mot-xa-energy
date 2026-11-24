@@ -1017,50 +1017,37 @@ def install_icon_motion():
 
 
 class _Wipe(QWidget):
-    """A round wash of the tool's colour that spreads from the click, with the tool's mark in the middle: drawn by hand, no pictures scaled."""
+    """A flat curtain of the tool's colour that sweeps across the window and out again, with the tool's mark in the middle.
+    Only a few plain rectangles are painted, so it stays smooth on any computer."""
     def __init__(self, parent, col, pm, origin):
         super().__init__(parent)
-        self.col, self.pm, self.o = QColor(col), pm, origin
-        self.k, self.a = 0.0, 1.0
+        self.col, self.pm = QColor(col).darker(170), pm
+        self.edge = QColor(col).lighter(125)
+        self.x0, self.x1 = 0.0, 0.0          # the covered strip, as fractions of the width
+        self.mark = 0.0
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        w, h = parent.width(), parent.height()
-        self.R = max(((w - origin.x()) ** 2 + (h - origin.y()) ** 2) ** 0.5, (origin.x() ** 2 + (h - origin.y()) ** 2) ** 0.5,
-                     ((w - origin.x()) ** 2 + origin.y() ** 2) ** 0.5, (origin.x() ** 2 + origin.y() ** 2) ** 0.5) + 6
 
     def paintEvent(self, _e):
         p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setOpacity(self.a)
-        r = self.R * self.k
-        fill = self.col.darker(185)
-        edge = QColor(self.col.lighter(130))
-        g = QRadialGradient(self.o, max(r, 1.0))
-        g.setColorAt(0.0, self.col.darker(150))
-        g.setColorAt(0.8, fill)
-        g.setColorAt(1.0, fill)
-        p.setPen(QPen(edge, 3))
-        p.setBrush(QBrush(g))
-        p.drawEllipse(self.o, r, r)
-        if self.pm is not None and self.k > 0.25:
-            p.setOpacity(self.a * min(1.0, (self.k - 0.25) / 0.4))
-            sz = self.pm.deviceIndependentSize()
-            c = self.rect().center()
-            p.drawPixmap(int(c.x() - sz.width() / 2), int(c.y() - sz.height() / 2), self.pm)
+        w, h = self.width(), self.height()
+        a, b = int(self.x0 * w), int(self.x1 * w)
+        if b > a:
+            p.fillRect(a, 0, b - a, h, self.col)
+            p.fillRect(max(a, b - 4), 0, 4, h, self.edge)           # a bright leading edge
+            if self.pm is not None and self.mark > 0:
+                sz = self.pm.deviceIndependentSize()
+                cx, cy = self.width() // 2, self.height() // 2
+                if a < cx < b:
+                    p.setOpacity(self.mark)
+                    p.drawPixmap(int(cx - sz.width() / 2), int(cy - sz.height() / 2), self.pm)
         p.end()
 
 
-def wipe_open(win, src, col, on_covered, pm=None, ms=230):
-    """Open a tool or a project: the tool's colour spreads from the click until the window is covered, `on_covered` runs under it
-    (the page changes, the project loads) and the colour fades away to show the result. About 0.45 s in all, nothing heavy is drawn."""
+def wipe_open(win, src, col, on_covered, pm=None, ms=150):
+    """Open a tool or a project: the tool's colour sweeps in from the left (150 ms), `on_covered` runs under it (the page changes, the
+    project loads) and the colour sweeps out to the right (170 ms). One flat shape, no pictures scaled, no effects."""
     top = win.centralWidget() or win
-    try:
-        o = top.mapFromGlobal(QCursor.pos())
-        if not top.rect().contains(o):
-            o = src.mapTo(top, src.rect().center())
-    except Exception:
-        on_covered()
-        return
-    ov = _Wipe(top, col, pm, o)
+    ov = _Wipe(top, col, pm, None)
     ov.setGeometry(top.rect())
     ov.show()
     ov.raise_()
@@ -1068,30 +1055,32 @@ def wipe_open(win, src, col, on_covered, pm=None, ms=230):
     an.setDuration(ms)
     an.setStartValue(0.0)
     an.setEndValue(1.0)
-    an.setEasingCurve(QEasingCurve.Type.OutCubic)
+    an.setEasingCurve(QEasingCurve.Type.OutQuart)
 
     def step(v):
-        ov.k = float(v)
+        ov.x1 = float(v)
+        ov.mark = float(v)
         ov.update()
 
     def covered():
-        ov.k = 1.0
+        ov.x0, ov.x1, ov.mark = 0.0, 1.0, 1.0
         ov.repaint()
         try:
             on_covered()
         finally:
             fa = QVariantAnimation(ov)
-            fa.setDuration(220)
-            fa.setStartValue(1.0)
-            fa.setEndValue(0.0)
-            fa.setEasingCurve(QEasingCurve.Type.InQuad)
+            fa.setDuration(170)
+            fa.setStartValue(0.0)
+            fa.setEndValue(1.0)
+            fa.setEasingCurve(QEasingCurve.Type.InOutCubic)
 
-            def fade(v):
-                ov.a = float(v)
+            def out(v):
+                ov.x0 = float(v)
+                ov.mark = max(0.0, 1.0 - float(v) * 2.0)
                 ov.update()
-            fa.valueChanged.connect(fade)
+            fa.valueChanged.connect(out)
             fa.finished.connect(ov.deleteLater)
-            fa.start()
+            QTimer.singleShot(0, fa.start)          # let the new page paint once before the curtain leaves
             ov._fa = fa
     an.valueChanged.connect(step)
     an.finished.connect(covered)

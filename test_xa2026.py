@@ -28,3 +28,24 @@ assert "4.2" in M.RD_ROUTES[0] and "4.4" in M.RD_ROUTES[1]
 assert M.rd_route("Rational design (SANS 10400-XA:2021 clause 4.3) - reference building") == M.RD_ROUTES[1]
 assert M.rd_route("Deemed-to-satisfy (SANS 10400-XA:2021 clause 4.4)") == M.RD_ROUTES[0]
 print("ok xa2026")
+# the new inputs on the Energy XA page
+w = M.MainWindow(); w.show()
+w.x26_rl_a.setValue(6.0); w.x26_rl_f.setValue(100.0); w.x26_rl_u.setValue(2.7); w.x26_rl_s.setValue(0.25)
+r = {x[0]: x for x in w.x26_rows()}
+assert r["Roof lights (5.3.9, table 5)"][3] == "ok"
+w.x26_rl_s.setValue(0.4); assert {x[0]: x for x in w.x26_rows()}["Roof lights (5.3.9, table 5)"][3] == "bad"
+w.x26_c1.setChecked(True); w.x26_wall.setValue(110)
+assert {x[0]: x for x in w.x26_rows()}["Category 1 wall (5.5.2)"][3] == "bad"
+w.x26_ac_t.setCurrentIndex(2); w.x26_ac_c.setValue(3.1); w.x26_ac_h.setValue(3.3)
+assert {x[0]: x for x in w.x26_rows()}["Air conditioning (6.3, table 11)"][3] == "ok"
+w.x26_sens.setValue(150)
+assert [x for x in w.x26_rows() if x[0].startswith("Sensors")][0][3] == "na"          # the default occupancy is a dwelling: no sensors needed
+i_ = [i for i in range(w.xa_occ.count()) if w.xa_occ.itemText(i)[:2] == "G1"][0]
+w.xa_occ.setCurrentIndex(i_)
+assert [x for x in w.x26_rows() if x[0].startswith("Occupancy and daylight")][0][3] == "bad"
+w.x26_sens.setValue(80)
+assert [x for x in w.x26_rows() if x[0].startswith("Occupancy and daylight")][0][3] == "ok"
+st = w.x26_state(); w.x26_rl_a.setValue(0); w.x26_set_state(st)
+assert abs(w.x26_rl_a.value() - 6.0) < 1e-9 and w.x26_c1.isChecked()
+assert w.project_data()["xa"]["x26"]["wall"] == 110
+print("ok x26 inputs")
