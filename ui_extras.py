@@ -750,7 +750,7 @@ class AnimIcon(QLabel):
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self._anims = {}
 
-    def enable_spin(self, offset=0.0, period=7.0):
+    def enable_spin(self, offset=0.0, period=5.5):
         """turn the icon on a vertical axis as a thin solid: the face, a dark edge made of stacked copies, and the back face.
         Drawn live from the clock (not from ready-made pictures), so the turn is as smooth as the screen allows."""
         self._spin_on = True
@@ -766,7 +766,7 @@ class AnimIcon(QLabel):
         q.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         q.drawPixmap(QRectF(0, 0, side.width(), side.height()), pm, QRectF(pm.rect()))
         q.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-        q.fillRect(side.rect(), QColor(self._accent).darker(185))
+        q.fillRect(side.rect(), QColor(self._accent).darker(120))
         q.end()
         self._side = side
         self._side_rect = QRectF(side.rect())
@@ -839,16 +839,31 @@ class AnimIcon(QLabel):
         p.scale(scale, scale)
         w, hh = self._pm.width() / max(1.0, self._pm.devicePixelRatio()), self._pm.height() / max(1.0, self._pm.devicePixelRatio())
         if self.__dict__.get("_spin_on"):
-            ang = self._spin_t / self._spin_period * 2.0 * math.pi + self._spin_off
+            ang = 0.68 * math.sin(self._spin_t / self._spin_period * 2.0 * math.pi + self._spin_off)       # rocks about 40 degrees each way: smooth, always readable
             ca, sa = math.cos(ang), math.sin(ang)
             if abs(ca) < 0.08:
                 ca = 0.08 if ca >= 0 else -0.08                  # edge-on it still shows the thickness
-            D, N = 12.0, 9
+            D, N = 14.0, 9
             dst, src = QRectF(-w / 2.0, -hh / 2.0, w, hh), QRectF(self._pm.rect())
             base = p.transform()
+            sh = QRadialGradient(QPointF(0.0, hh / 2.0 + 9.0), w * 0.42)                  # a soft floor shadow that narrows as the icon turns
+            sc_ = QColor(0, 0, 0, 70)
+            sh.setColorAt(0.0, sc_)
+            sc_.setAlpha(0)
+            sh.setColorAt(1.0, sc_)
+            p.save()
+            p.translate(0.0, hh / 2.0 + 9.0)
+            p.scale(0.55 + 0.45 * abs(ca), 0.16)
+            p.translate(0.0, -(hh / 2.0 + 9.0))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(sh)
+            p.drawEllipse(QPointF(0.0, hh / 2.0 + 9.0), w * 0.42, w * 0.42)
+            p.restore()
+            base = p.transform()
+            shy = 0.09 * sa                                                              # a touch of perspective: the near side is lower
             for k in sorted(range(N), key=lambda k: ((k / (N - 1.0)) - 0.5) * D * ca):      # far layers first
                 z = ((k / (N - 1.0)) - 0.5) * D
-                p.setTransform(QTransform(ca, 0.0, 0.0, 1.0, z * sa, 0.0) * base)
+                p.setTransform(QTransform(ca, shy, 0.0, 1.0, z * sa, 0.0) * base)
                 if k == 0 or k == N - 1:
                     p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
                     p.drawPixmap(dst, self._pm, src)
