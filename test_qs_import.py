@@ -113,3 +113,12 @@ assert any(r[0] == "Site works" for r in p4.all_rows())
 p5 = M.MaterialsPage(H()); p5.set_state(p4.state()); assert p5.fees == p4.fees and len(p5.site) == 2 and abs(p5.grand()[1] - t2) < 1e-6
 h4 = p4.report_html(); assert "Professional fees, on the cost of works" in h4 and "Site works" in h4 and "Total professional fees" in h4
 print("ok site works + fees")
+# a typed percentage of the building cost instead of the guideline scale
+p6 = M.MaterialsPage(H())
+p6.custom = [{"group": "A", "item": "x", "unit": "sum", "qty": 1, "mat": 0, "lab": 20_000_000.0}]
+p6.fees = {"arch": {"on": True, "mode": "pct", "pct": 8.0}, "struct": {"on": True, "mode": "pct", "pct": 4.0}, "pm": {"on": True, "mode": "scale"}}
+fl6, w6 = p6.fee_rows()
+d6 = {x[0]: x for x in fl6}
+assert abs(d6["arch"][3] - w6 * 0.08) < 0.01 and abs(d6["struct"][3] - w6 * 0.04) < 0.01 and "8 %" in d6["arch"][2] and d6["pm"][3] > 0
+p6._fee_mode(0, 1); p6.refresh()
+print("ok fee percentages")

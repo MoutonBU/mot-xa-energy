@@ -698,6 +698,12 @@ def fee_scale_amount(rows, works):
     return row[1] + (works - row[0]) * row[2] / 100.0
 
 
+def fee_mode(key, f):
+    """'scale' (guideline scale) or 'pct' (a percentage of the building cost you type). The professionals without a scale are always 'pct'."""
+    scale = {k: sc for k, _n, sc in FEE_PROS}[key]
+    return "pct" if (not scale or f.get("mode") == "pct") else "scale"
+
+
 def fee_lines(works, fees):
     """[(key, name, scale name, fee, share or %)] for every professional switched on, on the cost of works (excluding VAT)."""
     out = []
@@ -706,13 +712,13 @@ def fee_lines(works, fees):
         f = {**FEE_DEFAULT[key], **(f_all.get(key) or {})}
         if not f["on"]:
             continue
-        if scale:
+        if fee_mode(key, f) == "scale":
             sk = ("arch_" + str(f.get("cx", "medium"))) if key == "arch" else scale
             sk = sk if sk in FEE_SCALES else scale
             amt = fee_scale_amount(FEE_SCALES[sk][2], works) * float(f["share"]) / 100.0
             out.append((key, name, FEE_SCALES[sk][0], amt, float(f["share"])))
         else:
-            out.append((key, name, "typed percentage of the cost of works", works * float(f["pct"]) / 100.0, float(f["pct"])))
+            out.append((key, name, "%g %% of the building cost" % float(f["pct"]), works * float(f["pct"]) / 100.0, float(f["pct"])))
     return out
 
 
@@ -816,8 +822,8 @@ class MaterialsPage(QWidget):
         self.sitet = QTableWidget(0, 6)
         self.sitet.setHorizontalHeaderLabels(["Site work", "Unit", "Quantity", "Material rate", "Labour rate", "Cost"])
         self.sitet.itemChanged.connect(self._site_edit)
-        self.feet = QTableWidget(len(FEE_PROS), 7)
-        self.feet.setHorizontalHeaderLabels(["Use", "Professional", "Guideline scale", "Share of the full service (%)", "Typed % of the cost of works", "Fee", "% of the cost of works"])
+        self.feet = QTableWidget(len(FEE_PROS), 8)
+        self.feet.setHorizontalHeaderLabels(["Use", "Professional", "How the fee is worked out", "Guideline scale", "Share of the full service (%)", "Your % of the building cost", "Fee", "% of the cost of works"])
         self.feet.itemChanged.connect(self._fee_edit)
         self.fitt = QTableWidget(0, 5)
         self.fitt.setHorizontalHeaderLabels(["Group", "Full price", "At the budget", "Cut", "Share of the cut (%): 0 protects the group"])
@@ -1271,27 +1277,36 @@ class MaterialsPage(QWidget):
             flines, works = self.fee_rows()
             byk = {x[0]: x for x in flines}
             ftt = self.feet
+            from PySide6.QtWidgets import QComboBox as _CB
             for r, (key, name, scale) in enumerate(FEE_PROS):
                 f = {**FEE_DEFAULT[key], **(self.fees.get(key) or {})}
+                mode = fee_mode(key, f)
                 ck = QTableWidgetItem("")
                 ck.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
                 ck.setCheckState(Qt.CheckState.Checked if f["on"] else Qt.CheckState.Unchecked)
-                sc_txt = FEE_SCALES["arch_" + str(f.get("cx", "medium"))][0] if key == "arch" else (FEE_SCALES[scale][0] if scale else "typed percentage")
+                sc_txt = (FEE_SCALES["arch_" + str(f.get("cx", "medium"))][0] if key == "arch" else FEE_SCALES[scale][0]) if scale else "none: you type the %"
                 fee = byk[key][3] if key in byk else 0.0
-                vals = [None, name, sc_txt, ("%g" % f["share"]) if scale else "", ("%g" % f["pct"]) if not scale else "",
+                vals = [None, name, None, sc_txt, ("%g" % f["share"]) if mode == "scale" else "", ("%g" % f["pct"]) if mode == "pct" else "",
                         rand(fee) if key in byk else "", ("%.1f %%" % (100.0 * fee / works)) if (key in byk and works) else ""]
                 ftt.setItem(r, 0, ck)
-                for ci in range(1, 7):
+                cb = _CB()
+                cb.addItems(["Guideline scale", "% of the building cost"] if scale else ["% of the building cost"])
+                cb.setCurrentIndex(1 if (mode == "pct" and scale) else 0)
+                cb.setEnabled(bool(scale))
+                cb.currentIndexChanged.connect(lambda i, r_=r: self._fee_mode(r_, i))
+                ftt.setCellWidget(r, 2, cb)
+                for ci in (1, 3, 4, 5, 6, 7):
                     it = QTableWidgetItem(vals[ci])
-                    if not (ci == 3 and scale) and not (ci == 4 and not scale):
+                    if not ((ci == 4 and mode == "scale") or (ci == 5 and mode == "pct")):
                         it.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
-                    if ci >= 3:
+                    if ci >= 4:
                         it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                     ftt.setItem(r, ci, it)
             ftot = sum(x[3] for x in flines)
             self.fee_note.setText("Professional fees worked on the cost of works of %s (excluding VAT): %s in all, %s of the cost of works. They are one line in the price build-up. "
-                                  "Guideline fees (SACAP, ECSA and SACPCMP) are not compulsory: agree each fee with the professional. The share column lets you leave out stages "
-                                  "(the architect, for example, does stages 1 to 4.2 only = 67 %%). %s" % (rand(works), rand(ftot), ("%.1f %%" % (100.0 * ftot / works)) if works else "0 %", ARCH_STAGES))
+                                  "Choose for each professional: the guideline scale (the share column lets you leave out stages, for example the architect doing stages 1 to 4.2 only = 67 %%), "
+                                  "or a percentage of the building cost that you type (for example 4, 8 or 16 %%). Guideline fees (SACAP, ECSA and SACPCMP) are not compulsory: agree each fee "
+                                  "with the professional. %s" % (rand(works), rand(ftot), ("%.1f %%" % (100.0 * ftot / works)) if works else "0 %", ARCH_STAGES))
             gcs = self.group_costs()
             ft = self.fitt
             ft.setRowCount(len(gcs))
@@ -1349,7 +1364,7 @@ class MaterialsPage(QWidget):
         QTimer.singleShot(0, self.refresh)
 
     def _fee_edit(self, it):
-        if self._busy or not (0 <= it.row() < len(FEE_PROS)) or it.column() not in (0, 3, 4):
+        if self._busy or not (0 <= it.row() < len(FEE_PROS)) or it.column() not in (0, 4, 5):
             return
         key = FEE_PROS[it.row()][0]
         f = self.fees.setdefault(key, {})
@@ -1360,7 +1375,12 @@ class MaterialsPage(QWidget):
                 v = float(it.text().replace(",", ".").replace(" ", ""))
             except ValueError:
                 return
-            f["share" if it.column() == 3 else "pct"] = max(0.0, v)
+            f["share" if it.column() == 4 else "pct"] = max(0.0, v)
+        QTimer.singleShot(0, self.refresh)
+
+    def _fee_mode(self, row, idx):
+        key = FEE_PROS[row][0]
+        self.fees.setdefault(key, {})["mode"] = "pct" if idx == 1 else "scale"
         QTimer.singleShot(0, self.refresh)
 
     def fee_rows(self):
