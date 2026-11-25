@@ -36,6 +36,11 @@ ALLOW = {
     "bic_m_per_bedroom": ("Built-in cupboard per bedroom", "m", 2.4),
     "handrail_extra_m": ("Handrail / balustrade length added by hand (steel or timber), on top of the IFC railings", "m", 0.0),
     "handrail_ss_m": ("Stainless steel handrail / balustrade length, by hand", "m", 0.0),
+    "glazing_level": ("Glazing for all windows: 0 = as modelled, 1 = single, 2 = double, 3 = triple", "0-3", 0.0),
+    "glazing_default": ("Glazing when the model does not say: 1 = single, 2 = double, 3 = triple", "1-3", 1.0),
+    "spec_level": ("Finish level of fit-out rates: 1 = standard, 2 = high-end, 3 = luxury (not applied to rates you imported)", "1-3", 1.0),
+    "footing_w": ("Strip footing width when the model has no footings", "m", 0.6),
+    "footing_d": ("Strip footing depth when the model has no footings", "m", 0.3),
     "floor_finish_pct": ("Floor finish as a share of the room floor area (tiles or similar)", "%", 100.0),
     "truss_m3_per_m2": ("Truss and roof timber per m2 of roof surface", "m3/m2", 0.032),
     "roof_pitch_default": ("Roof pitch used when the model has no roof object", "deg", 25.0),
@@ -98,6 +103,13 @@ RATES = {
     "cup_wall": ("Kitchen wall units", "m", 1500.0, 600.0, EST_NOTE),
     "countertop": ("Kitchen countertop", "m", 1200.0, 450.0, EST_NOTE),
     "bic": ("Built-in bedroom cupboard", "m", 2500.0, 800.0, EST_NOTE),
+    "glass_double": ("Extra over single glazing for double glazing (per m2 of glass)", "m2", 1450.0, 150.0, EST_NOTE),
+    "glass_triple": ("Extra over single glazing for triple glazing, low-e (per m2 of glass)", "m2", 3300.0, 250.0, EST_NOTE),
+    "door_ext": ("External hinged door (hardwood or aluminium) with frame and ironmongery", "each", 7800.0, 950.0, EST_NOTE),
+    "door_slider": ("Large sliding, stacking or folding glazed door system, aluminium (per m2)", "m2", 6200.0, 700.0, EST_NOTE),
+    "door_garage": ("Garage door, sectional or roller, with motor", "each", 21000.0, 2200.0, EST_NOTE),
+    "cup_tall": ("Tall units, pantry and built-in cupboards, full height (per m)", "m", 4800.0, 1300.0, EST_NOTE),
+    "appliance": ("Built-in cooktop, oven or extractor, supplied and fitted", "each", 11000.0, 600.0, EST_NOTE),
     "roof_trusses": ("Timber roof trusses, supplied, treated and erected (per m3 of timber)", "m3", 9800.0, 3600.0, EST_NOTE),
     "steel_section": ("Structural steel sections, supplied, fabricated and erected", "kg", 34.0, 14.0, EST_NOTE),
     "timber_member": ("Timber columns, beams and members (per m3), supplied and fixed", "m3", 9500.0, 2800.0, EST_NOTE),
@@ -133,6 +145,11 @@ MAT_CLASSES = [("insulation", r"insul|rockwool|polystyrene|\beps\b|\bxps\b|isoth
                ("fill", r"soil|earth|\bsand\b|gravel|hardcore|\bfill\b|rock|stone")]
 MAT_CLASSES = [(c, re.compile(rx, re.I)) for c, rx in MAT_CLASSES]
 STEEL_KG_M3 = 7850.0
+
+
+SPEC_MULT = {1: 1.0, 2: 1.35, 3: 1.8}
+BASE_KEYS = re.compile(r"^(concrete|steel|steel_section|brick|brickforce|ties|cement|sand_build|sand_plaster|excavate|hardcore|dpm|site_clear|timber_member|roof_trusses|"
+                       r"insulation|plumb_point|services|geyser|db|coc|light_point|socket|switch|inst:)")
 
 
 def mat_class(name):
@@ -294,7 +311,7 @@ def read_ifc_quantities(path):
     q = dict(brick110=0.0, brick220=0.0, cavity=0.0, plaster_area=0.0, plain_brick_area=0.0, footing_vol=0.0, footing_len=0.0,
              slab_vol=0.0, slab_area=0.0, tile_area=0.0, dpm_area=0.0, roof_slab_vol=0.0, roof_area=0.0, beam_vol=0.0, win_area=0.0,
              win_n=0, door_n=0, gate_n=0, rail_m=0.0, rail_n=0, names={}, levels={}, slab_levels={},
-             conc_wall_vol=0.0, steel_kg=0.0, timber_vol=0.0, ins_area=0.0, soffit_plaster=0.0, fill_vol=0.0, mat_report={}, no_material={}, rooms=[], roof_timber_vol=0.0, roof_plan=0.0, roof_pitch=0.0, storeys=[])
+             conc_wall_vol=0.0, steel_kg=0.0, timber_vol=0.0, ins_area=0.0, soffit_plaster=0.0, fill_vol=0.0, mat_report={}, no_material={}, rooms=[], roof_timber_vol=0.0, roof_plan=0.0, roof_pitch=0.0, storeys=[], openings=[], cab_base_m=0.0, cab_tall_m=0.0, cab_wall_m=0.0, appliance_n=0, wall_len={})
 
     def shape_stats(e):
         s = ifcopenshell.geom.create_shape(st, e)
@@ -375,6 +392,7 @@ def read_ifc_quantities(path):
                 q["plaster_area"] += npl * face
                 q["names"][name] = q["names"].get(name, 0.0) + face
                 q["levels"][lv] = q["levels"].get(lv, 0.0) + face
+                q["wall_len"][lv] = q["wall_len"].get(lv, 0.0) + face / max(float(v[:, 2].max() - v[:, 2].min()), 0.5)
                 continue
             if by and mas_t <= 0 and not ly:
                 continue
@@ -407,6 +425,7 @@ def read_ifc_quantities(path):
                 q["ins_area"] += face
             q["names"][name] = q["names"].get(name, 0.0) + face
             q["levels"][lv] = q["levels"].get(lv, 0.0) + face
+            q["wall_len"][lv] = q["wall_len"].get(lv, 0.0) + face / max(float(v[:, 2].max() - v[:, 2].min()), 0.5)
             if npl:
                 q["plaster_area"] += npl * face
             elif kind in ("brick110", "brick220"):
@@ -659,18 +678,100 @@ def read_ifc_quantities(path):
             q["rooms"].append((nm, ar, lvn, re.sub(r"\s+", "", m_.group(1)).upper() if m_ else ""))
         except Exception:
             continue
-    for e in f.by_type("IfcWindow"):
+    def psets_text(e):
+        out = {}
         try:
-            w, h = float(e.OverallWidth or 0) * sc, float(e.OverallHeight or 0) * sc
-            q["win_area"] += w * h
-            q["win_n"] += 1
+            for p in UE.get_psets(e).values():
+                for k_, v_ in p.items():
+                    if isinstance(v_, (str, bool)):
+                        out[str(k_)] = v_
         except Exception:
             pass
-    for e in f.by_type("IfcDoor"):
-        if re.match(r"^\s*G\d*\b", str(e.Name or "")):
-            q["gate_n"] += 1
-        else:
-            q["door_n"] += 1
+        return out
+
+    def glass_of(e):
+        """single, double or triple (or '' when the model does not say), read from the opening's properties, its type and its materials."""
+        txt = []
+        for src in (e, UE.get_type(e)):
+            if src is None:
+                continue
+            ps = psets_text(src)
+            txt += [str(v_) for k_, v_ in ps.items() if re.search(r"glass|glaz|pane", k_, re.I)]
+            txt += [str(getattr(src, "Name", "") or ""), str(getattr(src, "ObjectType", "") or "")]
+        txt += [n_ for n_, _c, _t in element_layers(e, sc)]
+        t = " ".join(txt)
+        if re.search(r"triple|3\s*-?\s*(pane|layer)|argon.*low", t, re.I):
+            return "triple"
+        if re.search(r"double|2\s*-?\s*(pane|layer)|\bdgu\b|insulated glass|low\s?-?e", t, re.I):
+            return "double"
+        if re.search(r"single|clear|float|laminated|tint", t, re.I):
+            return "single"
+        return ""
+
+    def host_external(e):
+        for src in [e] + [r_.RelatingOpeningElement for r_ in (getattr(e, "FillsVoids", None) or [])]:
+            pass
+        flag = None
+        try:
+            for r_ in getattr(e, "FillsVoids", None) or []:
+                for v_ in r_.RelatingOpeningElement.VoidsElements:
+                    ps = psets_text(v_.RelatingBuildingElement)
+                    if "IsExternal" in ps:
+                        flag = bool(ps["IsExternal"])
+        except Exception:
+            pass
+        own = psets_text(e).get("IsExternal")
+        return bool(own) if own is not None else flag
+
+    for e in list(f.by_type("IfcWindow")) + list(f.by_type("IfcDoor")):
+        try:
+            kind = "Window" if e.is_a("IfcWindow") else "Door"
+            w, h = float(e.OverallWidth or 0) * sc, float(e.OverallHeight or 0) * sc
+            nm = str(e.Name or "") + " " + type_name(e)
+            if kind == "Door" and re.match(r"^\s*G\d*\b", str(e.Name or "")):
+                q["gate_n"] += 1
+                continue
+            cls = kind.lower()
+            if kind == "Door":
+                if re.search(r"garage|roller|sectional|up.?and.?over", nm, re.I) or (w >= 2.3 and h <= 2.5 and re.search(r"\bgar|\bgd", nm, re.I)):
+                    cls = "garage"
+                elif re.search(r"slid|stack|bi.?fold|fold|patio|stacker|pivot|glass|french|curtain", nm, re.I) or w >= 1.75:
+                    cls = "slider"
+                elif host_external(e):
+                    cls = "external"
+                else:
+                    cls = "internal"
+            g = glass_of(e) if cls in ("window", "slider") else ""
+            q["openings"].append([kind, str(e.Name or "")[:30], round(w, 3), round(h, 3), g, cls])
+            if kind == "Window":
+                q["win_area"] += w * h
+                q["win_n"] += 1
+            else:
+                q["door_n"] += 1
+        except Exception:
+            pass
+    CAB = re.compile(r"cabinet|cupboard|wardrobe|vanity|\bcub\b|pantry|drawer|\bbic\b|shelv|locker|kitchen unit|base unit|wall unit|larder|credenza", re.I)
+    APPL = re.compile(r"cooktop|\bhob\b|\boven\b|extractor|dishwasher|range hood|cooker", re.I)
+    for e in f.by_type("IfcFurnishingElement"):
+        try:
+            label = type_name(e) + " " + (e.Name or "")
+            isc, isa = bool(CAB.search(label)), bool(APPL.search(label))
+            if not (isc or isa):
+                continue
+            if isa and not isc:
+                q["appliance_n"] += 1
+                continue
+            sv = ifcopenshell.geom.create_shape(st, e)
+            vv = np.array(sv.geometry.verts, dtype=float).reshape(-1, 3)
+            d = vv.max(0) - vv.min(0)
+            ln, ht = float(max(d[0], d[1])), float(d[2])
+            lvn = level(e)
+            el_ = {n_: z_ for n_, z_, _b in q["storeys"]}.get(lvn, 0.0)
+            high = float(vv.min(0)[2]) - el_ > 0.9 or re.search(r"\bwall\b|upper|overhead|hanging", label, re.I)
+            k_ = "cab_wall_m" if (high and ht < 1.3) else ("cab_tall_m" if ht >= 1.5 else "cab_base_m")
+            q[k_] += ln
+        except Exception:
+            continue
     q["mat_report"] = [[k_, c_, u_, v_] for (k_, c_, u_), v_ in sorted(rep.items())]      # a list, not tuple keys: the state is saved as JSON
     return q
 
@@ -714,8 +815,16 @@ def facts_from_area(slab_area):
 def bom(q, rates, allow, facts, fixtures=None):
     """Rows for one block: [(group, item, unit, qty, material rate, labour rate)].
     rates {key: (mat, lab)} and allow {key: value} override the defaults; facts = counts from the rooms; fixtures = {category: number}."""
-    R = lambda k: tuple(rates.get(k, (RATES[k][2], RATES[k][3])))
     A = lambda k: float(allow.get(k, ALLOW[k][2]))
+    spec = SPEC_MULT.get(int(round(A("spec_level"))), 1.0)
+
+    def R(k):
+        if k in rates:                                           # a rate you set or imported from a bill is never scaled
+            return tuple(rates[k])
+        m_, l_ = RATES[k][2], RATES[k][3]
+        if spec != 1.0 and not BASE_KEYS.match(k):               # fit-out rates follow the finish level; structure and services do not
+            return m_ * spec, l_ * spec
+        return m_, l_
     rows = []
 
     def add(group, item, unit, qty, key):
@@ -730,15 +839,21 @@ def bom(q, rates, allow, facts, fixtures=None):
     foot = max(slab_by.values()) if slab_by else q["slab_area"] / 2.0
     area = max(facts["area"], 1.0)
     # site and foundations
+    fv, fnote = q["footing_vol"], ""
+    if fv <= 0 and q.get("wall_len"):                                   # no footings in the model: a strip under every wall of the lowest level
+        el_ = {n_: z_ for n_, z_, _b in q.get("storeys", [])}
+        low = min(q["wall_len"], key=lambda k_: el_.get(k_, 0.0))
+        fv = q["wall_len"][low] * A("footing_w") * A("footing_d")
+        fnote = " (allowance: the model has no footings)"
     add("Site and foundations", "Site clearing and levelling", "m2", foot * 1.3, "site_clear")
-    add("Site and foundations", "Excavation and backfill of footings", "m3", q["footing_vol"] * 1.4, "excavate")
-    add("Site and foundations", "Hardcore under the ground slab", "m3", foot * A("hardcore_m"), "hardcore")
+    add("Site and foundations", "Excavation and backfill of footings", "m3", fv * 1.4, "excavate")
+    add("Site and foundations", "Hardcore under the ground slab", "m3", max(0.0, foot * A("hardcore_m") - q.get("fill_vol", 0.0)), "hardcore")
     wc = 1 + A("waste_concrete") / 100.0
-    add("Concrete", "Footings (concrete)", "m3", q["footing_vol"] * wc, "concrete")
+    add("Concrete", "Footings (concrete)" + fnote, "m3", fv * wc, "concrete")
     add("Concrete", "Floor and roof slabs (concrete)", "m3", (q["slab_vol"] + q["roof_slab_vol"]) * wc, "concrete")
     add("Concrete", "Beams, columns, stairs and other concrete objects (concrete)", "m3", q["beam_vol"] * wc, "concrete")
     add("Concrete", "Concrete walls", "m3", q.get("conc_wall_vol", 0.0) * wc, "concrete")
-    steel = (q["footing_vol"] * A("steel_footing") + (q["slab_vol"] + q["roof_slab_vol"]) * A("steel_slab") + q["beam_vol"] * A("steel_beam")
+    steel = (fv * A("steel_footing") + (q["slab_vol"] + q["roof_slab_vol"]) * A("steel_slab") + q["beam_vol"] * A("steel_beam")
              + q.get("conc_wall_vol", 0.0) * A("steel_wall"))
     add("Concrete", "Reinforcing steel", "kg", steel, "steel")
     add("Concrete", "Fill and hardcore from the slab layers", "m3", q.get("fill_vol", 0.0), "hardcore")
@@ -790,8 +905,37 @@ def bom(q, rates, allow, facts, fixtures=None):
     add("Finishes", "Paint (walls and ceilings)", "L", (pl_area + area) * A("paint_l_per_m2"), "paint")
     add("Finishes", "Painting labour", "m2", pl_area + area, "painting")
     # openings
-    add("Windows and doors", "Windows", "m2", q["win_area"], "window")
-    add("Windows and doors", "Doors", "each", float(q["door_n"]), "door")
+    ops = q.get("openings") or []
+    if ops:
+        names_ = {1: "single", 2: "double", 3: "triple"}
+        lvl, dflt = int(round(A("glazing_level"))), int(round(A("glazing_default")))
+        win = sl = 0.0
+        gar = ext = inn = 0
+        glass = {"single": 0.0, "double": 0.0, "triple": 0.0}
+        for _k, _nm, w_, h_, g_, cls in ops:
+            a_ = w_ * h_
+            if cls in ("window", "slider"):
+                if cls == "window":
+                    win += a_
+                else:
+                    sl += a_
+                glass[names_[lvl] if lvl in names_ else (g_ or names_.get(dflt, "single"))] += a_
+            elif cls == "garage":
+                gar += 1
+            elif cls == "external":
+                ext += 1
+            else:
+                inn += 1
+        add("Windows and doors", "Windows (aluminium frame, single glazed)", "m2", win, "window")
+        add("Windows and doors", "Large sliding, stacking and glazed doors", "m2", sl, "door_slider")
+        add("Windows and doors", "External doors", "each", float(ext), "door_ext")
+        add("Windows and doors", "Internal doors", "each", float(inn), "door")
+        add("Windows and doors", "Garage doors", "each", float(gar), "door_garage")
+        add("Windows and doors", "Double glazing, extra over single", "m2", glass["double"], "glass_double")
+        add("Windows and doors", "Triple glazing, low-e, extra over single", "m2", glass["triple"], "glass_triple")
+    else:
+        add("Windows and doors", "Windows", "m2", q["win_area"], "window")
+        add("Windows and doors", "Doors", "each", float(q["door_n"]), "door")
     # electrical
     lights = area * A("lights_per_100m2") / 100.0
     add("Electrical", "Light points", "no.", lights, "light_point")
@@ -808,10 +952,19 @@ def bom(q, rates, allow, facts, fixtures=None):
     add("Plumbing", "Water and sewer connections", "no.", float(facts["units"]), "services")
     # cupboards
     k = facts["kitchens"]
-    add("Cupboards and fittings", "Kitchen base units", "m", k * A("kitchen_base_m"), "cup_base")
-    add("Cupboards and fittings", "Kitchen wall units", "m", k * A("kitchen_wall_m"), "cup_wall")
-    add("Cupboards and fittings", "Kitchen countertops", "m", k * A("kitchen_base_m"), "countertop")
-    add("Cupboards and fittings", "Built-in bedroom cupboards", "m", facts["bedrooms"] * A("bic_m_per_bedroom"), "bic")
+    cb, ct, cw = q.get("cab_base_m", 0.0), q.get("cab_tall_m", 0.0), q.get("cab_wall_m", 0.0)
+    if cb + ct + cw > 0:                                                # cupboards drawn in the model: measured, not assumed
+        add("Cupboards and fittings", "Base units and vanities (from the model)", "m", cb, "cup_base")
+        add("Cupboards and fittings", "Countertops (from the model)", "m", cb, "countertop")
+        add("Cupboards and fittings", "Wall units (from the model)", "m", cw, "cup_wall")
+        add("Cupboards and fittings", "Tall units and built-in cupboards (from the model)", "m", ct, "cup_tall")
+        add("Cupboards and fittings", "Built-in bedroom cupboards not drawn in the model", "m", max(0.0, facts["bedrooms"] * A("bic_m_per_bedroom") - ct), "bic")
+    else:
+        add("Cupboards and fittings", "Kitchen base units", "m", k * A("kitchen_base_m"), "cup_base")
+        add("Cupboards and fittings", "Kitchen wall units", "m", k * A("kitchen_wall_m"), "cup_wall")
+        add("Cupboards and fittings", "Kitchen countertops", "m", k * A("kitchen_base_m"), "countertop")
+        add("Cupboards and fittings", "Built-in bedroom cupboards", "m", facts["bedrooms"] * A("bic_m_per_bedroom"), "bic")
+    add("Cupboards and fittings", "Built-in cooktops, ovens and extractors (from the model)", "each", float(q.get("appliance_n", 0)), "appliance")
     add("Cupboards and fittings", "Bathroom accessories", "no.", float(facts["baths"]), "accessories")
     # stairs, balconies and ramps: handrails priced per metre run
     m_, l_ = R("handrail")                                      # always listed, even at 0 m, so it can be seen and its length checked
@@ -1761,6 +1914,20 @@ class MaterialsPage(QWidget):
                 for kd, n in ((b["q"] or {}).get("no_material") or {}).items():
                     nomat[kd] = nomat.get(kd, 0) + n * max(1, int(b.get("repeat", 1)))
             rows_ = [(d, u, sum((b["q"] or {}).get(k, 0) * max(1, int(b.get("repeat", 1))) for b in self.blocks if b.get("q"))) for d, u, k in qs]
+            ops = [o for b in self.blocks for o in ((b["q"] or {}).get("openings") or []) for _r in range(max(1, int(b.get("repeat", 1))))]
+            for cls_, lab_ in (("window", "Windows"), ("slider", "Large sliding or glazed doors"), ("external", "External doors"), ("internal", "Internal doors"), ("garage", "Garage doors")):
+                sub_ = [o for o in ops if o[5] == cls_]
+                if sub_:
+                    rows_.append(("Openings read from the model: " + lab_, "no.", float(len(sub_))))
+                    if cls_ in ("window", "slider"):
+                        for gl_ in ("single", "double", "triple", ""):
+                            a_ = sum(o[2] * o[3] for o in sub_ if o[4] == gl_)
+                            if a_ > 0:
+                                rows_.append(("   glazing %s: %s" % (gl_ or "not stated in the model", lab_.lower()), "m2", a_))
+            for k_, lab_ in (("cab_base_m", "Base units and vanities"), ("cab_wall_m", "Wall units"), ("cab_tall_m", "Tall units"), ("appliance_n", "Built-in appliances")):
+                v_ = sum((b["q"] or {}).get(k_, 0) * max(1, int(b.get("repeat", 1))) for b in self.blocks if b.get("q"))
+                if v_:
+                    rows_.append(("Cupboards read from the model: " + lab_, "no." if k_ == "appliance_n" else "m", float(v_)))
             rows_ += [("Material read from the model: %s, %s" % (kd, cl), un, v) for (kd, cl, un), v in sorted(mats.items()) if v > 0.005]
             rows_ += [("No material in the model, name or concrete assumed: %s" % kd, "no.", float(n)) for kd, n in sorted(nomat.items())]
             qt.setRowCount(len(rows_))

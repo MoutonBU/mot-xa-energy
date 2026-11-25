@@ -6967,27 +6967,43 @@ def read_ifc_model(path):
         return re.sub(r"^\s*u(?:nit)?\s*\d+\s*[-_. ]\s*", "", str(n_ or ""), flags=re.I).strip().lower()
     EXT_ROOM_RE = re.compile(r"patio|balcon|stoep|deck|veranda|terrace|garage|carport", re.I)
     ranked = []                    # (item, element, pos, [(distance, gid), ...] nearest first)
+    high_linked = [0]
+    _floor_elev = {n_: e_ for n_, e_ in storeys}
     for it in items:
         for el, pos, fl in zip(it["_els"], it["_pos"], it["_fl"]):
             if el.id() in linked or not pos:
                 continue
             cands = by_floor_rooms.get(fl) or list(gid2room)
             rk = []
-            for gid in cands:
-                bb = boxes.get(gid)
-                if not bb: continue
-                dx = max(bb[0] - pos[0], 0.0, pos[0] - bb[2]); dy = max(bb[1] - pos[1], 0.0, pos[1] - bb[3])
-                dd = (dx * dx + dy * dy) ** 0.5
-                if dd >= 0.6:
-                    continue
-                if tris.get(gid):
-                    dd = _dist_tris(pos, tris[gid])               # the room's real outline decides, not its box
-                    if dd >= 0.6:
+
+            def _rank(cands_, z_limit=None, reach=0.6):
+                out = []
+                for gid in cands_:
+                    bb = boxes.get(gid)
+                    if not bb: continue
+                    if z_limit is not None:                          # failsafe: only rooms whose floor is at or below the window
+                        if _floor_elev.get(gid2room[gid].get("floor") or "", 0.0) > z_limit + 0.3:
+                            continue
+                    dx = max(bb[0] - pos[0], 0.0, pos[0] - bb[2]); dy = max(bb[1] - pos[1], 0.0, pos[1] - bb[3])
+                    dd = (dx * dx + dy * dy) ** 0.5
+                    if dd >= reach:
                         continue
-                if EXT_ROOM_RE.search(gid2room[gid].get("name") or ""):
-                    dd += 0.5                                       # a patio outline reaches the wall: a window belongs to the room behind it
-                rk.append((dd, gid))
-            rk.sort()
+                    if tris.get(gid):
+                        dd = _dist_tris(pos, tris[gid])               # the room's real outline decides, not its box
+                        if dd >= reach:
+                            continue
+                    if EXT_ROOM_RE.search(gid2room[gid].get("name") or ""):
+                        dd += 0.5                                       # a patio outline reaches the wall: a window belongs to the room behind it
+                    if z_limit is not None:
+                        dd += 0.02 * max(0.0, z_limit - _floor_elev.get(gid2room[gid].get("floor") or "", 0.0))    # the nearest floor below wins
+                    out.append((dd, gid))
+                out.sort()
+                return out
+            rk = _rank(cands)
+            if not rk and len(pos) > 2:                              # a window on its own storey (a high band of windows in a separate wall) that no room reaches:
+                rk = _rank(list(gid2room), pos[2], 1.6)                   # take the room under it in plan, whatever storey the window is filed on
+                if rk:
+                    high_linked[0] += 1
             ranked.append((it, el, pos, rk))
 
     def _bare(n_):
@@ -7086,7 +7102,7 @@ def read_ifc_model(path):
     basement = {"floors": base_names, "rooms": sum(1 for r in rooms if r["basement"]),
                 "windows": sum(int((it.get("by_floor") or {}).get(n_, 0)) for it in items if it["kind"] == "Window" for n_ in base_names),
                 "doors": sum(int((it.get("by_floor") or {}).get(n_, 0)) for it in items if it["kind"] == "Door" for n_ in base_names)} if base_names else {}
-    return {"basement": basement, "aliases": aliases, "floors": floor_order, "rooms": rooms, "items": items, "north": north, "gross": round(gross, 2), "solid_doors": ext_noglass,
+    return {"basement": basement, "high_linked": high_linked[0], "aliases": aliases, "floors": floor_order, "rooms": rooms, "items": items, "north": north, "gross": round(gross, 2), "solid_doors": ext_noglass,
             "excluded": excluded_n, "dups": dup_n, "inside_doors": sum(left_out.values()) if isinstance(left_out, dict) else 0, "n_spaces": n_spaces, "geo_area": geo_area_n,
             "no_area": no_area_n, "no_area_names": no_area_names, "room_report": rep_lines, "n_zones": len(ifc.by_type("IfcZone")), "n_storeys": len(ifc.by_type("IfcBuildingStorey")),
             "n_win": len(_ifc_open_els(ifc, "IfcWindow")), "n_door": len(_ifc_open_els(ifc, "IfcDoor")), "placed": placed, "unplaced": unplaced, "faced": n_faced,
@@ -13478,6 +13494,8 @@ class MainWindow(QMainWindow):
                             % (res["no_area"], ", ".join(str(n_) for n_ in res.get("no_area_names", [])[:12])))
                 if nsd:
                     msg += " Door types with no glass found in the model (left out): %d." % nsd
+                if res.get("high_linked"):
+                    msg += " High windows filed on another storey were linked to the room under them by plan position: %d (check them)." % res["high_linked"]
                 if res.get("basement"):
                     bs = res["basement"]
                     msg += (" Basement found (%s): %d rooms, %d windows and %d outside doors on it."
