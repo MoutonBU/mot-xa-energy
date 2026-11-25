@@ -38,3 +38,9 @@ assert "OVER THE MARGIN" in w2.park_badge_html() and "E03050" in w2.park_badge_s
 w2.park_load(dict(M.PARK_DEFAULTS, units=12, counts={"open":21,"access":1})); w2.cov_stand.setValue(100); w2._cov_refresh()
 assert "WITHIN" in w2.park_badge.text()
 print("ok badge")
+w3=M.MainWindow(); w3.park_load(dict(M.PARK_DEFAULTS, units=12, counts={"open":8,"carport":10,"access":1}))
+w3.cov_stand.setValue(1500); w3.cov_maxcov.setValue(50); w3.cov_maxfar.setValue(1.0); w3._cov_refresh()
+c=M.parking_compare(w3.cov_state()); assert len(c)==5 and c[0][1]==21 and c[0][2]==19 and not c[0][4], c
+assert "Permissible and actual" in w3.park_out.text()
+import tempfile; w3._write_cov_pdf(os.path.join(tempfile.mkdtemp(),"b.pdf"))
+print("ok compare")

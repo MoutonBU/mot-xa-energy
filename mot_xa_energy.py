@@ -5434,6 +5434,28 @@ def parking_calc(p):
             "tandem_note": cnt.get("tandem", 0) > 0}
 
 
+def parking_compare(st):
+    """Permissible against actual for the parking, from the whole Coverage tab state: [(what, permissible, actual, unit, ok)].
+    Permissible is None where there is no limit. The coverage and FAR rows use the scenario with the covered parking."""
+    p = (st or {}).get("parking") or {}
+    r = parking_calc(p)
+    rows = []
+    if r["units"] or r["provided"]:
+        rows += [("Parking bays in total", r["required"], r["provided"], "bays", r["provided"] >= r["required"]),
+                 ("Visitor bays (open, carport, shaded or kerb)", r["visitor_req"], r["visitor_provided"], "bays", r["visitor_provided"] >= r["visitor_req"]),
+                 ("Accessible bays", r["access_req"], r["access_prov"], "bays", r["access_prov"] >= r["access_req"])]
+    try:
+        sc = cov_scenarios(st)
+        pk = [x for x in sc if "parking" in x["name"]] or sc[-1:]
+        if pk and pk[0]["stand"] > 0 and (r["covered_area"] or r["far_area"] or pk[0]["max_cov"] > 0 or pk[0]["max_far"] > 0):
+            x = pk[0]
+            rows.append(("Coverage with the parking (" + x["name"] + ")", x["max_cov"] if x["max_cov"] > 0 else None, x["cov"], "%", x["cov_ok"]))
+            rows.append(("Floor area ratio with the parking", x["max_far"] if x["max_far"] > 0 else None, x["far"], "FAR", x["far_ok"]))
+    except Exception:
+        pass
+    return rows
+
+
 def parking_cost_lines(p):
     """Site-works lines for the costing, at general South African rates (no IFC needed): [(item, unit, qty, material rate, labour rate)]."""
     r = parking_calc(p)
@@ -15656,10 +15678,19 @@ class MainWindow(QMainWindow):
         h = "".join("<tr><td>%s</td><td style='color:#777'>%s</td><td align='right'><b>%s</b></td></tr>" % x for x in rows)
         verdict = ("<b style='color:%s'>%s</b>" % (col(r["ok"]), "Parking requirement met" if r["ok"] else
                                                    "Short by %d bay(s), or visitor or accessible bays are not enough" % r["short"]))
+        cmp_ = parking_compare(self.cov_state())
+        ct = ""
+        if cmp_:
+            f_ = lambda v, u: "-" if v is None else (("%.3f" % v) if u == "FAR" else ("%.2f" % v if u == "%" else "%d" % v))
+            ct = ("<br><b>Permissible and actual</b><table cellspacing='0' cellpadding='3' width='100%'><tr><th align='left'></th><th align='right'>Permissible</th>"
+                  "<th align='right'>Actual</th><th align='right'></th></tr>" + "".join(
+                      "<tr><td>%s</td><td align='right'>%s</td><td align='right'><b>%s</b></td><td align='right'><b style='color:%s'>%s</b></td></tr>"
+                      % (w_, f_(pe, u) + (" max" if u != "bays" and pe is not None else (" needed" if u == "bays" else "")), f_(ac, u), col(ok), "OK" if ok else "OVER / SHORT")
+                      for w_, pe, ac, u, ok in cmp_) + "</table>")
         extra = ("<br>Covered parking adds %.1f m2 to the coverage and %.1f m2 to the floor area. Paved bays and aisles: %.1f m2."
                  % (r["covered_area"], r["far_area"], r["hard_area"]))
         tn = "<br><i>Tandem bays serve one unit each (the front bay blocks the back one), so they are not visitor bays.</i>" if r["tandem_note"] else ""
-        return "<table cellspacing='0' cellpadding='3' width='100%'>" + h + "</table>" + verdict + extra + tn
+        return "<table cellspacing='0' cellpadding='3' width='100%'>" + h + "</table>" + verdict + ct + extra + tn
 
     def cov_fill_from_rooms(self, force=False, mode="tab"):
         """Fill the blocks and carport roofs from the Rooms list: always on the button, when the wall allowance
@@ -15936,6 +15967,14 @@ class MainWindow(QMainWindow):
                     [cell("Paved bays and aisles (m2)"), cell(f"{_pk['hard_area']:.2f}", "right"), cell("")]]
             frags.append(f'<p style="font-size:12pt; font-weight:bold; color:{RED}; margin-left:10px; margin-top:12px;">Parking</p>')
             frags.append(table(["", "Number / area", ""], prow, [60, 20, 20]))
+            _fm = lambda v, u: "no limit" if v is None else (("%.3f" % v) if u == "FAR" else ("%.2f%%" % v if u == "%" else "%d" % v))
+            _fa = lambda v, u: ("%.3f" % v) if u == "FAR" else ("%.2f%%" % v if u == "%" else "%d" % v)
+            crow = [[cell(w_, bold=True), cell(_fm(pe, u) + (" needed" if u == "bays" else ""), "right"), cell(_fa(ac, u), "right"),
+                     cell("OK" if ok else ("SHORT" if u == "bays" else "OVER LIMIT"), "center", "#1B7F3B" if ok else RED, True,
+                          bg="#E7F5EB" if ok else "#FCE8EB")] for w_, pe, ac, u, ok in parking_compare(st)]
+            if crow:
+                frags.append('<p style="font-size:9pt; font-weight:bold; margin-left:10px; margin-top:8px;">Permissible and actual</p>')
+                frags.append(table(["", "Permissible", "Actual", "Result"], crow, [46, 20, 16, 18]))
             frags.append('<p style="font-size:7.5pt; color:#777777;">Ratios are typical South African figures; the zoning scheme of the municipality '
                          'and SANS 10400-S set the final numbers.' + (' Tandem bays serve one unit each and are not visitor bays.' if _pk["tandem_note"] else '') + '</p>')
         frags.append('<p style="font-size:7.5pt; color:#777777; margin-top:14px;">Areas are the figures entered on the Coverage and FAR tab. '
