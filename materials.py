@@ -2068,6 +2068,13 @@ class MaterialsPage(QWidget):
         self.refresh()
         self.tabs.setCurrentIndex(self.tabs.indexOf(self.sitet.parentWidget()))
 
+    def set_parking_lines(self, lines):
+        """Replace the 'Parking:' lines of the site works with new ones: (item, unit, qty, mat, lab)."""
+        self.site = [c for c in self.site if not str(c.get("item", "")).startswith("Parking:")]
+        for it, u, q, m, l in lines:
+            self.site.append({"item": it, "unit": u, "qty": q, "mat": m, "lab": l})
+        self.refresh()
+
     def remove_site(self):
         r = self.sitet.currentRow()
         if 0 <= r < len(self.site):

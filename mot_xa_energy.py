@@ -5334,13 +5334,16 @@ def cov_from_rooms(rooms, walls_pct=15.0, block_name="Building", total=None):
     return blocks, roofs
 
 
-def cov_scenario(st, name, blocks, with_roofs):
+def cov_scenario(st, name, blocks, with_roofs, park=None):
     """Coverage and FAR of a set of blocks (and, optionally, the roofs that are ticked) on the stand."""
     stand = cov_num(st.get("stand", 0))
     foot = sum(cov_num(b.get("fp", 0)) for b in blocks)
     floor = sum(cov_block_floor(b) for b in blocks)
     roofs = [r for r in st.get("roofs", []) if r.get("on", True)] if with_roofs else []
     roof = sum(cov_num(r.get("area", 0)) for r in roofs)
+    if park:
+        roof += park["covered_area"]
+        floor += park["far_area"]
     mc, mf = cov_num(st.get("max_cov", 0)), cov_num(st.get("max_far", 0))
     cov = (foot + roof) / stand * 100 if stand > 0 else 0.0
     far = floor / stand if stand > 0 else 0.0
@@ -5360,6 +5363,94 @@ def cov_scenarios(st):
         out.append(cov_scenario(st, f"All blocks ({len(on)})", on, False))
         if any(r.get("on", True) and cov_num(r.get("area", 0)) > 0 for r in st.get("roofs", [])):
             out.append(cov_scenario(st, f"All blocks ({len(on)}) with carport roofs", on, True))
+        pk = parking_calc(st.get("parking"))
+        if pk["covered_area"] > 0 or pk["far_area"] > 0:
+            out.append(cov_scenario(st, f"All blocks ({len(on)}) with covered parking", on, True, pk))
+    return out
+
+
+# ---------------- parking: bays needed for the units, bays provided, and what the covered ones add to coverage and FAR ----------------
+# The ratios are typical South African town-planning figures; every scheme sets its own, so each one can be typed over.
+PARK_RULES = ["A bay ratio per unit (type it: 1.5 per unit is a common figure for flats and townhouses)",
+              "By bedrooms: bachelor or 1 bed = 1 bay, 2 bed = 1.5 bays, 3 bed or more = 2 bays",
+              "Single dwelling house: 2 bays"]
+# key, label, bay width m, bay length m, bays per unit counted, covered by a roof, walls (enclosed)
+PARK_TYPES = [("open", "Open bay, uncovered", 2.5, 5.0, 1, False, False),
+              ("carport", "Carport bay (roof, open sides)", 2.7, 5.5, 1, True, False),
+              ("garage", "Garage, single, enclosed", 3.0, 6.0, 1, True, True),
+              ("tandem", "Tandem pair: two bays one behind the other (2.5 x 10.0)", 2.5, 10.0, 2, False, False),
+              ("parallel", "Parallel bay along a kerb", 2.5, 6.0, 1, False, False),
+              ("access", "Accessible (disabled) bay", 3.5, 5.0, 1, False, False),
+              ("basement", "Basement or undercroft bay", 2.5, 5.0, 1, True, True)]
+PARK_DEFAULTS = {"units": 0, "rule": 0, "ratio": 1.5, "visitor": 0.25, "mix": [0, 0, 0], "counts": {}, "access_per": 25, "min_access_from": 10,
+                 "tandem_covered": False, "garage_far": True, "basement_far": False, "aisle_area": 27.5, "wall_pct": 15.0}
+
+
+def parking_calc(p):
+    """What the parking needs and has. p is the Parking tab state (see PARK_DEFAULTS); returns a dict with the numbers the tab and the report show."""
+    import math
+    d = dict(PARK_DEFAULTS)
+    d.update(p or {})
+    cnt = {k: max(0, int(cov_num(v))) for k, v in (d.get("counts") or {}).items()}
+    units = max(0, int(cov_num(d["units"])))
+    rule = int(cov_num(d["rule"]))
+    mix = [max(0, int(cov_num(x))) for x in (list(d.get("mix") or [0, 0, 0]) + [0, 0, 0])[:3]]
+    if rule == 1:
+        if sum(mix) == 0:
+            mix = [0, units, 0]                                  # no mix typed: every unit is taken as a 2 bedroom unit
+        resident = mix[0] * 1.0 + mix[1] * 1.5 + mix[2] * 2.0
+    elif rule == 2:
+        resident = units * 2.0
+    else:
+        resident = units * cov_num(d["ratio"])
+    visitor = units * cov_num(d["visitor"])
+    required = math.ceil(resident + visitor - 1e-9)
+    acc_req = 0
+    if required >= cov_num(d["min_access_from"]) and cov_num(d["access_per"]) > 0:
+        acc_req = max(1, math.ceil(required / cov_num(d["access_per"])))
+    types = {t[0]: t for t in PARK_TYPES}
+    provided = sum(cnt.get(k, 0) * types[k][4] for k in types)
+    visitor_ok = cnt.get("open", 0) + cnt.get("carport", 0) + cnt.get("parallel", 0) + cnt.get("access", 0)   # a visitor cannot use a garage, a tandem bay or a basement bay
+    k_w = 1.0 + cov_num(d["wall_pct"]) / 100.0
+    covered = cnt.get("carport", 0) * types["carport"][2] * types["carport"][3]
+    covered += cnt.get("garage", 0) * types["garage"][2] * types["garage"][3] * k_w
+    if d.get("tandem_covered"):
+        covered += cnt.get("tandem", 0) * types["tandem"][2] * types["tandem"][3]
+    far_area = 0.0
+    if d.get("garage_far"):
+        far_area += cnt.get("garage", 0) * types["garage"][2] * types["garage"][3] * k_w
+    if d.get("basement_far"):
+        far_area += cnt.get("basement", 0) * types["basement"][2] * types["basement"][3] * (cov_num(d["aisle_area"]) / (types["basement"][2] * types["basement"][3]))
+    open_bays = cnt.get("open", 0) + cnt.get("parallel", 0) + cnt.get("access", 0) + cnt.get("tandem", 0) * 2
+    hard = open_bays * cov_num(d["aisle_area"])                  # bays and the aisle share, as hard surface
+    return {"units": units, "resident": resident, "visitor": visitor, "required": required, "access_req": acc_req,
+            "provided": provided, "visitor_provided": visitor_ok, "visitor_req": math.ceil(visitor - 1e-9) if visitor > 0 else 0,
+            "short": max(0, required - provided), "spare": max(0, provided - required),
+            "access_prov": cnt.get("access", 0), "ok": provided >= required and visitor_ok >= (math.ceil(visitor - 1e-9) if visitor > 0 else 0)
+            and cnt.get("access", 0) >= acc_req, "covered_area": covered, "far_area": far_area, "hard_area": hard, "counts": cnt,
+            "tandem_note": cnt.get("tandem", 0) > 0}
+
+
+def parking_cost_lines(p):
+    """Site-works lines for the costing, at general South African rates (no IFC needed): [(item, unit, qty, material rate, labour rate)]."""
+    r = parking_calc(p)
+    c = r["counts"]
+    out = []
+    if r["hard_area"] > 0:
+        out.append(("Parking: bays and aisles, interlocking paving on compacted bed", "m2", round(r["hard_area"], 1), 330.0, 190.0))
+        nb = c.get("open", 0) + c.get("parallel", 0) + c.get("access", 0) + c.get("tandem", 0) * 2
+        out.append(("Parking: bay markings, kerbs and wheel stops", "each", float(nb), 180.0, 120.0))
+    if c.get("carport", 0):
+        out.append(("Parking: carport structure and roof", "m2", round(c["carport"] * 2.7 * 5.5, 1), 1400.0, 600.0))
+    if c.get("tandem", 0) and p.get("tandem_covered"):
+        out.append(("Parking: carport over tandem bays", "m2", round(c["tandem"] * 2.5 * 10.0, 1), 1400.0, 600.0))
+    if c.get("garage", 0):
+        out.append(("Parking: garage built, single enclosed (per m2 of floor)", "m2", round(c["garage"] * 3.4 * 6.4, 1), 4200.0, 1900.0))
+        out.append(("Parking: garage door with motor", "each", float(c["garage"]), 21000.0, 2200.0))
+    if c.get("basement", 0):
+        out.append(("Parking: basement or undercroft bay, structure, waterproofing and ventilation", "each", float(c["basement"]), 85000.0, 35000.0))
+    if c.get("access", 0):
+        out.append(("Parking: accessible bay signs and markings", "each", float(c["access"]), 900.0, 300.0))
     return out
 
 
@@ -15276,9 +15367,10 @@ class MainWindow(QMainWindow):
         lay = QVBoxLayout(page)
         lay.setContentsMargins(10, 10, 10, 10)
         import ui_extras as ux_
-        self.cov_steps = ux_.StepBar(["The stand and its limits", "The buildings", "The result and reports"],
+        self.cov_steps = ux_.StepBar(["The stand and its limits", "The buildings", "Parking", "The result and reports"],
                                      ["Type the size of the stand and the limits from the zoning scheme or title deed. Leave a limit empty if there is none.",
                                       "Add the buildings on the stand. Press Fill the blocks from the Rooms list, or add each block by hand.",
+                                      "Parking the units need, and the bays you provide: open, carport, garage, tandem, basement. Covered parking counts in the coverage.",
                                       "The coverage and FAR against your limits. Preview or export the report."])
         cov_stack = QStackedWidget()
         lay.addWidget(self.cov_steps.top)
@@ -15375,6 +15467,8 @@ class MainWindow(QMainWindow):
             lay.addLayout(hl)
             lay.addWidget(t_)
         lay = cov_page_()
+        self._build_park_page(lay)
+        lay = cov_page_()
         self.cov_result = QLabel("")
         self.cov_result.setWordWrap(True)
         self.cov_result.setTextFormat(Qt.TextFormat.RichText)
@@ -15405,6 +15499,129 @@ class MainWindow(QMainWindow):
         self.cov_page = page
         self.main_tabs.addTab(page, "Coverage && FAR")
         self._cov_add_block(); self._cov_refresh()
+
+    def _build_park_page(self, lay):
+        """The Parking step: bays the units need (typical South African ratios, all editable), the bays provided, tandem parking, and what the covered ones add."""
+        self.park_units = QSpinBox(); self.park_units.setRange(0, 5000); self.park_units.setSuffix(" units")
+        self.park_rule = QComboBox(); self.park_rule.addItems(PARK_RULES)
+        self.park_ratio = QDoubleSpinBox(); self.park_ratio.setRange(0, 10); self.park_ratio.setDecimals(2); self.park_ratio.setValue(1.5); self.park_ratio.setSuffix(" bays per unit")
+        self.park_vis = QDoubleSpinBox(); self.park_vis.setRange(0, 5); self.park_vis.setDecimals(2); self.park_vis.setValue(0.25); self.park_vis.setSuffix(" visitor bays per unit")
+        self.park_mix = [QSpinBox() for _ in range(3)]
+        for sp, lab in zip(self.park_mix, ("bachelor / 1 bed", "2 bed", "3 bed or more")):
+            sp.setRange(0, 5000); sp.setSuffix(" " + lab)
+        self.park_units.setToolTip("How many dwelling units the parking serves.")
+        self.park_ratio.setToolTip("Used with the first rule. The zoning scheme of the municipality sets the real figure: typical is 1 to 2 bays per unit.")
+        self.park_vis.setToolTip("Bays kept for visitors, usually about 0.25 to 0.5 per unit in a block of units. A visitor cannot use a garage, a tandem or a basement bay.")
+        r1 = QHBoxLayout()
+        for lab, w_ in (("Units:", self.park_units), ("Rule:", self.park_rule)):
+            r1.addWidget(QLabel(lab)); r1.addWidget(w_, 1 if w_ is self.park_rule else 0)
+        bu = QPushButton("Take the units from the Rooms list")
+        bu.clicked.connect(self._park_units_from_rooms)
+        r1.addWidget(bu)
+        lay.addLayout(r1)
+        r2 = QHBoxLayout()
+        r2.addWidget(self.park_ratio); r2.addWidget(self.park_vis)
+        for sp in self.park_mix:
+            r2.addWidget(sp)
+        r2.addStretch()
+        lay.addLayout(r2)
+        self.park_t = QTableWidget(len(PARK_TYPES), 4)
+        self.park_t.setHorizontalHeaderLabels(["Type of bay", "Bay size (m)", "Bays each", "Number provided"])
+        for r, (k, lab, w_, l_, n_, cov_, enc_) in enumerate(PARK_TYPES):
+            for c, v in enumerate((lab, "%.1f x %.1f" % (w_, l_), str(n_), "0")):
+                it = QTableWidgetItem(v)
+                if c != 3:
+                    it.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+                self.park_t.setItem(r, c, it)
+        self.park_t.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.park_t.setMinimumHeight(230)
+        self.park_t.itemChanged.connect(lambda *_: self._cov_refresh())
+        lay.addWidget(self.park_t)
+        self.park_tandem_cov = QCheckBox("Tandem bays are under a roof (counts in the coverage)")
+        self.park_garage_far = QCheckBox("Garages count in the floor area (FAR)"); self.park_garage_far.setChecked(True)
+        self.park_base_far = QCheckBox("Basement parking counts in the floor area (FAR)")
+        ck = QHBoxLayout()
+        for w_ in (self.park_tandem_cov, self.park_garage_far, self.park_base_far):
+            ck.addWidget(w_)
+        ck.addStretch()
+        lay.addLayout(ck)
+        self.park_out = QLabel("")
+        self.park_out.setWordWrap(True)
+        self.park_out.setTextFormat(Qt.TextFormat.RichText)
+        lay.addWidget(self.park_out)
+        bc = QPushButton("Add the parking to the costing (site works)")
+        bc.setToolTip("Adds paving, markings, carports, garages and basement bays to the Site works tab of the costing at general South African rates. "
+                      "Nothing needs to be read from the IFC for this. Press again to replace the lines.")
+        bc.clicked.connect(self._park_to_costing)
+        lay.addWidget(bc, 0, Qt.AlignmentFlag.AlignLeft)
+        lay.addStretch(1)
+        for sp in (self.park_units, self.park_ratio, self.park_vis, *self.park_mix):
+            sp.valueChanged.connect(lambda *_: self._cov_refresh())
+        for w_ in (self.park_tandem_cov, self.park_garage_far, self.park_base_far):
+            w_.toggled.connect(lambda *_: self._cov_refresh())
+        self.park_rule.currentIndexChanged.connect(lambda *_: self._cov_refresh())
+
+    def _park_units_from_rooms(self):
+        try:
+            rooms = self.read_rooms()
+        except Exception:
+            rooms = []
+        us = {unit_label(getattr(r, "unit", "")) for r in rooms if getattr(r, "unit", "")}
+        self.park_units.setValue(len(us) if us else 1)
+
+    def park_state(self):
+        cnt = {}
+        for r, t in enumerate(PARK_TYPES):
+            it = self.park_t.item(r, 3)
+            cnt[t[0]] = int(cov_num(it.text())) if it else 0
+        return {"units": self.park_units.value(), "rule": self.park_rule.currentIndex(), "ratio": self.park_ratio.value(), "visitor": self.park_vis.value(),
+                "mix": [sp.value() for sp in self.park_mix], "counts": cnt, "tandem_covered": self.park_tandem_cov.isChecked(),
+                "garage_far": self.park_garage_far.isChecked(), "basement_far": self.park_base_far.isChecked()}
+
+    def park_load(self, p):
+        p = dict(PARK_DEFAULTS, **(p or {}))
+        for w_, v in ((self.park_units, int(cov_num(p["units"]))), (self.park_ratio, cov_num(p["ratio"])), (self.park_vis, cov_num(p["visitor"]))):
+            w_.setValue(v)
+        self.park_rule.setCurrentIndex(max(0, min(len(PARK_RULES) - 1, int(cov_num(p["rule"])))))
+        for sp, v in zip(self.park_mix, (list(p.get("mix") or []) + [0, 0, 0])[:3]):
+            sp.setValue(int(cov_num(v)))
+        for r, t in enumerate(PARK_TYPES):
+            it = self.park_t.item(r, 3)
+            if it:
+                it.setText(str(int(cov_num((p.get("counts") or {}).get(t[0], 0)))))
+        self.park_tandem_cov.setChecked(bool(p.get("tandem_covered")))
+        self.park_garage_far.setChecked(bool(p.get("garage_far", True)))
+        self.park_base_far.setChecked(bool(p.get("basement_far")))
+
+    def _park_to_costing(self):
+        cp = getattr(self, "costing_page", None)
+        lines = parking_cost_lines(self.park_state())
+        if cp is None or not hasattr(cp, "materials"):
+            QMessageBox.information(self, APP_NAME, "The costing tab is not available.")
+            return
+        if not lines:
+            QMessageBox.information(self, APP_NAME, "There are no bays typed in yet.")
+            return
+        cp.materials.set_parking_lines(lines)
+        QMessageBox.information(self, APP_NAME, "%d parking lines were put in the Site works tab of the costing, at general rates you can change there." % len(lines))
+
+    def park_html(self):
+        p = self.park_state()
+        r = parking_calc(p)
+        if not (r["units"] or r["provided"]):
+            return ""
+        col = lambda ok: "#1B9F4B" if ok else "#E03050"
+        rows = [("Bays the units need", "%.1f resident + %.1f visitor" % (r["resident"], r["visitor"]), str(r["required"])),
+                ("Bays provided", "tandem pairs count as 2", str(r["provided"])),
+                ("Visitor bays available (open, carport, kerb, accessible)", "needed %d" % r["visitor_req"], str(r["visitor_provided"])),
+                ("Accessible bays", "needed %d (1 per %d bays from %d bays; check SANS 10400-S and your scheme)" % (r["access_req"], int(cov_num(PARK_DEFAULTS["access_per"])), int(cov_num(PARK_DEFAULTS["min_access_from"]))), str(r["access_prov"]))]
+        h = "".join("<tr><td>%s</td><td style='color:#777'>%s</td><td align='right'><b>%s</b></td></tr>" % x for x in rows)
+        verdict = ("<b style='color:%s'>%s</b>" % (col(r["ok"]), "Parking requirement met" if r["ok"] else
+                                                   "Short by %d bay(s), or visitor or accessible bays are not enough" % r["short"]))
+        extra = ("<br>Covered parking adds %.1f m2 to the coverage and %.1f m2 to the floor area. Paved bays and aisles: %.1f m2."
+                 % (r["covered_area"], r["far_area"], r["hard_area"]))
+        tn = "<br><i>Tandem bays serve one unit each (the front bay blocks the back one), so they are not visitor bays.</i>" if r["tandem_note"] else ""
+        return "<table cellspacing='0' cellpadding='3' width='100%'>" + h + "</table>" + verdict + extra + tn
 
     def cov_fill_from_rooms(self, force=False, mode="tab"):
         """Fill the blocks and carport roofs from the Rooms list: always on the button, when the wall allowance
@@ -15536,7 +15753,8 @@ class MainWindow(QMainWindow):
                             "levels": (self.cov_blocks.item(r, 0).data(Qt.ItemDataRole.UserRole) or []) if self.cov_blocks.item(r, 0) else []}
                            for r in range(self.cov_blocks.rowCount())],
                 "roofs": [{"name": tx(self.cov_roofs, r, 0), "area": tx(self.cov_roofs, r, 1),
-                           "on": on(self.cov_roofs, r, 2)} for r in range(self.cov_roofs.rowCount())]}
+                           "on": on(self.cov_roofs, r, 2)} for r in range(self.cov_roofs.rowCount())],
+                "parking": self.park_state()}
 
     def cov_load(self, st):
         st = st or {}
@@ -15557,6 +15775,9 @@ class MainWindow(QMainWindow):
                                 b.get("levels") or None)
         for r in st.get("roofs", []):
             self._cov_add_roof(r.get("name", ""), r.get("area", ""), r.get("on", True))
+        self._cov_busy = True
+        self.park_load(st.get("parking"))
+        self._cov_busy = False
         if not st.get("blocks"):
             self._cov_add_block()
         self._cov_refresh()
@@ -15567,6 +15788,7 @@ class MainWindow(QMainWindow):
         _st = self.cov_state()
         self.cov_lvl.setText("   ".join(f"{b['name']}: " + ", ".join(f"{n} {a:.1f} m2" for n, a in b["levels"]) +
                                         f"  ({len(b['levels'])} storeys)" for b in _st["blocks"] if b.get("levels")))
+        self.park_out.setText(self.park_html())
         sc = cov_scenarios(_st)
         if not sc or sc[0]["stand"] <= 0:
             self.cov_result.setText("<i>Enter the stand area and the block footprints to see the coverage and FAR.</i>")
@@ -15660,6 +15882,22 @@ class MainWindow(QMainWindow):
                     cell(f"{r['max_far']:.2f}" if r["max_far"] > 0 else "-", "right"), verdict(r["far_ok"], r["max_far"])]]
             frags.append('<p style="font-size:9pt; font-weight:bold; margin-left:10px; margin-top:8px;">Result</p>')
             frags.append(table(["", "Calculation", "Limit", "Result"], res, [22, 40, 14, 24]))
+        _pk = parking_calc(st.get("parking") or {})
+        if _pk["units"] or _pk["provided"]:
+            _pc = (lambda ok: "#1B7F3B" if ok else RED)
+            prow = [[cell("Dwelling units", bold=True), cell(str(_pk["units"]), "right"), cell("")],
+                    [cell("Bays required (resident %.1f + visitor %.1f)" % (_pk["resident"], _pk["visitor"]), bold=True), cell(str(_pk["required"]), "right"), cell("")],
+                    [cell("Bays provided (a tandem pair counts as 2)", bold=True), cell(str(_pk["provided"]), "right"),
+                     cell("COMPLIES" if _pk["ok"] else "SHORT BY %d" % _pk["short"], "center", _pc(_pk["ok"]), True)],
+                    [cell("Visitor bays available / needed"), cell(str(_pk["visitor_provided"]), "right"), cell(str(_pk["visitor_req"]), "right")],
+                    [cell("Accessible bays provided / needed"), cell(str(_pk["access_prov"]), "right"), cell(str(_pk["access_req"]), "right")],
+                    [cell("Covered parking added to the coverage (m2)"), cell(f"{_pk['covered_area']:.2f}", "right"), cell("")],
+                    [cell("Parking added to the floor area (m2)"), cell(f"{_pk['far_area']:.2f}", "right"), cell("")],
+                    [cell("Paved bays and aisles (m2)"), cell(f"{_pk['hard_area']:.2f}", "right"), cell("")]]
+            frags.append(f'<p style="font-size:12pt; font-weight:bold; color:{RED}; margin-left:10px; margin-top:12px;">Parking</p>')
+            frags.append(table(["", "Number / area", ""], prow, [60, 20, 20]))
+            frags.append('<p style="font-size:7.5pt; color:#777777;">Ratios are typical South African figures; the zoning scheme of the municipality '
+                         'and SANS 10400-S set the final numbers.' + (' Tandem bays serve one unit each and are not visitor bays.' if _pk["tandem_note"] else '') + '</p>')
         frags.append('<p style="font-size:7.5pt; color:#777777; margin-top:14px;">Areas are the figures entered on the Coverage and FAR tab. '
                      'Check the coverage and FAR limits and what the zoning scheme counts (eaves, basements, covered balconies) '
                      f'before submission. Generated by {e(APP_NAME)}.</p>')
