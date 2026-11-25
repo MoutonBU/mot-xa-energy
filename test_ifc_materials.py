@@ -70,7 +70,7 @@ def test_openings_glazing_and_doors():
     rows = {r[1]: r for r in m.bom(_q(openings=ops), {}, {}, facts)}
     w2 = rows["Windows, aluminium frame, double glazed"]; s2 = rows["Large sliding, stacking and glazed doors, double glazed"]
     assert abs(w2[3] - 3.0) < 1e-6 and abs(s2[3] - 7.2) < 1e-6
-    assert abs(w2[4] - (3350.0 + 1450.0)) < 1e-6          # the double line carries the frame and the glass rate, no separate extra line
+    assert abs(w2[4] - 5400.0) < 1e-6 and abs(s2[4] - 8600.0) < 1e-6   # each grade has its own full rate, no extra line
     assert not any("extra over" in k for k in rows) and not any("single" in k for k in rows)
     assert rows["Internal doors"][3] == 1 and rows["External doors"][3] == 1 and rows["Garage doors"][3] == 1
     rows3 = {r[1]: r for r in m.bom(_q(openings=ops), {}, {"glazing_level": 3}, facts)}
@@ -78,6 +78,7 @@ def test_openings_glazing_and_doors():
     rows1 = {r[1]: r for r in m.bom(_q(openings=ops), {}, {"glazing_level": 1}, facts)}
     assert "Windows, aluminium frame, single clear glazed" in rows1 and not any("double" in k or "triple" in k for k in rows1)
     assert abs(rows1["Windows, aluminium frame, single clear glazed"][4] - 3350.0) < 1e-6
+    r3 = rows3["Windows, aluminium frame, triple glazed"]; assert r3[4] > w2[4] > 3350.0
 
 def test_cabinets_replace_generic():
     facts = dict(area=90, wet_area=10, units=1, kitchens=1, bedrooms=2, baths=1, dbs=1)
