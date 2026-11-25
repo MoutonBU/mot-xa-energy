@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.269**
+Current version: **1.86.270**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Costing and IFC import: basement levels are found and reported (rooms, windows, doors on them); a house gets one distribution board per level, a block one per dwelling; floor finishes follow the room floor area; roof trusses are priced from the roof's surface, pitch and overhang (worked out from the plan when the model has no roof), and concrete roofs get none.
 - Costing: the IFC reader now also picks up structure drawn as Morphs, Objects or split parts (concrete beams and columns, timber trusses and pergolas, steel, brick), by their material; roof timber drawn in the model replaces the generic roof timber allowance; plasterboard and ceiling boards are no longer counted as floors.
 - Fixed 'Could not save your work for the restart: keys must be str, int...' (the costing material report is now saved as a list), and railings whose posts and panels sit two levels deep in the IFC are now measured.
 - Light, ventilation and sun: every door the IFC shows between two rooms (glass or timber), or in a half-brick partition when nothing else says, is left out of the ventilation and sun counts. They stay in the costing. The import message says how many were left out.

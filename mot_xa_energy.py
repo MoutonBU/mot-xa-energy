@@ -7080,7 +7080,13 @@ def read_ifc_model(path):
         for tg_, gid_ in r.pop("_wel", []) or []:
             if gid_ in byel:
                 _shade_rooms.setdefault("%s||%s||%s||%s" % (r.get("floor", ""), r.get("unit", ""), r.get("name", ""), str(tg_).upper()), []).append(list(byel[gid_]))
-    return {"aliases": aliases, "floors": floor_order, "rooms": rooms, "items": items, "north": north, "gross": round(gross, 2), "solid_doors": ext_noglass,
+    base_names = [n_ for n_, e_ in storeys if re.search(r"basement|cellar|lower\s?ground|underground", n_ or "", re.I) or e_ < -0.5]
+    for r in rooms:
+        r["basement"] = (r.get("floor") or "") in base_names
+    basement = {"floors": base_names, "rooms": sum(1 for r in rooms if r["basement"]),
+                "windows": sum(int((it.get("by_floor") or {}).get(n_, 0)) for it in items if it["kind"] == "Window" for n_ in base_names),
+                "doors": sum(int((it.get("by_floor") or {}).get(n_, 0)) for it in items if it["kind"] == "Door" for n_ in base_names)} if base_names else {}
+    return {"basement": basement, "aliases": aliases, "floors": floor_order, "rooms": rooms, "items": items, "north": north, "gross": round(gross, 2), "solid_doors": ext_noglass,
             "excluded": excluded_n, "dups": dup_n, "inside_doors": sum(left_out.values()) if isinstance(left_out, dict) else 0, "n_spaces": n_spaces, "geo_area": geo_area_n,
             "no_area": no_area_n, "no_area_names": no_area_names, "room_report": rep_lines, "n_zones": len(ifc.by_type("IfcZone")), "n_storeys": len(ifc.by_type("IfcBuildingStorey")),
             "n_win": len(_ifc_open_els(ifc, "IfcWindow")), "n_door": len(_ifc_open_els(ifc, "IfcDoor")), "placed": placed, "unplaced": unplaced, "faced": n_faced,
@@ -13472,6 +13478,10 @@ class MainWindow(QMainWindow):
                             % (res["no_area"], ", ".join(str(n_) for n_ in res.get("no_area_names", [])[:12])))
                 if nsd:
                     msg += " Door types with no glass found in the model (left out): %d." % nsd
+                if res.get("basement"):
+                    bs = res["basement"]
+                    msg += (" Basement found (%s): %d rooms, %d windows and %d outside doors on it."
+                            % (", ".join(bs["floors"]), bs["rooms"], bs["windows"], bs["doors"]))
                 if res.get("inside_doors"):
                     msg += (" Inside doors (between rooms, glass or timber) left out of ventilation and sun: %d. They stay in the costing." % res["inside_doors"])
                 if res.get("dups"):

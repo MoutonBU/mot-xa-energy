@@ -36,6 +36,10 @@ ALLOW = {
     "bic_m_per_bedroom": ("Built-in cupboard per bedroom", "m", 2.4),
     "handrail_extra_m": ("Handrail / balustrade length added by hand (steel or timber), on top of the IFC railings", "m", 0.0),
     "handrail_ss_m": ("Stainless steel handrail / balustrade length, by hand", "m", 0.0),
+    "floor_finish_pct": ("Floor finish as a share of the room floor area (tiles or similar)", "%", 100.0),
+    "truss_m3_per_m2": ("Truss and roof timber per m2 of roof surface", "m3/m2", 0.032),
+    "roof_pitch_default": ("Roof pitch used when the model has no roof object", "deg", 25.0),
+    "roof_overhang_default": ("Roof overhang used when the model has no roof object", "m", 0.6),
     "steel_wall": ("Reinforcing steel per m3 of concrete wall", "kg/m3", 100.0),
     "plaster_brick_walls": ("Plaster the plain 'Brick' walls too (1 = yes)", "0/1", 0.0),
     # how the price is built up
@@ -94,6 +98,7 @@ RATES = {
     "cup_wall": ("Kitchen wall units", "m", 1500.0, 600.0, EST_NOTE),
     "countertop": ("Kitchen countertop", "m", 1200.0, 450.0, EST_NOTE),
     "bic": ("Built-in bedroom cupboard", "m", 2500.0, 800.0, EST_NOTE),
+    "roof_trusses": ("Timber roof trusses, supplied, treated and erected (per m3 of timber)", "m3", 9800.0, 3600.0, EST_NOTE),
     "steel_section": ("Structural steel sections, supplied, fabricated and erected", "kg", 34.0, 14.0, EST_NOTE),
     "timber_member": ("Timber columns, beams and members (per m3), supplied and fixed", "m3", 9500.0, 2800.0, EST_NOTE),
     "handrail": ("Handrail and balustrade, steel or timber, supplied and fixed (per metre run)", "m", 850.0, 300.0, EST_NOTE),
@@ -289,7 +294,7 @@ def read_ifc_quantities(path):
     q = dict(brick110=0.0, brick220=0.0, cavity=0.0, plaster_area=0.0, plain_brick_area=0.0, footing_vol=0.0, footing_len=0.0,
              slab_vol=0.0, slab_area=0.0, tile_area=0.0, dpm_area=0.0, roof_slab_vol=0.0, roof_area=0.0, beam_vol=0.0, win_area=0.0,
              win_n=0, door_n=0, gate_n=0, rail_m=0.0, rail_n=0, names={}, levels={}, slab_levels={},
-             conc_wall_vol=0.0, steel_kg=0.0, timber_vol=0.0, ins_area=0.0, soffit_plaster=0.0, fill_vol=0.0, mat_report={}, no_material={}, rooms=[], roof_timber_vol=0.0)
+             conc_wall_vol=0.0, steel_kg=0.0, timber_vol=0.0, ins_area=0.0, soffit_plaster=0.0, fill_vol=0.0, mat_report={}, no_material={}, rooms=[], roof_timber_vol=0.0, roof_plan=0.0, roof_pitch=0.0, storeys=[])
 
     def shape_stats(e):
         s = ifcopenshell.geom.create_shape(st, e)
@@ -528,9 +533,21 @@ def read_ifc_quantities(path):
     for e in f.by_type("IfcRoof"):
         try:
             vol, ar, nz, v = shape_stats(e)
-            q["roof_area"] += float(ar[nz > 0.25].sum())
+            up = nz > 0.25
+            true_a = float(ar[up].sum())
+            q["roof_area"] += true_a
+            q["roof_plan"] += float((ar[up] * nz[up]).sum())          # the same roof seen from above: with the overhangs, without the slope
         except Exception:
             continue
+    if q["roof_area"] > 0 and q["roof_plan"] > 0:
+        import math
+        q["roof_pitch"] = math.degrees(math.acos(max(0.0, min(1.0, q["roof_plan"] / q["roof_area"]))))
+    try:
+        q["storeys"] = sorted([[(x.Name or x.LongName or "Floor"), float(x.Elevation or 0.0) * sc,
+                                bool(re.search(r"basement|cellar|lower\s?ground|underground", (x.Name or "") + " " + (x.LongName or ""), re.I) or float(x.Elevation or 0.0) * sc < -0.5)]
+                               for x in f.by_type("IfcBuildingStorey")], key=lambda r: r[1])
+    except Exception:
+        pass
     for e in f.by_type("IfcFooting"):
         try:
             ly = element_layers(e, sc)
@@ -618,7 +635,28 @@ def read_ifc_quantities(path):
             except Exception:
                 ar = 0.0
             m_ = re.match(r"^\s*([A-Za-z]{0,2}\s*\d{1,2})\s*[-_.:]\s*[A-Za-z]", nm)
-            q["rooms"].append((nm, ar, level(e), re.sub(r"\s+", "", m_.group(1)).upper() if m_ else ""))
+            lvn = level(e)
+            if not lvn:
+                try:                                            # spaces are often aggregated into the storey, or only placed at its height
+                    o = e
+                    for _i in range(4):
+                        rel = (getattr(o, "Decomposes", None) or [None])[0]
+                        o = rel.RelatingObject if rel is not None else None
+                        if o is None or o.is_a("IfcBuildingStorey"):
+                            break
+                    if o is not None and o.is_a("IfcBuildingStorey"):
+                        lvn = o.Name or o.LongName or ""
+                except Exception:
+                    pass
+            if not lvn and q["storeys"]:
+                try:
+                    import ifcopenshell.util.placement as PL
+                    zz = float(PL.get_local_placement(e.ObjectPlacement)[2][3]) * sc
+                    low = [r_[0] for r_ in q["storeys"] if r_[1] <= zz + 0.3]
+                    lvn = low[-1] if low else q["storeys"][0][0]
+                except Exception:
+                    pass
+            q["rooms"].append((nm, ar, lvn, re.sub(r"\s+", "", m_.group(1)).upper() if m_ else ""))
         except Exception:
             continue
     for e in f.by_type("IfcWindow"):
@@ -657,12 +695,20 @@ def facts_from_rooms(rooms):
         if WET.search(base):
             f["wet_area"] += a
     f["units"] = len(units) or max(1, f["kitchens"])
+    floors = {}
+    for n, a, fl, u in rooms:
+        if a and a > 0 and not NON_CEILING.search(n or ""):
+            floors[fl or ""] = floors.get(fl or "", 0.0) + a
+    f["levels"] = max(1, len(floors))
+    # one distribution board per dwelling in a block of units; in a single house, one per level (basement, ground, first floor)
+    f["dbs"] = len(units) if len(units) >= 2 else f["levels"]
+    f["floor_areas"] = floors
     return f
 
 
 def facts_from_area(slab_area):
     u = max(1, round(slab_area / 80.0))
-    return dict(units=u, kitchens=u, bedrooms=2 * u, baths=u, wet_area=0.08 * slab_area, area=0.85 * slab_area)
+    return dict(units=u, kitchens=u, bedrooms=2 * u, baths=u, wet_area=0.08 * slab_area, area=0.85 * slab_area, dbs=u, levels=1, floor_areas={})
 
 
 def bom(q, rates, allow, facts, fixtures=None):
@@ -712,18 +758,33 @@ def bom(q, rates, allow, facts, fixtures=None):
     add("Walls", "Plaster sand", "m3", mortar_plaster * A("sand_m3_per_m3"), "sand_plaster")
     add("Walls", "Plastering", "m2", pl_area, "plaster")
     # floors
-    tile = q["tile_area"] * (1 + A("tile_waste") / 100.0)
+    floor_fin = max(q["tile_area"], facts["area"] * A("floor_finish_pct") / 100.0)        # floors follow the room floor area when the model shows less finish than floor
+    tile = floor_fin * (1 + A("tile_waste") / 100.0)
     add("Floors", "Floor tiles, laid", "m2", tile, "tile")
-    add("Floors", "Tile adhesive and grout", "kg", q["tile_area"] * A("adhesive_kg_per_m2"), "adhesive")
-    add("Floors", "Skirting", "m", q["tile_area"] * A("skirting_m_per_m2"), "skirting")
+    add("Floors", "Tile adhesive and grout", "kg", floor_fin * A("adhesive_kg_per_m2"), "adhesive")
+    add("Floors", "Skirting", "m", floor_fin * A("skirting_m_per_m2"), "skirting")
     add("Floors", "Waterproofing of wet areas", "m2", facts["wet_area"] * A("wet_factor"), "waterproof")
     # roof and ceiling
-    add("Roof and ceiling", "Roof covering", "m2", q["roof_area"], "roof_cover")
-    if q.get("roof_timber_vol", 0.0) < 0.01 * max(q["roof_area"], 1.0):     # trusses and rafters drawn in the model are priced from their volume instead
-        add("Roof and ceiling", "Roof timber structure", "m2", q["roof_area"], "roof_timber")
-    perim = 4.0 * (max(q["roof_area"], 1.0) ** 0.5) * 1.15 if q["roof_area"] else 0.0
+    import math
+    roof_surf = q["roof_area"]
+    pitch = q.get("roof_pitch", 0.0)
+    if roof_surf <= 0 and foot > 0:                                     # no roof in the model: work it out from the plan, the pitch and the overhang
+        pitch = A("roof_pitch_default")
+        oh = A("roof_overhang_default")
+        plan = foot + 4.0 * (foot ** 0.5) * 1.15 * oh + 4.0 * oh * oh
+        roof_surf = plan / max(0.2, math.cos(math.radians(pitch)))
+    flat_conc = q["roof_slab_vol"] > 0.08 * max(roof_surf, 1.0)           # a concrete roof slab has no trusses
+    add("Roof and ceiling", "Roof covering", "m2", roof_surf, "roof_cover")
+    if q.get("roof_timber_vol", 0.0) >= 0.01 * max(roof_surf, 1.0):      # trusses and rafters drawn in the model are priced from their own volume
+        pass
+    elif flat_conc or (pitch and pitch < 10.0 and q["roof_slab_vol"] > 0):
+        pass
+    elif roof_surf > 0:
+        add("Roof and ceiling", "Roof trusses and timber structure (%.0f deg pitch, from the roof volume)" % (pitch or A("roof_pitch_default")), "m3",
+            roof_surf * A("truss_m3_per_m2"), "roof_trusses")
+    perim = 4.0 * (max(roof_surf, 1.0) ** 0.5) * 1.15 if roof_surf else 0.0
     add("Roof and ceiling", "Gutter and fascia", "m", perim, "gutter")
-    add("Roof and ceiling", "Downpipes", "m", (q["roof_area"] / 25.0) * 3.0, "downpipe")
+    add("Roof and ceiling", "Downpipes", "m", (roof_surf / 25.0) * 3.0, "downpipe")
     add("Roof and ceiling", "Ceilings", "m2", area, "ceiling")
     # finishes
     add("Finishes", "Paint (walls and ceilings)", "L", (pl_area + area) * A("paint_l_per_m2"), "paint")
@@ -737,8 +798,9 @@ def bom(q, rates, allow, facts, fixtures=None):
     add("Electrical", "Light fittings", "no.", lights, "light_fitting")
     add("Electrical", "Socket outlets", "no.", area * A("sockets_per_100m2") / 100.0, "socket")
     add("Electrical", "Switches", "no.", area * A("switches_per_100m2") / 100.0, "switch")
-    add("Electrical", "Distribution boards", "no.", float(facts["units"]), "db")
-    add("Electrical", "Testing and certificate of compliance", "no.", float(facts["units"]), "coc")
+    dbs = float(facts.get("dbs", facts["units"]))
+    add("Electrical", "Distribution boards (one per dwelling, or one per level in a house)", "no.", dbs, "db")
+    add("Electrical", "Testing and certificate of compliance", "no.", dbs, "coc")
     # plumbing
     pts = sum(n for c, n in (fixtures or {}).items() if c in POINT_CATS)
     add("Plumbing", "Supply and waste pipes to each fixture", "no.", float(pts), "plumb_point")
@@ -1395,7 +1457,8 @@ class MaterialsPage(QWidget):
         if rooms and s:
             f = facts_from_rooms(rooms)
             return dict(units=max(1, round(f["units"] * s)), kitchens=round(f["kitchens"] * s), bedrooms=round(f["bedrooms"] * s),
-                        baths=round(f["baths"] * s), wet_area=f["wet_area"] * s, area=f["area"] * s)
+                        baths=round(f["baths"] * s), wet_area=f["wet_area"] * s, area=f["area"] * s,
+                        dbs=max(1, round(f.get("dbs", f["units"]) * s)), levels=f.get("levels", 1), floor_areas=f.get("floor_areas", {}))
         return facts_from_area(sa)
 
     # ----- blocks -----

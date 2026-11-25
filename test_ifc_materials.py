@@ -39,3 +39,20 @@ def test_roof_timber_replaces_generic():
     items = [r[1] for r in m.bom(q, {}, {}, facts)]
     assert "Roof timber structure" not in items and "Timber columns, beams and members" in items
 test_roof_timber_replaces_generic(); print("ok4")
+
+def test_db_per_level_and_unit():
+    house = [("Lounge", 40, "Basement", ""), ("Lounge", 50, "Ground Floor", ""), ("Bedroom 1", 30, "First Floor", ""), ("Kitchen", 20, "Ground Floor", "")]
+    f = m.facts_from_rooms(house)
+    assert f["levels"] == 3 and f["dbs"] == 3
+    block = [("U1-Kitchen", 10, "Ground", "U1"), ("U1-Bedroom", 12, "First", "U1"), ("U2-Kitchen", 10, "Ground", "U2")]
+    assert m.facts_from_rooms(block)["dbs"] == 2
+
+def test_truss_from_pitch_when_no_roof():
+    q = dict(brick110=0, brick220=0, cavity=0, plaster_area=0, plain_brick_area=0, footing_vol=0, slab_vol=0, slab_area=100.0, tile_area=0, dpm_area=0,
+             roof_slab_vol=0, roof_area=0, beam_vol=0, win_area=0, door_n=0, rail_m=0, slab_levels={"G": 100.0})
+    facts = dict(area=90, wet_area=10, units=1, kitchens=1, bedrooms=2, baths=1, dbs=1)
+    rows = m.bom(q, {}, {}, facts)
+    tr = [r for r in rows if r[1].startswith("Roof trusses")]
+    assert tr and tr[0][3] > 3.0
+    assert any(r[1] == "Roof covering" and r[3] > 100 for r in rows)
+test_db_per_level_and_unit(); test_truss_from_pitch_when_no_roof(); print("ok5")
