@@ -68,12 +68,16 @@ def test_openings_glazing_and_doors():
     ops = [["Window", "W1", 2.0, 1.5, "double", "window"], ["Door", "D1", 3.0, 2.4, "double", "slider"], ["Door", "D2", 0.8, 2.0, "", "internal"],
            ["Door", "D3", 0.9, 2.1, "", "external"], ["Door", "GD", 2.4, 2.1, "", "garage"]]
     rows = {r[1]: r for r in m.bom(_q(openings=ops), {}, {}, facts)}
-    assert abs(rows["Double glazing, extra over single"][3] - (3.0 + 7.2)) < 1e-6
+    w2 = rows["Windows, aluminium frame, double glazed"]; s2 = rows["Large sliding, stacking and glazed doors, double glazed"]
+    assert abs(w2[3] - 3.0) < 1e-6 and abs(s2[3] - 7.2) < 1e-6
+    assert abs(w2[4] - (3350.0 + 1450.0)) < 1e-6          # the double line carries the frame and the glass rate, no separate extra line
+    assert not any("extra over" in k for k in rows) and not any("single" in k for k in rows)
     assert rows["Internal doors"][3] == 1 and rows["External doors"][3] == 1 and rows["Garage doors"][3] == 1
     rows3 = {r[1]: r for r in m.bom(_q(openings=ops), {}, {"glazing_level": 3}, facts)}
-    assert "Triple glazing, low-e, extra over single" in rows3 and "Double glazing, extra over single" not in rows3
+    assert "Windows, aluminium frame, triple glazed" in rows3 and not any("double" in k for k in rows3)
     rows1 = {r[1]: r for r in m.bom(_q(openings=ops), {}, {"glazing_level": 1}, facts)}
-    assert "Double glazing, extra over single" not in rows1
+    assert "Windows, aluminium frame, single clear glazed" in rows1 and not any("double" in k or "triple" in k for k in rows1)
+    assert abs(rows1["Windows, aluminium frame, single clear glazed"][4] - 3350.0) < 1e-6
 
 def test_cabinets_replace_generic():
     facts = dict(area=90, wet_area=10, units=1, kitchens=1, bedrooms=2, baths=1, dbs=1)

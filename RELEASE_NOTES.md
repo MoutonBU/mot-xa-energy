@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.278**
+Current version: **1.86.279**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Costing glazing: the glazing you choose now replaces single clear instead of adding an extra line. Windows and large glazed doors are priced as single clear, double or triple glazed lines (frame rate plus that grade's glass rate), and the Glazing for all windows allowance sets every window to one grade.
 - Parking: a Permissible and actual table in the Parking step and in the Coverage and FAR report: bays, visitor bays, accessible bays, and the coverage and FAR with the parking, each with OK or over/short.
 - Parking step: a big green or red box at the top shows the bays needed from the units against the bays provided: green when within the requirement, red with the reason (short of bays, visitor bays, accessible bays) when not.
 - Parking: added shaded or netted bays (shade net or sail on posts). They count as bays and visitor bays, can be counted in the coverage with a tick box, and are priced in the site works.

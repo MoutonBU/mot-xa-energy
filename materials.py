@@ -36,7 +36,7 @@ ALLOW = {
     "bic_m_per_bedroom": ("Built-in cupboard per bedroom", "m", 2.4),
     "handrail_extra_m": ("Handrail / balustrade length added by hand (steel or timber), on top of the IFC railings", "m", 0.0),
     "handrail_ss_m": ("Stainless steel handrail / balustrade length, by hand", "m", 0.0),
-    "glazing_level": ("Glazing for all windows: 0 = as modelled, 1 = single, 2 = double, 3 = triple", "0-3", 0.0),
+    "glazing_level": ("Glazing for ALL windows and glazed doors: 0 = as modelled, 1 = single clear, 2 = double, 3 = triple (replaces what the model says)", "0-3", 0.0),
     "glazing_default": ("Glazing when the model does not say: 1 = single, 2 = double, 3 = triple", "1-3", 1.0),
     "spec_level": ("Finish level of fit-out rates: 1 = standard, 2 = high-end, 3 = luxury (not applied to rates you imported)", "1-3", 1.0),
     "footing_w": ("Strip footing width when the model has no footings", "m", 0.6),
@@ -103,8 +103,8 @@ RATES = {
     "cup_wall": ("Kitchen wall units", "m", 1500.0, 600.0, EST_NOTE),
     "countertop": ("Kitchen countertop", "m", 1200.0, 450.0, EST_NOTE),
     "bic": ("Built-in bedroom cupboard", "m", 2500.0, 800.0, EST_NOTE),
-    "glass_double": ("Extra over single glazing for double glazing (per m2 of glass)", "m2", 1450.0, 150.0, EST_NOTE),
-    "glass_triple": ("Extra over single glazing for triple glazing, low-e (per m2 of glass)", "m2", 3300.0, 250.0, EST_NOTE),
+    "glass_double": ("Double glazing: added to the window or door rate per m2 (the window line is then priced as double glazed, not as an extra line)", "m2", 1450.0, 150.0, EST_NOTE),
+    "glass_triple": ("Triple glazing, low-e: added to the window or door rate per m2 (the window line is then priced as triple glazed)", "m2", 3300.0, 250.0, EST_NOTE),
     "door_ext": ("External hinged door (hardwood or aluminium) with frame and ironmongery", "each", 7800.0, 950.0, EST_NOTE),
     "door_slider": ("Large sliding, stacking or folding glazed door system, aluminium (per m2)", "m2", 6200.0, 700.0, EST_NOTE),
     "door_garage": ("Garage door, sectional or roller, with motor", "each", 21000.0, 2200.0, EST_NOTE),
@@ -981,32 +981,43 @@ def bom(q, rates, allow, facts, fixtures=None):
     if ops:
         names_ = {1: "single", 2: "double", 3: "triple"}
         lvl, dflt = int(round(A("glazing_level"))), int(round(A("glazing_default")))
-        win = sl = 0.0
         gar = ext = inn = 0
-        glass = {"single": 0.0, "double": 0.0, "triple": 0.0}
+        wby = {"single": 0.0, "double": 0.0, "triple": 0.0}      # window area by glazing
+        sby = {"single": 0.0, "double": 0.0, "triple": 0.0}      # large glazed door area by glazing
         for _k, _nm, w_, h_, g_, cls in ops:
             a_ = w_ * h_
             if cls in ("window", "slider"):
-                if cls == "window":
-                    win += a_
-                else:
-                    sl += a_
-                glass[names_[lvl] if lvl in names_ else (g_ or names_.get(dflt, "single"))] += a_
+                gk_ = names_[lvl] if lvl in names_ else (g_ if g_ in wby else names_.get(dflt, "single"))
+                (wby if cls == "window" else sby)[gk_] += a_
             elif cls == "garage":
                 gar += 1
             elif cls == "external":
                 ext += 1
             else:
                 inn += 1
-        add("Windows and doors", "Windows (aluminium frame, single glazed)", "m2", win, "window")
-        add("Windows and doors", "Large sliding, stacking and glazed doors", "m2", sl, "door_slider")
+        def add_glazed(item, unit, by_, base_key):
+            """One full line per glazing grade: the frame rate plus that grade's glass rate. Choosing double or triple REPLACES the single line, it is not an extra."""
+            for g_, qty_ in by_.items():
+                if qty_ > 1e-9:
+                    m_, l_ = R(base_key)
+                    if g_ != "single":
+                        gm_, gl_ = R("glass_" + g_)
+                        m_, l_ = m_ + gm_, l_ + gl_
+                    rows.append(("Windows and doors", "%s, %s glazed%s" % (item, "single clear" if g_ == "single" else g_, ""), unit, qty_, m_, l_))
+        add_glazed("Windows, aluminium frame", "m2", wby, "window")
+        add_glazed("Large sliding, stacking and glazed doors", "m2", sby, "door_slider")
         add("Windows and doors", "External doors", "each", float(ext), "door_ext")
         add("Windows and doors", "Internal doors", "each", float(inn), "door")
         add("Windows and doors", "Garage doors", "each", float(gar), "door_garage")
-        add("Windows and doors", "Double glazing, extra over single", "m2", glass["double"], "glass_double")
-        add("Windows and doors", "Triple glazing, low-e, extra over single", "m2", glass["triple"], "glass_triple")
     else:
-        add("Windows and doors", "Windows", "m2", q["win_area"], "window")
+        lv_ = int(round(A("glazing_level"))) or int(round(A("glazing_default")))
+        gn_ = {2: "double", 3: "triple"}.get(lv_, "")
+        if q["win_area"] > 1e-9:
+            m_, l_ = R("window")
+            if gn_:
+                gm_, gl_ = R("glass_" + gn_)
+                m_, l_ = m_ + gm_, l_ + gl_
+            rows.append(("Windows and doors", "Windows, aluminium frame, %s glazed" % (gn_ or "single clear"), "m2", q["win_area"], m_, l_))
         add("Windows and doors", "Doors", "each", float(q["door_n"]), "door")
     # electrical
     lights = area * A("lights_per_100m2") / 100.0
