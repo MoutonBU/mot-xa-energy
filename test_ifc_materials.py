@@ -31,3 +31,11 @@ def test_report_is_json():
     import json
     json.dumps({"mat_report": [["Walls", "brick", "m2", 1.0]], "rooms": [("U1-Kitchen", 1.0, "", "U1")]})
 test_report_is_json(); print("ok3")
+
+def test_roof_timber_replaces_generic():
+    q = dict(brick110=0, brick220=0, cavity=0, plaster_area=0, plain_brick_area=0, footing_vol=0, slab_vol=0, slab_area=0, tile_area=0, dpm_area=0,
+             roof_slab_vol=0, roof_area=100.0, beam_vol=0, win_area=0, door_n=0, rail_m=0, timber_vol=5.0, roof_timber_vol=5.0)
+    facts = dict(area=100, wet_area=10, units=1, kitchens=1, bedrooms=2, baths=1)
+    items = [r[1] for r in m.bom(q, {}, {}, facts)]
+    assert "Roof timber structure" not in items and "Timber columns, beams and members" in items
+test_roof_timber_replaces_generic(); print("ok4")
