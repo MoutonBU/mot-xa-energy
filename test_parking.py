@@ -31,3 +31,10 @@ assert abs(r2["covered_area"]-(2*2.7*5.5+4*2.5*5.0))<1e-6
 assert M.parking_calc(dict(p2,shade_covered=False))["covered_area"]<r2["covered_area"]
 assert any("shade" in l[0] for l in M.parking_cost_lines(p2))
 print("ok shade")
+w2=M.MainWindow(); w2.park_load(dict(M.PARK_DEFAULTS, units=12, counts={"open":21,"access":1}))
+assert "WITHIN" in w2.park_badge_html() and "1B9F4B" in w2.park_badge_style()
+w2.park_load(dict(M.PARK_DEFAULTS, units=12, counts={"open":10}))
+assert "OVER THE MARGIN" in w2.park_badge_html() and "E03050" in w2.park_badge_style()
+w2.park_load(dict(M.PARK_DEFAULTS, units=12, counts={"open":21,"access":1})); w2.cov_stand.setValue(100); w2._cov_refresh()
+assert "WITHIN" in w2.park_badge.text()
+print("ok badge")

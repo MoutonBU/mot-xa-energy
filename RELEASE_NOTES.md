@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.276**
+Current version: **1.86.277**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Parking step: a big green or red box at the top shows the bays needed from the units against the bays provided: green when within the requirement, red with the reason (short of bays, visitor bays, accessible bays) when not.
 - Parking: added shaded or netted bays (shade net or sail on posts). They count as bays and visitor bays, can be counted in the coverage with a tick box, and are priced in the site works.
 - IFC reader check: the Quantities tab now shows, for every block, how many walls, windows and doors are in the model against how many were read, and the wall volume against the volume given a price line, with a warning where they differ. Walls that cannot be read are named (2D lines only, or a broken 3D shape) instead of being dropped silently.
 - Coverage & FAR now has a Parking step: bays needed from the units (ratio per unit, by bedrooms, or a house), visitor and accessible bays, open, carport, garage, tandem, parallel and basement bays, the effect on coverage and FAR, a Parking section in the report, and a button that adds paving, carports and garages to the costing site works at general South African rates.

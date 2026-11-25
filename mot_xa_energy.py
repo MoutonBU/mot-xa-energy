@@ -15530,6 +15530,10 @@ class MainWindow(QMainWindow):
             r2.addWidget(sp)
         r2.addStretch()
         lay.addLayout(r2)
+        self.park_badge = QLabel("")
+        self.park_badge.setWordWrap(True)
+        self.park_badge.setMinimumHeight(54)
+        lay.addWidget(self.park_badge)
         self.park_t = QTableWidget(len(PARK_TYPES), 4)
         self.park_t.setHorizontalHeaderLabels(["Type of bay", "Bay size (m)", "Bays each", "Number provided"])
         for r, (k, lab, w_, l_, n_, cov_, enc_) in enumerate(PARK_TYPES):
@@ -15611,6 +15615,33 @@ class MainWindow(QMainWindow):
             return
         cp.materials.set_parking_lines(lines)
         QMessageBox.information(self, APP_NAME, "%d parking lines were put in the Site works tab of the costing, at general rates you can change there." % len(lines))
+
+    def park_badge_style(self):
+        r = parking_calc(self.park_state())
+        if not (r["units"] or r["provided"]):
+            col = "#888888"
+        else:
+            col = "#1B9F4B" if r["ok"] else "#E03050"
+        return "QLabel { border: 2px solid %s; border-radius: 8px; padding: 8px; font-size: 14px; }" % col
+
+    def park_badge_html(self):
+        """The big green or red line: bays needed against bays provided."""
+        r = parking_calc(self.park_state())
+        if not (r["units"] or r["provided"]):
+            return "<span style='color:#888'>Type the number of units to see how many bays are needed.</span>"
+        need = "<b>%d bays needed</b> (%.1f for the units + %.1f for visitors) &nbsp;|&nbsp; <b>%d provided</b>" % (r["required"], r["resident"], r["visitor"], r["provided"])
+        if r["ok"]:
+            sp = r["spare"]
+            return "<span style='color:#1B9F4B; font-size:20px'>&#9679;</span> <b style='color:#1B9F4B'>WITHIN THE REQUIREMENT</b> &nbsp; " + need + \
+                   (" &nbsp;(%d spare)" % sp if sp else "")
+        why = []
+        if r["short"]:
+            why.append("short by %d bay%s" % (r["short"], "" if r["short"] == 1 else "s"))
+        if r["visitor_provided"] < r["visitor_req"]:
+            why.append("%d more visitor bay%s needed (open, carport, shaded or kerb)" % (r["visitor_req"] - r["visitor_provided"], "" if r["visitor_req"] - r["visitor_provided"] == 1 else "s"))
+        if r["access_prov"] < r["access_req"]:
+            why.append("%d accessible bay%s needed" % (r["access_req"] - r["access_prov"], "" if r["access_req"] - r["access_prov"] == 1 else "s"))
+        return "<span style='color:#E03050; font-size:20px'>&#9679;</span> <b style='color:#E03050'>OVER THE MARGIN: " + "; ".join(why) + "</b> &nbsp; " + need
 
     def park_html(self):
         p = self.park_state()
@@ -15796,6 +15827,8 @@ class MainWindow(QMainWindow):
         self.cov_lvl.setText("   ".join(f"{b['name']}: " + ", ".join(f"{n} {a:.1f} m2" for n, a in b["levels"]) +
                                         f"  ({len(b['levels'])} storeys)" for b in _st["blocks"] if b.get("levels")))
         self.park_out.setText(self.park_html())
+        self.park_badge.setText(self.park_badge_html())
+        self.park_badge.setStyleSheet(self.park_badge_style())
         sc = cov_scenarios(_st)
         if not sc or sc[0]["stand"] <= 0:
             self.cov_result.setText("<i>Enter the stand area and the block footprints to see the coverage and FAR.</i>")
