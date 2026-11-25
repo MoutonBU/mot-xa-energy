@@ -6452,6 +6452,16 @@ def _ifc_dump_props(sp):
 IFC_EXCLUDE_RE = re.compile(r"^\s*G\s*-?\d+|\b(gate|garage|roller ?door|sectional|carport|boundary)\b", re.I)
 
 
+def _ifc_open_tag(*names, fallback=""):
+    """The mark of a window or door as the drawings show it, whatever the spacing: 'WD -09', 'WD - 09' and 'WD-09' are all WD-09; 'W1' stays W1.
+    The first name that looks like a mark wins (the element's own name before its type name)."""
+    for n in names:
+        m = re.match(r"^\s*([A-Za-z]{1,5})(\s*[-_.]\s*|\s+)?(\d{1,3})([A-Za-z]?)(?![A-Za-z0-9])", str(n or ""))
+        if m:
+            return "%s%s%s%s" % (m.group(1).upper(), "-" if m.group(2) else "", m.group(3), m.group(4).upper())
+    return fallback
+
+
 def ifc_excluded(tag, *names):
     """Gates (G1, G2...), garage doors and the like are not part of the glazing calculations."""
     return any(n and IFC_EXCLUDE_RE.search(str(n)) for n in (tag,) + names)
@@ -6799,7 +6809,7 @@ def read_ifc_model(path):
             for rel in getattr(el, "IsTypedBy", None) or []:
                 typ = rel.RelatingType
             nm = ((typ.Name if typ is not None and typ.Name else None) or el.Name or kind).strip()
-            tag = re.sub(r":.*$", "", nm).strip().split(" ")[0] or nm
+            tag = _ifc_open_tag(el.Name, nm, fallback=(re.sub(r":.*$", "", nm).strip().split(" ")[0] or nm))
             if ifc_excluded(tag, nm, el.Name, getattr(typ, "Name", None) if typ is not None else None):
                 excluded_n += 1
                 continue
