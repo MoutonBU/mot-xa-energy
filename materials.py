@@ -282,7 +282,7 @@ def read_ifc_quantities(path):
     q = dict(brick110=0.0, brick220=0.0, cavity=0.0, plaster_area=0.0, plain_brick_area=0.0, footing_vol=0.0, footing_len=0.0,
              slab_vol=0.0, slab_area=0.0, tile_area=0.0, dpm_area=0.0, roof_slab_vol=0.0, roof_area=0.0, beam_vol=0.0, win_area=0.0,
              win_n=0, door_n=0, gate_n=0, rail_m=0.0, rail_n=0, names={}, levels={}, slab_levels={},
-             conc_wall_vol=0.0, steel_kg=0.0, timber_vol=0.0, ins_area=0.0, soffit_plaster=0.0, fill_vol=0.0, mat_report={}, no_material={})
+             conc_wall_vol=0.0, steel_kg=0.0, timber_vol=0.0, ins_area=0.0, soffit_plaster=0.0, fill_vol=0.0, mat_report={}, no_material={}, rooms=[])
 
     def shape_stats(e):
         s = ifcopenshell.geom.create_shape(st, e)
@@ -498,6 +498,17 @@ def read_ifc_quantities(path):
                     ln = 0.0
             q["rail_m"] += ln
             q["rail_n"] += 1
+        except Exception:
+            continue
+    for e in f.by_type("IfcSpace"):                              # the block's own rooms: name, floor area, dwelling (U1-, U2- prefix)
+        try:
+            nm = str(getattr(e, "LongName", None) or e.Name or "")
+            try:
+                ar = float(shape_stats(e)[1][shape_stats(e)[2] < -0.9].sum())
+            except Exception:
+                ar = 0.0
+            m_ = re.match(r"^\s*([A-Za-z]{0,2}\s*\d{1,2})\s*[-_.:]\s*[A-Za-z]", nm)
+            q["rooms"].append((nm, ar, level(e), re.sub(r"\s+", "", m_.group(1)).upper() if m_ else ""))
         except Exception:
             continue
     for e in f.by_type("IfcWindow"):
@@ -1260,6 +1271,12 @@ class MaterialsPage(QWidget):
     def facts(self, b):
         rooms = self.rooms_full()
         sa = float((b.get("q") or {}).get("slab_area", 0))
+        own = (b.get("q") or {}).get("rooms")
+        if own and len(own) >= 2:                                # the block's own IFC has rooms: count from them, not from the project
+            f = facts_from_rooms(own)
+            if f["area"] < 1.0:
+                f["area"] = 0.85 * sa
+            return f
         if b.get("path") == self._project_ifc() and rooms:
             return facts_from_rooms(rooms)
         s = self.scale(b)

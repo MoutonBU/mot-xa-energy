@@ -20,3 +20,9 @@ def test_bom_new_rows():
     assert abs(steel - 10.0 * 100.0) < 1e-6
 if __name__ == "__main__":
     test_classes(); test_bom_new_rows(); print("ok")
+
+def test_rooms_facts():
+    rooms = [("U1-Kitchen", 10, "", "U1"), ("U1-Bedroom 1", 12, "", "U1"), ("U2-Kitchen", 10, "", "U2"), ("U2-Bath 1", 5, "", "U2")]
+    f = m.facts_from_rooms(rooms)
+    assert f["units"] == 2 and f["kitchens"] == 2
+test_rooms_facts(); print("ok2")
