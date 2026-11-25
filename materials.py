@@ -240,8 +240,15 @@ def _rail_run(e, st):
     import numpy as np
     import ifcopenshell.geom
     parts = []
-    for rel in getattr(e, "IsDecomposedBy", None) or []:
-        parts += list(rel.RelatedObjects)
+
+    def leaves(o, depth=0):                                     # railing > panels or members > parts: the shapes are on the lowest level
+        kids = [x for rel in (getattr(o, "IsDecomposedBy", None) or []) for x in rel.RelatedObjects]
+        if kids and depth < 4:
+            for k in kids:
+                leaves(k, depth + 1)
+        elif depth:
+            parts.append(o)
+    leaves(e)
     boxes = []
     for p in parts or [e]:
         try:
@@ -550,6 +557,7 @@ def read_ifc_quantities(path):
             q["gate_n"] += 1
         else:
             q["door_n"] += 1
+    q["mat_report"] = [[k_, c_, u_, v_] for (k_, c_, u_), v_ in sorted(rep.items())]      # a list, not tuple keys: the state is saved as JSON
     return q
 
 
@@ -1606,7 +1614,7 @@ class MaterialsPage(QWidget):
             qt = self.qt_
             mats = {}
             for b in self.blocks:
-                for (kd, cl, un), v in ((b["q"] or {}).get("mat_report") or {}).items():
+                for kd, cl, un, v in ((b["q"] or {}).get("mat_report") or []):
                     mats[(kd, cl, un)] = mats.get((kd, cl, un), 0.0) + v * max(1, int(b.get("repeat", 1)))
             nomat = {}
             for b in self.blocks:

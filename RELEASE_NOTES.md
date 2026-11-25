@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.267**
+Current version: **1.86.268**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Fixed 'Could not save your work for the restart: keys must be str, int...' (the costing material report is now saved as a list), and railings whose posts and panels sit two levels deep in the IFC are now measured.
 - Light, ventilation and sun: every door the IFC shows between two rooms (glass or timber), or in a half-brick partition when nothing else says, is left out of the ventilation and sun counts. They stay in the costing. The import message says how many were left out.
 - Costing: floors that Archicad exports as generic objects split into layer parts (concrete, fill, insulation, tile) are now read as floors, and a floor type with 'waterproof' in its name is no longer mistaken for a roof.
 - Costing: each block now counts its own dwellings, kitchens, bedrooms and bathrooms from the rooms in its own IFC (so distribution boards, geysers and kitchens match the block), instead of scaling the project's rooms by floor area.

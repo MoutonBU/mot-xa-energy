@@ -26,3 +26,8 @@ def test_rooms_facts():
     f = m.facts_from_rooms(rooms)
     assert f["units"] == 2 and f["kitchens"] == 2
 test_rooms_facts(); print("ok2")
+
+def test_report_is_json():
+    import json
+    json.dumps({"mat_report": [["Walls", "brick", "m2", 1.0]], "rooms": [("U1-Kitchen", 1.0, "", "U1")]})
+test_report_is_json(); print("ok3")
