@@ -38,7 +38,7 @@ ALLOW = {
     "handrail_ss_m": ("Stainless steel handrail / balustrade length, by hand", "m", 0.0),
     "glazing_level": ("Glazing for ALL windows and glazed doors: 0 = as modelled, 1 = single clear, 2 = double, 3 = triple (replaces what the model says)", "0-3", 0.0),
     "glazing_default": ("Glazing when the model does not say: 1 = single, 2 = double, 3 = triple", "1-3", 1.0),
-    "spec_level": ("Finish level of fit-out rates: 1 = standard, 2 = high-end, 3 = luxury (not applied to rates you imported)", "1-3", 1.0),
+    "spec_level": ("Finish level of fit-out rates: 1 = budget (cheapest), 2 = mid-range, 3 = high-end, 4 = luxury (not applied to rates you imported)", "1-4", 2.0),
     "footing_w": ("Strip footing width when the model has no footings", "m", 0.6),
     "footing_d": ("Strip footing depth when the model has no footings", "m", 0.3),
     "floor_finish_pct": ("Floor finish as a share of the room floor area (tiles or similar)", "%", 100.0),
@@ -149,7 +149,7 @@ MAT_CLASSES = [(c, re.compile(rx, re.I)) for c, rx in MAT_CLASSES]
 STEEL_KG_M3 = 7850.0
 
 
-SPEC_MULT = {1: 1.0, 2: 1.35, 3: 1.8}
+SPEC_MULT = {1: 1.0, 2: 1.25, 3: 1.7, 4: 2.3}      # 1 is the budget rates as listed; 2, mid-range, is the starting level
 BASE_KEYS = re.compile(r"^(concrete|steel|steel_section|brick|brickforce|ties|cement|sand_build|sand_plaster|excavate|hardcore|dpm|site_clear|timber_member|roof_trusses|"
                        r"insulation|plumb_point|services|geyser|db|coc|light_point|socket|switch|inst:)")
 

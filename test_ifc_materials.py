@@ -67,15 +67,15 @@ def test_openings_glazing_and_doors():
     facts = dict(area=90, wet_area=10, units=1, kitchens=1, bedrooms=2, baths=1, dbs=1)
     ops = [["Window", "W1", 2.0, 1.5, "double", "window"], ["Door", "D1", 3.0, 2.4, "double", "slider"], ["Door", "D2", 0.8, 2.0, "", "internal"],
            ["Door", "D3", 0.9, 2.1, "", "external"], ["Door", "GD", 2.4, 2.1, "", "garage"]]
-    rows = {r[1]: r for r in m.bom(_q(openings=ops), {}, {}, facts)}
+    rows = {r[1]: r for r in m.bom(_q(openings=ops), {}, {"spec_level": 1}, facts)}
     w2 = rows["Windows, aluminium frame, double glazed"]; s2 = rows["Large sliding, stacking and glazed doors, double glazed"]
     assert abs(w2[3] - 3.0) < 1e-6 and abs(s2[3] - 7.2) < 1e-6
     assert abs(w2[4] - 5400.0) < 1e-6 and abs(s2[4] - 8600.0) < 1e-6   # each grade has its own full rate, no extra line
     assert not any("extra over" in k for k in rows) and not any("single" in k for k in rows)
     assert rows["Internal doors"][3] == 1 and rows["External doors"][3] == 1 and rows["Garage doors"][3] == 1
-    rows3 = {r[1]: r for r in m.bom(_q(openings=ops), {}, {"glazing_level": 3}, facts)}
+    rows3 = {r[1]: r for r in m.bom(_q(openings=ops), {}, {"glazing_level": 3, "spec_level": 1}, facts)}
     assert "Windows, aluminium frame, triple glazed" in rows3 and not any("double" in k for k in rows3)
-    rows1 = {r[1]: r for r in m.bom(_q(openings=ops), {}, {"glazing_level": 1}, facts)}
+    rows1 = {r[1]: r for r in m.bom(_q(openings=ops), {}, {"glazing_level": 1, "spec_level": 1}, facts)}
     assert "Windows, aluminium frame, single clear glazed" in rows1 and not any("double" in k or "triple" in k for k in rows1)
     assert abs(rows1["Windows, aluminium frame, single clear glazed"][4] - 3350.0) < 1e-6
     r3 = rows3["Windows, aluminium frame, triple glazed"]; assert r3[4] > w2[4] > 3350.0
@@ -91,9 +91,11 @@ def test_footing_fallback_and_spec():
     rows = m.bom(_q(wall_len={"G": 100.0}), {}, {}, facts)
     f = [r for r in rows if r[1].startswith("Footings (concrete)")][0]
     assert abs(f[3] - 100.0 * 0.6 * 0.3 * 1.05) < 0.5 and "allowance" in f[1]
-    base = {r[1]: r for r in m.bom(_q(), {}, {}, facts)}
+    base = {r[1]: r for r in m.bom(_q(), {}, {"spec_level": 1}, facts)}
+    mid = {r[1]: r for r in m.bom(_q(), {}, {}, facts)}
+    assert abs(mid["Floor tiles, laid"][4] - base["Floor tiles, laid"][4] * 1.25) < 1e-6      # the default is mid-range, not the cheapest
     lux = {r[1]: r for r in m.bom(_q(), {}, {"spec_level": 3}, facts)}
-    assert lux["Floor tiles, laid"][4] > base["Floor tiles, laid"][4] * 1.7
+    assert lux["Floor tiles, laid"][4] > base["Floor tiles, laid"][4] * 1.69
     assert abs(lux["Bricks laid"][4] - base["Bricks laid"][4]) < 1e-9 if "Bricks laid" in lux else True
     own = {r[1]: r for r in m.bom(_q(), {"tile": (100.0, 50.0)}, {"spec_level": 3}, facts)}
     assert own["Floor tiles, laid"][4] == 100.0
