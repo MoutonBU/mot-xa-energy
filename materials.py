@@ -311,7 +311,7 @@ def read_ifc_quantities(path):
     q = dict(brick110=0.0, brick220=0.0, cavity=0.0, plaster_area=0.0, plain_brick_area=0.0, footing_vol=0.0, footing_len=0.0,
              slab_vol=0.0, slab_area=0.0, tile_area=0.0, dpm_area=0.0, roof_slab_vol=0.0, roof_area=0.0, beam_vol=0.0, win_area=0.0,
              win_n=0, door_n=0, gate_n=0, rail_m=0.0, rail_n=0, names={}, levels={}, slab_levels={},
-             conc_wall_vol=0.0, steel_kg=0.0, timber_vol=0.0, ins_area=0.0, soffit_plaster=0.0, fill_vol=0.0, mat_report={}, no_material={}, rooms=[], roof_timber_vol=0.0, roof_plan=0.0, roof_pitch=0.0, storeys=[], openings=[], cab_base_m=0.0, cab_tall_m=0.0, cab_wall_m=0.0, appliance_n=0, wall_len={}, unread=[])
+             conc_wall_vol=0.0, steel_kg=0.0, timber_vol=0.0, ins_area=0.0, soffit_plaster=0.0, fill_vol=0.0, mat_report={}, no_material={}, rooms=[], roof_timber_vol=0.0, roof_plan=0.0, roof_pitch=0.0, storeys=[], openings=[], cab_base_m=0.0, cab_tall_m=0.0, cab_wall_m=0.0, appliance_n=0, wall_len={}, unread=[], failed={}, audit=[])
 
     def shape_stats(e):
         s = ifcopenshell.geom.create_shape(st, e)
@@ -358,6 +358,20 @@ def read_ifc_quantities(path):
         k = (kind, cls, unit)
         rep[k] = rep.get(k, 0.0) + qty
 
+    def fail_(e):
+        try:
+            k = e.is_a() + " " + (e.Name or "")[:40]
+            reps = [r_.RepresentationType for r_ in (e.Representation.Representations if e.Representation else [])]
+            if reps and all(t_ in ("Curve2D", "GeometricCurveSet", "Annotation2D") for t_ in reps):
+                k = "2D line only, no 3D body: " + k
+                q["flat_n"] = q.get("flat_n", 0) + 1
+            elif e.is_a("IfcWall"):
+                q["wall_fail3d"] = q.get("wall_fail3d", 0) + 1
+                k = "empty or broken 3D shape, check in Archicad: " + k
+        except Exception:
+            k = "object"
+        q["failed"][k] = q["failed"].get(k, 0) + 1
+
     def nomat(kind):
         q["no_material"][kind] = q["no_material"].get(kind, 0) + 1
 
@@ -367,8 +381,11 @@ def read_ifc_quantities(path):
             kind, th = _wall_kind(name)
             if kind == "footing":
                 q["footing_vol"] += _footing_volume(e, name, sc)
+                q["wall_n_read"] = q.get("wall_n_read", 0) + 1
                 continue
             vol, ar, nz, v = shape_stats(e)
+            q["wall_vol_geom"] = q.get("wall_vol_geom", 0.0) + vol
+            q["wall_n_read"] = q.get("wall_n_read", 0) + 1
             ly = element_layers(e, sc)
             by, tot = layer_split(ly)
             if not ly:
@@ -385,6 +402,7 @@ def read_ifc_quantities(path):
             lv = level(e)
             if by and conc_t > mas_t:                           # a concrete wall: concrete and steel, not brick
                 cv = vol * conc_t / tot
+                q["wall_vol_priced"] = q.get("wall_vol_priced", 0.0) + cv
                 q["conc_wall_vol"] += cv
                 note("Walls", "concrete", cv, "m3")
                 face = vol / tot
@@ -398,6 +416,7 @@ def read_ifc_quantities(path):
                 continue
             if by and mas_t <= 0:                               # steel, timber, glass or something else: not brickwork
                 c0 = main_class(ly)
+                q["wall_vol_priced"] = q.get("wall_vol_priced", 0.0) + (vol if c0 in ("timber", "steel") else 0.0)
                 note("Walls", c0 + " (not costed as brick)", vol, "m3")
                 if c0 == "timber":
                     q["timber_vol"] += vol
@@ -419,6 +438,7 @@ def read_ifc_quantities(path):
                 npl = 2 if "plaster" in name.lower() else 0
                 bc = "brick"
             face = vol / tt
+            q["wall_vol_priced"] = q.get("wall_vol_priced", 0.0) + vol
             q[kind] += face
             note("Walls", bc + (" cavity" if kind == "cavity" else ""), face, "m2")
             if by.get("insulation") and kind != "cavity":
@@ -431,6 +451,7 @@ def read_ifc_quantities(path):
             elif kind in ("brick110", "brick220"):
                 q["plain_brick_area"] += 2.0 * face
         except Exception:
+            fail_(e)
             continue
     def leaf_parts(o, depth=0):
         kids = [x for rel in (getattr(o, "IsDecomposedBy", None) or []) for x in rel.RelatedObjects]
@@ -470,6 +491,7 @@ def read_ifc_quantities(path):
             try:
                 pv = shape_stats(p)[0]
             except Exception:
+                fail_(p)
                 continue
             pl = element_layers(p, sc)
             c = pl[0][1] if pl else mat_class(p.Name or "")
@@ -548,6 +570,7 @@ def read_ifc_quantities(path):
             if share("membrane") or re.search(r"waterproof|membrane|dpm", name, re.I):
                 q["dpm_area"] += top
         except Exception:
+            fail_(e)
             continue
     for e in f.by_type("IfcRoof"):
         try:
@@ -557,6 +580,7 @@ def read_ifc_quantities(path):
             q["roof_area"] += true_a
             q["roof_plan"] += float((ar[up] * nz[up]).sum())          # the same roof seen from above: with the overhangs, without the slope
         except Exception:
+            fail_(e)
             continue
     if q["roof_area"] > 0 and q["roof_plan"] > 0:
         import math
@@ -578,6 +602,7 @@ def read_ifc_quantities(path):
             q["footing_vol"] += fv
             note("Footings", "concrete", fv, "m3")
         except Exception:
+            fail_(e)
             continue
     NOT_STRUCT = re.compile(r"furnit|sofa|\bbed\b|table|chair|toilet|basin|bathtub|\bbath\b|lamp|light|\btv\b|plant|tree|\bcar\b|person|appliance|cupboard|counter|\bsink|shower|\bwc\b|"
                             r"fridge|stove|oven|hob|mirror|curtain|carpet|rug|door|window|glazing|railing|balustrade|handrail", re.I)
@@ -646,6 +671,7 @@ def read_ifc_quantities(path):
                     q["fill_vol"] += vol
                 note("Beams, columns, stairs, objects", c0 + ex, vol, "m3")
         except Exception:
+            fail_(e)
             continue
     for e in f.by_type("IfcRailing"):                           # handrails and balustrades: the run length of each
         try:
@@ -662,6 +688,7 @@ def read_ifc_quantities(path):
             q["rail_m"] += ln
             q["rail_n"] += 1
         except Exception:
+            fail_(e)
             continue
     for e in f.by_type("IfcSpace"):                              # the block's own rooms: name, floor area, dwelling (U1-, U2- prefix)
         try:
@@ -802,6 +829,21 @@ def read_ifc_quantities(path):
         except Exception:
             pass
     q["unread"] = [[c_, l_, n_, round(v_, 2)] for (c_, l_), (n_, v_) in sorted(skipped.items(), key=lambda x: -x[1][0])][:25]
+    for k_, n_ in q["failed"].items():
+        q["unread"].append(["COULD NOT READ (geometry error)", k_, n_, 0.0])
+    try:
+        nfw = 0
+        wl = list(f.by_type("IfcWall"))
+        flat = q.get("flat_n", 0)
+        q["audit"] = [
+            ["Walls with a 3D body: in the model / read", len(wl) - flat, q.get("wall_n_read", 0) - q.get("wall_fail3d", 0)],
+            ["Windows: in the model / read", len(f.by_type("IfcWindow")), q["win_n"]],
+            ["Doors and gates: in the model / read", len(f.by_type("IfcDoor")), q["door_n"] + q["gate_n"]],
+            ["Wall volume m3 (3D shape of the walls / given a price line)", round(q.get("wall_vol_geom", 0.0), 1), round(q.get("wall_vol_priced", 0.0), 1)],
+        ]
+        q["flat_walls"] = flat
+    except Exception:
+        q["audit"] = []
     q["mat_report"] = [[k_, c_, u_, v_] for (k_, c_, u_), v_ in sorted(rep.items())]      # a list, not tuple keys: the state is saved as JSON
     return q
 
@@ -1958,6 +2000,10 @@ class MaterialsPage(QWidget):
                 v_ = sum((b["q"] or {}).get(k_, 0) * max(1, int(b.get("repeat", 1))) for b in self.blocks if b.get("q"))
                 if v_:
                     rows_.append(("Cupboards read from the model: " + lab_, "no." if k_ == "appliance_n" else "m", float(v_)))
+            for b in self.blocks:
+                for lab_, a_, b_ in ((b["q"] or {}).get("audit") or []):
+                    rows_.append(("Reader check, %s: %s" % (b.get("name", ""), lab_.replace(" / ", " / "))
+                                  + " = %g / %g%s" % (a_, b_, "" if abs(a_ - b_) < 0.5 else "   <-- DIFFERENT, look at this"), "check", float(b_)))
             un_ = {}
             for b in self.blocks:
                 for c_, l_, n_, v_ in ((b["q"] or {}).get("unread") or []):

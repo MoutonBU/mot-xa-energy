@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.274**
+Current version: **1.86.275**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- IFC reader check: the Quantities tab now shows, for every block, how many walls, windows and doors are in the model against how many were read, and the wall volume against the volume given a price line, with a warning where they differ. Walls that cannot be read are named (2D lines only, or a broken 3D shape) instead of being dropped silently.
 - Coverage & FAR now has a Parking step: bays needed from the units (ratio per unit, by bedrooms, or a house), visitor and accessible bays, open, carport, garage, tandem, parallel and basement bays, the effect on coverage and FAR, a Parking section in the report, and a button that adds paving, carports and garages to the costing site works at general South African rates.
 - Costing IFC reader: posts, purlins and other timber, steel or concrete fittings are now read as structure, built-in ovens and dishwashers exported as flow elements are counted, and the Quantities tab lists every object the reader found but has nothing to price it with, so nothing is missed silently.
 - IFC import: window and door marks are read whole whatever the spacing ('WD -09', 'WD - 09', 'WD-09', 'TWD - 04', 'W1'), so every mark is its own window type for light, ventilation and sun, instead of all the WD windows sharing one tag.
