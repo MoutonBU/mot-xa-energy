@@ -6201,6 +6201,29 @@ AIR_DOOR_NAME_RE = re.compile(r"front|entrance|entry|main\s?door|back\s?door|rea
                               r"bi-?fold|external|exterior|outside|\bext\b|kitchen\s?door|scullery|laundry\s?door|fire\s?escape", re.I)
 
 
+def _ifc_wall_thickness(wall, scale=1.0):
+    """Thickness in metres of a wall: from its layer set, else from the number of mm in its type name ('Brick - Structural 110'). 0 when unknown."""
+    if wall is None:
+        return 0.0
+    try:
+        import ifcopenshell.util.element as UE
+        m = UE.get_material(wall)
+        if m is not None and m.is_a("IfcMaterialLayerSetUsage"):
+            m = m.ForLayerSet
+        if m is not None and m.is_a("IfcMaterialLayerSet"):
+            t = sum(float(l.LayerThickness or 0) for l in m.MaterialLayers) * scale
+            if t > 0:
+                return t
+        ty = UE.get_type(wall)
+        nm = (ty.Name if ty is not None else "") or wall.Name or ""
+        x = re.search(r"(\d{2,3})\s*(?:mm)?\s*(?:brick|block|wall|$)", nm, re.I) or re.search(r"(\d{2,3})\s*$", nm)
+        if x:
+            return float(x.group(1)) / 1000.0
+    except Exception:
+        pass
+    return 0.0
+
+
 def _ifc_is_external(el, scale, spaces):
     """True when a door sits in an outside wall, whether it is timber, steel or glass. Order of evidence: the IFC's own
     IsExternal flag on the door or its wall, the rooms on each side, then the name (front door, entrance, patio...).
@@ -6235,6 +6258,9 @@ def _ifc_is_external(el, scale, spaces):
         return False
     if AIR_DOOR_NAME_RE.search(f"{getattr(el, 'Name', '') or ''} {getattr(el, 'ObjectType', '') or ''}"):
         return True
+    th = _ifc_wall_thickness(wall, scale)     # last evidence: a half-brick (110) partition is an inside wall, an outside wall is thicker or a cavity wall
+    if th and th <= 0.125:
+        return False
     return None
 
 
@@ -6864,13 +6890,15 @@ def read_ifc_model(path):
                         el_ext[el_.id()] = bool(ex_)
     except Exception:
         face_of = {}
+    left_out = {}
+    # inside doors, glass or timber, whatever their tag: a door the model shows between two rooms (or flagged inside) is not an opening to the outside, so it
+    # leaves the ventilation and sun counts, the room links and the schedule (the costing reads its own door count from the IFC and still prices it)
     # inside doors that carry the tag of an outside door (the same mark on a passage door, or an object exported as a proxy in an inside wall) are not outside
     # openings: they leave the counts, the room links and the schedule, so D1 x 2 outside is not reported as 3
     try:
-        ext_tags = {it["tag"] for it in items if it["kind"] == "Door" and any(el_ext.get(e_.id()) for e_ in it["_els"])}
         left_out = {}
         for it in list(items):
-            if it["kind"] != "Door" or it["tag"] not in ext_tags:
+            if it["kind"] != "Door":
                 continue
             keep = [i for i, e_ in enumerate(it["_els"]) if el_ext.get(e_.id()) is not False]
             if len(keep) == len(it["_els"]):
@@ -6884,7 +6912,7 @@ def read_ifc_model(path):
                 items.remove(it)
         for it in items:
             if it["kind"] == "Door" and left_out.get(it["tag"]):
-                it["note"] = (it.get("note", "") + " Not counted: %d inside door(s) with the same tag." % left_out[it["tag"]]).strip()
+                it["note"] = (it.get("note", "") + " Not counted for ventilation or sun: %d inside door(s) with the same tag (they are still in the costing)." % left_out[it["tag"]]).strip()
     except Exception:
         pass
     # link openings to rooms through space boundaries
@@ -7053,7 +7081,7 @@ def read_ifc_model(path):
             if gid_ in byel:
                 _shade_rooms.setdefault("%s||%s||%s||%s" % (r.get("floor", ""), r.get("unit", ""), r.get("name", ""), str(tg_).upper()), []).append(list(byel[gid_]))
     return {"aliases": aliases, "floors": floor_order, "rooms": rooms, "items": items, "north": north, "gross": round(gross, 2), "solid_doors": ext_noglass,
-            "excluded": excluded_n, "dups": dup_n, "n_spaces": n_spaces, "geo_area": geo_area_n,
+            "excluded": excluded_n, "dups": dup_n, "inside_doors": sum(left_out.values()) if isinstance(left_out, dict) else 0, "n_spaces": n_spaces, "geo_area": geo_area_n,
             "no_area": no_area_n, "no_area_names": no_area_names, "room_report": rep_lines, "n_zones": len(ifc.by_type("IfcZone")), "n_storeys": len(ifc.by_type("IfcBuildingStorey")),
             "n_win": len(_ifc_open_els(ifc, "IfcWindow")), "n_door": len(_ifc_open_els(ifc, "IfcDoor")), "placed": placed, "unplaced": unplaced, "faced": n_faced,
             "latlon": ifc_site_latlon(ifc), "air": air, "shading": _shd, "shade_by_room": _shade_rooms}
@@ -13444,6 +13472,8 @@ class MainWindow(QMainWindow):
                             % (res["no_area"], ", ".join(str(n_) for n_ in res.get("no_area_names", [])[:12])))
                 if nsd:
                     msg += " Door types with no glass found in the model (left out): %d." % nsd
+                if res.get("inside_doors"):
+                    msg += (" Inside doors (between rooms, glass or timber) left out of ventilation and sun: %d. They stay in the costing." % res["inside_doors"])
                 if res.get("dups"):
                     msg += (" Duplicates removed (the same window or door exported twice on the same spot): %d."
                             % res["dups"])
