@@ -36,6 +36,7 @@ ALLOW = {
     "bic_m_per_bedroom": ("Built-in cupboard per bedroom", "m", 2.4),
     "handrail_extra_m": ("Handrail / balustrade length added by hand (steel or timber), on top of the IFC railings", "m", 0.0),
     "handrail_ss_m": ("Stainless steel handrail / balustrade length, by hand", "m", 0.0),
+    "steel_wall": ("Reinforcing steel per m3 of concrete wall", "kg/m3", 100.0),
     "plaster_brick_walls": ("Plaster the plain 'Brick' walls too (1 = yes)", "0/1", 0.0),
     # how the price is built up
     "breakage_pct": ("Breakage, theft and wastage allowance, on all materials", "%", 3.0),
@@ -93,6 +94,8 @@ RATES = {
     "cup_wall": ("Kitchen wall units", "m", 1500.0, 600.0, EST_NOTE),
     "countertop": ("Kitchen countertop", "m", 1200.0, 450.0, EST_NOTE),
     "bic": ("Built-in bedroom cupboard", "m", 2500.0, 800.0, EST_NOTE),
+    "steel_section": ("Structural steel sections, supplied, fabricated and erected", "kg", 34.0, 14.0, EST_NOTE),
+    "timber_member": ("Timber columns, beams and members (per m3), supplied and fixed", "m3", 9500.0, 2800.0, EST_NOTE),
     "handrail": ("Handrail and balustrade, steel or timber, supplied and fixed (per metre run)", "m", 850.0, 300.0, EST_NOTE),
     "handrail_ss": ("Handrail and balustrade, stainless steel, supplied and fixed (per metre run)", "m", 1900.0, 450.0, EST_NOTE),
     "accessories": ("Bathroom accessories (roll holder, towel rail, mirror)", "per bathroom", 600.0, 120.0, EST_NOTE),
@@ -110,6 +113,89 @@ WET = re.compile(r"\b(bath|ensuite|en-suite|shower|wc|toilet)", re.I)
 
 
 # ---------------- reading the model ----------------
+
+# ---------------- what an object is made of, read from the IFC material of the object itself ----------------
+MAT_CLASSES = [("insulation", r"insul|rockwool|polystyrene|\beps\b|\bxps\b|isotherm|glasswool|foam"),
+               ("block", r"\bblock|\bcmu\b|hollow"),
+               ("concrete", r"concrete|\bconc\b|screed|reinforced|\bcement\b"),
+               ("brick", r"brick|masonry|clay"),
+               ("steel", r"steel|\biron\b|metal|galv|alumin|zinc|\bchs\b|\brhs\b"),
+               ("timber", r"timber|wood|plywood|\bpine\b|saligna|\boak\b|chipboard|\bosb\b|fib(re|er)board|\bmdf\b"),
+               ("glass", r"glass|glaz"),
+               ("tile", r"\btiles?\b|ceramic|porcelain"),
+               ("plaster", r"plaster|gypsum|render|skim"),
+               ("membrane", r"membrane|waterproof|\bdpm\b|bitumen|rainproof|polythene"),
+               ("fill", r"soil|earth|\bsand\b|gravel|hardcore|\bfill\b|rock|stone")]
+MAT_CLASSES = [(c, re.compile(rx, re.I)) for c, rx in MAT_CLASSES]
+STEEL_KG_M3 = 7850.0
+
+
+def mat_class(name):
+    """What a material name means: concrete, brick, block, steel, timber, insulation, glass, tile, plaster, membrane, fill, air or other."""
+    n = str(name or "")
+    for c, rx in MAT_CLASSES:
+        if rx.search(n):
+            return c
+    return "air" if re.search(r"\bair\b|cavity", n, re.I) else "other"
+
+
+def element_layers(e, sc):
+    """The layers an object is made of: [(material name, class, thickness in m or None)]. Reads layer sets (and their usages), constituent sets,
+    profile sets, material lists and a single material, from the object or from its type."""
+    import ifcopenshell.util.element as UE
+    try:
+        m = UE.get_material(e)
+    except Exception:
+        m = None
+    if m is None:
+        return []
+    out = []
+
+    def one(mt, th=None):
+        if mt is not None:
+            nm = getattr(mt, "Name", "") or ""
+            out.append((nm, mat_class(nm), th))
+    try:
+        if m.is_a("IfcMaterialLayerSetUsage"):
+            m = m.ForLayerSet
+        if m.is_a("IfcMaterialLayerSet"):
+            for l in m.MaterialLayers:
+                one(l.Material, float(l.LayerThickness or 0) * sc)
+        elif m.is_a("IfcMaterialConstituentSet"):
+            for c in m.MaterialConstituents or []:
+                one(c.Material)
+        elif m.is_a("IfcMaterialProfileSetUsage") or m.is_a("IfcMaterialProfileSet"):
+            ps = m.ForProfileSet if m.is_a("IfcMaterialProfileSetUsage") else m
+            for p in ps.MaterialProfiles or []:
+                one(p.Material)
+        elif m.is_a("IfcMaterialList"):
+            for x in m.Materials or []:
+                one(x)
+        elif m.is_a("IfcMaterial"):
+            one(m)
+        elif hasattr(m, "Material"):
+            one(m.Material)
+    except Exception:
+        pass
+    return out
+
+
+def layer_split(ly, vol=None):
+    """({class: thickness m}, total thickness) of the layers that have a thickness."""
+    by = {}
+    for _n, c, t in ly:
+        if t:
+            by[c] = by.get(c, 0.0) + t
+    return by, sum(by.values())
+
+
+def main_class(ly):
+    """The class that makes most of an object (by thickness when known, else the first material)."""
+    by, tot = layer_split(ly)
+    if by:
+        return max(by, key=by.get)
+    return ly[0][1] if ly else None
+
 def _wall_kind(name):
     n = name.lower()
     t = re.search(r"(\d{2,3})\s*mm", n)
@@ -195,7 +281,8 @@ def read_ifc_quantities(path):
     sc = UU.calculate_unit_scale(f)
     q = dict(brick110=0.0, brick220=0.0, cavity=0.0, plaster_area=0.0, plain_brick_area=0.0, footing_vol=0.0, footing_len=0.0,
              slab_vol=0.0, slab_area=0.0, tile_area=0.0, dpm_area=0.0, roof_slab_vol=0.0, roof_area=0.0, beam_vol=0.0, win_area=0.0,
-             win_n=0, door_n=0, gate_n=0, rail_m=0.0, rail_n=0, names={}, levels={}, slab_levels={})
+             win_n=0, door_n=0, gate_n=0, rail_m=0.0, rail_n=0, names={}, levels={}, slab_levels={},
+             conc_wall_vol=0.0, steel_kg=0.0, timber_vol=0.0, ins_area=0.0, soffit_plaster=0.0, fill_vol=0.0, mat_report={}, no_material={})
 
     def shape_stats(e):
         s = ifcopenshell.geom.create_shape(st, e)
@@ -236,6 +323,15 @@ def read_ifc_quantities(path):
             pass
         return 0.0
 
+    rep = q["mat_report"]
+
+    def note(kind, cls, qty, unit):
+        k = (kind, cls, unit)
+        rep[k] = rep.get(k, 0.0) + qty
+
+    def nomat(kind):
+        q["no_material"][kind] = q["no_material"].get(kind, 0) + 1
+
     for e in f.by_type("IfcWall"):
         try:
             name = type_name(e)
@@ -244,14 +340,63 @@ def read_ifc_quantities(path):
                 q["footing_vol"] += _footing_volume(e, name, sc)
                 continue
             vol, ar, nz, v = shape_stats(e)
-            th = th or layer_thickness(e) or 0.11
-            face = vol / th
-            q[kind] += face
-            q["names"][name] = q["names"].get(name, 0.0) + face
+            ly = element_layers(e, sc)
+            by, tot = layer_split(ly)
+            if not ly:
+                nomat("Walls")
+            conc_t = by.get("concrete", 0.0)
+            mas_t = by.get("brick", 0.0) + by.get("block", 0.0)
+            if not by and ly:                                   # one material, no thickness: take it from the name
+                c0 = main_class(ly)
+                tt = th or 0.11
+                by = {c0: tt}
+                tot = tt
+                conc_t = tt if c0 == "concrete" else 0.0
+                mas_t = tt if c0 in ("brick", "block") else 0.0
             lv = level(e)
+            if by and conc_t > mas_t:                           # a concrete wall: concrete and steel, not brick
+                cv = vol * conc_t / tot
+                q["conc_wall_vol"] += cv
+                note("Walls", "concrete", cv, "m3")
+                face = vol / tot
+                npl = sum(1 for _n, c, _t in ly if c == "plaster")
+                q["plaster_area"] += npl * face
+                q["names"][name] = q["names"].get(name, 0.0) + face
+                q["levels"][lv] = q["levels"].get(lv, 0.0) + face
+                continue
+            if by and mas_t <= 0 and not ly:
+                continue
+            if by and mas_t <= 0:                               # steel, timber, glass or something else: not brickwork
+                c0 = main_class(ly)
+                note("Walls", c0 + " (not costed as brick)", vol, "m3")
+                if c0 == "timber":
+                    q["timber_vol"] += vol
+                elif c0 == "steel":
+                    q["steel_kg"] += vol * STEEL_KG_M3
+                continue
+            if by:
+                tt = tot
+                if by.get("insulation") or by.get("air") or "cavity" in name.lower():
+                    kind = "cavity"
+                elif mas_t >= 0.20:
+                    kind = "brick220"
+                else:
+                    kind = "brick110"
+                bc = "block" if by.get("block", 0) > by.get("brick", 0) else "brick"
+                npl = sum(1 for _n, c, _t in ly if c == "plaster")
+            else:                                               # no material at all: the type name decides, as before
+                tt = th or 0.11
+                npl = 2 if "plaster" in name.lower() else 0
+                bc = "brick"
+            face = vol / tt
+            q[kind] += face
+            note("Walls", bc + (" cavity" if kind == "cavity" else ""), face, "m2")
+            if by.get("insulation") and kind != "cavity":
+                q["ins_area"] += face
+            q["names"][name] = q["names"].get(name, 0.0) + face
             q["levels"][lv] = q["levels"].get(lv, 0.0) + face
-            if "plaster" in name.lower():
-                q["plaster_area"] += 2.0 * face
+            if npl:
+                q["plaster_area"] += npl * face
             elif kind in ("brick110", "brick220"):
                 q["plain_brick_area"] += 2.0 * face
         except Exception:
@@ -261,18 +406,40 @@ def read_ifc_quantities(path):
             name = type_name(e)
             vol, ar, nz, v = shape_stats(e)
             top = float(ar[nz > 0.9].sum())
+            bot = float(ar[nz < -0.9].sum())
             lv = level(e)
             is_roof = "roof" in name.lower() or "roof" in lv.lower() or str(getattr(e, "PredefinedType", "")) == "ROOF"
+            ly = element_layers(e, sc)
+            by, tot = layer_split(ly)
+            if not ly:
+                nomat("Slabs")
+            if by:
+                share = lambda c: by.get(c, 0.0) / tot
+                cvol = vol * share("concrete")
+            else:
+                c0 = main_class(ly)
+                cvol = vol if c0 in (None, "concrete") else 0.0
+                share = lambda c: 1.0 if c == c0 else 0.0
+            if by and not cvol and share("timber") > 0.5:
+                q["timber_vol"] += vol * share("timber")
+            if share("fill"):
+                q["fill_vol"] += vol * share("fill")
+            if share("insulation"):
+                q["ins_area"] += top
+            if share("plaster") and bot:
+                q["soffit_plaster"] += bot
             if is_roof:
-                q["roof_slab_vol"] += vol
+                q["roof_slab_vol"] += cvol
                 q["roof_area"] += top
+                note("Roof slabs", "concrete" if ly else "concrete (no material given)", cvol, "m3")
                 continue
-            q["slab_vol"] += vol
+            q["slab_vol"] += cvol
             q["slab_area"] += top
             q["slab_levels"][lv] = q["slab_levels"].get(lv, 0.0) + top
-            if "tile" in name.lower():
+            note("Floor slabs", "concrete" if ly else "concrete (no material given)", cvol, "m3")
+            if share("tile") or "tile" in name.lower():
                 q["tile_area"] += top
-            if "waterproof" in name.lower() or "membrane" in name.lower() or "dpm" in name.lower():
+            if share("membrane") or re.search(r"waterproof|membrane|dpm", name, re.I):
                 q["dpm_area"] += top
         except Exception:
             continue
@@ -282,13 +449,37 @@ def read_ifc_quantities(path):
             q["roof_area"] += float(ar[nz > 0.25].sum())
         except Exception:
             continue
+    for e in f.by_type("IfcFooting"):
+        try:
+            ly = element_layers(e, sc)
+            if ly and main_class(ly) not in ("concrete",):
+                continue
+            if not ly:
+                nomat("Footings")
+            fv = shape_stats(e)[0]
+            q["footing_vol"] += fv
+            note("Footings", "concrete", fv, "m3")
+        except Exception:
+            continue
     for cls in ("IfcBeam", "IfcColumn", "IfcMember", "IfcStair", "IfcStairFlight"):
         try:
             for e in f.by_type(cls):
-                if getattr(e, "Name", "") and "CHS" in (type_name(e) or ""):
-                    continue            # a steel tube column is not concrete
                 try:
-                    q["beam_vol"] += shape_stats(e)[0]
+                    vol = shape_stats(e)[0]
+                    ly = element_layers(e, sc)
+                    c0 = main_class(ly) if ly else None
+                    if c0 is None:                              # no material given: a steel tube is named in its type, the rest is concrete
+                        nomat("Beams and columns")
+                        c0 = "steel" if re.search(r"\bCHS\b|\bRHS\b|\bSHS\b|\bIPE\b|\bUB\b|steel", type_name(e), re.I) else "concrete"
+                    if c0 == "concrete":
+                        q["beam_vol"] += vol
+                    elif c0 == "steel":
+                        q["steel_kg"] += vol * STEEL_KG_M3
+                    elif c0 == "timber":
+                        q["timber_vol"] += vol
+                    elif c0 in ("brick", "block"):
+                        q["beam_vol"] += 0.0
+                    note("Beams, columns, stairs", c0, vol, "m3")
                 except Exception:
                     pass
         except Exception:
@@ -378,15 +569,20 @@ def bom(q, rates, allow, facts, fixtures=None):
     add("Concrete", "Footings (concrete)", "m3", q["footing_vol"] * wc, "concrete")
     add("Concrete", "Floor and roof slabs (concrete)", "m3", (q["slab_vol"] + q["roof_slab_vol"]) * wc, "concrete")
     add("Concrete", "Beams, columns and stairs (concrete)", "m3", q["beam_vol"] * wc, "concrete")
-    steel = q["footing_vol"] * A("steel_footing") + (q["slab_vol"] + q["roof_slab_vol"]) * A("steel_slab") + q["beam_vol"] * A("steel_beam")
+    add("Concrete", "Concrete walls", "m3", q.get("conc_wall_vol", 0.0) * wc, "concrete")
+    steel = (q["footing_vol"] * A("steel_footing") + (q["slab_vol"] + q["roof_slab_vol"]) * A("steel_slab") + q["beam_vol"] * A("steel_beam")
+             + q.get("conc_wall_vol", 0.0) * A("steel_wall"))
     add("Concrete", "Reinforcing steel", "kg", steel, "steel")
+    add("Concrete", "Fill and hardcore from the slab layers", "m3", q.get("fill_vol", 0.0), "hardcore")
+    add("Steel and timber", "Structural steel sections", "kg", q.get("steel_kg", 0.0), "steel_section")
+    add("Steel and timber", "Timber columns, beams and members", "m3", q.get("timber_vol", 0.0), "timber_member")
     add("Concrete", "Damp-proof membrane under slabs", "m2", q["dpm_area"] * 1.1, "dpm")
     # walls
     add("Walls", "Bricks laid", "no.", wall * per * wb, "brick")
     add("Walls", "Brickforce", "m2", face, "brickforce")
     add("Walls", "Wall ties (cavity walls)", "no.", q["cavity"] * A("ties_per_m2"), "ties")
-    add("Walls", "Cavity insulation", "m2", q["cavity"], "insulation")
-    pl_area = q["plaster_area"] + (q["plain_brick_area"] if A("plaster_brick_walls") else 0.0)
+    add("Walls", "Cavity and wall insulation", "m2", q["cavity"] + q.get("ins_area", 0.0), "insulation")
+    pl_area = q["plaster_area"] + q.get("soffit_plaster", 0.0) + (q["plain_brick_area"] if A("plaster_brick_walls") else 0.0)
     mortar_walls = wall * mort * wb
     mortar_plaster = pl_area * A("plaster_thick") / 1000.0 * (1 + A("waste_plaster") / 100.0)
     add("Walls", "Cement for brickwork and plaster", "bag", (mortar_walls + mortar_plaster) * A("cement_bags_per_m3"), "cement")
@@ -1359,12 +1555,24 @@ class MaterialsPage(QWidget):
                   ("Cavity walls (280), face area", "m2", "cavity"), ("Plastered wall area, both faces", "m2", "plaster_area"),
                   ("Plain brick wall area, both faces", "m2", "plain_brick_area"), ("Footings", "m3", "footing_vol"),
                   ("Floor slabs", "m3", "slab_vol"), ("Floor slab area", "m2", "slab_area"), ("Tiled floor area", "m2", "tile_area"),
-                  ("Roof slabs", "m3", "roof_slab_vol"), ("Roof area", "m2", "roof_area"), ("Beams, columns, stairs", "m3", "beam_vol"),
+                  ("Roof slabs", "m3", "roof_slab_vol"), ("Roof area", "m2", "roof_area"), ("Beams, columns, stairs (concrete)", "m3", "beam_vol"),
+                  ("Concrete walls", "m3", "conc_wall_vol"), ("Structural steel (from the model)", "kg", "steel_kg"), ("Timber members (from the model)", "m3", "timber_vol"),
+                  ("Wall and floor insulation", "m2", "ins_area"), ("Fill under slabs", "m3", "fill_vol"),
                   ("Windows", "m2", "win_area"), ("Windows", "no.", "win_n"), ("Railings and handrails, length", "m", "rail_m"), ("Railings in the model", "no.", "rail_n"), ("Doors", "no.", "door_n"), ("Gates (not costed)", "no.", "gate_n")]
             qt = self.qt_
-            qt.setRowCount(len(qs))
-            for r, (d, u, k) in enumerate(qs):
-                val = sum((b["q"] or {}).get(k, 0) * max(1, int(b.get("repeat", 1))) for b in self.blocks if b.get("q"))
+            mats = {}
+            for b in self.blocks:
+                for (kd, cl, un), v in ((b["q"] or {}).get("mat_report") or {}).items():
+                    mats[(kd, cl, un)] = mats.get((kd, cl, un), 0.0) + v * max(1, int(b.get("repeat", 1)))
+            nomat = {}
+            for b in self.blocks:
+                for kd, n in ((b["q"] or {}).get("no_material") or {}).items():
+                    nomat[kd] = nomat.get(kd, 0) + n * max(1, int(b.get("repeat", 1)))
+            rows_ = [(d, u, sum((b["q"] or {}).get(k, 0) * max(1, int(b.get("repeat", 1))) for b in self.blocks if b.get("q"))) for d, u, k in qs]
+            rows_ += [("Material read from the model: %s, %s" % (kd, cl), un, v) for (kd, cl, un), v in sorted(mats.items()) if v > 0.005]
+            rows_ += [("No material in the model, name or concrete assumed: %s" % kd, "no.", float(n)) for kd, n in sorted(nomat.items())]
+            qt.setRowCount(len(rows_))
+            for r, (d, u, val) in enumerate(rows_):
                 for c, txt in enumerate((d, u, num(val, 1 if u != "no." else 0))):
                     qt.setItem(r, c, QTableWidgetItem(txt))
             st = self.sitet
