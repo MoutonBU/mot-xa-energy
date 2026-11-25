@@ -5377,13 +5377,14 @@ PARK_RULES = ["A bay ratio per unit (type it: 1.5 per unit is a common figure fo
 # key, label, bay width m, bay length m, bays per unit counted, covered by a roof, walls (enclosed)
 PARK_TYPES = [("open", "Open bay, uncovered", 2.5, 5.0, 1, False, False),
               ("carport", "Carport bay (roof, open sides)", 2.7, 5.5, 1, True, False),
+              ("shade", "Shaded bay: shade net or shade sail on posts", 2.5, 5.0, 1, False, False),
               ("garage", "Garage, single, enclosed", 3.0, 6.0, 1, True, True),
               ("tandem", "Tandem pair: two bays one behind the other (2.5 x 10.0)", 2.5, 10.0, 2, False, False),
               ("parallel", "Parallel bay along a kerb", 2.5, 6.0, 1, False, False),
               ("access", "Accessible (disabled) bay", 3.5, 5.0, 1, False, False),
               ("basement", "Basement or undercroft bay", 2.5, 5.0, 1, True, True)]
 PARK_DEFAULTS = {"units": 0, "rule": 0, "ratio": 1.5, "visitor": 0.25, "mix": [0, 0, 0], "counts": {}, "access_per": 25, "min_access_from": 10,
-                 "tandem_covered": False, "garage_far": True, "basement_far": False, "aisle_area": 27.5, "wall_pct": 15.0}
+                 "tandem_covered": False, "shade_covered": True, "garage_far": True, "basement_far": False, "aisle_area": 27.5, "wall_pct": 15.0}
 
 
 def parking_calc(p):
@@ -5410,10 +5411,12 @@ def parking_calc(p):
         acc_req = max(1, math.ceil(required / cov_num(d["access_per"])))
     types = {t[0]: t for t in PARK_TYPES}
     provided = sum(cnt.get(k, 0) * types[k][4] for k in types)
-    visitor_ok = cnt.get("open", 0) + cnt.get("carport", 0) + cnt.get("parallel", 0) + cnt.get("access", 0)   # a visitor cannot use a garage, a tandem bay or a basement bay
+    visitor_ok = cnt.get("open", 0) + cnt.get("carport", 0) + cnt.get("shade", 0) + cnt.get("parallel", 0) + cnt.get("access", 0)   # a visitor cannot use a garage, a tandem bay or a basement bay
     k_w = 1.0 + cov_num(d["wall_pct"]) / 100.0
     covered = cnt.get("carport", 0) * types["carport"][2] * types["carport"][3]
     covered += cnt.get("garage", 0) * types["garage"][2] * types["garage"][3] * k_w
+    if d.get("shade_covered", True):                              # many schemes count a shade net or sail as a covered structure
+        covered += cnt.get("shade", 0) * types["shade"][2] * types["shade"][3]
     if d.get("tandem_covered"):
         covered += cnt.get("tandem", 0) * types["tandem"][2] * types["tandem"][3]
     far_area = 0.0
@@ -5421,7 +5424,7 @@ def parking_calc(p):
         far_area += cnt.get("garage", 0) * types["garage"][2] * types["garage"][3] * k_w
     if d.get("basement_far"):
         far_area += cnt.get("basement", 0) * types["basement"][2] * types["basement"][3] * (cov_num(d["aisle_area"]) / (types["basement"][2] * types["basement"][3]))
-    open_bays = cnt.get("open", 0) + cnt.get("parallel", 0) + cnt.get("access", 0) + cnt.get("tandem", 0) * 2
+    open_bays = cnt.get("open", 0) + cnt.get("shade", 0) + cnt.get("parallel", 0) + cnt.get("access", 0) + cnt.get("tandem", 0) * 2
     hard = open_bays * cov_num(d["aisle_area"])                  # bays and the aisle share, as hard surface
     return {"units": units, "resident": resident, "visitor": visitor, "required": required, "access_req": acc_req,
             "provided": provided, "visitor_provided": visitor_ok, "visitor_req": math.ceil(visitor - 1e-9) if visitor > 0 else 0,
@@ -5438,10 +5441,12 @@ def parking_cost_lines(p):
     out = []
     if r["hard_area"] > 0:
         out.append(("Parking: bays and aisles, interlocking paving on compacted bed", "m2", round(r["hard_area"], 1), 330.0, 190.0))
-        nb = c.get("open", 0) + c.get("parallel", 0) + c.get("access", 0) + c.get("tandem", 0) * 2
+        nb = c.get("open", 0) + c.get("shade", 0) + c.get("parallel", 0) + c.get("access", 0) + c.get("tandem", 0) * 2
         out.append(("Parking: bay markings, kerbs and wheel stops", "each", float(nb), 180.0, 120.0))
     if c.get("carport", 0):
         out.append(("Parking: carport structure and roof", "m2", round(c["carport"] * 2.7 * 5.5, 1), 1400.0, 600.0))
+    if c.get("shade", 0):
+        out.append(("Parking: shade net or sail on posts over bays", "m2", round(c["shade"] * 2.5 * 5.0, 1), 450.0, 250.0))
     if c.get("tandem", 0) and p.get("tandem_covered"):
         out.append(("Parking: carport over tandem bays", "m2", round(c["tandem"] * 2.5 * 10.0, 1), 1400.0, 600.0))
     if c.get("garage", 0):
@@ -15538,10 +15543,11 @@ class MainWindow(QMainWindow):
         self.park_t.itemChanged.connect(lambda *_: self._cov_refresh())
         lay.addWidget(self.park_t)
         self.park_tandem_cov = QCheckBox("Tandem bays are under a roof (counts in the coverage)")
+        self.park_shade_cov = QCheckBox("Shade net bays count in the coverage"); self.park_shade_cov.setChecked(True)
         self.park_garage_far = QCheckBox("Garages count in the floor area (FAR)"); self.park_garage_far.setChecked(True)
         self.park_base_far = QCheckBox("Basement parking counts in the floor area (FAR)")
         ck = QHBoxLayout()
-        for w_ in (self.park_tandem_cov, self.park_garage_far, self.park_base_far):
+        for w_ in (self.park_tandem_cov, self.park_shade_cov, self.park_garage_far, self.park_base_far):
             ck.addWidget(w_)
         ck.addStretch()
         lay.addLayout(ck)
@@ -15557,7 +15563,7 @@ class MainWindow(QMainWindow):
         lay.addStretch(1)
         for sp in (self.park_units, self.park_ratio, self.park_vis, *self.park_mix):
             sp.valueChanged.connect(lambda *_: self._cov_refresh())
-        for w_ in (self.park_tandem_cov, self.park_garage_far, self.park_base_far):
+        for w_ in (self.park_tandem_cov, self.park_shade_cov, self.park_garage_far, self.park_base_far):
             w_.toggled.connect(lambda *_: self._cov_refresh())
         self.park_rule.currentIndexChanged.connect(lambda *_: self._cov_refresh())
 
@@ -15575,7 +15581,7 @@ class MainWindow(QMainWindow):
             it = self.park_t.item(r, 3)
             cnt[t[0]] = int(cov_num(it.text())) if it else 0
         return {"units": self.park_units.value(), "rule": self.park_rule.currentIndex(), "ratio": self.park_ratio.value(), "visitor": self.park_vis.value(),
-                "mix": [sp.value() for sp in self.park_mix], "counts": cnt, "tandem_covered": self.park_tandem_cov.isChecked(),
+                "mix": [sp.value() for sp in self.park_mix], "counts": cnt, "tandem_covered": self.park_tandem_cov.isChecked(), "shade_covered": self.park_shade_cov.isChecked(),
                 "garage_far": self.park_garage_far.isChecked(), "basement_far": self.park_base_far.isChecked()}
 
     def park_load(self, p):
@@ -15590,6 +15596,7 @@ class MainWindow(QMainWindow):
             if it:
                 it.setText(str(int(cov_num((p.get("counts") or {}).get(t[0], 0)))))
         self.park_tandem_cov.setChecked(bool(p.get("tandem_covered")))
+        self.park_shade_cov.setChecked(bool(p.get("shade_covered", True)))
         self.park_garage_far.setChecked(bool(p.get("garage_far", True)))
         self.park_base_far.setChecked(bool(p.get("basement_far")))
 

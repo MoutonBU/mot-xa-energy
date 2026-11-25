@@ -25,3 +25,9 @@ mp.set_parking_lines(M.parking_cost_lines(p)); assert len(mp.site)==n>0
 import tempfile
 w._write_cov_pdf(os.path.join(tempfile.mkdtemp(),"a.pdf"))
 print("ok")
+p2=dict(M.PARK_DEFAULTS, units=4, counts={"open":2,"shade":4,"carport":2})
+r2=M.parking_calc(p2); assert r2["provided"]==8 and r2["visitor_provided"]==8
+assert abs(r2["covered_area"]-(2*2.7*5.5+4*2.5*5.0))<1e-6
+assert M.parking_calc(dict(p2,shade_covered=False))["covered_area"]<r2["covered_area"]
+assert any("shade" in l[0] for l in M.parking_cost_lines(p2))
+print("ok shade")
