@@ -93,3 +93,8 @@ def test_footing_fallback_and_spec():
     own = {r[1]: r for r in m.bom(_q(), {"tile": (100.0, 50.0)}, {"spec_level": 3}, facts)}
     assert own["Floor tiles, laid"][4] == 100.0
 test_openings_glazing_and_doors(); test_cabinets_replace_generic(); test_footing_fallback_and_spec(); print("ok6")
+
+def test_unread_is_json():
+    import json
+    json.dumps({"unread": [["IfcDiscreteAccessory", "Water", 20, 0.41]], "openings": [["Window", "W1", 1.0, 1.0, "double", "window"]]})
+test_unread_is_json(); print("ok7")

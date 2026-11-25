@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.272**
+Current version: **1.86.273**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Costing IFC reader: posts, purlins and other timber, steel or concrete fittings are now read as structure, built-in ovens and dishwashers exported as flow elements are counted, and the Quantities tab lists every object the reader found but has nothing to price it with, so nothing is missed silently.
 - IFC import: window and door marks are read whole whatever the spacing ('WD -09', 'WD - 09', 'WD-09', 'TWD - 04', 'W1'), so every mark is its own window type for light, ventilation and sun, instead of all the WD windows sharing one tag.
 - Costing: windows and doors are now priced by what they are (windows, large sliding and glazed doors, external doors, internal doors, garage doors) with the glazing read from the model (single, double, triple) and a glazing setting to price everything single, double or triple; cupboards and built-in appliances are measured from the model; a strip footing is allowed for when the model has none; a finish level (standard, high-end, luxury) scales fit-out rates; high windows filed on another storey are linked to the room under them.
 - Costing and IFC import: basement levels are found and reported (rooms, windows, doors on them); a house gets one distribution board per level, a block one per dwelling; floor finishes follow the room floor area; roof trusses are priced from the roof's surface, pitch and overhang (worked out from the plan when the model has no roof), and concrete roofs get none.

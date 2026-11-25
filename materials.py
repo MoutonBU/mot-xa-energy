@@ -311,7 +311,7 @@ def read_ifc_quantities(path):
     q = dict(brick110=0.0, brick220=0.0, cavity=0.0, plaster_area=0.0, plain_brick_area=0.0, footing_vol=0.0, footing_len=0.0,
              slab_vol=0.0, slab_area=0.0, tile_area=0.0, dpm_area=0.0, roof_slab_vol=0.0, roof_area=0.0, beam_vol=0.0, win_area=0.0,
              win_n=0, door_n=0, gate_n=0, rail_m=0.0, rail_n=0, names={}, levels={}, slab_levels={},
-             conc_wall_vol=0.0, steel_kg=0.0, timber_vol=0.0, ins_area=0.0, soffit_plaster=0.0, fill_vol=0.0, mat_report={}, no_material={}, rooms=[], roof_timber_vol=0.0, roof_plan=0.0, roof_pitch=0.0, storeys=[], openings=[], cab_base_m=0.0, cab_tall_m=0.0, cab_wall_m=0.0, appliance_n=0, wall_len={})
+             conc_wall_vol=0.0, steel_kg=0.0, timber_vol=0.0, ins_area=0.0, soffit_plaster=0.0, fill_vol=0.0, mat_report={}, no_material={}, rooms=[], roof_timber_vol=0.0, roof_plan=0.0, roof_pitch=0.0, storeys=[], openings=[], cab_base_m=0.0, cab_tall_m=0.0, cab_wall_m=0.0, appliance_n=0, wall_len={}, unread=[])
 
     def shape_stats(e):
         s = ifcopenshell.geom.create_shape(st, e)
@@ -585,7 +585,18 @@ def read_ifc_quantities(path):
     done = {id(x) for x, _p in slabs}
     seen_ids = set()
     todo = []
-    for cls in ("IfcBeam", "IfcColumn", "IfcMember", "IfcStair", "IfcStairFlight", "IfcBuildingElementProxy", "IfcPlate", "IfcCovering"):
+    STRUCT_WORD = re.compile(r"post|purlin|beam|rafter|truss|column|joist|batten|lintel|bracket|strut|pergola|deck", re.I)
+    skipped = {}
+
+    def skip(cls, e, why=""):
+        lab = (type_name(e) or e.Name or cls)[:40]
+        a_ = skipped.setdefault((cls, lab), [0, 0.0])
+        a_[0] += 1
+        try:
+            a_[1] += shape_stats(e)[0] if e.Representation else 0.0
+        except Exception:
+            pass
+    for cls in ("IfcBeam", "IfcColumn", "IfcMember", "IfcStair", "IfcStairFlight", "IfcBuildingElementProxy", "IfcPlate", "IfcCovering", "IfcDiscreteAccessory"):
         for e in f.by_type(cls):
             if e.id() in seen_ids or id(e) in done or (cls == "IfcBuildingElementProxy" and (getattr(e, "FillsVoids", None) or slab_like(e))):
                 continue
@@ -594,12 +605,18 @@ def read_ifc_quantities(path):
     for cls, e in todo:                                          # beams, columns, trusses, pergolas, morphs and objects: by what they are made of
         try:
             label = type_name(e) + " " + (e.Name or "")
-            if NOT_STRUCT.search(label) and cls in ("IfcBuildingElementProxy", "IfcCovering"):
+            if NOT_STRUCT.search(label) and cls in ("IfcBuildingElementProxy", "IfcCovering", "IfcDiscreteAccessory"):
+                skip(cls, e)
                 continue
             if cls == "IfcCovering" and not re.search(r"ceiling|plaster|screed|insul", label, re.I):
+                skip(cls, e)
                 continue
             pcs = pieces(e)
+            if cls == "IfcDiscreteAccessory" and not (STRUCT_WORD.search(label) and any(c_ in ("timber", "steel", "concrete") for c_, _v in pcs)):
+                skip(cls, e)                                    # fittings are not structure; posts, purlins and the like are
+                continue
             if not pcs:
+                skip(cls, e)
                 continue
             ex = " (no material given)" if all(c in ("other", None) for c, _v in pcs) else ""
             for c0, vol in pcs:
@@ -772,6 +789,19 @@ def read_ifc_quantities(path):
             q[k_] += ln
         except Exception:
             continue
+    for cls in ("IfcFurnishingElement", "IfcDistributionFlowElement", "IfcCurtainWall", "IfcTransportElement", "IfcFlowTerminal", "IfcElectricAppliance", "IfcLightFixture"):
+        try:
+            for e in f.by_type(cls):
+                lab = (type_name(e) or e.Name or cls)[:40]
+                if cls == "IfcFurnishingElement" and (re.search(r"cabinet|cupboard|wardrobe|vanity|\bcub\b|pantry|drawer|\bbic\b|shelv|locker|larder|credenza|cooktop|\bhob\b|\boven\b|extractor|dishwasher|cooker", lab + " " + (e.Name or ""), re.I)):
+                    continue
+                if cls != "IfcFurnishingElement" and APPL.search(lab + " " + (e.Name or "")):
+                    q["appliance_n"] += 1                       # a built-in oven or dishwasher exported as a flow element
+                    continue
+                skip(cls, e)
+        except Exception:
+            pass
+    q["unread"] = [[c_, l_, n_, round(v_, 2)] for (c_, l_), (n_, v_) in sorted(skipped.items(), key=lambda x: -x[1][0])][:25]
     q["mat_report"] = [[k_, c_, u_, v_] for (k_, c_, u_), v_ in sorted(rep.items())]      # a list, not tuple keys: the state is saved as JSON
     return q
 
@@ -1928,6 +1958,12 @@ class MaterialsPage(QWidget):
                 v_ = sum((b["q"] or {}).get(k_, 0) * max(1, int(b.get("repeat", 1))) for b in self.blocks if b.get("q"))
                 if v_:
                     rows_.append(("Cupboards read from the model: " + lab_, "no." if k_ == "appliance_n" else "m", float(v_)))
+            un_ = {}
+            for b in self.blocks:
+                for c_, l_, n_, v_ in ((b["q"] or {}).get("unread") or []):
+                    a_ = un_.setdefault((c_, l_), [0, 0.0]); a_[0] += n_ * max(1, int(b.get("repeat", 1))); a_[1] += v_
+            for (c_, l_), (n_, v_) in sorted(un_.items(), key=lambda x: -x[1][0])[:12]:
+                rows_.append(("Not priced (nothing in the bill for it): %s %s, %.2f m3" % (c_.replace("Ifc", ""), l_, v_), "no.", float(n_)))
             rows_ += [("Material read from the model: %s, %s" % (kd, cl), un, v) for (kd, cl, un), v in sorted(mats.items()) if v > 0.005]
             rows_ += [("No material in the model, name or concrete assumed: %s" % kd, "no.", float(n)) for kd, n in sorted(nomat.items())]
             qt.setRowCount(len(rows_))
