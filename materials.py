@@ -401,15 +401,40 @@ def read_ifc_quantities(path):
                 q["plain_brick_area"] += 2.0 * face
         except Exception:
             continue
-    for e in f.by_type("IfcSlab"):
+    def slab_like(p):
+        return bool(re.search(r"slab|floor|screed|deck", (p.Name or "") + " " + type_name(p), re.I))
+
+    def parts_of(e):
+        out = []
+        for rel in getattr(e, "IsDecomposedBy", None) or []:
+            out += list(rel.RelatedObjects)
+        return out
+
+    slabs = [(e, False) for e in f.by_type("IfcSlab")] + [(p, True) for p in f.by_type("IfcBuildingElementProxy") if slab_like(p)]
+    for e, proxy in slabs:                                      # floors; Archicad also exports slabs as generic objects split into one part per layer
         try:
             name = type_name(e)
-            vol, ar, nz, v = shape_stats(e)
-            top = float(ar[nz > 0.9].sum())
-            bot = float(ar[nz < -0.9].sum())
             lv = level(e)
-            is_roof = "roof" in name.lower() or "roof" in lv.lower() or str(getattr(e, "PredefinedType", "")) == "ROOF"
-            ly = element_layers(e, sc)
+            pts = parts_of(e) if proxy else []
+            if pts:
+                by_v, top, bot, vol = {}, 0.0, 0.0, 0.0
+                for p in pts:
+                    pv, par, pnz, _v = shape_stats(p)
+                    pl = element_layers(p, sc)
+                    c_ = pl[0][1] if pl else mat_class(p.Name)
+                    by_v[c_] = by_v.get(c_, 0.0) + pv
+                    vol += pv
+                    top = max(top, float(par[pnz > 0.9].sum()))
+                    bot = max(bot, float(par[pnz < -0.9].sum()))
+                ly = [(c_, c_, v_) for c_, v_ in by_v.items()]
+            else:
+                vol, ar, nz, v = shape_stats(e)
+                top = float(ar[nz > 0.9].sum())
+                bot = float(ar[nz < -0.9].sum())
+                ly = element_layers(e, sc)
+                if not ly and proxy and mat_class(name) not in ("other", "air"):
+                    ly = [(name, mat_class(name), None)]
+            is_roof = bool(re.search(r"(?<![a-z])roof", name + " " + (e.Name or ""), re.I)) or "roof" in lv.lower() or str(getattr(e, "PredefinedType", "")) == "ROOF"
             by, tot = layer_split(ly)
             if not ly:
                 nomat("Slabs")
@@ -420,6 +445,13 @@ def read_ifc_quantities(path):
                 c0 = main_class(ly)
                 cvol = vol if c0 in (None, "concrete") else 0.0
                 share = lambda c: 1.0 if c == c0 else 0.0
+            if is_roof:
+                if cvol:
+                    q["roof_slab_vol"] += cvol
+                    note("Roof slabs", "concrete", cvol, "m3")
+                if not proxy:
+                    q["roof_area"] += top
+                continue
             if by and not cvol and share("timber") > 0.5:
                 q["timber_vol"] += vol * share("timber")
             if share("fill"):
@@ -428,16 +460,11 @@ def read_ifc_quantities(path):
                 q["ins_area"] += top
             if share("plaster") and bot:
                 q["soffit_plaster"] += bot
-            if is_roof:
-                q["roof_slab_vol"] += cvol
-                q["roof_area"] += top
-                note("Roof slabs", "concrete" if ly else "concrete (no material given)", cvol, "m3")
-                continue
             q["slab_vol"] += cvol
             q["slab_area"] += top
             q["slab_levels"][lv] = q["slab_levels"].get(lv, 0.0) + top
             note("Floor slabs", "concrete" if ly else "concrete (no material given)", cvol, "m3")
-            if share("tile") or "tile" in name.lower():
+            if share("tile") or "tile" in name.lower() or "tile" in (e.Name or "").lower():
                 q["tile_area"] += top
             if share("membrane") or re.search(r"waterproof|membrane|dpm", name, re.I):
                 q["dpm_area"] += top
