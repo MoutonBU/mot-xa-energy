@@ -1837,6 +1837,66 @@ def mail_parts(payload):
     return "".join(out["html"]), "\n".join(out["plain"]), out["att"]
 
 
+_IMG_RE = re.compile(r"(?is)<img\b[^>]*?>")
+_SRC_RE = re.compile(r"""(?is)\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""")
+
+
+def mail_img_src(tag):
+    m = _SRC_RE.search(tag)
+    return _html.unescape((m.group(1) or m.group(2) or m.group(3) or "").strip()) if m else ""
+
+
+def mail_fix_images(body, doc, inline, remote_ok):
+    """Make every picture in an email either show or vanish (never Qt's big grey 'missing picture' box).
+    cid: pictures come from the attachments, data: pictures are decoded, web pictures show only when fetched (inline['url:...'])."""
+    seen = {}
+
+    def one(m):
+        tag = m.group(0)
+        src = mail_img_src(tag)
+        data = None
+        if src.lower().startswith("cid:"):
+            data = inline.get(src[4:].strip().lower())
+        elif src.lower().startswith("data:") and "," in src:
+            try:
+                head, payload = src.split(",", 1)
+                data = _b64.b64decode(payload + "=" * (-len(payload) % 4)) if "base64" in head.lower() else None
+            except Exception:
+                data = None
+        elif src.lower().startswith(("http://", "https://")):
+            data = inline.get("url:" + src)
+        if not data:
+            return ""
+        key = seen.get(src)
+        if key is None:
+            img = QPixmap()
+            if not img.loadFromData(data) or img.isNull():
+                return ""
+            key = "mimg:///%d" % len(seen)
+            seen[src] = key
+            doc.addResource(QTextDocument.ResourceType.ImageResource, QUrl(key), img)
+        return _SRC_RE.sub('src="%s"' % key, tag, 1)
+    return _IMG_RE.sub(one, body)
+
+
+def mail_web_images(html):
+    """The http(s) picture addresses in an email body (what 'Show pictures' would fetch)."""
+    out = []
+    for m in _IMG_RE.finditer(html or ""):
+        u = mail_img_src(m.group(0))
+        if u.lower().startswith(("http://", "https://")) and u not in out:
+            out.append(u)
+    return out
+
+
+def _web_picture(url):
+    import urllib.request as _ur
+    req = _ur.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with _ur.urlopen(req, timeout=6) as r:
+        d = r.read(1500000)
+    return d if len(d) > 200 else b""
+
+
 def mail_date_text(ms, now=None):
     try:
         d = _dt.datetime.fromtimestamp(int(ms) / 1000.0)
@@ -2952,15 +3012,20 @@ class MailPage(_QW):
                     if a["data"]:
                         inline[a["cid"].lower()] = mail_b64(a["data"])
                     else:
-                        todo.append((inline, a["cid"].lower(), "messages/%s/attachments/%s" % (m["id"], a["id"])))
+                        todo.append((inline, a["cid"].lower(), lambda p="messages/%s/attachments/%s" % (m["id"], a["id"]): self.mo.gmail_bytes(self.S, p)))
+            if self.S.get("mail_images"):
+                for u in mail_web_images(html)[:8]:
+                    todo.append((inline, "url:" + u, lambda u=u: _web_picture(u)))
             res.append((m, html, plain, atts, inline))
 
         def get(t):
             try:
-                t[0][t[1]] = self.mo.gmail_bytes(self.S, t[2])
+                v = t[2]()
+                if v:
+                    t[0][t[1]] = v
             except Exception:
                 pass
-        q = list(todo[:40])
+        q = list(todo[:60])
         lk = _th.Lock()
 
         def worker():
@@ -2980,6 +3045,16 @@ class MailPage(_QW):
         if len(self._topen) > 30:
             self._topen.pop(next(iter(self._topen)))
         return out
+
+    def _show_pictures(self):
+        self.S["mail_images"] = True
+        try:
+            self.get_M().save_settings()
+        except Exception:
+            pass
+        self._topen.clear()
+        if self.cur:
+            self.open_thread(self.cur, self.subject_lbl.text())
 
     def _prefetch(self):
         # the first few conversations are loaded in the background so the first clicks open at once
@@ -3068,12 +3143,12 @@ class MailPage(_QW):
                 body = re.sub(r"(?is)<script.*?>.*?</script>", "", body)
             else:
                 body = "<pre style='font-family:Arial;white-space:pre-wrap'>%s</pre>" % _html.escape(plain or m.get("snippet", ""))
-            for ref in {x for x in re.findall(r"(?i)cid:([^\"'\s>)]+)", html or "")}:
-                data = inline.get(ref.lower())
-                if data:
-                    img = QPixmap()
-                    img.loadFromData(data)
-                    b.document().addResource(QTextDocument.ResourceType.ImageResource, QUrl("cid:" + ref), img)
+            body = mail_fix_images(body, b.document(), inline, bool(self.S.get("mail_images")))
+            hidden = [] if self.S.get("mail_images") else mail_web_images(html)
+            if hidden:
+                bar = _QPB("Show pictures from the web in this email")
+                bar.clicked.connect(self._show_pictures)
+                cv.addWidget(bar)
             b.setHtml(body)
             cv.addWidget(b)
             used = {x.lower() for x in re.findall(r"(?i)cid:([^\"'\s>)]+)", html or "")}

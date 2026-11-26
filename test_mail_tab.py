@@ -150,3 +150,16 @@ got = mp._fetch_thread("tz")[1][0][4]
 assert sorted(got) == ["image001.png@01dc", "image002.png@01dc"] and got["image001.png@01dc"] == b"PNGDATA", got
 mo.gmail_call = _old
 print("ok3")
+
+# pictures either show or vanish, never the grey missing-picture box
+from PySide6.QtGui import QImage, QTextDocument as _TD
+from PySide6.QtCore import QBuffer, QByteArray
+_im = QImage(4, 4, QImage.Format.Format_RGB32); _im.fill(0xff0000)
+_ba = QByteArray(); _bf = QBuffer(_ba); _bf.open(QBuffer.OpenModeFlag.WriteOnly); _im.save(_bf, "PNG"); png = bytes(_ba)
+dd = _TD()
+body = ('<img src="cid:A@x" width=10><img src="cid:MISSING"><img src="data:image/png;base64,%s"><img src="https://a.b/c.png?x=1&amp;y=2">'
+        '<img src="https://a.b/d.png"><img src="cid:BAD@x">') % _b.b64encode(png).decode()
+out = U.mail_fix_images(body, dd, {"a@x": png, "bad@x": b"notanimage", "url:https://a.b/c.png?x=1&y=2": png}, True)
+assert out.count("<img") == 3 and "MISSING" not in out and "d.png" not in out and "BAD" not in out, out
+assert U.mail_web_images(body) == ["https://a.b/c.png?x=1&y=2", "https://a.b/d.png"]
+print("ok4")
