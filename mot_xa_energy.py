@@ -12650,7 +12650,7 @@ class MainWindow(QMainWindow):
             return
         QApplication.setQuitOnLastWindowClosed(False)
         tr = QSystemTrayIcon(app_icon(), self)
-        tr.setToolTip(APP_NAME + " - watching Gmail for orders")
+        tr.setToolTip(APP_NAME + " - watching Gmail for mail and orders")
         m = QMenu()
         m.addAction("Open " + APP_NAME, self._tray_show)
         m.addAction("Open the Orders", lambda: (self._tray_show(), self.register_page.show_orders("Order")))
@@ -12683,7 +12683,7 @@ class MainWindow(QMainWindow):
             try:
                 if getattr(self, "_tray", None) is not None and not getattr(self, "_tray_told", False):
                     self._tray_told = True
-                    self._tray.showMessage(APP_NAME, "Still running in the background to watch your Gmail for orders. Right-click this icon to open or quit.",
+                    self._tray.showMessage(APP_NAME, "Still running in the background to watch your Gmail for new mail and orders. Right-click this icon to open or quit.",
                                            self._tray.MessageIcon.Information, 6000)
             except Exception:
                 pass

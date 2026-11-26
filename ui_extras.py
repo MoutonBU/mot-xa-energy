@@ -3130,8 +3130,8 @@ class MailPage(_QW):
         self.timer = QTimer(self)
         self._ntimer = QTimer(self)
         self._ntimer.timeout.connect(self._notify_tick)
-        self._ntimer.start(20000)
-        QTimer.singleShot(6000, self._notify_tick)
+        self._ntimer.start(3000)                               # asks Gmail for new mail every 3 s (one tiny call), also while another tool is open or the window is in the tray
+        QTimer.singleShot(2000, self._notify_tick)
         self.timer.timeout.connect(self._tick)
         self.timer.start(3000)
         self._hid = None
@@ -3324,7 +3324,7 @@ class MailPage(_QW):
                 for ma in rec.get("messagesAdded", []) or []:
                     m = ma.get("message", {})
                     lb = m.get("labelIds") or []
-                    if m.get("id") and "INBOX" in lb and "SENT" not in lb and "DRAFT" not in lb and m["id"] not in ids:
+                    if m.get("id") and "INBOX" in lb and "DRAFT" not in lb and m["id"] not in ids:          # mail you send to yourself is in the inbox too
                         ids.append(m["id"])
             rows = []
             for mid in ids[-5:]:
@@ -3347,6 +3347,10 @@ class MailPage(_QW):
                 S["mail_notify_hid"] = hid
             if rows:
                 self._show_toast(rows)
+                self._topen.clear()
+                if self.isVisible() and self.label == "INBOX" and not self.query and self.stack.currentIndex() == 0:
+                    self.load_labels(quiet=True)
+                    self.load_list(reset=False, quiet=True)               # the new mail is in the list the moment the pop-up shows
         self.run(work, done)
 
     def _show_toast(self, rows):

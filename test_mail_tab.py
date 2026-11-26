@@ -329,6 +329,11 @@ mp._nbusy = False
 mp._notify_tick()
 assert wait(lambda: _shown), "no pop-up"
 assert _shown[0][0]["from"] == "Dewann" and _shown[0][0]["subject"] == "New drawings" and "&amp;" not in _shown[0][0]["snippet"] and S["mail_notify_hid"] == "99"
+# a mail you send to yourself (labels INBOX and SENT) pops up too; a reply of yours (SENT only) does not
+_h = {"historyId": "100", "history": [{"messagesAdded": [{"message": {"id": "n1", "labelIds": ["INBOX", "SENT", "UNREAD"]}}, {"message": {"id": "n2", "labelIds": ["SENT"]}}]}]}
+mo.gmail_call = lambda S_, method, path, params=None, body=None, timeout=60: _h if path == "history" else _fake(S_, method, path, params, body, timeout)
+_shown.clear(); mp._nbusy = False; mp._notify_tick()
+assert wait(lambda: _shown) and len(_shown[0]) == 1, _shown
 mo.gmail_call = _old2
 _t = U.MailToast(_shown[0], None, lambda r: None); _t.show(); app.processEvents(); assert _t.width() > 300; _t.close()
 print("ok14")
