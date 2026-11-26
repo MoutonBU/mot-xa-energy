@@ -1793,10 +1793,10 @@ from PySide6.QtGui import QFont as _QFont, QFontMetrics as _QFM
 from PySide6.QtWidgets import (QAbstractItemView as _AIV, QCheckBox as _QCheck, QFileDialog as _QFD, QHBoxLayout as _HB, QLineEdit as _QLE, QListWidget as _QLW,
                                QListWidgetItem as _QLWI, QMessageBox as _QMB, QPushButton as _QPB, QSplitter as _QSplit, QStackedWidget as _QStack, QStyledItemDelegate as _QSID,
                                QTabBar as _QTabBar, QTextBrowser as _QTB, QTextEdit as _QTE, QVBoxLayout as _VB, QWidget as _QW, QLabel as _QL, QDialog as _QD, QFrame as _QF,
-                               QScrollArea as _QSA)
+                               QScrollArea as _QSA, QMenu as _QMenu, QComboBox as _QCombo, QInputDialog as _QID)
 
 MAIL_SYSTEM = [("INBOX", "Inbox"), ("STARRED", "Starred"), ("SENT", "Sent"), ("DRAFT", "Drafts"), ("SPAM", "Spam"), ("TRASH", "Trash"), ("ALL", "All Mail")]
-MAIL_CATEGORIES = [("category:primary", "Primary"), ("category:promotions", "Promotions"), ("category:social", "Social"), ("category:updates", "Updates")]
+MAIL_CATEGORIES = [("CATEGORY_PERSONAL", "Primary"), ("CATEGORY_PROMOTIONS", "Promotions"), ("CATEGORY_SOCIAL", "Social"), ("CATEGORY_UPDATES", "Updates")]
 ROLE_THREAD, ROLE_SENDER, ROLE_SUBJECT, ROLE_SNIP, ROLE_DATE, ROLE_UNREAD, ROLE_STAR, ROLE_CHECK, ROLE_CLIP = [Qt.ItemDataRole.UserRole + i for i in range(1, 10)]
 
 
@@ -2246,6 +2246,9 @@ class MailPage(_QW):
         self.side = _QLW()
         self.side.setFrameShape(_QF.Shape.NoFrame)
         self.side.currentItemChanged.connect(self._side_changed)
+        self.side.viewport().installEventFilter(self)
+        self.side.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.side.customContextMenuRequested.connect(self._side_menu)
         lv.addWidget(self.side, 1)
         mh.addWidget(left)
         self.stack = _QStack()
@@ -2266,6 +2269,12 @@ class MailPage(_QW):
             b.clicked.connect(fn)
             b.setVisible(False)
             self.bulk.append(b)
+        lb = _QPB("Label as")
+        lb.setVisible(False)
+        self.label_menu = _QMenu(lb)
+        self.label_menu.aboutToShow.connect(self._fill_label_menu)
+        lb.setMenu(self.label_menu)
+        self.bulk.append(lb)
         tb.addWidget(self.refresh_btn)
         for b in self.bulk:
             tb.addWidget(b)
@@ -2463,6 +2472,9 @@ class MailPage(_QW):
         self.run(lambda: self.mo.gmail_call(self.S, "GET", "profile").get("historyId", ""), done)
 
     # ------------------------------------------------------------- sidebar
+    def _collapsed(self):
+        return set(self.S.get("mail_collapsed") or [])
+
     def _fill_side(self):
         self.side.blockSignals(True)
         self.side.clear()
@@ -2477,10 +2489,25 @@ class MailPage(_QW):
         f.setBold(True)
         hdr.setFont(f)
         self.side.addItem(hdr)
-        for nm, ind, lid, full in mail_label_tree(self.labels):
-            it = _QLWI("    " * ind + nm)
+        new = _QLWI("+  Create label")
+        new.setData(Qt.ItemDataRole.UserRole, "__NEW__")
+        new.setData(Qt.ItemDataRole.UserRole + 1, "+  Create label")
+        self.side.addItem(new)
+        tree = mail_label_tree(self.labels)
+        names = {full for _n, _i, _l, full in tree}
+        coll = self._collapsed()
+        for nm, ind, lid, full in tree:
+            parts = full.split("/")
+            if any("/".join(parts[:k]) in coll for k in range(1, len(parts))):
+                continue                                           # a parent above it is collapsed
+            has_kids = any(o.startswith(full + "/") for o in names)
+            arrow = ("\u25b8 " if full in coll else "\u25be ") if has_kids else "    "
+            base = "    " * ind + arrow + nm
+            it = _QLWI(base)
             it.setData(Qt.ItemDataRole.UserRole, lid)
-            it.setData(Qt.ItemDataRole.UserRole + 1, "    " * ind + nm)
+            it.setData(Qt.ItemDataRole.UserRole + 1, base)
+            it.setData(Qt.ItemDataRole.UserRole + 2, full)
+            it.setData(Qt.ItemDataRole.UserRole + 3, (ind, has_kids))
             self.side.addItem(it)
         for i in range(self.side.count()):
             if self.side.item(i).data(Qt.ItemDataRole.UserRole) == self.label:
@@ -2488,8 +2515,137 @@ class MailPage(_QW):
                 break
         self.side.blockSignals(False)
 
+    def eventFilter(self, obj, ev):
+        if obj is self.side.viewport() and ev.type() == QEvent.Type.MouseButtonPress and ev.button() == Qt.MouseButton.LeftButton:
+            it = self.side.itemAt(ev.position().toPoint())
+            info = it.data(Qt.ItemDataRole.UserRole + 3) if it else None
+            if info and info[1]:
+                fm = _QFM(it.font())
+                x0 = self.side.visualItemRect(it).left() + 14 + fm.horizontalAdvance("    " * info[0])
+                if x0 - 6 <= ev.position().x() <= x0 + fm.horizontalAdvance("\u25be ") + 8:
+                    full = it.data(Qt.ItemDataRole.UserRole + 2)
+                    coll = self._collapsed()
+                    coll.symmetric_difference_update({full})
+                    self.S["mail_collapsed"] = sorted(coll)
+                    try:
+                        self.get_M().save_settings()
+                    except Exception:
+                        pass
+                    self._fill_side()
+                    self._apply_counts()
+                    return True
+        return super().eventFilter(obj, ev)
+
+    def _apply_counts(self):
+        counts = getattr(self, "_counts_keep", {})
+        for i in range(self.side.count()):
+            it = self.side.item(i)
+            lid = it.data(Qt.ItemDataRole.UserRole)
+            if lid in counts:
+                un, tot = counts[lid]
+                n = tot if lid == "DRAFT" else un
+                base = it.data(Qt.ItemDataRole.UserRole + 1)
+                it.setText("%s   %d" % (base, n) if n else base)
+                f = it.font()
+                f.setBold(bool(un) and lid != "DRAFT")
+                it.setFont(f)
+
+    # ---- labels made here are made in Gmail itself
+    def _label_dialog(self, title, name="", parent=""):
+        d = _QD(self)
+        d.setWindowTitle(title)
+        v = _VB(d)
+        v.addWidget(_QL("Label name"))
+        le = _QLE(name)
+        v.addWidget(le)
+        cb = None
+        if not name:
+            v.addWidget(_QL("Put it inside"))
+            cb = _QCombo()
+            cb.addItem("(top level)", "")
+            for _n, _i, _l, full in mail_label_tree(self.labels):
+                cb.addItem(full, full)
+            if parent:
+                k = cb.findData(parent)
+                cb.setCurrentIndex(max(0, k))
+            v.addWidget(cb)
+        row = _HB()
+        row.addStretch(1)
+        ok = _QPB("Create" if not name else "Rename")
+        no = _QPB("Cancel")
+        ok.clicked.connect(d.accept)
+        no.clicked.connect(d.reject)
+        ok.setDefault(True)
+        row.addWidget(no)
+        row.addWidget(ok)
+        v.addLayout(row)
+        if d.exec() != _QD.DialogCode.Accepted or not le.text().strip():
+            return None
+        return le.text().strip().replace("/", "-"), (cb.currentData() if cb else "")
+
+    def new_label(self, parent=""):
+        r = self._label_dialog("Create label", "", parent)
+        if not r or self._need_modify():
+            return
+        full = (r[1] + "/" if r[1] else "") + r[0]
+
+        def work():
+            return self.mo.gmail_call(self.S, "POST", "labels", body={"name": full, "labelListVisibility": "labelShow", "messageListVisibility": "show"})
+
+        def done(res, err):
+            if err:
+                self.say(err, True)
+                return
+            self.say("Label created in Gmail: " + full)
+            self.load_labels(quiet=True)
+        self.run(work, done)
+
+    def _side_menu(self, pos):
+        it = self.side.itemAt(pos)
+        full = it.data(Qt.ItemDataRole.UserRole + 2) if it else None
+        if not full:
+            return
+        lid = it.data(Qt.ItemDataRole.UserRole)
+        m = _QMenu(self)
+        a1 = m.addAction("New label inside it")
+        a2 = m.addAction("Rename")
+        a3 = m.addAction("Delete label")
+        act = m.exec(self.side.viewport().mapToGlobal(pos))
+        if act is a1:
+            self.new_label(full)
+        elif act is a2:
+            r = self._label_dialog("Rename label", full.split("/")[-1])
+            if r and not self._need_modify():
+                newfull = "/".join(full.split("/")[:-1] + [r[0]])
+                self.run(lambda: self.mo.gmail_call(self.S, "PUT", "labels/" + lid, body={"id": lid, "name": newfull}),
+                         lambda res, err: (self.say(err, True) if err else (self.say("Renamed in Gmail"), self.load_labels(quiet=True))))
+        elif act is a3:
+            if _QMB.question(self, "Delete label", "Delete the label '%s' in Gmail? The emails stay, they just lose this label." % full) == _QMB.StandardButton.Yes and not self._need_modify():
+                self.run(lambda: self.mo.gmail_call(self.S, "DELETE", "labels/" + lid),
+                         lambda res, err: (self.say(err, True) if err else (self.say("Label deleted in Gmail"), self.load_labels(quiet=True))))
+
+    def _fill_label_menu(self):
+        self.label_menu.clear()
+        tree = mail_label_tree(self.labels)
+        if not tree:
+            self.label_menu.addAction("No labels yet").setEnabled(False)
+        for nm, ind, lid, full in tree:
+            a = self.label_menu.addAction(full)
+            a.triggered.connect(lambda _=False, lid=lid, full=full: self.modify(self.checked_ids() or ([self.cur] if self.cur else []), add=[lid],
+                                                                              cb=lambda: self.say("Labelled " + full)))
+        self.label_menu.addSeparator()
+        self.label_menu.addAction("Create new label...").triggered.connect(lambda: self.new_label())
+
     def _side_changed(self, cur, _prev):
         if cur is None or cur.data(Qt.ItemDataRole.UserRole) is None:
+            return
+        if cur.data(Qt.ItemDataRole.UserRole) == "__NEW__":
+            self.side.blockSignals(True)
+            for i in range(self.side.count()):
+                if self.side.item(i).data(Qt.ItemDataRole.UserRole) == self.label:
+                    self.side.setCurrentRow(i)
+            self.side.blockSignals(False)
+            self.new_label()
             return
         self.label = cur.data(Qt.ItemDataRole.UserRole)
         self.search.clear()
@@ -2528,17 +2684,7 @@ class MailPage(_QW):
             if [x.get("id") for x in labs] != [x.get("id") for x in self.labels]:
                 self.labels = labs
                 self._fill_side()
-            for i in range(self.side.count()):
-                it = self.side.item(i)
-                lid = it.data(Qt.ItemDataRole.UserRole)
-                if lid in counts:
-                    un, tot = counts[lid]
-                    n = tot if lid == "DRAFT" else un
-                    base = it.data(Qt.ItemDataRole.UserRole + 1)
-                    it.setText("%s   %d" % (base, n) if n else base)
-                    f = it.font()
-                    f.setBold(bool(un) and lid != "DRAFT")
-                    it.setFont(f)
+            self._apply_counts()
         self.run(work, done)
 
     # ---------------------------------------------------------------- list
@@ -2591,7 +2737,7 @@ class MailPage(_QW):
                 else:
                     params["labelIds"] = [label]
                 if label == "INBOX":
-                    q = MAIL_CATEGORIES[max(0, min(cat, len(MAIL_CATEGORIES) - 1))][0]
+                    params["labelIds"] = ["INBOX", MAIL_CATEGORIES[max(0, min(cat, len(MAIL_CATEGORIES) - 1))][0]]
             if q:
                 params["q"] = q
             if tok:

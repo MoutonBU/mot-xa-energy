@@ -56,7 +56,7 @@ assert r["id"] == "t1" and r["count"] == 2 and r["unread"] and r["sender"] == "D
 assert mp.rows[1]["starred"] and not mp.rows[1]["unread"]
 assert wait(lambda: any(mp.side.item(i).text().strip().startswith("Inbox   364") for i in range(mp.side.count()))), [mp.side.item(i).text() for i in range(mp.side.count())]
 names = [mp.side.item(i).text() for i in range(mp.side.count())]
-assert any(n.startswith("City Dev") for n in names) and any(n.startswith("    Zandspruit") for n in names), names
+assert any("City Dev" in n for n in names) and any("Zandspruit" in n for n in names), names
 assert mp.next.isEnabled() and not mp.prev.isEnabled()
 # open and read
 mp.open_thread("t1", "Erf 670")
@@ -95,3 +95,37 @@ S["gmail_modify"] = False
 mp._refresh_state(); assert not mp.connect_box.isHidden() and mp.main.isHidden()
 assert U.mail_date_text(int(time.time() * 1000)).endswith(("AM", "PM"))
 print("ok")
+
+# categories use Gmail's own category labels
+S.update({"gmail_modify": True, "gmail_read": True})
+gcalls = []
+_f = mo.gmail_call
+def spy(S, method, path, params=None, body=None, timeout=60):
+    gcalls.append((method, path, params, body))
+    return _f(S, method, path, params, body, timeout)
+mo.gmail_call = spy
+mp.label = "INBOX"; mp.query = ""; mp.stack.setCurrentIndex(0)
+mp.cats.blockSignals(True); mp.cats.setCurrentIndex(3); mp.cats.blockSignals(False)
+mp.cats.setCurrentIndex(1)
+assert wait(lambda: any(c[1] == "threads" and c[2] and "CATEGORY_PROMOTIONS" in c[2].get("labelIds", []) for c in gcalls)), gcalls[-3:]
+mp.cats.setCurrentIndex(0)
+assert wait(lambda: any(c[1] == "threads" and c[2] and "CATEGORY_PERSONAL" in c[2].get("labelIds", []) for c in gcalls))
+# collapse a parent label: its child disappears, and expanding brings it back
+def texts():
+    return [mp.side.item(i).text() for i in range(mp.side.count())]
+S["mail_collapsed"] = ["City Dev"]
+mp._fill_side()
+assert not any("Zandspruit" in t for t in texts()) and any("▸ City Dev" in t for t in texts()), texts()
+S["mail_collapsed"] = []
+mp._fill_side()
+assert any("Zandspruit" in t for t in texts())
+# a label created here is created in Gmail
+mp._label_dialog = lambda title, name="", parent="": ("Quotes", "City Dev")
+gcalls.clear()
+mp.new_label()
+assert wait(lambda: any(c[0] == "POST" and c[1] == "labels" and c[3]["name"] == "City Dev/Quotes" for c in gcalls)), gcalls
+# labelling selected mail adds the Gmail label to the threads
+mp.list.item(0).setData(M.ROLE_CHECK if hasattr(M, "ROLE_CHECK") else mo.ROLE_CHECK, True) if False else None
+mp.modify(["t1"], add=["Label_1"])
+assert wait(lambda: any(c[1] == "threads/t1/modify" and c[3]["addLabelIds"] == ["Label_1"] for c in gcalls))
+print("ok2")

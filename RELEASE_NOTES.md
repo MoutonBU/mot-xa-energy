@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: 1.86.287
+Current version: 1.86.288
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Mail tab: Primary/Promotions/Social/Updates now filter by Gmail's own categories; parent labels collapse and expand with the arrow; labels can be created, renamed and deleted here and appear in Gmail itself; "Label as" puts ticked emails into a label.
 - Mail tab is much faster: it keeps one Google sign-in token and open connections instead of signing in and reconnecting on every single request.
 - Mail tab opens conversations much faster: a conversation starts loading when the pointer rests on it, images load in parallel, and reopening is instant.
 - Mail tab checks Gmail for changes every 3 seconds and refreshes the list as soon as something arrives, is read, starred or moved (also from your phone or the browser).
