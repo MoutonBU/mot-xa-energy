@@ -696,3 +696,29 @@ S["mail_accounts"] = []; S["mail_default"] = ""
 mp._switch_account("me@x.com")
 M.save_settings = _save0
 print("ok36")
+
+# per-account colour theme and profile photo on the squares
+_save0 = M.save_settings; M.save_settings = lambda *a, **k: None
+import tempfile as _tf
+mp._switch_account("me@x.com") if mp._act.get("main") is None else None
+S["mail_accounts"] = [{"address": "b@x.com", "refresh": "rB", "modify": True, "read": True, "hid": "", "color": "#e2a93f"}]
+mp._rebuild_acc_bar(True)
+_c0 = mp.compose_btn.styleSheet()
+mp._switch_account("b@x.com")
+assert mp._accent() == "#e2a93f" and "#e2a93f" in mp.compose_btn.styleSheet() and mp.compose_btn.styleSheet() != _c0
+mp._switch_account("me@x.com")
+assert mp._accent() == U.MAIL_ACC_COLS[0] and U.MAIL_ACC_COLS[0] in mp.compose_btn.styleSheet()
+from PySide6.QtGui import QImage, QColor
+_pic = QImage(200, 120, QImage.Format.Format_RGB32); _pic.fill(QColor("#cc3333"))
+_pf = os.path.join(_tf.mkdtemp(), "p.png"); _pic.save(_pf)
+import PySide6.QtWidgets as _QW2
+_QW2.QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (_pf, ""))
+M.SETTINGS_PATH = os.path.join(os.path.dirname(_pf), "settings.json")
+mp._pick_photo(mp._by_addr("b@x.com"))
+_ph = mp._by_addr("b@x.com").get("photo"); assert _ph and os.path.exists(_ph) and mp._acc_photo(mp._by_addr("b@x.com")).width() == 128
+mp._pick_photo(mp._main); assert S.get("mail_main_photo") and mp._acc_photo(mp._accounts()[0]) is not None
+mp._acc_set(mp._main, color="#55b57a"); assert mp._accent() == "#55b57a"
+S["mail_accounts"] = []; S.pop("mail_main_photo", None); S.pop("mail_main_color", None)
+mp._rebuild_acc_bar(True)
+M.save_settings = _save0
+print("ok37")

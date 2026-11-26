@@ -3188,7 +3188,7 @@ class MailAcct:
 class _AccTile(_QF):
     """One Gmail account as a square like the ones on the home screen: a coloured initial, the address and what is waiting; click to switch, right-click for more."""
 
-    def __init__(self, letter, line1, line2, col, active, pal, click, menu=None):
+    def __init__(self, letter, line1, line2, col, active, pal, click, menu=None, photo=None):
         super().__init__()
         self._click, self._menu = click, menu
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -3202,6 +3202,23 @@ class _AccTile(_QF):
         sq.setFixedSize(34, 34)
         sq.setAlignment(Qt.AlignmentFlag.AlignCenter)
         sq.setStyleSheet("background:%s;color:#ffffff;border-radius:9px;font-weight:800;font-size:16px;" % col)
+        if photo is not None and not photo.isNull():
+            d = _dpr()
+            pm = QPixmap(int(34 * d), int(34 * d))
+            pm.fill(Qt.GlobalColor.transparent)
+            pp = QPainter(pm)
+            pp.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            pp.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+            from PySide6.QtGui import QPainterPath as _QPP
+            path = _QPP()
+            path.addRoundedRect(0, 0, 34 * d, 34 * d, 9 * d, 9 * d)
+            pp.setClipPath(path)
+            pp.drawPixmap(0, 0, photo.scaled(int(34 * d), int(34 * d), Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation))
+            pp.end()
+            pm.setDevicePixelRatio(d)
+            sq.setText("")
+            sq.setPixmap(pm)
+            sq.setStyleSheet("background:transparent;")
         sq.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         lab = _QL("<b style='font-size:13px'>%s</b><br><span style='color:%s;font-size:11px'>%s</span>" % (_html.escape(line1), pal["muted"], _html.escape(line2)))
         lab.setTextFormat(Qt.TextFormat.RichText)
@@ -3524,9 +3541,57 @@ class MailPage(_QW):
     def _accounts(self):
         """[the main account (the one the whole program uses)] + the accounts added in the Mail tab."""
         self._main["address"] = str(self.G.get("mail_address") or "")
-        self._main.setdefault("color", MAIL_ACC_COLS[0])
+        self._main["color"] = self.G.get("mail_main_color") or MAIL_ACC_COLS[0]
+        self._main["photo"] = self.G.get("mail_main_photo") or ""
         extra = [a for a in (self.G.get("mail_accounts") or []) if isinstance(a, dict) and a.get("address")]
         return [self._main] + extra
+
+    def _accent(self):
+        """The colour of the open account: the whole Mail tab is tinted with it."""
+        c = (self._act or {}).get("color") or MAIL_ACC_COLS[0]
+        return c if QColor(c).isValid() else MAIL_ACC_COLS[0]
+
+    def _acc_set(self, a, **kw):
+        for k, v in kw.items():
+            if a.get("main"):
+                self.G["mail_main_" + k] = v
+            else:
+                a[k] = v
+        try:
+            self.get_M().save_settings()
+        except Exception:
+            pass
+        if a is self._act:
+            self.restyle()
+        else:
+            self._rebuild_acc_bar(True)
+
+    def _acc_photo(self, a):
+        p = a.get("photo")
+        if p and os.path.exists(p):
+            pm = QPixmap(p)
+            if not pm.isNull():
+                return pm
+        return None
+
+    def _pick_photo(self, a):
+        from PySide6.QtWidgets import QFileDialog
+        f, _ = QFileDialog.getOpenFileName(self, "Profile photo for " + str(a.get("address")), "", "Pictures (*.png *.jpg *.jpeg *.bmp *.webp)")
+        if not f:
+            return
+        im = QImage(f)
+        if im.isNull():
+            self.say("That picture could not be opened.")
+            return
+        sd = min(im.width(), im.height())
+        im = im.copy((im.width() - sd) // 2, (im.height() - sd) // 2, sd, sd).scaled(
+            128, 128, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        out = os.path.join(os.path.dirname(self.get_M().SETTINGS_PATH), "mail_photo_%s.png" % re.sub(r"[^a-z0-9]+", "_", str(a.get("address", "")).lower()))
+        if not im.save(out, "PNG"):
+            self.say("The photo could not be saved.")
+            return
+        self._acc_set(a, photo=out)
+        self.say("Photo set for %s." % a.get("address"))
 
     def _by_addr(self, addr):
         addr = str(addr or "").strip().lower()
@@ -3548,7 +3613,7 @@ class MailPage(_QW):
         accs = self._accounts()
         pal = self._pal()
         dflt = self._by_addr(self.G.get("mail_default")) or self._main
-        sig = (self._acc_key(self._act), self._acc_key(dflt), self.is_light(), tuple((a.get("address"), a.get("unread"), a.get("color")) for a in accs),
+        sig = (self._acc_key(self._act), self._acc_key(dflt), self.is_light(), tuple((a.get("address"), a.get("unread"), a.get("color"), a.get("photo")) for a in accs),
                self._counts_keep.get("INBOX") if hasattr(self, "_counts_keep") else None)
         shown = self.ready() or len(accs) > 1
         self.acc_bar.setVisible(shown)
@@ -3575,8 +3640,8 @@ class MailPage(_QW):
                 bits.append("%s unread" % unread)
             col = a.get("color") or MAIL_ACC_COLS[i % len(MAIL_ACC_COLS)]
             t = _AccTile(addr[:1].upper() or "?", addr, "  \u00b7  ".join(bits) or "inbox", col, active, pal,
-                         lambda a=a: self._switch_account(a.get("address")), lambda pos, a=a: self._tile_menu(a, pos))
-            t.setToolTip("%s\nClick to switch to this account; right-click to make it the default" % addr)
+                         lambda a=a: self._switch_account(a.get("address")), lambda pos, a=a: self._tile_menu(a, pos), self._acc_photo(a))
+            t.setToolTip("%s\nClick to switch to this account; right-click for photo, colour and default" % addr)
             self.acc_lay.addWidget(t)
         add = _AccTile("+", "Add account", "another Gmail", "#8a9099", False, pal, self._add_account)
         add.setMinimumWidth(150)
@@ -3588,6 +3653,14 @@ class MailPage(_QW):
         m = QMenu(self)
         m.addAction("Switch to this account", lambda: self._switch_account(a.get("address")))
         m.addAction("Make this my default account", lambda: self._make_default(a))
+        m.addSeparator()
+        m.addAction("Choose profile photo...", lambda: self._pick_photo(a))
+        if a.get("photo"):
+            m.addAction("Remove profile photo", lambda: self._acc_set(a, photo=""))
+        cm = m.addMenu("Account colour")
+        names = ("Blue", "Yellow", "Green", "Purple", "Pink", "Orange", "Teal", "Brown")
+        for c, nm in zip(MAIL_ACC_COLS, names):
+            cm.addAction(nm + ("  \u2713" if c == a.get("color") else ""), lambda c=c: self._acc_set(a, color=c))
         if not a.get("main"):
             m.addSeparator()
             m.addAction("Remove this account from Mail", lambda: self._remove_account(a))
@@ -3624,6 +3697,7 @@ class MailPage(_QW):
         self.search.blockSignals(False)
         self.stack.setCurrentIndex(0)
         self._clear_thread()
+        self.restyle()                                          # the whole Mail tab takes this account's colour
         if not st:
             self._disk_load()                                       # that account's last view from disk: mail on screen at once
         self.cats.blockSignals(True)
@@ -3753,7 +3827,7 @@ class MailPage(_QW):
         """The program's palette in the Mail card's blue: selection, accents and the hot tint all follow it."""
         import app_shell
         old = app_shell.ACC[0]
-        app_shell.ACC[0] = self.MAIL_BLUE
+        app_shell.ACC[0] = self._accent()
         try:
             return app_shell._palette(self.is_light())
         finally:
@@ -3787,7 +3861,7 @@ class MailPage(_QW):
             dict(bg=bg, fg=fg, line=line, rail=p["rail"], pline=p["line"], accent=p["accent"], hover=p["hover"], muted=p["muted"], sel=p["sel"], hotline=p["hotline"]))
         self.cats.setDrawBase(False)
         self.compose_btn.setStyleSheet("QPushButton{background:%s;color:#ffffff;font-weight:700;font-size:14px;padding:14px 22px;border-radius:12px;text-align:left;border:none;} "
-                                       "QPushButton:hover{background:%s;}" % (self.MAIL_BLUE, "#6bb8ea"))
+                                       "QPushButton:hover{background:%s;}" % (self._accent(), QColor(self._accent()).lighter(125).name()))
         self.side.setStyleSheet("QListWidget{background:transparent;color:%s;border:none;outline:0;} QListWidget::item{padding:7px 12px;border-radius:9px;} "
                                 "QListWidget::item:selected{background:%s;color:%s;font-weight:700;border-left:3px solid %s;} QListWidget::item:hover{background:%s;}"
                                 % (p["text"], p["sel"], p["text"], p["accent"], p["hover"]))
@@ -4031,7 +4105,7 @@ class MailPage(_QW):
                     pass
             ic = self.host.windowIcon().pixmap(64, 64) if hasattr(self.host, "windowIcon") else None
             bg_, fg_, mute_, line_ = self.colors()
-            t = MailToast(rows, ic, self._toast_open, (bg_, fg_, mute_, "#2a2e35" if not self.is_light() else "#f1f3f5", self.MAIL_BLUE))
+            t = MailToast(rows, ic, self._toast_open, (bg_, fg_, mute_, "#2a2e35" if not self.is_light() else "#f1f3f5", self._accent()))
             self._toast = t
             ag = (self.screen() or QApplication.primaryScreen()).availableGeometry()
             t.move(ag.right() - t.width() - 14, ag.bottom() - t.height() - 14)
@@ -5017,7 +5091,7 @@ class MailPage(_QW):
             self._later_images(tid)
             return
         self.thread_lay.addStretch(1)
-        self.thread_lay.addWidget(MailPulse(self.MAIL_BLUE), 0, Qt.AlignmentFlag.AlignHCenter)
+        self.thread_lay.addWidget(MailPulse(self._accent()), 0, Qt.AlignmentFlag.AlignHCenter)
         self.thread_lay.addStretch(1)
         QTimer.singleShot(10000, lambda: self._slow_open(tid, subject))
 
