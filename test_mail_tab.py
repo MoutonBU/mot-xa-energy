@@ -202,3 +202,9 @@ got = mp._fetch_thread("tw")[1][0][4]
 assert fetched == [url] and "url:" + url in got, (fetched, list(got))
 mo.gmail_call = _old
 print("ok7")
+
+# resizable, rounded side column; width is remembered
+assert mp.split.count() == 2 and mp.split.widget(0).objectName() == "mailside"
+mp.split.sizes = lambda: [300, 900]; mp._save_side_width()
+assert S.get("mail_side_w") == 300 or abs(S.get("mail_side_w", 0) - 300) < 3, S.get("mail_side_w")
+print("ok8")

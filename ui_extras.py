@@ -2028,71 +2028,73 @@ class _MailRow(_QSID):
     def _cols(self, r):
         return QRect(r.left() + 10, r.top() + 12, 20, 20), QRect(r.left() + 40, r.top() + 10, 24, 24)
 
+    def _st(self, opt):
+        key = (opt.font.toString(), self.page.is_light())
+        if getattr(self, "_key", None) != key:
+            self._key = key
+            bg, fg, mute, line = self.page.colors()
+            fn = _QFont(opt.font)
+            fn.setBold(False)
+            fb = _QFont(opt.font)
+            fb.setBold(True)
+            fs = _QFont(opt.font)
+            fs.setPointSizeF(fs.pointSizeF() + 2)
+            self._c = dict(fg=QColor(fg), mute=QColor(mute), line=QColor(line), red=QColor("#d8132b"), white=QColor("#ffffff"), gold=QColor("#e0a800"),
+                           pen_mute=QPen(QColor(mute), 1.4), pen_white=QPen(QColor("#ffffff"), 2), pen_line=QPen(QColor(line)),
+                           rows={(u, s_, h): QColor(self.page.row_color(u, s_, h)) for u in (0, 1) for s_ in (0, 1) for h in (0, 1)})
+            self._f = dict(n=fn, b=fb, star=fs, mn=_QFM(fn), mb=_QFM(fb))
+        return self._c, self._f
+
     def paint(self, p, opt, idx):
-        bg, fg, mute, line = self.page.colors()
+        c, f = self._st(opt)
         r = opt.rect
         unread = bool(idx.data(ROLE_UNREAD))
         sel = bool(opt.state & QStyle_State_Selected)
         hov = bool(opt.state & QStyle_State_MouseOver)
         p.save()
-        p.fillRect(r, QColor(self.page.row_color(unread, sel, hov)))
-        p.setPen(QColor(line))
+        p.fillRect(r, c["rows"][(int(unread), int(sel), int(hov))])
+        p.setPen(c["pen_line"])
         p.drawLine(r.left(), r.bottom(), r.right(), r.bottom())
         cb, st = self._cols(r)
-        p.setPen(QPen(QColor(mute), 1.4))
-        p.setBrush(QColor("#d8132b") if idx.data(ROLE_CHECK) else Qt.BrushStyle.NoBrush)
+        checked = bool(idx.data(ROLE_CHECK))
+        p.setPen(c["pen_mute"])
+        p.setBrush(c["red"] if checked else Qt.BrushStyle.NoBrush)
         p.drawRoundedRect(cb.adjusted(2, 2, -2, -2), 3, 3)
-        if idx.data(ROLE_CHECK):
-            p.setPen(QPen(QColor("#ffffff"), 2))
+        if checked:
+            p.setPen(c["pen_white"])
             p.drawLine(cb.left() + 6, cb.center().y(), cb.left() + 9, cb.center().y() + 3)
             p.drawLine(cb.left() + 9, cb.center().y() + 3, cb.left() + 15, cb.center().y() - 4)
         starred = bool(idx.data(ROLE_STAR))
-        f = _QFont(opt.font)
-        f.setPointSizeF(f.pointSizeF() + 2)
-        p.setFont(f)
-        p.setPen(QColor("#e0a800") if starred else QColor(mute))
-        p.drawText(st, Qt.AlignmentFlag.AlignCenter, "★" if starred else "☆")
-        f = _QFont(opt.font)
-        f.setBold(unread)
-        p.setFont(f)
-        p.setPen(QColor(fg))
+        p.setFont(f["star"])
+        p.setPen(c["gold"] if starred else c["mute"])
+        p.drawText(st, Qt.AlignmentFlag.AlignCenter, "\u2605" if starred else "\u2606")
+        ft, fm = (f["b"], f["mb"]) if unread else (f["n"], f["mn"])
         x0 = r.left() + 76
         wname = 190
-        fm = _QFM(f)
-        who = idx.data(ROLE_SENDER) or ""
-        p.drawText(QRect(x0, r.top(), wname, r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, fm.elidedText(who, Qt.TextElideMode.ElideRight, wname))
+        mid = Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
+        p.setFont(ft)
+        p.setPen(c["fg"])
+        p.drawText(QRect(x0, r.top(), wname, r.height()), mid, fm.elidedText(idx.data(ROLE_SENDER) or "", Qt.TextElideMode.ElideRight, wname))
         dw = 84
-        dtxt = idx.data(ROLE_DATE) or ""
-        fd = _QFont(opt.font)
-        fd.setBold(unread)
-        p.setFont(fd)
-        p.setPen(QColor(fg if unread else mute))
-        p.drawText(QRect(r.right() - dw - 12, r.top(), dw, r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, dtxt)
+        p.setPen(c["fg"] if unread else c["mute"])
+        p.drawText(QRect(r.right() - dw - 12, r.top(), dw, r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, idx.data(ROLE_DATE) or "")
         sx = x0 + wname + 12
         if idx.data(ROLE_CLIP):
-            p.setFont(_QFont(opt.font))
-            p.setPen(QColor(mute))
-            p.drawText(QRect(sx, r.top(), 18, r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, "\u29c9")
+            p.setFont(f["n"])
+            p.setPen(c["mute"])
+            p.drawText(QRect(sx, r.top(), 18, r.height()), mid, "\u29c9")
             sx += 20
         avail = r.right() - dw - 28 - sx
         subj = idx.data(ROLE_SUBJECT) or ""
-        fs = _QFont(opt.font)
-        fs.setBold(unread)
-        fms = _QFM(fs)
-        subj_txt = subj
-        sw = min(fms.horizontalAdvance(subj_txt) + 6, int(avail * 0.62))
-        p.setFont(fs)
-        p.setPen(QColor(fg))
-        p.drawText(QRect(sx, r.top(), sw, r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, fms.elidedText(subj_txt, Qt.TextElideMode.ElideRight, sw))
-        fn = _QFont(opt.font)
-        fn.setBold(False)
-        p.setFont(fn)
-        p.setPen(QColor(mute))
-        fmn = _QFM(fn)
+        sw = min(fm.horizontalAdvance(subj) + 6, int(avail * 0.62))
+        p.setFont(ft)
+        p.setPen(c["fg"])
+        p.drawText(QRect(sx, r.top(), sw, r.height()), mid, fm.elidedText(subj, Qt.TextElideMode.ElideRight, sw))
         rest = avail - sw - 10
         if rest > 30:
-            p.drawText(QRect(sx + sw + 10, r.top(), rest, r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                       fmn.elidedText("- " + (idx.data(ROLE_SNIP) or ""), Qt.TextElideMode.ElideRight, rest))
+            p.setFont(f["n"])
+            p.setPen(c["mute"])
+            p.drawText(QRect(sx + sw + 10, r.top(), rest, r.height()), mid, f["mn"].elidedText("- " + (idx.data(ROLE_SNIP) or ""), Qt.TextElideMode.ElideRight, rest))
         p.restore()
 
     def editorEvent(self, ev, model, opt, idx):
@@ -2313,10 +2315,12 @@ class MailPage(_QW):
         self.main = _QW()
         mh = _HB(self.main)
         mh.setContentsMargins(0, 0, 0, 0)
-        left = _QW()
-        left.setFixedWidth(232)
+        left = _QF()
+        left.setObjectName("mailside")
+        left.setMinimumWidth(170)
         lv = _VB(left)
-        lv.setContentsMargins(0, 0, 0, 0)
+        lv.setContentsMargins(8, 8, 8, 8)
+        lv.setSpacing(6)
         self.compose_btn = _QPB("  Compose")
         self.compose_btn.setStyleSheet("QPushButton{background:#d8132b;color:#ffffff;font-weight:700;font-size:14px;padding:14px 22px;border-radius:14px;text-align:left;}")
         self.compose_btn.clicked.connect(lambda: self.compose())
@@ -2328,9 +2332,22 @@ class MailPage(_QW):
         self.side.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.side.customContextMenuRequested.connect(self._side_menu)
         lv.addWidget(self.side, 1)
-        mh.addWidget(left)
         self.stack = _QStack()
-        mh.addWidget(self.stack, 1)
+        self.split = _QSplit(Qt.Orientation.Horizontal)
+        self.split.setObjectName("mailsplit")
+        self.split.setHandleWidth(12)
+        self.split.setChildrenCollapsible(False)
+        self.split.addWidget(left)
+        self.split.addWidget(self.stack)
+        self.split.setStretchFactor(0, 0)
+        self.split.setStretchFactor(1, 1)
+        w0 = int(self.S.get("mail_side_w") or 250)
+        self.split.setSizes([max(170, min(w0, 520)), 1200])
+        self._side_save = QTimer(self)
+        self._side_save.setSingleShot(True)
+        self._side_save.timeout.connect(self._save_side_width)
+        self.split.splitterMoved.connect(lambda *_: self._side_save.start(500))
+        mh.addWidget(self.split, 1)
         # the list page
         lp = _QW()
         lpv = _VB(lp)
@@ -2439,17 +2456,42 @@ class MailPage(_QW):
         return "#1f2125", "#eceef0", "#8a9099", "#30353b"
 
     def restyle(self):
+        import app_shell
+        p = app_shell._palette0(self.is_light())
         bg, fg, mute, line = self.colors()
-        sel, hov = ("#fbe3e6", "#eef1f5") if self.is_light() else ("#3a2328", "#2a2e34")
-        self.setStyleSheet("#mailpage{background:%s;} #mailpage QLabel{color:%s;background:transparent;} #mailpage QCheckBox{color:%s;} "
-                           "#mailpage QFrame#mcard{border:1px solid %s;border-radius:8px;} #mailpage QScrollArea{background:%s;border:none;} "
-                           "#mailpage QTabBar::tab{color:%s;padding:10px 22px;background:transparent;border:none;} "
-                           "#mailpage QTabBar::tab:selected{color:%s;border-bottom:3px solid #d8132b;font-weight:700;}" % (bg, fg, fg, line, bg, mute, fg))
-        self.side.setStyleSheet("QListWidget{background:%s;color:%s;border:none;outline:0;} QListWidget::item{padding:7px 14px;border-radius:15px;} "
-                                "QListWidget::item:selected{background:%s;color:%s;font-weight:700;} QListWidget::item:hover{background:%s;}" % (bg, fg, sel, fg, hov))
-        self.list.setStyleSheet("QListWidget{background:%s;border:none;outline:0;}" % bg)
+        self.setStyleSheet(
+            "#mailpage{background:%(bg)s;} #mailpage QLabel{color:%(fg)s;background:transparent;} #mailpage QCheckBox{color:%(fg)s;} "
+            "#mailpage QFrame#mcard{border:1px solid %(line)s;border-radius:8px;} #mailpage QScrollArea{background:%(bg)s;border:none;} "
+            "#mailpage QFrame#mailside{background:%(rail)s;border:1px solid %(pline)s;border-radius:14px;} "
+            "#mailpage QSplitter::handle{background:transparent;} "
+            "#mailpage QSplitter::handle:horizontal{margin:6px 4px;border-radius:2px;background:%(pline)s;} "
+            "#mailpage QSplitter::handle:horizontal:hover{background:%(accent)s;} "
+            "#mailpage QPushButton{background:%(rail)s;color:%(fg)s;border:1px solid %(pline)s;border-radius:10px;padding:6px 14px;min-height:20px;font-weight:500;} "
+            "#mailpage QPushButton:hover{background:%(hover)s;} #mailpage QPushButton:disabled{color:%(muted)s;} "
+            "#mailpage QPushButton::menu-indicator{width:0px;} "
+            "#mailpage QTabBar{background:transparent;} "
+            "#mailpage QTabBar::tab{background:%(rail)s;color:%(muted)s;border:1px solid %(pline)s;border-radius:10px;padding:7px 20px;margin:3px 6px 3px 0;} "
+            "#mailpage QTabBar::tab:hover{background:%(hover)s;color:%(fg)s;} "
+            "#mailpage QTabBar::tab:selected{background:%(sel)s;color:%(fg)s;border:1px solid %(hotline)s;font-weight:700;} "
+            "#mailpage QLineEdit{background:%(rail)s;color:%(fg)s;border:1px solid %(pline)s;border-radius:10px;padding:6px 12px;} "
+            "#mailpage QLineEdit:focus{border:1px solid %(accent)s;}" %
+            dict(bg=bg, fg=fg, line=line, rail=p["rail"], pline=p["line"], accent=p["accent"], hover=p["hover"], muted=p["muted"], sel=p["sel"], hotline=p["hotline"]))
+        self.cats.setDrawBase(False)
+        self.compose_btn.setStyleSheet("QPushButton{background:#d8132b;color:#ffffff;font-weight:700;font-size:14px;padding:14px 22px;border-radius:12px;text-align:left;border:none;} "
+                                       "QPushButton:hover{background:#e0243a;}")
+        self.side.setStyleSheet("QListWidget{background:transparent;color:%s;border:none;outline:0;} QListWidget::item{padding:7px 12px;border-radius:9px;} "
+                                "QListWidget::item:selected{background:%s;color:%s;font-weight:700;border-left:3px solid %s;} QListWidget::item:hover{background:%s;}"
+                                % (p["text"], p["sel"], p["text"], p["accent"], p["hover"]))
+        self.list.setStyleSheet("QListWidget{background:%s;border:1px solid %s;border-radius:14px;outline:0;}" % (bg, p["line"]))
         self.thread_host.setStyleSheet("background:%s;" % bg)
         self.connect_box.setStyleSheet("QFrame{background:%s;border:none;}" % bg)
+        self._row_cache_reset()
+
+    def _row_cache_reset(self):
+        d = self.list.itemDelegate()
+        if hasattr(d, "_key"):
+            d._key = None
+        self.list.viewport().update()
 
     def row_color(self, unread, sel, hov):
         if self.is_light():
@@ -2551,6 +2593,15 @@ class MailPage(_QW):
         self.run(lambda: self.mo.gmail_call(self.S, "GET", "profile").get("historyId", ""), done)
 
     # ------------------------------------------------------------- sidebar
+    def _save_side_width(self):
+        w = self.split.sizes()[0]
+        if w >= 170 and w != self.S.get("mail_side_w"):
+            self.S["mail_side_w"] = int(w)
+            try:
+                self.get_M().save_settings()
+            except Exception:
+                pass
+
     def _collapsed(self):
         if "mail_collapsed" not in self.S:                       # first time: every group starts closed
             names = {full for _n, _i, _l, full in mail_label_tree(self.labels)}

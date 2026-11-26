@@ -22421,8 +22421,8 @@ def apply_glass_theme(app, win):
         pill.setStyleSheet("background: #262a2f; border: 1px solid #3a3f46;"
                            "border-radius: 9px; padding: 1px 8px; font-size: 11px; color: #eceef0; font-weight: 600;")  # light mode: colours translated by setStyleSheet
     spacer = QPushButton("\u263E  Dark" if light() else "\u2600  Light")
-    spacer.setFixedSize(78, 24)
-    spacer.setStyleSheet("font-size: 11px; padding: 0px 6px;")
+    spacer.setFixedSize(78, 26)
+    spacer.setStyleSheet("QPushButton{font-size:11px;padding:0px 8px;background:#17171b;color:#eceef0;border:1px solid #26262c;border-radius:12px;} QPushButton:hover{background:#1f1f24;}")
     spacer.setToolTip("Switch between the dark and the light look")
     spacer.setCursor(Qt.CursorShape.PointingHandCursor)
     spacer.clicked.connect(win.toggle_mode)
