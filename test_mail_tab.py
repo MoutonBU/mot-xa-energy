@@ -441,3 +441,12 @@ for _x in range(_r.left(), _r.left() + 90, 2):
 print("arrow clickable at", _hit[:1], _hit[-1:], "icon", mp.side.iconSize())
 assert _hit and _hit[0] < 40 and _hit[-1] > 40, _hit
 print("ok23")
+
+# every folder is read ahead: switching shows its mail at once, with no waiting for Gmail
+mp._lcache.clear(); mp._pw_busy = False
+mp._prewarm(0)
+assert wait(lambda: all((l, "", 0, "") in mp._lcache for l in ("STARRED", "SENT", "DRAFT", "TRASH", "ALL")), 10), list(mp._lcache)
+mp.label = "SENT"; mp.query = ""; mp.rows = []; mp._fill_list()
+mp.load_list(reset=True)
+assert mp.list.count() == len(mp._lcache[("SENT", "", 0, "")][0]) and mp.list.count() > 0, mp.list.count()
+print("ok24")

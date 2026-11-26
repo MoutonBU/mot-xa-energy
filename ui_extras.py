@@ -3162,6 +3162,7 @@ class MailPage(_QW):
         self._ntimer.timeout.connect(self._notify_tick)
         self._ntimer.start(3000)                               # asks Gmail for new mail every 3 s (one tiny call), also while another tool is open or the window is in the tray
         QTimer.singleShot(2000, self._notify_tick)
+        QTimer.singleShot(5000, self._startup_warm)
         self.timer.timeout.connect(self._tick)
         self.timer.start(3000)
         self._hid = None
@@ -3346,6 +3347,7 @@ class MailPage(_QW):
         self._loaded = True
         self.load_labels()
         self.load_list(reset=True)
+        self._prewarm()
 
     # ------------------------------------------------------------- new-mail pop-up (works while the window is hidden in the tray)
     def _notify_tick(self):
@@ -3847,76 +3849,7 @@ class MailPage(_QW):
             self.say("Loading...")
 
         def work():
-            params = {"maxResults": 25}
-            q = query
-            if query:
-                params["includeSpamTrash"] = "false"
-            else:
-                if label == "ALL":
-                    pass
-                elif label in ("TRASH", "SPAM"):
-                    params["labelIds"] = [label]
-                    params["includeSpamTrash"] = "true"
-                else:
-                    params["labelIds"] = [label]
-                if label == "INBOX":
-                    params["labelIds"] = ["INBOX", MAIL_CATEGORIES[max(0, min(cat, len(MAIL_CATEGORIES) - 1))][0]]
-            if q:
-                params["q"] = q
-            if tok:
-                params["pageToken"] = tok
-            j = self.mo.gmail_call(self.S, "GET", "threads", params)
-            ids = [t["id"] for t in j.get("threads", []) or []]
-            snips = {t["id"]: t.get("snippet", "") for t in j.get("threads", []) or []}
-            hids = {t["id"]: t.get("historyId", "") for t in j.get("threads", []) or []}
-            cache = self.__dict__.setdefault("_tcache", {})
-            out = [None] * len(ids)
-            import threading as _thr
-
-            def one(i):
-                try:
-                    hit = cache.get(ids[i])
-                    if hit and hids.get(ids[i]) and hit[0] == hids[ids[i]]:
-                        out[i] = hit[1]
-                        return
-                    th = self.mo.gmail_call(self.S, "GET", "threads/" + ids[i], {"format": "metadata", "metadataHeaders": ["From", "Subject"]})
-                    th["snippet"] = snips.get(ids[i], "") or th.get("snippet", "")
-                    out[i] = th
-                    cache[ids[i]] = (hids.get(ids[i], ""), th)
-                    if len(cache) > 600:
-                        cache.pop(next(iter(cache)))
-                except Exception:
-                    out[i] = None
-            need = [i for i in range(len(ids)) if not (cache.get(ids[i]) and hids.get(ids[i]) and cache[ids[i]][0] == hids[ids[i]])]
-            if len(need) > 1 and hasattr(self.mo, "gmail_batch"):            # all the missing conversations in ONE request
-                try:
-                    got = self.mo.gmail_batch(self.S, ["threads/%s?format=metadata&metadataHeaders=From&metadataHeaders=Subject" % ids[i] for i in need])
-                except Exception:
-                    got = None
-                if got:
-                    for i, th in zip(need, got):
-                        if th:
-                            th["snippet"] = snips.get(ids[i], "") or th.get("snippet", "")
-                            cache[ids[i]] = (hids.get(ids[i], ""), th)
-            if self.mo.gmail_blocked():
-                raise RuntimeError("Gmail's per-minute limit was reached; it carries on by itself in %d seconds" % (self.mo.gmail_blocked() + 1))
-            nxt = [0]
-            lock = _thr.Lock()
-
-            def worker():
-                while True:
-                    with lock:
-                        i = nxt[0]
-                        nxt[0] += 1
-                    if i >= len(ids):
-                        return
-                    one(i)
-            ws = [_thr.Thread(target=worker) for _ in range(min(12, len(ids)))]
-            for w in ws:
-                w.start()
-            for w in ws:
-                w.join()
-            return out, j.get("nextPageToken", "")
+            return self._page(label, query, cat, tok)
 
         def done(res, err):
             if gen != self.gen:
@@ -3937,6 +3870,110 @@ class MailPage(_QW):
                 self._fill_list()
             self.say("")
         self.run(work, done)
+
+    def _startup_warm(self):
+        # the mailbox is read in the background as the program starts, so the first time you open Mail it is already there
+        if self.ready() and not self._loaded:
+            self.load_labels(quiet=True)
+            self._prewarm(500)
+
+    def _prewarm(self, delay=2500):
+        """Load the first page of every folder in the background, so switching folders shows its mail at once."""
+        if getattr(self, "_pw_busy", False) or not self.ready():
+            return
+        self._pw_busy = True
+
+        def work():
+            import time as _tp
+            _tp.sleep(delay / 1000.0)
+            jobs = [("INBOX", "", i) for i in range(len(MAIL_CATEGORIES))] + [(l, "", 0) for l, _n in MAIL_SYSTEM if l not in ("INBOX",)]
+            for lab, q, c in jobs:
+                key = (lab, q, c, "")
+                if key in self._lcache:
+                    continue
+                if self.mo.gmail_load() > 0.6 or self.mo.gmail_blocked():
+                    break                                           # never take the quota the user is using
+                try:
+                    ths, nxt = self._page(lab, q, c, "")
+                    rows = [r for r in (mail_thread_row(t, self.me) for t in ths if t) if r]
+                    self._lcache[key] = (rows, nxt, self._hid)
+                except Exception:
+                    continue
+            return True
+        self.run(work, lambda res, err: setattr(self, "_pw_busy", False))
+
+    def _page(self, label, query, cat, tok):
+        """One page of the list as Gmail thread records (also used to load the other folders ahead of time)."""
+        params = {"maxResults": 25}
+        q = query
+        if query:
+            params["includeSpamTrash"] = "false"
+        else:
+            if label == "ALL":
+                pass
+            elif label in ("TRASH", "SPAM"):
+                params["labelIds"] = [label]
+                params["includeSpamTrash"] = "true"
+            else:
+                params["labelIds"] = [label]
+            if label == "INBOX":
+                params["labelIds"] = ["INBOX", MAIL_CATEGORIES[max(0, min(cat, len(MAIL_CATEGORIES) - 1))][0]]
+        if q:
+            params["q"] = q
+        if tok:
+            params["pageToken"] = tok
+        j = self.mo.gmail_call(self.S, "GET", "threads", params)
+        ids = [t["id"] for t in j.get("threads", []) or []]
+        snips = {t["id"]: t.get("snippet", "") for t in j.get("threads", []) or []}
+        hids = {t["id"]: t.get("historyId", "") for t in j.get("threads", []) or []}
+        cache = self.__dict__.setdefault("_tcache", {})
+        out = [None] * len(ids)
+        import threading as _thr
+
+        def one(i):
+            try:
+                hit = cache.get(ids[i])
+                if hit and hids.get(ids[i]) and hit[0] == hids[ids[i]]:
+                    out[i] = hit[1]
+                    return
+                th = self.mo.gmail_call(self.S, "GET", "threads/" + ids[i], {"format": "metadata", "metadataHeaders": ["From", "Subject"]})
+                th["snippet"] = snips.get(ids[i], "") or th.get("snippet", "")
+                out[i] = th
+                cache[ids[i]] = (hids.get(ids[i], ""), th)
+                if len(cache) > 600:
+                    cache.pop(next(iter(cache)))
+            except Exception:
+                out[i] = None
+        need = [i for i in range(len(ids)) if not (cache.get(ids[i]) and hids.get(ids[i]) and cache[ids[i]][0] == hids[ids[i]])]
+        if len(need) > 1 and hasattr(self.mo, "gmail_batch"):            # all the missing conversations in ONE request
+            try:
+                got = self.mo.gmail_batch(self.S, ["threads/%s?format=metadata&metadataHeaders=From&metadataHeaders=Subject" % ids[i] for i in need])
+            except Exception:
+                got = None
+            if got:
+                for i, th in zip(need, got):
+                    if th:
+                        th["snippet"] = snips.get(ids[i], "") or th.get("snippet", "")
+                        cache[ids[i]] = (hids.get(ids[i], ""), th)
+        if self.mo.gmail_blocked():
+            raise RuntimeError("Gmail's per-minute limit was reached; it carries on by itself in %d seconds" % (self.mo.gmail_blocked() + 1))
+        nxt = [0]
+        lock = _thr.Lock()
+
+        def worker():
+            while True:
+                with lock:
+                    i = nxt[0]
+                    nxt[0] += 1
+                if i >= len(ids):
+                    return
+                one(i)
+        ws = [_thr.Thread(target=worker) for _ in range(min(12, len(ids)))]
+        for w in ws:
+            w.start()
+        for w in ws:
+            w.join()
+        return out, j.get("nextPageToken", "")
 
     def _fill_list(self):
         sel = self.cur
@@ -4014,6 +4051,7 @@ class MailPage(_QW):
                 return
             self._lcache.clear()
             self._topen.clear()
+            self._prewarm(1500)
             if not trash:
                 for t in tids:                                              # the squares in front of the rows follow at once
                     for r_ in self.rows:
