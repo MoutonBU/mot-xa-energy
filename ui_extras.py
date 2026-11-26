@@ -2119,7 +2119,9 @@ def mail_fix_images(body, doc, inline, remote_ok, maxw=700):
         if not data:
             if src.lower().startswith("cid:"):
                 why = inline.get("err:" + src[4:].strip().lower())
-                return "<span style='color:#8a9099;font-size:11px'>[picture not loaded%s]</span>" % ((": " + _html.escape(str(why))) if why else "")
+                if not why:
+                    return ""                                    # still on its way (the page says "Loading pictures..."): no placeholder text, which broke the layout of cut-up banners
+                return "<span style='color:#8a9099;font-size:11px'>[picture not loaded: %s]</span>" % _html.escape(str(why))
             return ""
         key = seen.get(src)
         if key is None:
