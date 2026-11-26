@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: 1.86.310
+Current version: 1.86.311
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Mail tab: fixed the drop-down arrows of the labels, which stopped opening and closing when the colour squares were added.
 - Mail tab: simple emails (plain text, no pictures or colours of their own) now show in the program's dark look instead of a bright white block; designed emails sit on a soft light grey page instead of pure white. Settings has Always show emails on white if you prefer the old way.
 - Mail tab: while an email's pictures (such as a signature logo) are still loading it says Loading pictures..., and if they fail there is a Try again button, so a signature is never missing without a word.
 - Mail pop-up fixed and faster: mail you send to yourself now pops up (it was being skipped because Gmail also marks it as Sent), the program asks Gmail for new mail every 3 seconds (was 20) whichever tool is open and also while it runs hidden in the tray, and the inbox list updates the moment the pop-up shows.

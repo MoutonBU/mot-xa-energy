@@ -424,3 +424,20 @@ assert U.mail_plain('<div style="background-color:#ffffff">x</div>')
 _l = U.mail_lighten('<span style="color:#000000">a</span><a style="color:#1155cc">b</a><span style="color:#999999">c</span><font color="black">d</font>')
 assert "#eceef0" in _l and "#7cb7f0" in _l and "#999999" in _l and 'color="#eceef0"' in _l, _l
 print("ok22")
+
+# the drop-down arrows of the labels still toggle with the colour squares in front
+from PySide6.QtTest import QTest as _QTe
+mp.labels = [{"id": "Label_1", "name": "City Dev", "type": "user"}, {"id": "Label_2", "name": "City Dev/Zandspruit", "type": "user"}]
+mp.lcol = {}; S.pop("mail_collapsed", None); mp._fill_side()
+def _row(n):
+    return next(mp.side.item(i) for i in range(mp.side.count()) if (mp.side.item(i).data(Qt.ItemDataRole.UserRole + 2) or "") == n)
+_it = _row("City Dev"); _r = mp.side.visualItemRect(_it)
+_hit = []
+for _x in range(_r.left(), _r.left() + 90, 2):
+    S.pop("mail_collapsed", None)
+    _QTe.mouseClick(mp.side.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, __import__("PySide6.QtCore", fromlist=["QPoint"]).QPoint(_x, _r.center().y()))
+    if S.get("mail_collapsed") is not None:
+        _hit.append(_x - _r.left())
+print("arrow clickable at", _hit[:1], _hit[-1:], "icon", mp.side.iconSize())
+assert _hit and _hit[0] < 40 and _hit[-1] > 40, _hit
+print("ok23")

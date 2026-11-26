@@ -3038,6 +3038,7 @@ class MailPage(_QW):
         lv.addWidget(self.compose_btn)
         self.side = _QLW()
         self.side.setFrameShape(_QF.Shape.NoFrame)
+        self.side.setIconSize(_QSize(14, 14))
         self.side.currentItemChanged.connect(self._side_changed)
         self.side.itemClicked.connect(self._side_clicked)
         self.side.viewport().installEventFilter(self)
@@ -3526,8 +3527,8 @@ class MailPage(_QW):
             info = it.data(Qt.ItemDataRole.UserRole + 3) if it else None
             if info and info[1]:
                 fm = _QFM(it.font())
-                x0 = self.side.visualItemRect(it).left() + 14 + fm.horizontalAdvance("    " * info[0])
-                if x0 - 6 <= ev.position().x() <= x0 + fm.horizontalAdvance("\u25be ") + 8:
+                x0 = self.side.visualItemRect(it).left() + 14 + 14 + 14 + fm.horizontalAdvance("    " * info[0])          # the colour square sits in front of the text
+                if x0 - 8 <= ev.position().x() <= x0 + fm.horizontalAdvance("\u25be ") + 12:
                     full = it.data(Qt.ItemDataRole.UserRole + 2)
                     coll = self._collapsed()
                     coll.symmetric_difference_update({full})
