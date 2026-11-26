@@ -276,3 +276,19 @@ for i in range(mp.side.count()):
         mp._side_clicked(mp.side.item(i))
 assert mp.stack.currentIndex() == 0
 print("ok10")
+
+# many attachments must not make the email wider than the window
+mp.resize(1000, 700); mp.show(); app.processEvents()
+atts = [{"mimeType": "application/pdf", "filename": "Drawing number %03d long file name here.pdf" % i, "headers": [], "body": {"attachmentId": "A%d" % i, "size": 400000}} for i in range(16)]
+thx = {"id": "tm", "messages": [{"id": "mm", "internalDate": "1", "payload": {"mimeType": "multipart/mixed", "headers": [{"name": "From", "value": "a <a@b.c>"}, {"name": "To", "value": "x@y.z"}], "parts": [
+    {"mimeType": "text/html", "body": {"data": _b.urlsafe_b64encode(b"<table width=1500><tr><td>hello</td></tr></table>").decode()}}] + atts}}]}
+mo.gmail_call = lambda S_, method, path, params=None, body=None, timeout=60: thx if path == "threads/tm" else _old(S_, method, path, params, body, timeout)
+mp._topen.clear()
+mp.open_thread("tm", "many")
+assert wait(lambda: mp.thread_lay.count() >= 2)
+app.processEvents()
+vw = mp.sa.viewport().width()
+assert mp.thread_host.minimumSizeHint().width() <= vw, (mp.thread_host.minimumSizeHint().width(), vw)
+assert mp.thread_host.width() <= vw + 2, (mp.thread_host.width(), vw)
+mo.gmail_call = _old
+print("ok11")

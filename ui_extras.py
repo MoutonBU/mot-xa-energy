@@ -3328,6 +3328,8 @@ class MailPage(_QW):
                 _html.escape(to or "me"), _html.escape(("   cc " + cc) if cc else "")))
             hd.setTextFormat(Qt.TextFormat.RichText)
             hd.setWordWrap(True)
+            hd.setMinimumWidth(0)
+            hd.setSizePolicy(_QSP.Policy.Ignored, _QSP.Policy.Preferred)
             cv.addWidget(hd)
             b = _AutoBrowser()
             b.setStyleSheet("QTextBrowser{background:#ffffff;color:#202124;border-radius:6px;padding:6px;}")
@@ -3348,13 +3350,30 @@ class MailPage(_QW):
             used = {x.lower() for x in re.findall(r"(?i)cid:([^\"'\s>)]+)", html or "")}
             files = [a for a in atts if a["name"] and not (a["cid"] and a["cid"].lower() in used)]
             if files:
-                row = _HB()
-                for a in files[:12]:
-                    bt = _QPB("%s  (%s)" % (a["name"][:34], ("%.1f MB" % (a["size"] / 1048576.0)) if a["size"] > 1048576 else ("%d KB" % max(1, a["size"] // 1024))))
-                    bt.clicked.connect(lambda _=False, a=a, mid=m["id"]: self._save_attachment(mid, a))
-                    row.addWidget(bt)
-                row.addStretch(1)
-                cv.addLayout(row)
+                # attachment buttons wrap onto as many rows as the width needs (one long row made the whole email wider than the window)
+                avail = max(300, self.sa.viewport().width() - 70)
+                fmb = _QFM(self.font())
+                rows, cur, used_w = [], [], 0
+                for a in files[:60]:
+                    nm = a["name"] if len(a["name"]) <= 30 else a["name"][:27] + "..."
+                    txt = "%s  (%s)" % (nm, ("%.1f MB" % (a["size"] / 1048576.0)) if a["size"] > 1048576 else ("%d KB" % max(1, a["size"] // 1024)))
+                    w_ = fmb.horizontalAdvance(txt) + 44
+                    if cur and used_w + w_ > avail:
+                        rows.append(cur)
+                        cur, used_w = [], 0
+                    cur.append((txt, a))
+                    used_w += w_ + 6
+                if cur:
+                    rows.append(cur)
+                for rw in rows:
+                    row = _HB()
+                    for txt, a in rw:
+                        bt = _QPB(txt)
+                        bt.setToolTip(a["name"])
+                        bt.clicked.connect(lambda _=False, a=a, mid=m["id"]: self._save_attachment(mid, a))
+                        row.addWidget(bt)
+                    row.addStretch(1)
+                    cv.addLayout(row)
             self.thread_lay.addWidget(card)
         self.thread_lay.addStretch(1)
 
