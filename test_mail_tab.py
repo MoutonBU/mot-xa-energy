@@ -417,3 +417,10 @@ mo.gmail_call = _old2
 assert sum(len(r) for r in U.MAIL_GRID) == 54 and U.mail_text_on("#fad165") == "#000000" and U.mail_text_on("#285bac") == "#ffffff"
 _pl = U.MailPulse(); _pl.show(); app.processEvents(); _pl.grab().save("/tmp/pulse.png"); _pl.close()
 print("ok21")
+
+# simple emails wear the dark look; designed ones stay on a soft light page
+assert U.mail_plain("<div>test<br>--<br><span style='color:#000000'>Kind</span></div>") and not U.mail_plain('<div><img src="cid:a"></div>') and not U.mail_plain('<table bgcolor="#112233"><tr><td>x')
+assert U.mail_plain('<div style="background-color:#ffffff">x</div>')
+_l = U.mail_lighten('<span style="color:#000000">a</span><a style="color:#1155cc">b</a><span style="color:#999999">c</span><font color="black">d</font>')
+assert "#eceef0" in _l and "#7cb7f0" in _l and "#999999" in _l and 'color="#eceef0"' in _l, _l
+print("ok22")

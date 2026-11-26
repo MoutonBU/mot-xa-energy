@@ -1814,6 +1814,35 @@ MAIL_GRID = [["#f6c5be", "#efa093", "#e66550", "#fb4c2f", "#cc3a21", "#ac2b16"],
              ["#efefef", "#cccccc", "#999999", "#666666", "#434343", "#000000"]]
 
 
+_PLAIN_BG = re.compile(r"(?is)bgcolor\s*=|\sbackground\s*=|background(?:-color|-image)?\s*:\s*(?!(?:#fff\b|#ffffff\b|white\b|transparent\b|none\b|inherit\b|rgb\(\s*255\s*,\s*255\s*,\s*255\s*\)))")
+_CLR = re.compile(r"(?i)((?<![-\w])color\s*[:=]\s*[\"']?)(#[0-9a-f]{6}|#[0-9a-f]{3}|rgb\([^)]*\)|black|navy|blue|maroon|purple|green|gray|grey)")
+
+
+def mail_plain(html):
+    """True for a simple email (no pictures, no colours of its own): it can wear the program's dark look without spoiling anything."""
+    if not html:
+        return True
+    if re.search(r"(?i)<img\b", html) or _PLAIN_BG.search(html):
+        return False
+    return True
+
+
+def mail_lighten(html):
+    """Dark text colours in a plain email become light and the blue links lighter, so it reads on the dark page."""
+    def fix(m):
+        c = QColor(m.group(2))
+        if not c.isValid():
+            m2 = re.match(r"rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)", m.group(2))
+            c = QColor(int(m2.group(1)), int(m2.group(2)), int(m2.group(3))) if m2 else QColor("#000000")
+        lum = 0.299 * c.red() + 0.587 * c.green() + 0.114 * c.blue()
+        if c.blue() > c.red() + 40 and c.blue() > c.green() and lum < 190:
+            return m.group(1) + "#7cb7f0"
+        if lum < 120:
+            return m.group(1) + "#eceef0"
+        return m.group(0)
+    return _CLR.sub(fix, html)
+
+
 def mail_text_on(hx):
     c = QColor(hx)
     return "#000000" if (0.299 * c.red() + 0.587 * c.green() + 0.114 * c.blue()) > 150 else "#ffffff"
@@ -3195,11 +3224,25 @@ class MailPage(_QW):
         from PySide6.QtWidgets import QMenu
         m = QMenu(self)
         m.addAction("My email signature...", self._edit_signature)
+        w_ = m.addAction("Always show emails on white")
+        w_.setCheckable(True)
+        w_.setChecked(bool(self.S.get("mail_white")))
+        w_.toggled.connect(self._set_white)
         a = m.addAction("Pop-up when new mail arrives")
         a.setCheckable(True)
         a.setChecked(bool(self.S.get("mail_notify", True)))
         a.toggled.connect(self._set_notify)
         m.exec(self.set_btn.mapToGlobal(self.set_btn.rect().bottomLeft()))
+
+    def _set_white(self, on):
+        self.S["mail_white"] = bool(on)
+        try:
+            self.get_M().save_settings()
+        except Exception:
+            pass
+        if self.cur and self.stack.currentIndex() == 1 and getattr(self, "msgs", None):
+            self._clear_thread()
+            self._render_thread()
 
     def _set_notify(self, on):
         self.S["mail_notify"] = bool(on)
@@ -4102,6 +4145,12 @@ class MailPage(_QW):
                 w.join()
             return True
 
+    def _retry_pictures(self):
+        self._topen.pop(self.cur, None)
+        self._tpend.pop(self.cur, None)
+        if self.cur:
+            self.open_thread(self.cur, self.subject_lbl.text())
+
     def _show_pictures(self):
         self.S["mail_images"] = True
         try:
@@ -4234,8 +4283,15 @@ class MailPage(_QW):
                 body = re.sub(r"(?is)<script.*?>.*?</script>", "", body)
             else:
                 body = "<pre style='font-family:Arial;white-space:pre-wrap'>%s</pre>" % _html.escape(plain or m.get("snippet", ""))
-            # received emails stay on white, as the sender designed them (the dark rendering cut the corners of the signature banner)
-            b.setStyleSheet("QTextBrowser{background:%s;color:%s;border-radius:6px;padding:6px;}" % (page_bg or "#ffffff", "#eceef0" if page_bg else "#202124"))
+            # designed emails stay on a soft light page (as the sender made them); simple ones wear the program's dark look
+            page_bg, fgc, dark_mail = "#eef0f3", "#202124", False
+            if not self.is_light() and not self.S.get("mail_white") and mail_plain(html):
+                body = mail_lighten(body)
+                page_bg, fgc, dark_mail = "#25282d", "#eceef0", True
+            b.setStyleSheet("QTextBrowser{background:%s;color:%s;border-radius:6px;padding:6px;}" % (page_bg, fgc))
+            b.document().setDefaultStyleSheet("a{color:%s;}" % ("#7cb7f0" if dark_mail else "#1a5fb4"))
+            if self.S.get("mail_white"):
+                b.setStyleSheet("QTextBrowser{background:#ffffff;color:#202124;border-radius:6px;padding:6px;}")
             body = mail_fix_images(body, b.document(), inline, bool(self.S.get("mail_images")), max(320, self.sa.viewport().width() - 90))
             hidden = [] if self.S.get("mail_images") else [u for u in mail_web_images(html) if not mail_trusted_image(u)]
             if hidden:
@@ -4244,6 +4300,14 @@ class MailPage(_QW):
                 cv.addWidget(bar)
             b.setHtml(body)
             cv.addWidget(b)
+            if self._tpend.get(self.cur) or (lk_ := self._tlock.get("img:" + str(self.cur))) and lk_.locked():
+                wl = _QL("Loading pictures...")
+                wl.setStyleSheet("color:%s;" % mute)
+                cv.addWidget(wl)
+            elif any(k.startswith("err:") for k in inline):
+                rb = _QPB("Some pictures did not load - try again")
+                rb.clicked.connect(self._retry_pictures)
+                cv.addWidget(rb)
             used = {x.lower() for x in re.findall(r"(?i)cid:([^\"'\s>)]+)", html or "")}
             files = [a for a in atts if a["name"] and not (a["cid"] and a["cid"].lower() in used)]
             if files:
