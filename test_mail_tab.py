@@ -453,3 +453,32 @@ mp.label = "SENT"; mp.query = ""; mp.rows = []; mp._fill_list()
 mp.load_list(reset=True)
 assert mp.list.count() == len(mp._lcache[("SENT", "", 0, "")][0]) and mp.list.count() > 0, mp.list.count()
 print("ok24")
+
+# the last mailbox view is kept on disk; a picture in an email can be saved or copied with a right-click
+import tempfile as _tf2
+_dpf = os.path.join(_tf2.mkdtemp(), "mail_cache.json")
+mp._disk_path = lambda: _dpf; mp._disk_test = True
+S["mail_address"] = "me@x.com"
+mp._lcache[("INBOX", "", 0, "")] = ([{"id": "z1", "sender": "A", "subject": "S", "snippet": "x", "date": 1, "unread": True, "starred": False, "count": 1, "attach": False, "labels": ["INBOX"]}], "", None)
+mp._disk_save(); assert os.path.exists(_dpf)
+mp._lcache.clear(); mp._disk_load()
+assert mp._lcache[("INBOX", "", 0, "")][0][0]["id"] == "z1" and mp._lcache[("INBOX", "", 0, "")][2] is None
+from PySide6.QtGui import QImage as _QI, QColor as _QC
+from PySide6.QtCore import QBuffer as _QB, QIODevice as _QD2, QPoint as _QP2
+_im = _QI(120, 60, _QI.Format.Format_RGB32); _im.fill(_QC("#336699")); _bf = _QB(); _bf.open(_QD2.OpenModeFlag.WriteOnly); _im.save(_bf, "PNG"); _png = bytes(_bf.data())
+_ab = U._AutoBrowser(); _ab.resize(600, 300); _ab.show()
+_ab.setHtml(U.mail_fix_images('<p>hello</p><img src="cid:p@x" width="120">', _ab.document(), {"p@x": _png}, False, 500)); app.processEvents()
+_nm = ""
+for _y in range(0, 120, 6):
+    for _x in range(0, 200, 10):
+        _nm = _ab._image_at(_QP2(_x, _y))
+        if _nm: break
+    if _nm: break
+assert _nm and _ab._picture_bytes(_nm) == _png, _nm
+assert not _ab._image_at(_QP2(500, 20)), "far from the picture is not the picture"
+_dst = os.path.join(_tf2.mkdtemp(), "out.png")
+U._QFD.getSaveFileName = staticmethod(lambda *a, **k: (_dst, ""))
+_ab.save_picture(_nm); assert open(_dst, "rb").read() == _png
+_ab.copy_picture(_nm); assert not app.clipboard().image().isNull()
+_ab.close()
+print("ok25")

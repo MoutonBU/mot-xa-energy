@@ -1788,7 +1788,7 @@ def _formataddr(a):
 from email.utils import getaddresses as _getaddr, parseaddr as _parseaddr
 
 from PySide6.QtCore import QRect, QSize as _QSize, Signal as _Signal
-from PySide6.QtGui import QIcon as _QIcon, QTextDocument
+from PySide6.QtGui import QIcon as _QIcon, QTextDocument, QAction as _QAction
 from PySide6.QtGui import QFont as _QFont, QFontMetrics as _QFM
 from PySide6.QtWidgets import (QAbstractItemView as _AIV, QCheckBox as _QCheck, QFileDialog as _QFD, QHBoxLayout as _HB, QLineEdit as _QLE, QListWidget as _QLW,
                                QListWidgetItem as _QLWI, QMessageBox as _QMB, QPushButton as _QPB, QSplitter as _QSplit, QStackedWidget as _QStack, QStyledItemDelegate as _QSID,
@@ -1979,6 +1979,40 @@ def mail_pixmap(data):
     return QPixmap()
 
 
+def mail_qimage(data):
+    """Like mail_pixmap but a QImage: it can be decoded in a background thread, so opening an email only has to lay it out."""
+    img = QImage()
+    if img.loadFromData(data) and not img.isNull():
+        return img
+    try:
+        import cv2
+        import numpy as _np
+        arr = cv2.imdecode(_np.frombuffer(bytes(data), _np.uint8), cv2.IMREAD_UNCHANGED)
+        if arr is not None:
+            ok, png = cv2.imencode(".png", arr)
+            if ok and img.loadFromData(bytes(png.tobytes())) and not img.isNull():
+                return img
+    except Exception:
+        pass
+    return QImage()
+
+
+_ORIG = {}                                     # (document id, picture resource) -> the picture's own bytes, for Save picture
+
+
+def mail_warm(inline):
+    """Decode the pictures of an email ahead of time (called from a background thread) into the shared cache."""
+    for v in list(inline.values()):
+        if isinstance(v, (bytes, bytearray)) and v:
+            hk = hash(bytes(v))
+            if hk not in _PIXC:
+                im = QImage()
+                if im.loadFromData(bytes(v)) and not im.isNull():
+                    if len(_PIXC) > 120:
+                        _PIXC.clear()
+                    _PIXC[hk] = im
+
+
 _ATTR_DROP = re.compile(r"""(?is)\s(?:width|height|style)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)""")
 _W_ATTR = re.compile(r"""(?is)\bwidth\s*=\s*["']?\s*(\d+)\s*(%?)""")
 _W_STYLE = re.compile(r"""(?is)(?<![-\w])width\s*:\s*(\d+(?:\.\d+)?)\s*(px|%)""")
@@ -2075,9 +2109,9 @@ def mail_fix_images(body, doc, inline, remote_ok, maxw=700):
             hk = hash(data)
             img = _PIXC.get(hk)
             if img is None:
-                img = mail_pixmap(data)
+                img = mail_qimage(data)
                 if not img.isNull():
-                    if len(_PIXC) > 60:
+                    if len(_PIXC) > 120:
                         _PIXC.clear()
                     _PIXC[hk] = img
             if img.isNull():
@@ -2115,6 +2149,9 @@ def mail_fix_images(body, doc, inline, remote_ok, maxw=700):
             if target != pw:                                    # a smooth resize here, because Qt's text view would otherwise squash it roughly (jagged edges)
                 im2 = im2.scaled(int(target * dpr), int(h * dpr), Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
             doc.addResource(QTextDocument.ResourceType.ImageResource, QUrl(rk), im2)
+            _ORIG[(id(doc), rk)] = data
+            if len(_ORIG) > 200:
+                _ORIG.clear()
         t2 = _ATTR_DROP.sub("", tag)
         t2 = _SRC_RE.sub('src="%s" width="%d" height="%d"' % (rk, target, h), t2, 1)
         return t2
@@ -2699,6 +2736,74 @@ class _AutoBrowser(_QTB):
     def sizeHint(self):
         return _QSize(300, 40)
 
+    def _image_at(self, pos):
+        """The picture under the pointer: (resource name) or ''."""
+        from PySide6.QtGui import QTextCursor
+        c = self.cursorForPosition(pos)
+        for p in (c.position(), c.position() - 1):
+            if p < 0 or p + 1 >= self.document().characterCount():
+                continue
+            t = QTextCursor(self.document())
+            t.setPosition(p)
+            t.setPosition(p + 1, QTextCursor.MoveMode.KeepAnchor)
+            f = t.charFormat()
+            if f.isImageFormat():
+                im = f.toImageFormat()
+                if (id(self.document()), im.name()) not in _ORIG:
+                    continue                                     # the decorative corner and pill pictures are not the email's pictures
+                t.setPosition(p)
+                r0 = self.cursorRect(t)
+                w = int(im.width()) or 40
+                if QRectF(r0.left() - 3, r0.top() - 3, w + 6, r0.height() + 6).contains(QPointF(pos)):
+                    return im.name()
+        return ""
+
+    def contextMenuEvent(self, e):
+        name = self._image_at(e.pos())
+        m = self.createStandardContextMenu()
+        if name:
+            first = m.actions()[0] if m.actions() else None
+            a_save = _QAction("Save picture as...", m)
+            a_copy = _QAction("Copy picture", m)
+            a_save.triggered.connect(lambda: self.save_picture(name))
+            a_copy.triggered.connect(lambda: self.copy_picture(name))
+            m.insertAction(first, a_save)
+            m.insertAction(first, a_copy)
+            m.insertSeparator(first)
+        m.exec(e.globalPos())
+        m.deleteLater()
+
+    def _picture_bytes(self, name):
+        return _ORIG.get((id(self.document()), name))
+
+    def copy_picture(self, name):
+        data = self._picture_bytes(name)
+        im = mail_qimage(data) if data else QImage()
+        if not im.isNull():
+            QApplication.clipboard().setImage(im)
+
+    def save_picture(self, name):
+        import os as _os
+        from PySide6.QtCore import QStandardPaths
+        data = self._picture_bytes(name)
+        if not data:
+            return
+        ext = {"jpeg": "jpg"}.get(mail_sniff(data), mail_sniff(data))
+        if ext not in ("png", "jpg", "gif", "webp"):
+            ext = "png"
+        start = _os.path.join(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.PicturesLocation) or _os.path.expanduser("~"), "picture." + ext)
+        fn, _f = _QFD.getSaveFileName(self, "Save picture", start, "Pictures (*.%s);;All files (*)" % ext)
+        if not fn:
+            return
+        try:
+            if ext == "png" and mail_sniff(data) != "png":       # a format the program converted: save it as a PNG
+                mail_qimage(data).save(fn, "PNG")
+            else:
+                with open(fn, "wb") as f:
+                    f.write(bytes(data))
+        except Exception as ex:
+            _QMB.warning(self, "Save picture", "Could not save the picture: %s" % ex)
+
     def minimumSizeHint(self):
         return _QSize(0, 20)
 
@@ -3168,9 +3273,55 @@ class MailPage(_QW):
         self._hid = None
         self._busy = False
         self._last_full = 0.0
+        self._disk_load()
         self._fill_side()
         self._refresh_state()
         self.restyle()
+
+    # ---------------------------------------------- the last mailbox view is kept on disk, so Mail opens with mail on screen at once
+    def _disk_path(self):
+        import os as _o
+        return _o.path.join(_o.path.dirname(self.get_M().SETTINGS_PATH), "mail_cache.json")
+
+    def _disk_load(self):
+        import json as _j
+        try:
+            if not self.ready():
+                return
+            with open(self._disk_path(), encoding="utf-8") as f:
+                d = _j.load(f)
+            if str(d.get("acct", "")).lower() != str(self.S.get("mail_address", "")).lower() or not d.get("acct"):
+                return
+            for k, v in (d.get("lists") or {}).items():
+                lab, cat = k.rsplit("|", 1)
+                self._lcache[(lab, "", int(cat), "")] = (v["rows"], v.get("next", ""), None)         # shown first, then checked against Gmail
+            if d.get("labels"):
+                self.labels = d["labels"]
+                self.lcol = {x.get("id"): (x.get("color") or {}).get("backgroundColor") or MAIL_NOCOL for x in self.labels}
+        except Exception:
+            pass
+
+    def _disk_soon(self):
+        if getattr(self, "_dk_pend", False):
+            return
+        self._dk_pend = True
+        QTimer.singleShot(4000, self._disk_save)
+
+    def _disk_save(self):
+        import json as _j
+        self._dk_pend = False
+        try:
+            import os as _o0
+            if not self.ready() or not self.S.get("mail_address") or (_o0.environ.get("MOT_TEST") and not getattr(self, "_disk_test", False)):
+                return
+            lists = {"%s|%d" % (k[0], k[2]): {"rows": v[0], "next": v[1]} for k, v in self._lcache.items() if not k[1] and not k[3]}
+            tmp = self._disk_path() + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                _j.dump({"acct": str(self.S.get("mail_address", "")).lower(), "lists": lists, "labels": self.labels}, f)
+            import os as _o
+            _o.replace(tmp, self._disk_path())
+        except Exception:
+            pass
 
     # ----------------------------------------------------------------- look
     MAIL_BLUE = "#4aa3df"                      # the Mail card's colour on the home screen
@@ -3794,6 +3945,7 @@ class MailPage(_QW):
             if sg(labs) != sg(self.labels):
                 self.labels = labs
                 self.lcol = {x.get("id"): (x.get("color") or {}).get("backgroundColor") or MAIL_NOCOL for x in labs}
+                self._disk_soon()
                 self._fill_side()
                 for i in range(self.list.count()):
                     it = self.list.item(i)
@@ -3864,6 +4016,7 @@ class MailPage(_QW):
             self.next_token = nxt
             self.rows = rows
             self._lcache[key] = (list(rows), nxt, self._hid)
+            self._disk_soon()
             if len(self._lcache) > 40:
                 self._lcache.pop(next(iter(self._lcache)))
             if not same:
@@ -3900,7 +4053,7 @@ class MailPage(_QW):
                 except Exception:
                     continue
             return True
-        self.run(work, lambda res, err: setattr(self, "_pw_busy", False))
+        self.run(work, lambda res, err: (setattr(self, "_pw_busy", False), self._disk_soon()))
 
     def _page(self, label, query, cat, tok):
         """One page of the list as Gmail thread records (also used to load the other folders ahead of time)."""
@@ -4119,7 +4272,13 @@ class MailPage(_QW):
             hit = self._topen.get(tid)
             if hit and _time.time() - hit[0] < 900:
                 return hit[1]
-            return self._fetch_thread2(tid)
+            out = self._fetch_thread2(tid)
+            try:
+                for r_ in out[1]:
+                    mail_warm(r_[4])                                 # the pictures that came with the text are decoded here, not while the email opens
+            except Exception:
+                pass
+            return out
 
     def _fetch_thread2(self, tid):
         th = self.mo.gmail_call(self.S, "GET", "threads/" + tid, {"format": "full"})
@@ -4182,6 +4341,11 @@ class MailPage(_QW):
                 w.start()
             for w in ws:
                 w.join()
+            try:
+                for t in todo:
+                    mail_warm(t[0])
+            except Exception:
+                pass
             return True
 
     def _retry_pictures(self):
@@ -4323,7 +4487,7 @@ class MailPage(_QW):
             else:
                 body = "<pre style='font-family:Arial;white-space:pre-wrap'>%s</pre>" % _html.escape(plain or m.get("snippet", ""))
             # designed emails stay on a soft light page (as the sender made them); simple ones wear the program's dark look
-            page_bg, fgc, dark_mail = "#eef0f3", "#202124", False
+            page_bg, fgc, dark_mail = "#ffffff", "#202124", False
             if not self.is_light() and not self.S.get("mail_white") and mail_plain(html):
                 body = mail_lighten(body)
                 page_bg, fgc, dark_mail = "#25282d", "#eceef0", True

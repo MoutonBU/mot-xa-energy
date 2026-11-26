@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: 1.86.313
+Current version: 1.86.314
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Mail tab: faster. Pictures are decoded in the background before you open the email, and the last view of your mailbox (every folder's first page and your labels) is kept on disk, so Mail opens with your mail already on screen and is then brought up to date.
+- Mail tab: right-click a picture in an email for Save picture as... (saved exactly as sent) and Copy picture. Designed emails now sit on pure white.
 - Update downloads are small again (program code only): the last update had to be a full installer because of a test-only import; that is removed.
 - Mail tab: every folder (Inbox tabs, Starred, Sent, Drafts, Spam, Trash, All Mail) is now read in the background as the program starts and after changes, so clicking a folder shows its mail at once; Gmail is then asked only for what changed, and the background reading pauses when Gmail's quota is busy.
 - Mail tab: fixed the drop-down arrows of the labels, which stopped opening and closing when the colour squares were added.
