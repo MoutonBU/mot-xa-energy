@@ -110,7 +110,7 @@ mp.cats.blockSignals(True); mp.cats.setCurrentIndex(3); mp.cats.blockSignals(Fal
 mp.cats.setCurrentIndex(1)
 assert wait(lambda: any(c[1] == "threads" and c[2] and "CATEGORY_PROMOTIONS" in c[2].get("labelIds", []) for c in gcalls)), gcalls[-3:]
 mp.cats.setCurrentIndex(0)
-assert wait(lambda: any(c[1] == "threads" and c[2] and "CATEGORY_PERSONAL" in c[2].get("labelIds", []) for c in gcalls))
+assert wait(lambda: any(c[1] == "threads" and c[2] and c[2].get("labelIds") == ["INBOX"] and "-category:promotions" in c[2].get("q", "") for c in gcalls))
 # collapse a parent label: its child disappears, and expanding brings it back
 def texts():
     return [mp.side.item(i).text() for i in range(mp.side.count())]
@@ -482,3 +482,17 @@ _ab.save_picture(_nm); assert open(_dst, "rb").read() == _png
 _ab.copy_picture(_nm); assert not app.clipboard().image().isNull()
 _ab.close()
 print("ok25")
+
+# Primary asks for the inbox minus the other tabs, so mail you send to yourself (no tab label) is listed
+_seen_p = []
+_old3 = mo.gmail_call
+def _cap(S_, method, path, params=None, body=None, timeout=60):
+    if path == "threads":
+        _seen_p.append(dict(params or {}))
+    return _old3(S_, method, path, params, body, timeout)
+mo.gmail_call = _cap
+mp._page("INBOX", "", 0, ""); mp._page("INBOX", "", 1, "")
+mo.gmail_call = _old3
+assert _seen_p[0]["labelIds"] == ["INBOX"] and "-category:promotions" in _seen_p[0]["q"], _seen_p[0]
+assert _seen_p[1]["labelIds"] == ["INBOX", "CATEGORY_PROMOTIONS"] and "q" not in _seen_p[1], _seen_p[1]
+print("ok26")

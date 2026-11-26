@@ -4070,7 +4070,12 @@ class MailPage(_QW):
             else:
                 params["labelIds"] = [label]
             if label == "INBOX":
-                params["labelIds"] = ["INBOX", MAIL_CATEGORIES[max(0, min(cat, len(MAIL_CATEGORIES) - 1))][0]]
+                cat = max(0, min(cat, len(MAIL_CATEGORIES) - 1))
+                if cat == 0:                                   # Primary is everything that is not in another tab: mail you send to yourself has no tab label and would be lost
+                    params["labelIds"] = ["INBOX"]
+                    q = "-category:promotions -category:social -category:updates -category:forums"
+                else:
+                    params["labelIds"] = ["INBOX", MAIL_CATEGORIES[cat][0]]
         if q:
             params["q"] = q
         if tok:
