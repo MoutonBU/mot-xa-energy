@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: 1.86.325
+Current version: 1.86.326
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Mail tab: the time above each email is now when it arrived in your own time zone (for example Thu, 26 Nov 2026  15:14). It used to also show the sender's own header time, cut short, which read hours off (07:14 for a mail sent at 15:14).
 - Mail tab: while the pictures of an email are still arriving, the pieces not yet loaded are left empty instead of showing "[picture not loaded]" (which stretched out letter by letter and broke the email signature banner apart). The message only appears when a picture really failed to load, with the reason.
 - Mail tab: a reply or forward now shows the original email exactly as in the reading view (the logo, the rounded boxes and the red stripe) in its own pane below your empty pane to type in, instead of squeezing it into the editor (which lost the logo and squared the corners). Sending puts your text and signature first, then the original with its pictures. The quote is laid out again only once you stop resizing the window.
 - Mail tab: an email with a logo or a few pictures no longer flashes when it opens: the pictures are given a moment to arrive with the text, so it is drawn once (slower pictures still follow the text, as before).

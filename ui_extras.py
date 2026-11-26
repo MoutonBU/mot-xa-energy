@@ -2505,6 +2505,14 @@ def mail_date_text(ms, now=None):
     return d.strftime("%d/%m/%Y")
 
 
+def mail_full_date(m):
+    """The time the email arrived, in my own time zone ('Thu, 26 Nov 2026  15:14'); the sender's Date header is in their zone and was cut short, so it read hours off."""
+    try:
+        return _dt.datetime.fromtimestamp(int(m.get("internalDate", 0)) / 1000.0).strftime("%a, %d %b %Y  %H:%M")
+    except Exception:
+        return mail_header(m, "Date")[:31]
+
+
 def mail_name(addr_field):
     n, a = _parseaddr(addr_field or "")
     return (n or a.split("@")[0] or addr_field or "").strip().strip('"')
@@ -4669,7 +4677,7 @@ class MailPage(_QW):
             to = mail_header(m, "To")
             cc = mail_header(m, "Cc")
             hd = _QL("<b>%s</b> &lt;%s&gt; &nbsp; <span style='color:%s'>%s</span><br><span style='color:%s'>to %s%s</span>" % (
-                _html.escape(mail_name(fr)), _html.escape(_parseaddr(fr)[1]), mute, _html.escape(mail_date_text(m.get("internalDate", 0)) + "  " + mail_header(m, "Date")[:25]), mute,
+                _html.escape(mail_name(fr)), _html.escape(_parseaddr(fr)[1]), mute, _html.escape(mail_full_date(m)), mute,
                 _html.escape(to or "me"), _html.escape(("   cc " + cc) if cc else "")))
             hd.setTextFormat(Qt.TextFormat.RichText)
             hd.setWordWrap(True)
