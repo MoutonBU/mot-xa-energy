@@ -1612,7 +1612,7 @@ class MaterialsPage(QWidget):
         v.addWidget(self.tabs, 1)
         bar = QHBoxLayout()
         for text, fn in (("Update prices with AI...", self.ai_prices), ("Preview PDF", self.preview_pdf), ("Export PDF", self.export_pdf),
-                         ("Export CSV", self.export_csv)):
+                         ("Export CSV", self.export_csv), ("Builder's quantities (no prices)...", self.qty_export_pdf)):
             b = QPushButton(text)
             b.clicked.connect(fn)
             bar.addWidget(b)
@@ -2631,6 +2631,82 @@ class MaterialsPage(QWidget):
                 path += ".pdf"
             self.write_pdf(path)
             QMessageBox.information(self, "Costing", "PDF saved:\n" + path)
+
+    # ----- the builder's quantities: the same quantities, no prices at all, so he can cost them with his own suppliers -----
+    def qty_rows(self):
+        """[(group, item, unit, quantity)] over every block, then the extra and site items, with no rates."""
+        return [(g, item, unit, qty) for g, item, unit, qty, _mr, _lr, _mc, _lc in self.all_rows() if qty > 1e-9]
+
+    def qty_html(self):
+        e = lambda x: _html.escape(str(x))
+        RED, DARK = "#C8102E", "#DCDCDC"
+        rd = self.host.det_rd() if hasattr(self.host, "det_rd") else (getattr(self.host.win, "rd", {}) or {})
+        th = lambda t, w: '<th bgcolor="%s" width="%d%%" style="padding:3px;">%s</th>' % (DARK, w, t)
+        td = lambda t, a="left": '<td style="padding:4px;text-align:%s;">%s</td>' % (a, t)
+        out = ['<h2 style="color:%s;">Builder\'s quantities</h2>' % RED,
+               '<p style="font-size:9pt;color:#444;">%s &nbsp;|&nbsp; %s</p>' % (e(rd.get("project") or "Project"), datetime.date.today().strftime("%d %B %Y")),
+               '<p style="font-size:9pt;">Quantities for pricing with your own suppliers and subcontractors. No prices are shown; the last two columns are for your rates.</p>']
+        rows, last = "", None
+        for g, item, unit, qty in self.qty_rows():
+            if g != last:
+                rows += '<tr><td colspan="6" bgcolor="#F1F1F1" style="padding:4px;"><b>%s</b></td></tr>' % e(g)
+                last = g
+            rows += "<tr>%s%s%s%s%s%s</tr>" % (td(""), td(e(item)), td(e(unit), "center"), td(num(qty, 1 if qty < 1000 else 0), "right"), td(""), td(""))
+        out.append('<table width="100%%" border="0.6" cellspacing="0" style="font-size:8.5pt;"><tr>%s%s%s%s%s%s</tr>%s</table>' %
+                   (th("", 3), th("Item", 47), th("Unit", 8), th("Quantity", 12), th("Your rate", 15), th("Amount", 15), rows))
+        out.append('<p style="font-size:7.5pt;color:#666;">Quantities are read from the IFC model and the rooms list and include the waste allowances set in the program '
+                   '(bricks, concrete, plaster and so on). Reinforcing steel, insulation, plaster and roof timber follow the allowances for the project. '
+                   'Check every quantity against the drawings and the site before pricing; this is a take-off to help the builder, not a contract bill of quantities.</p>')
+        return "".join(out)
+
+    def write_qty_pdf(self, path):
+        from PySide6.QtCore import QMarginsF
+        from PySide6.QtGui import QFont, QPageLayout, QPageSize, QPdfWriter, QTextDocument
+        w = QPdfWriter(path)
+        w.setPageLayout(QPageLayout(QPageSize(QPageSize.PageSizeId.A4), QPageLayout.Orientation.Portrait, QMarginsF(12, 12, 12, 12), QPageLayout.Unit.Millimeter))
+        w.setTitle("Builder's quantities")
+        d = QTextDocument()
+        d.setDefaultFont(QFont("Arial", 9))
+        from costing import report_cover
+        d.setHtml('<html><body style="font-family:Arial;color:#111;">' + report_cover(d, self.host.win, "BUILDER'S QUANTITIES", "Quantities for pricing", None, getattr(self.host, "details", None)) + self.qty_html() + "</body></html>")
+        d.print_(w)
+
+    def _qty_ready(self):
+        if not self.qty_rows():
+            QMessageBox.information(self, "Costing", "There are no quantities yet. Press Read IFC first (Building materials).")
+            return False
+        return True
+
+    def qty_preview(self):
+        if self._qty_ready():
+            try:
+                self.host.win.preview_pdf_report(self.write_qty_pdf, lambda: None)
+            except Exception as e:
+                QMessageBox.warning(self, "Costing", "The preview could not be shown (%s). Use Export PDF." % e)
+
+    def qty_export_pdf(self):
+        if not self._qty_ready():
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Export builder's quantities", "Builder's quantities.pdf", "PDF (*.pdf)")
+        if path:
+            if not path.lower().endswith(".pdf"):
+                path += ".pdf"
+            self.write_qty_pdf(path)
+            QMessageBox.information(self, "Costing", "PDF saved (no prices in it):\n" + path)
+
+    def qty_export_csv(self):
+        if not self._qty_ready():
+            return
+        import csv
+        path, _ = QFileDialog.getSaveFileName(self, "Export builder's quantities", "Builder's quantities.csv", "CSV (*.csv)")
+        if not path:
+            return
+        with open(path, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.writer(f, delimiter=";")
+            w.writerow(["Group", "Item", "Unit", "Quantity", "Your rate", "Amount"])
+            for g, item, unit, qty in self.qty_rows():
+                w.writerow([g, item, unit, "%.2f" % qty, "", ""])
+        QMessageBox.information(self, "Costing", "CSV saved (no prices in it):\n" + path)
 
     def export_csv(self):
         import csv

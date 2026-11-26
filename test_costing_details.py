@@ -35,3 +35,17 @@ cp.details_from_project()
 assert cp.details.get("project") == "Some other project"
 cp.write_cost_report("/tmp/cd.pdf"); cp.materials.write_pdf("/tmp/cdm.pdf")
 print("ok costing details")
+
+# builder's quantities: the same quantities with no prices anywhere
+import materials as _mat
+_mp = cp.materials
+_q = dict(brick110=100.0, brick220=0, cavity=0, plaster_area=80.0, plain_brick_area=0, footing_vol=5.0, slab_vol=8.0, slab_area=60.0, tile_area=0, dpm_area=60.0,
+          roof_slab_vol=0, roof_area=70.0, beam_vol=1.0, win_area=6.0, door_n=3, rail_m=0, conc_wall_vol=0, steel_kg=0, timber_vol=0, ins_area=20.0, fill_vol=0)
+_mp.blocks = [{"name": "House", "path": "", "repeat": 1, "q": _q}]
+_rows = _mp.qty_rows()
+assert _rows and all(len(r) == 4 for r in _rows), _rows[:2]
+_h = _mp.qty_html()
+assert "Builder" in _h and "Your rate" in _h and "R " not in _h and "Material" not in _h and "Labour" not in _h
+_mp.write_qty_pdf("/tmp/qty.pdf")
+assert os.path.getsize("/tmp/qty.pdf") > 1000
+print("ok builder quantities")

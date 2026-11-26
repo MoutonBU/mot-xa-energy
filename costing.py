@@ -1407,6 +1407,21 @@ class CostingPage(QWidget):
         if self.materials:
             self.materials.export_pdf()
 
+    def qty_preview(self):
+        self.mat_show()
+        if self.materials:
+            self.materials.qty_preview()
+
+    def qty_pdf(self):
+        self.mat_show()
+        if self.materials:
+            self.materials.qty_export_pdf()
+
+    def qty_csv(self):
+        self.mat_show()
+        if self.materials:
+            self.materials.qty_export_csv()
+
     def preview_pdf(self):
         try:
             self.win.preview_pdf_report(self.write_pdf, lambda: None)

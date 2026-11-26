@@ -468,6 +468,7 @@ class Ribbon(QFrame):
                           T("Find (AI)", "search", cost("find_ai"), hot=True)]),
             ("Building materials", [T("Read IFC", "cube", cost("mat_read")), T("Preview", "eye", cost("mat_preview")), T("Export", "pdf", cost("mat_export"))]),
             ("Costing report", [T("Preview", "eye", cost("cost_report_preview"), hot=True), T("PDF", "pdf", cost("cost_report_export"))]),
+            ("Builder's quantities", [T("Preview", "eye", cost("qty_preview")), T("PDF", "pdf", cost("qty_pdf")), T("CSV", "export", cost("qty_csv"))]),
             ("Fixture schedule", [T("Preview", "eye", cost("preview_pdf")), T("PDF", "pdf", cost("export_pdf")), T("CSV", "export", cost("export_csv"))])])
         def reg(name, *a):
             def f():
