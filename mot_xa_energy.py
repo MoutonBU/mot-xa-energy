@@ -4469,6 +4469,31 @@ def _icon_for(text):
     return None
 
 
+def icon_tint(default="#eceef0"):
+    """The icons of the open tool wear its home-card colour (a touch lighter on dark, deeper on light)."""
+    col = ACCENT_COL[0]
+    if not col:
+        return default
+    c = QColor(col)
+    return (c.darker(115) if light() else c.lighter(112)).name()
+
+
+def retint_icons(page, win=None):
+    """Recolour the tab icons and the button icons of the page that is open with the tool's colour."""
+    from PySide6.QtWidgets import QTabWidget as _TWd, QPushButton as _PB
+    tint = icon_tint()
+    for tw in ([page] if isinstance(page, _TWd) else []) + page.findChildren(_TWd):
+        for i in range(tw.count()):
+            t_ = tw.tabText(i).replace("&&", "&").strip().lower()
+            n_ = next((n for k, n in TAB_KEYS if k in t_), None)
+            if n_ and not tw.tabIcon(i).isNull():
+                tw.setTabIcon(i, make_icon(n_, tint, 17))
+    for b in page.findChildren(_PB):
+        n = b.property("_icn")
+        if n and not b.property("accent"):
+            b.setIcon(make_icon(n, tint, 18))
+
+
 def decorate_icons(root, force=False):
     """Give every button / menu entry under root an icon, chosen from its text."""
     from PySide6.QtWidgets import QPushButton as _PB, QTableWidget as _TW, QMenu as _MN
@@ -4485,7 +4510,8 @@ def decorate_icons(root, force=False):
             continue
         n = _icon_for(b.text())
         if n:
-            b.setIcon(make_icon(n, "#ffffff" if b.property("accent") else "#eceef0", 18))
+            b.setIcon(make_icon(n, "#ffffff" if b.property("accent") else icon_tint(), 18))
+            b.setProperty("_icn", n)
             b.setIconSize(QSize(18, 18))
     if isinstance(root, _MN):
         for a in root.actions():
@@ -4551,7 +4577,7 @@ def apply_icons(win, force=False):
                 t_ = tw.tabText(i).replace("&&", "&").strip().lower()
                 n_ = next((n for k, n in TAB_KEYS if k in t_), None)
                 if n_:
-                    tw.setTabIcon(i, make_icon(n_, "#eceef0", 17))
+                    tw.setTabIcon(i, make_icon(n_, icon_tint(), 17))
         if tw.count():
             tw.setIconSize(QSize(17, 17))
     mt = getattr(win, "main_tabs", None)
@@ -13419,6 +13445,14 @@ class MainWindow(QMainWindow):
                     fn_()
             self._accent_ctx = ctx
             page = self.main_tabs.currentWidget()
+            if page is not None:
+                k_ = (col, id(page), bool(light()))
+                if self.__dict__.get("_tint_key") != k_:             # the open tool's icons take its card colour (once per tool and look)
+                    self._tint_key = k_
+                    try:
+                        retint_icons(page)
+                    except Exception:
+                        pass
             if page is not None and studio():
                 theme_widget(page, _accent_rules(col) if col else "")
             elif page is not None and col:

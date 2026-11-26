@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: 1.86.307
+Current version: 1.86.308
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- The icons inside each tool now wear that tool's home-card colour as well: the bar, the ribbon, the tab icons, the button icons and the Switch tool list (costing purple, light and ventilation yellow, XA energy orange, and so on).
 - Mail tab: 54 label colours (Gmail's full palette, light to dark) in a colour grid, when creating a label and from Colour... in a label's right-click menu.
 - Mail tab: a conversation now opens as soon as its text arrives; the pictures follow a moment later without moving the page, and the first twelve conversations are loaded ahead. While it loads, the centre of the view shows the mail icon with pulsing rings instead of the word Opening.
 - Mail tab: labels now show their colour: a small square (one per label, up to three) in front of the tick box on every row, and in the label list on the left. Right-click a label to change its colour (Gmail's palette), and pick a colour when creating one.

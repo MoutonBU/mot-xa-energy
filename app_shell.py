@@ -184,7 +184,9 @@ class Rail(QFrame):
         if not self.make_icon:
             return
         col = "#1c1f24" if self.light_fn() else "#eceef0"
-        own = {b: TOOL_COL.get(CTX.get(i_)) for i_, b in self.nav.items()}          # each tool's own muted colour on its icon
+        own = {b: TOOL_COL.get(TAB_KEY.get(self.win.main_tabs.tabText(i_), CTX.get(i_))) for i_, b in self.nav.items()}          # each tool's own colour on its icon
+        if ACC[0]:
+            col = _palette(bool(self.light_fn()))["accent"]
         for b in self.findChildren(QPushButton):
             n = b.property("iconName")
             if n:
@@ -201,8 +203,10 @@ class Rail(QFrame):
                         t = ev.type()
                         n_ = obj.property("iconName") if isinstance(obj, QPushButton) else None
                         if n_ and t in (QEvent.Type.Enter, QEvent.Type.Leave):
-                            c_ = "#ff4056" if t == QEvent.Type.Enter else ("#1c1f24" if rail.light_fn() else "#eceef0")
-                            obj.setIcon(rail.make_icon(n_, c_, 28))
+                            if t == QEvent.Type.Enter:
+                                obj.setIcon(rail.make_icon(n_, "#ff4056", 28))
+                            else:
+                                rail.icons()                       # back to the tool's own colour
                     except Exception:
                         pass
                     return False
@@ -229,7 +233,8 @@ class Rail(QFrame):
                 continue
             a = m.addAction(label.replace("&&", "&"), lambda i=idx: w.main_tabs.setCurrentIndex(w.launcher_idx[0] if i < 0 else i))
             if self.make_icon:
-                a.setIcon(self.make_icon(ico, col, 20))
+                k_ = TAB_KEY.get(label, CTX.get(idx))
+                a.setIcon(self.make_icon(ico, TOOL_COL.get(k_) or col, 20))              # each tool's card colour in the list
         m.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
 
     def _lv_sub(self, i):
@@ -576,6 +581,8 @@ class Ribbon(QFrame):
 
     def icon_names(self):
         col = "#1c1f24" if self.light_fn() else "#eceef0"
+        if ACC[0]:                                                    # the open tool's card colour on its ribbon icons
+            col = _palette(bool(self.light_fn()))["accent"]
         for b in self.findChildren(QToolButton):
             n = b.property("iconName")
             if n:
@@ -656,6 +663,8 @@ def install_shell(win, make_icon, light_fn):
             rail.setStyleSheet(q)
             ribbon.acc_q, ribbon.acc_key = q, state["acc"]
             ribbon.apply_acc(ribbon.stack.currentWidget())
+            ribbon.icon_names()
+            rail.icons()
 
     def refresh():
         restyle()
