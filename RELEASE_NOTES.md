@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: 1.86.293
+Current version: 1.86.294
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Mail tab: pictures Qt cannot read (for example webp) now fall back to OpenCV, web pictures ask for png/jpeg first, and when a picture still cannot be read the message says what it really was.
 - Mail tab restyled to the program's own look: a rounded left column you can drag wider or narrower (it remembers the width), pill tabs for Primary/Promotions/Social/Updates, matching Home, Switch tool, pager and Light/Dark buttons; the list paints faster.
 - Mail tab: Gmail signature pictures (hosted by Google) now show straight away without pressing Show pictures.
 - Mail tab now fills the whole window (no ribbon, left bar or step strip), with Home and Switch tool at its top left. Signature pictures load whatever their file type, up to 12 MB, and show the reason when one cannot load. Lists load in one batched request instead of one request per conversation.

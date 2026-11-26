@@ -208,3 +208,14 @@ assert mp.split.count() == 2 and mp.split.widget(0).objectName() == "mailside"
 mp.split.sizes = lambda: [300, 900]; mp._save_side_width()
 assert S.get("mail_side_w") == 300 or abs(S.get("mail_side_w", 0) - 300) < 3, S.get("mail_side_w")
 print("ok8")
+
+# a picture Qt cannot read falls back to OpenCV; unreadable data says what it was
+import cv2 as _cv2, numpy as _np
+_ok, _enc = _cv2.imencode(".webp", _np.full((8, 8, 3), 200, _np.uint8))
+if _ok:
+    assert not U.mail_pixmap(bytes(_enc.tobytes())).isNull()
+assert "web page" in U.mail_sniff(b"<!DOCTYPE html><html>") and U.mail_sniff(b"RIFF\x00\x00\x00\x00WEBPVP8 ") == "webp"
+dd2 = _TD()
+txt = U.mail_fix_images('<img src="cid:q@x">', dd2, {"q@x": b"<html>nope"}, True)
+assert "could not be read" in txt and "web page" in txt, txt
+print("ok9")

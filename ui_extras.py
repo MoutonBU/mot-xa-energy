@@ -1846,6 +1846,47 @@ def mail_img_src(tag):
     return _html.unescape((m.group(1) or m.group(2) or m.group(3) or "").strip()) if m else ""
 
 
+def mail_sniff(data):
+    """What a block of picture bytes really is, in a word (for the message when Qt cannot read it)."""
+    h = bytes(data[:16])
+    if h.startswith(b"\x89PNG"):
+        return "png"
+    if h.startswith(b"\xff\xd8"):
+        return "jpeg"
+    if h.startswith(b"GIF8"):
+        return "gif"
+    if h[:4] == b"RIFF" and h[8:12] == b"WEBP":
+        return "webp"
+    if h[4:12] in (b"ftypavif", b"ftypavis"):
+        return "avif"
+    if h[4:8] == b"ftyp":
+        return "heic"
+    low = bytes(data[:200]).lower().lstrip()
+    if low.startswith((b"<svg", b"<?xml")):
+        return "svg"
+    if low.startswith((b"<!doc", b"<html", b"{")):
+        return "a web page, not a picture"
+    return "unknown (%s)" % h[:6].hex()
+
+
+def mail_pixmap(data):
+    """A QPixmap from picture bytes: Qt first, then OpenCV (reads webp and others the installed Qt may lack); a null pixmap when neither can."""
+    img = QPixmap()
+    if img.loadFromData(data) and not img.isNull():
+        return img
+    try:
+        import cv2
+        import numpy as _np
+        arr = cv2.imdecode(_np.frombuffer(bytes(data), _np.uint8), cv2.IMREAD_UNCHANGED)
+        if arr is not None:
+            ok, png = cv2.imencode(".png", arr)
+            if ok and img.loadFromData(bytes(png.tobytes())) and not img.isNull():
+                return img
+    except Exception:
+        pass
+    return QPixmap()
+
+
 def mail_fix_images(body, doc, inline, remote_ok):
     """Make every picture in an email either show or vanish (never Qt's big grey 'missing picture' box).
     cid: pictures come from the attachments, data: pictures are decoded, web pictures show only when fetched (inline['url:...'])."""
@@ -1872,9 +1913,9 @@ def mail_fix_images(body, doc, inline, remote_ok):
             return ""
         key = seen.get(src)
         if key is None:
-            img = QPixmap()
-            if not img.loadFromData(data) or img.isNull():
-                return "<span style='color:#8a9099;font-size:11px'>[picture format not supported]</span>"
+            img = mail_pixmap(data)
+            if img.isNull():
+                return "<span style='color:#8a9099;font-size:11px'>[picture could not be read: %s, %d KB]</span>" % (_html.escape(mail_sniff(data)), max(1, len(data) // 1024))
             key = "mimg:///%d" % len(seen)
             seen[src] = key
             doc.addResource(QTextDocument.ResourceType.ImageResource, QUrl(key), img)
@@ -1900,7 +1941,7 @@ def mail_web_images(html):
 
 def _web_picture(url):
     import urllib.request as _ur
-    req = _ur.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    req = _ur.Request(url, headers={"User-Agent": "Mozilla/5.0", "Accept": "image/png,image/jpeg,image/gif,image/*;q=0.5"})
     with _ur.urlopen(req, timeout=6) as r:
         d = r.read(1500000)
     return d if len(d) > 200 else b""
