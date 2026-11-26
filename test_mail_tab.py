@@ -564,3 +564,11 @@ _bs = mp.thread_host.findChildren(U._AutoBrowser)
 _b0 = _bs[-1]
 assert abs(_b0.height() - (int(_b0.document().size().height()) + 14)) <= 1 and _b0.height() > 300, _b0.height()
 print("ok30")
+
+# the conversations on screen are read ahead as soon as the list shows, so a click needs no waiting
+mp._topen.clear(); mp._tbusy.clear(); mp._tpend.clear()
+mp.rows = [dict(id="t1", sender="A", subject="S", snippet="x", date=1, unread=False, starred=False, count=1, attach=False, labels=["INBOX"])]
+mp._fill_list()
+assert wait(lambda: "t1" in mp._topen, 8), "read-ahead did not run"
+t0 = time.time(); mp.open_thread("t1", "S"); assert time.time() - t0 < 0.5 and mp.msgs
+print("ok31")

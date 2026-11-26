@@ -4179,6 +4179,7 @@ class MailPage(_QW):
         self.sel_all.setChecked(False)
         self.sel_all.blockSignals(False)
         self.update_bulk()
+        QTimer.singleShot(400, self._prefetch)
 
     def checked_ids(self):
         return [self.list.item(i).data(ROLE_THREAD) for i in range(self.list.count()) if self.list.item(i).data(ROLE_CHECK)]
@@ -4440,23 +4441,38 @@ class MailPage(_QW):
             self.open_thread(self.cur, self.subject_lbl.text())
 
     def _prefetch(self):
-        # the first few conversations are loaded in the background so the first clicks open at once
-        ids = [r["id"] for r in self.rows[:12] if r["id"] not in self._topen and r["id"] not in self._tbusy]
+        """The conversations of the list on screen are loaded in the background (four at a time, newest first), so a click opens from memory."""
+        ids = [r["id"] for r in self.rows[:25] if r["id"] not in self._topen and r["id"] not in self._tbusy]
         if not ids or not self.ready():
             return
         self._tbusy.update(ids)
+        q = list(ids)
+        lk = _th.Lock()
+        stop = []
 
-        def work():
+        def worker():
             self.mo.background(True)
-            for t in ids:
+            while not stop:
+                with lk:
+                    if not q:
+                        return
+                    t = q.pop(0)
                 try:
                     if self.mo.gmail_load() > 0.6 or self.mo.gmail_blocked():
-                        break                                         # never spend the quota the user needs
+                        stop.append(1)
+                        return                                        # never spend the quota the user needs
                     self._fetch_thread(t)
                     self._thread_images(t)
                 except Exception:
-                    break
-            self.mo.background(False)
+                    stop.append(1)
+                    return
+
+        def work():
+            ws = [_th.Thread(target=worker, daemon=True) for _ in range(4)]
+            for w in ws:
+                w.start()
+            for w in ws:
+                w.join()
             return True
         self.run(work, lambda res, err: self._tbusy.difference_update(ids))
 
@@ -4473,8 +4489,8 @@ class MailPage(_QW):
 
             def done(res, err):
                 self._tbusy.discard(tid)
-            self.run(lambda: (self.mo.background(True), self._fetch_thread(tid), self._thread_images(tid), self.mo.background(False)), done)
-        QTimer.singleShot(150, go)
+            self.run(lambda: (self._fetch_thread(tid), self._thread_images(tid)), done)
+        QTimer.singleShot(40, go)
 
     def _slow_open(self, tid, subject):
         """Opening takes more than ten seconds: say so and offer a retry, instead of spinning for ever."""
@@ -4527,6 +4543,8 @@ class MailPage(_QW):
         def work():
             return self._fetch_thread(tid)
 
+        _t_open = _time.time()
+
         def done(res, err):
             if tid != self.cur:
                 return
@@ -4534,6 +4552,7 @@ class MailPage(_QW):
             if err:
                 self.thread_lay.addWidget(_QL("Could not open it: " + err))
                 return
+            self.say("Opened in %.1f s (Gmail)" % (_time.time() - _t_open))
             th, msgs = res
             self.thread_view = th
             self.msgs = msgs
