@@ -1793,7 +1793,7 @@ from PySide6.QtGui import QFont as _QFont, QFontMetrics as _QFM
 from PySide6.QtWidgets import (QAbstractItemView as _AIV, QCheckBox as _QCheck, QFileDialog as _QFD, QHBoxLayout as _HB, QLineEdit as _QLE, QListWidget as _QLW,
                                QListWidgetItem as _QLWI, QMessageBox as _QMB, QPushButton as _QPB, QSplitter as _QSplit, QStackedWidget as _QStack, QStyledItemDelegate as _QSID,
                                QTabBar as _QTabBar, QTextBrowser as _QTB, QTextEdit as _QTE, QVBoxLayout as _VB, QWidget as _QW, QLabel as _QL, QDialog as _QD, QFrame as _QF,
-                               QScrollArea as _QSA, QMenu as _QMenu, QComboBox as _QCombo, QInputDialog as _QID)
+                               QScrollArea as _QSA, QSizePolicy as _QSP, QMenu as _QMenu, QComboBox as _QCombo, QInputDialog as _QID)
 
 MAIL_SYSTEM = [("INBOX", "Inbox"), ("STARRED", "Starred"), ("SENT", "Sent"), ("DRAFT", "Drafts"), ("SPAM", "Spam"), ("TRASH", "Trash"), ("ALL", "All Mail")]
 MAIL_CATEGORIES = [("CATEGORY_PERSONAL", "Primary"), ("CATEGORY_PROMOTIONS", "Promotions"), ("CATEGORY_SOCIAL", "Social"), ("CATEGORY_UPDATES", "Updates")]
@@ -1887,7 +1887,21 @@ def mail_pixmap(data):
     return QPixmap()
 
 
-def mail_fix_images(body, doc, inline, remote_ok):
+_ATTR_DROP = re.compile(r"""(?is)\s(?:width|height|style)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)""")
+_W_ATTR = re.compile(r"""(?is)\bwidth\s*=\s*["']?\s*(\d+)\s*(%?)""")
+_W_STYLE = re.compile(r"""(?is)(?<![-\w])width\s*:\s*(\d+(?:\.\d+)?)\s*(px|%)""")
+
+
+def mail_fit_widths(body, maxw):
+    """Fixed widths wider than the window (600/900 px tables, min-width) become 100% so the email fits its view."""
+    body = re.sub(r"(?is)(?:min-width|min-height)\s*:\s*[\d.]+\s*(?:px|pt|%)?\s*;?", "", body)
+    body = re.sub(r"(?is)(<(?:table|td|th|div|center)\b[^>]*?\bwidth\s*=\s*[\"']?)(\d+)([\"']?)",
+                  lambda m: m.group(1) + ("100%" if int(m.group(2)) > maxw else m.group(2)) + m.group(3), body)
+    body = re.sub(r"(?is)(?<![-\w])width\s*:\s*(\d+(?:\.\d+)?)\s*px", lambda m: ("width:100%" if float(m.group(1)) > maxw else m.group(0)), body)
+    return body
+
+
+def mail_fix_images(body, doc, inline, remote_ok, maxw=700):
     """Make every picture in an email either show or vanish (never Qt's big grey 'missing picture' box).
     cid: pictures come from the attachments, data: pictures are decoded, web pictures show only when fetched (inline['url:...'])."""
     seen = {}
@@ -1919,8 +1933,26 @@ def mail_fix_images(body, doc, inline, remote_ok):
             key = "mimg:///%d" % len(seen)
             seen[src] = key
             doc.addResource(QTextDocument.ResourceType.ImageResource, QUrl(key), img)
-        return _SRC_RE.sub('src="%s"' % key, tag, 1)
-    return _IMG_RE.sub(one, body)
+            dims[key] = (img.width(), img.height())
+        pw, ph = dims[key]
+        w_attr = _W_ATTR.search(tag)
+        w_sty = _W_STYLE.search(tag)
+        if w_attr and not w_attr.group(2):
+            target = int(w_attr.group(1))
+        elif w_sty and w_sty.group(2) == "px":
+            target = int(float(w_sty.group(1)))
+        elif w_attr or w_sty:                                   # a percentage: that share of the window, never blown up more than 2x
+            pct = float((w_attr.group(1) if w_attr else w_sty.group(1)) or 100) if (w_attr and w_attr.group(2)) or (w_sty and w_sty.group(2) == "%") else 100.0
+            target = min(int(maxw * pct / 100.0), pw * 2)
+        else:
+            target = pw
+        target = max(1, min(target, maxw))
+        h = max(1, int(round(target * ph / float(max(1, pw)))))
+        t2 = _ATTR_DROP.sub("", tag)
+        t2 = _SRC_RE.sub('src="%s" width="%d" height="%d"' % (key, target, h), t2, 1)
+        return t2
+    dims = {}
+    return mail_fit_widths(_IMG_RE.sub(one, body), maxw)
 
 
 def mail_trusted_image(url):
@@ -2166,11 +2198,20 @@ class _AutoBrowser(_QTB):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setOpenExternalLinks(True)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(_QSP.Policy.Ignored, _QSP.Policy.Fixed)
         self.document().documentLayout().documentSizeChanged.connect(lambda *_: self._fit())
+
+    def sizeHint(self):
+        return _QSize(300, 40)
+
+    def minimumSizeHint(self):
+        return _QSize(0, 20)
 
     def _fit(self):
         w = max(200, self.viewport().width())
         self.document().setTextWidth(w)
+        self.horizontalScrollBar().setValue(0)
         self.setFixedHeight(int(self.document().size().height()) + 14)
 
     def resizeEvent(self, e):
@@ -2369,6 +2410,7 @@ class MailPage(_QW):
         self.side = _QLW()
         self.side.setFrameShape(_QF.Shape.NoFrame)
         self.side.currentItemChanged.connect(self._side_changed)
+        self.side.itemClicked.connect(self._side_clicked)
         self.side.viewport().installEventFilter(self)
         self.side.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.side.customContextMenuRequested.connect(self._side_menu)
@@ -2468,6 +2510,7 @@ class MailPage(_QW):
         rv.addWidget(self.subject_lbl)
         self.sa = _QSA()
         self.sa.setWidgetResizable(True)
+        self.sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.sa.setFrameShape(_QF.Shape.NoFrame)
         self.thread_host = _QW()
         self.thread_lay = _VB(self.thread_host)
@@ -2613,15 +2656,13 @@ class MailPage(_QW):
     def _tick(self):
         # Gmail has no push to a desktop app, so ask for the tiny mailbox change marker every 3 s and reload only when it moves
         import time as _t0
-        if self._busy or _t0.time() < getattr(self, "_pause", 0) or not (self.isVisible() and self.ready() and self._loaded and self.stack.currentIndex() == 0 and not self.search.hasFocus()):
+        if self._busy or self.mo.gmail_blocked() or _t0.time() < getattr(self, "_pause", 0) or not (self.isVisible() and self.ready() and self._loaded and self.stack.currentIndex() == 0 and not self.search.hasFocus()):
             return
         import time as _t
         self._busy = True
 
         def done(res, err):
             self._busy = False
-            if err and "quota" in err.lower():
-                self._pause = _t.time() + 75
             if err or not res:
                 return
             changed = self._hid is not None and res != self._hid
@@ -2634,6 +2675,16 @@ class MailPage(_QW):
         self.run(lambda: self.mo.gmail_call(self.S, "GET", "profile").get("historyId", ""), done)
 
     # ------------------------------------------------------------- sidebar
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if self.stack.currentIndex() == 1 and getattr(self, "msgs", None) and abs(self.sa.viewport().width() - getattr(self, "_rw", 0)) > 80:
+            QTimer.singleShot(250, self._rerender)
+
+    def _rerender(self):
+        if self.stack.currentIndex() == 1 and getattr(self, "msgs", None) and abs(self.sa.viewport().width() - getattr(self, "_rw", 0)) > 80:
+            self._clear_thread()
+            self._render_thread()
+
     def _save_side_width(self):
         w = self.split.sizes()[0]
         if w >= 170 and w != self.S.get("mail_side_w"):
@@ -2810,6 +2861,18 @@ class MailPage(_QW):
         self.label_menu.addSeparator()
         self.label_menu.addAction("Create new label...").triggered.connect(lambda: self.new_label())
 
+    def _side_clicked(self, it):
+        lid = it.data(Qt.ItemDataRole.UserRole)
+        if lid in (None, "__NEW__") or lid != self.label:
+            return                                           # a different label is handled by _side_changed
+        if self.query:
+            self.search.clear()
+            self.query = ""
+            self.stack.setCurrentIndex(0)
+            self.load_list(reset=True)
+        elif self.stack.currentIndex() == 1:
+            self._back()                                      # Inbox clicked again while reading: back to the list
+
     def _side_changed(self, cur, _prev):
         if cur is None or cur.data(Qt.ItemDataRole.UserRole) is None:
             return
@@ -2843,14 +2906,16 @@ class MailPage(_QW):
                     counts[lid] = (int(j.get("threadsUnread", 0) or 0), int(j.get("threadsTotal", 0) or 0))
                 except Exception:
                     pass
-            return labs, prof.get("emailAddress", ""), counts
+            return labs, prof.get("emailAddress", ""), counts, prof.get("historyId", "")
 
         def done(res, err):
             if err:
                 if not quiet:
                     self.say(err, True)
                 return
-            labs, me, counts = res
+            labs, me, counts, hid0 = res
+            if self._hid is None and hid0:
+                self._hid = hid0
             if me:
                 self.me = me.lower()
             counts = dict(getattr(self, "_counts_keep", {}), **counts)
@@ -2898,12 +2963,15 @@ class MailPage(_QW):
         hit = self._lcache.get(key)
         if hit and not quiet:
             self.rows, self.next_token = list(hit[0]), hit[1]
-            self._fill_list()                                   # show what we had at once, then refresh below
+            self._fill_list()                                   # show what we had at once
+            if hit[2] is not None and hit[2] == self._hid:
+                self.say("")
+                return                                          # nothing changed in the mailbox since: no request at all
         elif not quiet:
             self.say("Loading...")
 
         def work():
-            params = {"maxResults": 30}
+            params = {"maxResults": 25}
             q = query
             if query:
                 params["includeSpamTrash"] = "false"
@@ -2954,6 +3022,8 @@ class MailPage(_QW):
                         if th:
                             th["snippet"] = snips.get(ids[i], "") or th.get("snippet", "")
                             cache[ids[i]] = (hids.get(ids[i], ""), th)
+            if self.mo.gmail_blocked():
+                raise RuntimeError("Gmail's per-minute limit was reached; it carries on by itself in %d seconds" % (self.mo.gmail_blocked() + 1))
             nxt = [0]
             lock = _thr.Lock()
 
@@ -2984,13 +3054,12 @@ class MailPage(_QW):
             same = sig(rows) == sig(self.rows) and nxt == self.next_token and self.list.count() == len(rows)
             self.next_token = nxt
             self.rows = rows
-            self._lcache[key] = (list(rows), nxt)
+            self._lcache[key] = (list(rows), nxt, self._hid)
             if len(self._lcache) > 40:
                 self._lcache.pop(next(iter(self._lcache)))
             if not same:
                 self._fill_list()
             self.say("")
-            self._prefetch()
         self.run(work, done)
 
     def _fill_list(self):
@@ -3013,7 +3082,7 @@ class MailPage(_QW):
             self.list.addItem(it)
         self.list.setUpdatesEnabled(True)
         n = len(self.rows)
-        start = (len(self.tokens) - 1) * 30 + 1
+        start = (len(self.tokens) - 1) * 25 + 1
         self.page_lbl.setText("%d-%d" % (start, start + n - 1) if n else "No conversations")
         self.prev.setEnabled(len(self.tokens) > 1)
         self.next.setEnabled(bool(self.next_token))
@@ -3066,6 +3135,8 @@ class MailPage(_QW):
             if err:
                 self.say(err, True)
                 return
+            self._lcache.clear()
+            self._topen.clear()
             if cb:
                 cb()
             self.load_labels(quiet=True)
@@ -3197,7 +3268,7 @@ class MailPage(_QW):
     def _hover_item(self, it):
         # start fetching a conversation as soon as the pointer rests on it, so the click opens it from memory
         tid = it.data(ROLE_THREAD)
-        if not tid or tid in self._topen or tid in self._tbusy or not self.ready():
+        if not tid or tid in self._topen or tid in self._tbusy or not self.ready() or self.mo.gmail_load() > 0.5 or self.mo.gmail_blocked():
             return
 
         def go():
@@ -3241,6 +3312,7 @@ class MailPage(_QW):
                 w.deleteLater()
 
     def _render_thread(self):
+        self._rw = self.sa.viewport().width()
         bg, fg, mute, line = self.colors()
         n = len(self.msgs)
         for i, (m, html, plain, atts, inline) in enumerate(self.msgs):
@@ -3265,7 +3337,7 @@ class MailPage(_QW):
                 body = re.sub(r"(?is)<script.*?>.*?</script>", "", body)
             else:
                 body = "<pre style='font-family:Arial;white-space:pre-wrap'>%s</pre>" % _html.escape(plain or m.get("snippet", ""))
-            body = mail_fix_images(body, b.document(), inline, bool(self.S.get("mail_images")))
+            body = mail_fix_images(body, b.document(), inline, bool(self.S.get("mail_images")), max(320, self.sa.viewport().width() - 90))
             hidden = [] if self.S.get("mail_images") else [u for u in mail_web_images(html) if not mail_trusted_image(u)]
             if hidden:
                 bar = _QPB("Show pictures from the web in this email")

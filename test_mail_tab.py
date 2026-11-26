@@ -219,3 +219,58 @@ dd2 = _TD()
 txt = U.mail_fix_images('<img src="cid:q@x">', dd2, {"q@x": b"<html>nope"}, True)
 assert "could not be read" in txt and "web page" in txt, txt
 print("ok9")
+
+# wide emails fit the view: big pictures and fixed-width tables are cut down to the window
+big = QImage(2000, 800, QImage.Format.Format_RGB32); big.fill(0x00ff00)
+ba2 = QByteArray(); bf2 = QBuffer(ba2); bf2.open(QBuffer.OpenModeFlag.WriteOnly); big.save(bf2, "PNG"); bigpng = bytes(ba2)
+wide = ('<table width="1200" style="width:1200px;min-width:1200px"><tr><td width="900" style="width:900px">x</td></tr></table>'
+        '<img src="cid:big@x" width="100%" style="display:block;width:100%"><img src="cid:big@x" width="3000">')
+dd3 = _TD()
+res = U.mail_fix_images(wide, dd3, {"big@x": bigpng}, True, 640)
+assert "1200" not in res and "900" not in res and "min-width" not in res, res
+import re as _re
+ws = [int(x) for x in _re.findall(r'<img[^>]*width="(\d+)"', res)]
+assert ws and all(x <= 640 for x in ws), ws
+assert all(int(h) == int(int(w) * 0.4 + 0.5) for w, h in _re.findall(r'<img[^>]*width="(\d+)" height="(\d+)"', res)), res
+dd3.setHtml(res); dd3.setTextWidth(700)
+assert dd3.idealWidth() <= 705, dd3.idealWidth()
+
+# Gmail's per-minute limit: the budget makes calls wait, and a real "no" teaches it to use less
+import time as _t
+from PySide6.QtCore import Qt
+mo._UNITS.clear(); mo._BUDGET[0] = 100.0; mo._BLOCK[0] = 0.0
+mo._spend(60); mo._spend(30)
+try:
+    mo._spend(30, max_wait=0)
+    raise SystemExit("budget not enforced")
+except RuntimeError as e:
+    assert "catching up" in str(e)
+mo._UNITS.clear(); mo._UNITS.append((_t.time(), 1000)); mo._BUDGET[0] = 8000.0
+mo._quota_hit()
+assert mo.gmail_blocked() > 20 and mo._BUDGET[0] == 600.0, (mo.gmail_blocked(), mo._BUDGET[0])
+mo._BLOCK[0] = 0.0; mo._BUDGET[0] = 8000.0; mo._UNITS.clear()
+assert mo.gmail_cost("GET", "threads/abc?format=full") == 10 and mo.gmail_cost("GET", "profile") == 1
+
+# a list seen before costs no request while the mailbox has not changed; clicking the open label returns from an email
+mp._lcache.clear(); mp._hid = "H1"; mp.label = "INBOX"; mp.query = ""; mp.cat = 0; mp.stack.setCurrentIndex(0)
+time.sleep(0.3); app.processEvents()
+mp._lcache.clear()
+mp.load_list(reset=True)
+assert wait(lambda: len(mp._lcache) == 1)
+time.sleep(0.3); app.processEvents()
+n0 = []
+_g = mo.gmail_call
+mo.gmail_call = lambda *a, **k: (n0.append(a[2]), _g(*a, **k))[1]
+mp.load_list(reset=True)
+app.processEvents()
+assert not n0 and mp.list.count() == 2, (n0, mp._hid, {k: v[2] for k, v in mp._lcache.items()})
+mp._hid = "H2"
+mp.load_list(reset=True)
+assert wait(lambda: n0), "a changed mailbox must reload"
+mo.gmail_call = _g
+mp.open_thread("t1", "x"); assert wait(lambda: mp.stack.currentIndex() == 1)
+for i in range(mp.side.count()):
+    if mp.side.item(i).data(Qt.ItemDataRole.UserRole) == "INBOX":
+        mp._side_clicked(mp.side.item(i))
+assert mp.stack.currentIndex() == 0
+print("ok10")

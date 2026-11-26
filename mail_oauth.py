@@ -231,6 +231,68 @@ def gmail_get(S, path, params=None, timeout=60):
 GMAIL_MODIFY = "https://www.googleapis.com/auth/gmail.modify"
 
 
+import collections as _col
+import time as _time
+_UNITS = _col.deque()                 # (time, Gmail quota units) spent in the last minute
+_BUDGET = [8000.0]                    # units per minute we allow ourselves; learned down if Google ever says no
+_BLOCK = [0.0]                        # until when Google asked us to wait
+_ULOCK = threading.Lock()
+
+
+def gmail_cost(method, path):
+    p = path.split("?")[0]
+    if p.startswith("messages/send"):
+        return 100
+    if p.startswith("threads"):
+        return 5 if p.endswith("/trash") else 10
+    if p.startswith("labels") or p.startswith("profile"):
+        return 1 if method == "GET" else 5
+    if p.startswith("history"):
+        return 2
+    return 5
+
+
+def gmail_load():
+    """0..1: how much of the per-minute allowance is used right now (the Mail tab skips optional look-ahead loading when it is busy)."""
+    now = _time.time()
+    with _ULOCK:
+        while _UNITS and now - _UNITS[0][0] > 60:
+            _UNITS.popleft()
+        used = sum(u for _t, u in _UNITS)
+    return min(1.0, used / max(1.0, _BUDGET[0]))
+
+
+def gmail_blocked():
+    """Seconds Google asked us to wait (0 when free)."""
+    return max(0.0, _BLOCK[0] - _time.time())
+
+
+def _spend(units, max_wait=25.0):
+    """Take units from the minute's allowance, waiting a little when it is used up, so the limit is not hit."""
+    t0 = _time.time()
+    while True:
+        now = _time.time()
+        with _ULOCK:
+            while _UNITS and now - _UNITS[0][0] > 60:
+                _UNITS.popleft()
+            used = sum(u for _t, u in _UNITS)
+            if now >= _BLOCK[0] and used + units <= _BUDGET[0]:
+                _UNITS.append((now, units))
+                return
+        if now - t0 >= max_wait:
+            raise RuntimeError("Gmail is catching up (its per-minute limit); this carries on by itself in a moment")
+        _time.sleep(0.4)
+
+
+def _quota_hit():
+    now = _time.time()
+    with _ULOCK:
+        used = sum(u for t, u in _UNITS if now - t <= 60)
+        _BUDGET[0] = max(150.0, min(_BUDGET[0], used * 0.6))     # learn: stay well under what just failed
+        _BLOCK[0] = now + 30
+        _UNITS.clear()
+
+
 _POOL = []
 _PLOCK = threading.Lock()
 
@@ -272,6 +334,7 @@ def gmail_call(S, method, path, params=None, body=None, timeout=60):
     hdr = {"Authorization": "Bearer " + tok, "Accept-Encoding": "identity"}
     if data is not None:
         hdr["Content-Type"] = "application/json"
+    _spend(gmail_cost(method, path))
     try:
         code, raw = _gmail_http(method, url, hdr, data, timeout)
     except Exception as e:
@@ -290,6 +353,9 @@ def gmail_call(S, method, path, params=None, body=None, timeout=60):
         raise RuntimeError("Google did not allow this: press Allow Gmail again in the Mail tab (%s)" % code)
     if code == 403 and ("not been used" in body_ or "disabled" in body_ or "accessnotconfigured" in body_):
         raise RuntimeError("The Gmail API is switched off in your Google Cloud project. Open console.cloud.google.com, APIs & Services, Library, search Gmail API and press Enable (403)")
+    if code in (403, 429) and ("quota" in body_ or "rate limit" in body_ or "ratelimit" in body_ or "too many" in body_):
+        _quota_hit()
+        raise RuntimeError("Gmail's per-minute limit was reached; it carries on by itself in about 30 seconds (the program now uses less)")
     if code in (401, 403, 429):
         why = ""
         try:
@@ -311,10 +377,13 @@ def gmail_batch(S, paths, timeout=60):
         parts.append("--%s\r\nContent-Type: application/http\r\nContent-ID: <item%d>\r\n\r\nGET /gmail/v1/users/me/%s\r\n\r\n" % (bd, i, p))
     data = ("".join(parts) + "--%s--\r\n" % bd).encode()
     hdr = {"Authorization": "Bearer " + tok, "Content-Type": "multipart/mixed; boundary=" + bd, "Accept-Encoding": "identity"}
+    _spend(sum(gmail_cost("GET", p) for p in paths[:100]))
     try:
         code, raw = _gmail_http("POST", "/batch/gmail/v1", hdr, data, timeout)
     except Exception:
         return None
+    if code in (403, 429) and b"uota" in raw[:4000]:
+        _quota_hit()
     if code != 200:
         return None
     text = raw.decode("utf-8", "replace")
