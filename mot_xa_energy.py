@@ -15999,9 +15999,9 @@ class MainWindow(QMainWindow):
         w = QPdfWriter(path)
         w.setPageLayout(QPageLayout(QPageSize(QPageSize.A4), QPageLayout.Orientation.Portrait,
                                     QMarginsF(10, 10, 10, 10), QPageLayout.Unit.Millimeter))
-        w.setResolution(96)
+        w.setResolution(96 * PDF_SS)
         w.setTitle("Coverage and FAR" + (f" - {only}" if only else ""))
-        pw, ph = float(w.width()), float(w.height())
+        pw, ph = float(w.width()) / PDF_SS, float(w.height()) / PDF_SS
         avail = ph - 30.0
 
         def mkdoc(html_):
@@ -16014,6 +16014,7 @@ class MainWindow(QMainWindow):
         pages = _pack_pages(mkdoc, frags, avail)
         pages = [(self._report_cover("COVERAGE AND<br>FAR REPORT", "Stand coverage and floor area ratio", only), 0, None)] + list(pages)
         painter = QPainter(w)
+        painter.scale(PDF_SS, PDF_SS)
         company = self.rd.get("company", "") or APP_NAME
         for i, (html_, y0, y1) in enumerate(pages):
             if i:
@@ -16138,9 +16139,10 @@ class MainWindow(QMainWindow):
         w = QPdfWriter(path)
         w.setPageLayout(QPageLayout(QPageSize(QSizeF(mm(W) + 8, mm(H) + 8), QPageSize.Unit.Millimeter), QPageLayout.Orientation.Portrait,
                                     QMarginsF(4, 4, 4, 4), QPageLayout.Unit.Millimeter))
-        w.setResolution(96)
+        w.setResolution(96 * PDF_SS)
         w.setTitle("Coverage and FAR - " + only)
         painter = QPainter(w)
+        painter.scale(PDF_SS, PDF_SS)
         _draw_doc_rounded(painter, d_)
         painter.end()
 
@@ -20471,9 +20473,9 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
         w = QPdfWriter(path if path else "/dev/null")
         w.setPageLayout(QPageLayout(QPageSize(QPageSize.A4), QPageLayout.Orientation.Portrait,
                                     QMarginsF(10, 10, 10, 10), QPageLayout.Unit.Millimeter))
-        w.setResolution(96)
+        w.setResolution(96 * PDF_SS)
         w.setTitle("SANS 10400-XA energy report")
-        pw, ph = float(w.width()), float(w.height())
+        pw, ph = float(w.width()) / PDF_SS, float(w.height()) / PDF_SS
         foot = 30.0
         avail = ph - foot
 
@@ -20499,6 +20501,7 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
         pages = _pack_pages(mkdoc, ["".join(body)] + list(frags), avail)
         pages = [(self._report_cover("ENERGY EFFICIENCY<br>REPORT", "SANS 10400-XA", only), 0, None)] + list(pages)
         painter = QPainter(w)
+        painter.scale(PDF_SS, PDF_SS)
         total = len(pages)
         company = self.rd.get("company", "") or APP_NAME
         for i, (html_, y0, y1) in enumerate(pages):
@@ -20819,10 +20822,11 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
             from PySide6.QtGui import QPdfWriter, QPageSize, QPageLayout
             from PySide6.QtCore import QMarginsF
             w = QPdfWriter(path)
-            w.setResolution(96)
+            w.setResolution(96 * PDF_SS)
             w.setPageLayout(QPageLayout(QPageSize(QSizeF(900 / 96 * 25.4, h / 96 * 25.4), QPageSize.Unit.Millimeter),
                                         QPageLayout.Orientation.Portrait, QMarginsF(0, 0, 0, 0)))
             p = QPainter(w)
+            p.scale(PDF_SS, PDF_SS)
             _draw_doc_rounded(p, d)
             p.end()
         else:
@@ -21359,9 +21363,9 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
         w = QPdfWriter(path)
         w.setPageLayout(QPageLayout(QPageSize(QPageSize.A4), QPageLayout.Orientation.Portrait,
                                     QMarginsF(12, 12, 12, 12), QPageLayout.Unit.Millimeter))
-        w.setResolution(96)
+        w.setResolution(96 * PDF_SS)
         w.setTitle("Rational design report")
-        pw, ph = float(w.width()), float(w.height())
+        pw, ph = float(w.width()) / PDF_SS, float(w.height()) / PDF_SS
         top, bottom = 4.0, 30.0            # room for the running footer
         avail = ph - top - bottom
 
@@ -21456,6 +21460,8 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
         _flush()
 
         painter = QPainter(w)
+
+        painter.scale(PDF_SS, PDF_SS)
         total = len(pages)
         for i, (kind, html_, y0, y1) in enumerate(pages):
             if i:
@@ -21610,9 +21616,11 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
             doc = fitz.open(tmp)
             for pg in doc:
                 sc = scale_for(pg)
-                pix = pg.get_pixmap(matrix=fitz.Matrix(sc, sc), alpha=False)
+                dpr_ = max(1.0, float(self.devicePixelRatioF()))
+                pix = pg.get_pixmap(matrix=fitz.Matrix(sc * dpr_, sc * dpr_), alpha=False)
                 img = QImage(pix.samples, pix.width, pix.height, pix.stride,
                              QImage.Format.Format_RGB888).copy()
+                img.setDevicePixelRatio(dpr_)
                 lab = QLabel()
                 lab.setPixmap(QPixmap.fromImage(img))
                 lab.setAlignment(Qt.AlignmentFlag.AlignHCenter)
@@ -21833,9 +21841,9 @@ Glazing limit: glazing may not exceed {GLAZE_LIMIT[0]:g}% of the net floor area,
         w = QPdfWriter(path)
         w.setPageLayout(QPageLayout(QPageSize(QPageSize.A4), QPageLayout.Orientation.Portrait,
                                     QMarginsF(10, 10, 10, 10), QPageLayout.Unit.Millimeter))
-        w.setResolution(96)
+        w.setResolution(96 * PDF_SS)
         w.setTitle("Light & Ventilation Report" + (f" - {only}" if only else ""))
-        pw, ph = float(w.width()), float(w.height())
+        pw, ph = float(w.width()) / PDF_SS, float(w.height()) / PDF_SS
         avail = ph - 30.0
 
         def mkdoc(html_):
@@ -21850,6 +21858,7 @@ Glazing limit: glazing may not exceed {GLAZE_LIMIT[0]:g}% of the net floor area,
         pages = _pack_pages(mkdoc, list(body), avail)      # real size, no shrinking; long tables run on to the next page
         pages = [(self._report_cover("LIGHT &amp; VENTILATION<br>REPORT", "SANS 10400-O natural light and ventilation", only), 0, None)] + list(pages)
         painter = QPainter(w)
+        painter.scale(PDF_SS, PDF_SS)
         company = self.rd.get("company", "") or APP_NAME
         for i, (html_, y0, y1) in enumerate(pages):
             if i:
@@ -21906,6 +21915,9 @@ _logo_pm = None
 
 
 _LOGO_CACHE = {}
+
+
+PDF_SS = 4          # PDF pages are drawn at 4 x 96 = 384 dpi (the layout stays in 96 dpi units), so text and lines are crisp
 
 
 def logo_pixmap():

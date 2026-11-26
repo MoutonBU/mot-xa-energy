@@ -2676,9 +2676,9 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         w = QPdfWriter(path)
         mk = lambda o: QPageLayout(QPageSize(QPageSize.PageSizeId.A4), o, QMarginsF(10, 10, 10, 10), QPageLayout.Unit.Millimeter)
         w.setPageLayout(mk(QPageLayout.Orientation.Portrait))
-        w.setResolution(96)
+        w.setResolution(96 * M.PDF_SS)
         w.setTitle("Sheet index" if index else "Drawing register")
-        pwp, php = float(w.width()), float(w.height())
+        pwp, php = float(w.width()) / M.PDF_SS, float(w.height()) / M.PDF_SS
 
         def mkdoc(html_, pw):
             d_ = QTextDocument()
@@ -2690,12 +2690,13 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
             return d_
         # the client logo is stored under the name used in the html
         painter = QPainter(w)
+        painter.scale(M.PDF_SS, M.PDF_SS)
         painter.save()
         M._draw_doc_rounded(painter, mkdoc(self.cover_html("SHEET INDEX" if index else "DRAWING REGISTER"), pwp))
         painter.restore()
         w.setPageLayout(mk(QPageLayout.Orientation.Landscape))
         w.newPage()
-        pw, ph = float(w.width()), float(w.height())
+        pw, ph = float(w.width()) / M.PDF_SS, float(w.height()) / M.PDF_SS
         body = self.index_parts(always=True) if index else self.report_parts()
         pages = M._pack_pages(lambda h: mkdoc(h, pw), body, ph - 30.0)
         company = (getattr(self.host, "rd", {}) or {}).get("company") or "MCP Architecture & Interiors"

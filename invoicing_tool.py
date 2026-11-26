@@ -812,10 +812,10 @@ class InvoicingPage(QWidget):
         from PySide6.QtGui import QPageLayout, QPageSize, QPdfWriter
         w = QPdfWriter(path)
         w.setPageLayout(QPageLayout(QPageSize(QPageSize.PageSizeId.A4), QPageLayout.Orientation.Portrait, QMarginsF(14, 14, 14, 14), QPageLayout.Unit.Millimeter))
-        w.setResolution(96)
+        w.setResolution(300)
         w.setTitle("Invoice %s" % inv.get("no", ""))
         d = self._doc(inv)
-        d.setPageSize(w.pageLayout().paintRectPixels(96).size().toSizeF() if hasattr(w.pageLayout(), "paintRectPixels") else d.pageSize())
+        d.setPageSize(w.pageLayout().paintRectPixels(300).size().toSizeF() if hasattr(w.pageLayout(), "paintRectPixels") else d.pageSize())
         d.print_(w)
         return path
 
