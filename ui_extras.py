@@ -2293,6 +2293,9 @@ class MailPage(_QW):
         self.list.setItemDelegate(_MailRow(self))
         self.list.setVerticalScrollMode(_AIV.ScrollMode.ScrollPerPixel)
         self.list.itemClicked.connect(self._open_item)
+        self.list.itemEntered.connect(self._hover_item)
+        self._topen = {}
+        self._tbusy = set()
         lpv.addWidget(self.list, 1)
         self.stack.addWidget(lp)
         # the reading page
@@ -2454,6 +2457,7 @@ class MailPage(_QW):
             self._hid = res
             if changed or _t.time() - self._last_full > 90:
                 self._last_full = _t.time()
+                self._topen.clear()
                 self.load_labels(quiet=True)
                 self.load_list(reset=False, quiet=True)
         self.run(lambda: self.mo.gmail_call(self.S, "GET", "profile").get("historyId", ""), done)
@@ -2769,6 +2773,56 @@ class MailPage(_QW):
             it.setData(ROLE_UNREAD, False)
             self.modify([tid], remove=["UNREAD"])
 
+    def _fetch_thread(self, tid):
+        hit = self._topen.get(tid)
+        if hit and _time.time() - hit[0] < 120:
+            return hit[1]
+        th = self.mo.gmail_call(self.S, "GET", "threads/" + tid, {"format": "full"})
+        res = []
+        todo = []
+        for m in th.get("messages", []) or []:
+            html, plain, atts = mail_parts(m.get("payload"))
+            inline = {}
+            for a in atts:
+                if a["cid"] and a["mime"].startswith("image/") and a["size"] < 600000:
+                    if a["data"]:
+                        inline[a["cid"]] = mail_b64(a["data"])
+                    else:
+                        todo.append((inline, a["cid"], "messages/%s/attachments/%s" % (m["id"], a["id"])))
+            res.append((m, html, plain, atts, inline))
+
+        def get(t):
+            try:
+                t[0][t[1]] = self.mo.gmail_bytes(self.S, t[2])
+            except Exception:
+                pass
+        ws = [_th.Thread(target=get, args=(t,)) for t in todo[:12]]
+        for w in ws:
+            w.start()
+        for w in ws:
+            w.join()
+        out = (th, res)
+        self._topen[tid] = (_time.time(), out)
+        if len(self._topen) > 30:
+            self._topen.pop(next(iter(self._topen)))
+        return out
+
+    def _hover_item(self, it):
+        # start fetching a conversation as soon as the pointer rests on it, so the click opens it from memory
+        tid = it.data(ROLE_THREAD)
+        if not tid or tid in self._topen or tid in self._tbusy or not self.ready():
+            return
+
+        def go():
+            if self.list.itemAt(self.list.viewport().mapFromGlobal(QCursor.pos())) is not it or tid in self._tbusy:
+                return
+            self._tbusy.add(tid)
+
+            def done(res, err):
+                self._tbusy.discard(tid)
+            self.run(lambda: self._fetch_thread(tid), done)
+        QTimer.singleShot(150, go)
+
     def open_thread(self, tid, subject=""):
         self.cur = tid
         self.stack.setCurrentIndex(1)
@@ -2778,19 +2832,7 @@ class MailPage(_QW):
         self.thread_lay.addWidget(busy)
 
         def work():
-            th = self.mo.gmail_call(self.S, "GET", "threads/" + tid, {"format": "full"})
-            res = []
-            for m in th.get("messages", []) or []:
-                html, plain, atts = mail_parts(m.get("payload"))
-                inline = {}
-                for a in atts:
-                    if a["cid"] and a["mime"].startswith("image/") and a["size"] < 600000:
-                        try:
-                            inline[a["cid"]] = mail_b64(a["data"]) if a["data"] else self.mo.gmail_bytes(self.S, "messages/%s/attachments/%s" % (m["id"], a["id"]))
-                        except Exception:
-                            pass
-                res.append((m, html, plain, atts, inline))
-            return th, res
+            return self._fetch_thread(tid)
 
         def done(res, err):
             if tid != self.cur:
@@ -2929,5 +2971,6 @@ class MailPage(_QW):
         MailCompose(self).exec()
 
     def after_send(self):
+        self._topen.clear()
         if self.label == "SENT" or self.label == "INBOX":
             self.load_list(reset=False, quiet=True)

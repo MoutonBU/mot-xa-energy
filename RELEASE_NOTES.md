@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: 1.86.285
+Current version: 1.86.286
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Mail tab opens conversations much faster: a conversation starts loading when the pointer rests on it, images load in parallel, and reopening is instant.
 - Mail tab checks Gmail for changes every 3 seconds and refreshes the list as soon as something arrives, is read, starred or moved (also from your phone or the browser).
 - Mail tab now shows Google's real reason when Gmail refuses a request (for example the Gmail API not being enabled in the Google Cloud project).
 - New Mail tab: a live Gmail view (inbox, labels, search, read, reply, forward, compose with your signature, star/archive/trash). Nothing is stored on the PC. Sign in again once to allow Gmail changes.
