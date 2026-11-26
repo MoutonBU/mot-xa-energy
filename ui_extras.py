@@ -3437,7 +3437,7 @@ class MailPage(_QW):
         self.sel_all.toggled.connect(self._select_all)
         tb.addWidget(self.sel_all)
         self.refresh_btn = _QPB("Refresh")
-        self.refresh_btn.clicked.connect(lambda: self.load_list(reset=False))
+        self.refresh_btn.clicked.connect(lambda: self._force_refresh())
         self.bulk = []
         for txt, fn in (("Archive", lambda: self.act("archive")), ("Delete", lambda: self.act("trash")), ("Mark as read", lambda: self.act("read")), ("Mark as unread", lambda: self.act("unread"))):
             b = _QPB(txt)
@@ -3531,7 +3531,7 @@ class MailPage(_QW):
         QTimer.singleShot(2000, self._notify_tick)
         QTimer.singleShot(5000, self._startup_warm)
         self.timer.timeout.connect(self._tick)
-        self.timer.start(3000)
+        self.timer.start(1200)                                 # one tiny request about every second: new mail shows within a second or two of reaching Gmail
         self._hid = None
         self._busy = False
         self._last_full = 0.0
@@ -3693,6 +3693,7 @@ class MailPage(_QW):
         for k in self._ST_KEYS:
             setattr(self, k, (st or fresh)[k] if (st or fresh).get(k) is not None else fresh[k])
         self._tlock, self._tpend, self._tbusy, self._qopen = {}, {}, set(), set()
+        self._busy = False
         self._pw_busy, self.cur, self.thread_view, self.msgs = False, None, None, []
         self.gen += 1
         self.search.blockSignals(True)
@@ -4144,10 +4145,13 @@ class MailPage(_QW):
     def _tick(self):
         # Gmail has no push to a desktop app, so ask for the tiny mailbox change marker every 3 s and reload only when it moves
         import time as _t0
-        if self._busy or self.mo.gmail_blocked() or _t0.time() < getattr(self, "_pause", 0) or not (self.isVisible() and self.ready() and self._loaded and self.stack.currentIndex() == 0 and not self.search.hasFocus()):
+        if self._busy and _t0.time() - getattr(self, "_busy_t", 0) > 12:
+            self._busy = False                                       # an answer that never came back (account switched, line dropped) must not stop the mail from updating for good
+        if self._busy or self.mo.gmail_blocked() or _t0.time() < getattr(self, "_pause", 0) or not (self.isVisible() and self.ready() and self._loaded and self.stack.currentIndex() == 0):
             return
         import time as _t
         self._busy = True
+        self._busy_t = _t0.time()
 
         old_ = self._hid
 
@@ -4602,6 +4606,17 @@ class MailPage(_QW):
                 self._fill_list()
             self.say("")
         self.run(work, done)
+
+    def _force_refresh(self):
+        """The Refresh button: always asks Gmail again (no cached list, no 'nothing changed' shortcut), folders and counts too."""
+        if not self.ready():
+            return
+        self._lcache.clear()
+        self._topen.clear()
+        self._busy = False
+        self._last_full = _time.time()
+        self.load_labels(quiet=True)
+        self.load_list(reset=False)
 
     def _startup_warm(self):
         # the mailbox is read in the background as the program starts, so the first time you open Mail it is already there

@@ -722,3 +722,24 @@ S["mail_accounts"] = []; S.pop("mail_main_photo", None); S.pop("mail_main_color"
 mp._rebuild_acc_bar(True)
 M.save_settings = _save0
 print("ok37")
+
+# Refresh always asks Gmail again; a stuck busy flag cannot freeze live updates; new mail appears on its own
+_save0 = M.save_settings; M.save_settings = lambda *a, **k: None
+mp.stack.setCurrentIndex(0); mp._loaded = True
+_calls = []
+_prev2 = mo.gmail_call
+def _spy(S_, method, path, params=None, body=None, timeout=60):
+    _calls.append(path)
+    return _prev2(S_, method, path, params, body, timeout)
+mo.gmail_call = _spy
+mp.load_list(reset=False); app.processEvents(); wait(lambda: not mp._busy, 3)
+time.sleep(0.5); app.processEvents(); _calls.clear()
+mp._lcache[(mp.label, mp.query, mp.cat, mp.tokens[-1])] = (list(mp.rows), mp.next_token, mp._hid)       # cached and 'unchanged'
+mp.refresh_btn.click(); app.processEvents()
+assert wait(lambda: "threads" in _calls, 4), _calls                 # the button went to Gmail although nothing had changed
+_calls.clear()
+mp._busy = True; mp._busy_t = time.time() - 30                        # a stuck flag
+mp._tick(); assert mp._busy and wait(lambda: "profile" in _calls, 4), _calls
+mo.gmail_call = _prev2
+M.save_settings = _save0
+print("ok38")
