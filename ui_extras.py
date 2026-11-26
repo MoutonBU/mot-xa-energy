@@ -4191,38 +4191,86 @@ class MailPage(_QW):
         self._refresh_state()
         return True
 
+    def _local_apply(self, tids, add, remove, trash):
+        """Show the change at once, on the screen and in every kept list, before Gmail has even been asked."""
+        ts = set(tids)
+        add, remove = set(add), set(remove)
+        for key, ent in list(self._lcache.items()):
+            lab = key[0]
+            keep = []
+            for r_ in ent[0]:
+                if r_["id"] in ts:
+                    if trash and lab not in ("TRASH", "ALL"):
+                        continue
+                    if (lab in remove) or (lab in ("STARRED", "UNREAD") and lab in remove):
+                        continue
+                    ls = (set(r_.get("labels") or []) | add) - remove
+                    r_ = dict(r_, labels=sorted(ls), unread="UNREAD" in ls, starred="STARRED" in ls)
+                keep.append(r_)
+            self._lcache[key] = (keep, ent[1], ent[2])
+        if not trash:
+            for r_ in self.rows:
+                if r_["id"] in ts:
+                    ls = (set(r_.get("labels") or []) | add) - remove
+                    r_["labels"] = sorted(ls)
+                    r_["unread"] = "UNREAD" in ls
+                    r_["starred"] = "STARRED" in ls
+                    k_ = self._row_of(r_["id"])
+                    if k_ >= 0:
+                        self.list.item(k_).setData(ROLE_LABS, self._label_cols(r_["labels"]))
+            self.list.viewport().update()
+        for t in ts:
+            self._topen.pop(t, None)
+
     def modify(self, tids, add=(), remove=(), trash=False, cb=None):
         if self._need_modify() or not tids:
             return
+        tids = list(dict.fromkeys(tids))
+        self._local_apply(tids, add, remove, trash)                 # instant: the screen does not wait for Gmail
+        if cb:
+            cb()
+        q = list(tids)
+        lk = _th.Lock()
+        errs = []
+
+        def call(t):
+            if trash:
+                self.mo.gmail_call(self.S, "POST", "threads/%s/trash" % t, body={})
+            else:
+                self.mo.gmail_call(self.S, "POST", "threads/%s/modify" % t, body={"addLabelIds": list(add), "removeLabelIds": list(remove)})
+
+        def worker():
+            while True:
+                with lk:
+                    if not q:
+                        return
+                    t = q.pop(0)
+                try:
+                    call(t)
+                except Exception as e:
+                    try:
+                        call(t)                                     # one more try
+                    except Exception as e2:
+                        errs.append(str(e2) or str(e))
 
         def work():
-            for t in tids:
-                if trash:
-                    self.mo.gmail_call(self.S, "POST", "threads/%s/trash" % t, body={})
-                else:
-                    self.mo.gmail_call(self.S, "POST", "threads/%s/modify" % t, body={"addLabelIds": list(add), "removeLabelIds": list(remove)})
+            ws = [_th.Thread(target=worker) for _ in range(min(8, len(tids)))]       # many at once, not one after the other
+            for w in ws:
+                w.start()
+            for w in ws:
+                w.join()
+            if errs:
+                raise RuntimeError(errs[0])
             return True
 
         def done(res, err):
             if err:
-                self.say(err, True)
+                self._lcache.clear()
+                self.say("Gmail did not accept the change (%s); the list is being reloaded" % err, True)
+                self.load_list(reset=False, quiet=True)
                 return
-            self._lcache.clear()
-            self._topen.clear()
-            self._prewarm(1500)
-            if not trash:
-                for t in tids:                                              # the squares in front of the rows follow at once
-                    for r_ in self.rows:
-                        if r_["id"] == t:
-                            ls = (set(r_.get("labels") or []) | set(add)) - set(remove)
-                            r_["labels"] = sorted(ls)
-                            k_ = self._row_of(t)
-                            if k_ >= 0:
-                                self.list.item(k_).setData(ROLE_LABS, self._label_cols(r_["labels"]))
-                self.list.viewport().update()
-            if cb:
-                cb()
-            self.load_labels(quiet=True)
+            self.load_labels(quiet=True)                           # the counts next to the folders
+            self._disk_soon()
         self.run(work, done)
 
     def toggle_star(self, tid, on, row):

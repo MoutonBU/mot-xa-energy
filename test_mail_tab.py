@@ -496,3 +496,28 @@ mo.gmail_call = _old3
 assert _seen_p[0]["labelIds"] == ["INBOX"] and "-category:promotions" in _seen_p[0]["q"], _seen_p[0]
 assert _seen_p[1]["labelIds"] == ["INBOX", "CATEGORY_PROMOTIONS"] and "q" not in _seen_p[1], _seen_p[1]
 print("ok26")
+
+# marking, labelling and deleting show at once; Gmail is told afterwards, many conversations in parallel
+import time as _tm3
+mp.label = "INBOX"; mp.query = ""
+mp.rows = [dict(id="q%d" % i, sender="A", subject="S", snippet="x", date=1, unread=True, starred=False, count=1, attach=False, labels=["INBOX", "UNREAD"]) for i in range(10)]
+mp._fill_list()
+_calls3 = []
+_old4 = mo.gmail_call
+def _slow3(S_, method, path, params=None, body=None, timeout=60):
+    if "/modify" in path or "/trash" in path:
+        _tm3.sleep(0.4); _calls3.append(path); return {}
+    return _old4(S_, method, path, params, body, timeout)
+mo.gmail_call = _slow3
+for _i in range(10):
+    mp.list.item(_i).setData(U.ROLE_CHECK, True)
+mp.update_bulk()
+_t0 = _tm3.time(); mp.act("read")
+assert _tm3.time() - _t0 < 0.2 and not any(mp.list.item(i).data(U.ROLE_UNREAD) for i in range(10)), "the screen must change at once"
+assert wait(lambda: len(_calls3) == 10, 6) and _tm3.time() - _t0 < 2.5, (len(_calls3), _tm3.time() - _t0)      # 10 x 0.4 s in parallel, not 4 s in a row
+for _i in range(3):
+    mp.list.item(_i).setData(U.ROLE_CHECK, True)
+_t0 = _tm3.time(); mp.act("trash")
+assert _tm3.time() - _t0 < 0.2 and mp.list.count() == 7
+mo.gmail_call = _old4
+print("ok27")
