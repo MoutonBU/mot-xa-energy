@@ -13361,6 +13361,15 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         try:
+            mp_ = getattr(self, "mail_page", None)       # Mail writes its own colours: it is restyled for the new look at once
+            if mp_ is not None:
+                mp_.restyle()
+                if getattr(mp_, "cur", None) and mp_.stack.currentIndex() == 1 and getattr(mp_, "msgs", None):
+                    mp_._clear_thread()
+                    mp_._render_thread()
+        except Exception:
+            pass
+        try:
             if getattr(self, "plan_page", None) is not None:
                 self.plan_page.refresh()
             if getattr(self, "_det_win", None) is not None:

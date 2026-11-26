@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: 1.86.320
+Current version: 1.86.321
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Mail tab: switching between dark and light while Mail is open left it half dark (black sidebar and buttons with unreadable text on a white page). Mail now restyles itself, and redraws the open email, the moment the look is switched.
 - Mail tab: the look-ahead of conversations had stopped running (it was never started after a list loaded). It now loads the conversations of the list on screen, four at a time, newest first, as soon as the list shows, and pointing at one starts it after 40 ms. The status line also shows how long each email took to open, so a slow one can be told apart from a slow Gmail.
 - Mail tab: fixed the brief mess when an email opens (the attachment buttons drawn on top of the email and the logo cut off). The email now gets its real width and height before it is drawn, and the page is painted once, finished.
 - Mail tab: an email could hang on the loading icon for minutes because the background reading (other folders, look-ahead) used up Gmail's per-minute allowance and your click had to queue behind it. Background reading now only uses 40 percent of the allowance and gives way at once, an open never waits more than 3 seconds for a look-ahead that is busy with the same email, and after 10 seconds the view says Gmail is slow and offers Try again. The background reading is also lighter (it skips Spam and Trash), and the program no longer learns its allowance down below a sensible minimum.

@@ -572,3 +572,13 @@ mp._fill_list()
 assert wait(lambda: "t1" in mp._topen, 8), "read-ahead did not run"
 t0 = time.time(); mp.open_thread("t1", "S"); assert time.time() - t0 < 0.5 and mp.msgs
 print("ok31")
+
+# switching to the light look restyles Mail at once: no dark rail or buttons left on the light page
+_il = mp.is_light
+mp.is_light = lambda: True; mp.restyle()
+_ss = mp.styleSheet().lower()
+assert "#131316" not in _ss and "#eceef1" in _ss and "#ffffff" in _ss, _ss[:400]
+mp.is_light = lambda: False; mp.restyle()
+assert "#131316" in mp.styleSheet().lower()
+mp.is_light = _il; mp.restyle()
+print("ok32")
