@@ -2513,6 +2513,32 @@ def mail_date_text(ms, now=None):
     return d.strftime("%d/%m/%Y")
 
 
+_QUOTE_STARTS = (
+    re.compile(r"(?is)<div[^>]+class=[\"'][^\"']*gmail_(?:quote|attr)"),
+    re.compile(r"(?is)<div[^>]+id=[\"'](?:appendonsend|divRplyFwdMsg)"),
+    re.compile(r"(?is)<blockquote\b"),
+)
+
+
+def mail_split_quote(html):
+    """(new text, quoted text): a reply carries the whole earlier email under 'On ... wrote:'. The earlier email is already in the conversation above it,
+    and what the sender's mail program made of it is often broken (logo gone, square corners), so it is hidden behind 'Show quoted text'."""
+    if not html:
+        return html, ""
+    cut = None
+    for rx in _QUOTE_STARTS:
+        m = rx.search(html)
+        if m and (cut is None or m.start() < cut):
+            cut = m.start()
+    if cut is None:
+        return html, ""
+    before = html[max(0, cut - 400):cut]
+    w = list(re.finditer(r"(?is)(?:On|Op)\s[^<>]{0,140}?(?:wrote|skryf|het geskryf|schreef)\s*:", before))
+    if w:
+        cut = cut - len(before) + w[-1].start()                # the 'On ... wrote:' line goes with the quote
+    return html[:cut], html[cut:]
+
+
 def mail_full_date(m):
     """The time the email arrived, in my own time zone ('Thu, 26 Nov 2026  15:14'); the sender's Date header is in their zone and was cut short, so it read hours off."""
     try:
@@ -3339,6 +3365,7 @@ class MailPage(_QW):
         self._topen = {}
         self._tlock = {}
         self._tpend = {}
+        self._qopen = set()                                       # messages whose quoted text is shown
         self._lcache = {}
         self._tbusy = set()
         lpv.addWidget(self.list, 1)
@@ -4651,6 +4678,8 @@ class MailPage(_QW):
         self.run(lambda: self._thread_images(tid), done)
 
     def open_thread(self, tid, subject=""):
+        if tid != self.cur:
+            self._qopen = set()
         self.cur = tid
         self.stack.setCurrentIndex(1)
         self.subject_lbl.setText(subject)
@@ -4706,6 +4735,14 @@ class MailPage(_QW):
             self.thread_host.setUpdatesEnabled(True)
             QTimer.singleShot(0, self._refit_all)
 
+    def _show_quote(self, mid):
+        self._qopen.add(mid)
+        sb = self.sa.verticalScrollBar()
+        pos = sb.value()
+        self._clear_thread()
+        self._render_thread()
+        QTimer.singleShot(0, lambda: sb.setValue(pos))
+
     def _refit_all(self):
         for b in self.thread_host.findChildren(_AutoBrowser):
             b._fit()
@@ -4732,6 +4769,13 @@ class MailPage(_QW):
             cv.addWidget(hd)
             b = _AutoBrowser()
             body = html
+            cut_q = False
+            if i > 0 and html and m["id"] not in self._qopen:
+                _hd, _qt = mail_split_quote(html)
+                if _qt:
+                    body, cut_q = _hd, True
+                    if not re.sub(r"(?is)<[^>]+>|&nbsp;|\s", "", _hd):
+                        body = "<p style='color:#8a9099'>(no new text)</p>"
             page_bg = None
             if body:
                 body = re.sub(r"(?is)<(script|iframe|object|embed|link)\b.*?(</\1>|/>)", "", body)
@@ -4757,6 +4801,11 @@ class MailPage(_QW):
             b.setHtml(body)
             b._fit()
             cv.addWidget(b)
+            if cut_q:
+                qb = _QPB("Show quoted text")
+                qb.setToolTip("The earlier email this one replies to (it is in the conversation above)")
+                qb.clicked.connect(lambda _=False, mid=m["id"]: self._show_quote(mid))
+                cv.addWidget(qb, 0, Qt.AlignmentFlag.AlignLeft)
             if self._tpend.get(self.cur) or (lk_ := self._tlock.get("img:" + str(self.cur))) and lk_.locked():
                 wl = _QL("Loading pictures...")
                 wl.setStyleSheet("color:%s;" % mute)

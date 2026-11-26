@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: 1.86.328
+Current version: 1.86.329
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Mail tab: in a conversation, the earlier email quoted inside a reply is now hidden behind "Show quoted text" (it is already in the conversation above, drawn properly). Replies sent from older versions carried a damaged copy of it (logo gone, square corners, red bars instead of dots); that copy no longer shows unless you ask for it. This also makes long conversations open faster, because the big quoted tables are not laid out.
 - Mail tab, speed: drawing-register style emails (big tables, rounded boxes) were laid out two to three times when opened; they are now laid out once (a thread of three heavy messages went from 630 ms to 190 ms in the program's own test).
 - Mail tab, speed: the stored read-ahead of conversations was thrown away every time Gmail's change marker moved and every 90 seconds, so many opens went back to Gmail. Now only the conversations that actually received a new message lose their stored copy, and sending a reply only refreshes that conversation.
 - Mail tab: dragging the window edge no longer redraws the open email every quarter second; it is drawn once when you stop.

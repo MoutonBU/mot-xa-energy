@@ -621,3 +621,30 @@ _t0 = time.time(); mp._clear_thread(); mp._render_thread(); app.processEvents()
 _g2 = sorted([w for w in mp.thread_host.findChildren(QWidget) if w.layout() is not None and type(w.layout()).__name__ == "QGridLayout"], key=lambda w: -len(w.findChildren(U._QPB)))[0]
 assert len(_g2.findChildren(U._QPB)) == 22 and all(not b.icon().isNull() for b in _g2.findChildren(U._QPB)) and time.time() - _t0 < 1.5
 print("ok34")
+
+# a reply's quoted earlier email is hidden behind "Show quoted text" (it is in the conversation above); the new text shows
+def _live(kind):
+    out = []
+    for k in range(mp.thread_lay.count()):
+        w_ = mp.thread_lay.itemAt(k).widget()
+        if w_ is not None:
+            out += w_.findChildren(kind)
+    return out
+_h, _q = U.mail_split_quote("<p>Het julle?</p><br><br>On 1:34 PM, m.mcparch wrote:<blockquote><table><tr><td>DRAWING REGISTER</td></tr></table></blockquote>")
+assert "Het julle" in _h and "wrote" not in _h and "DRAWING REGISTER" not in _h and "wrote" in _q, (_h, _q)
+_h, _q = U.mail_split_quote("<div>Thanks</div><div class=\"gmail_quote\"><div class=\"gmail_attr\">On Thu, X wrote:</div><blockquote>old</blockquote></div>")
+assert _h == "<div>Thanks</div>" and "old" in _q, (_h, _q)
+assert U.mail_split_quote("<p>plain mail</p>") == ("<p>plain mail</p>", "")
+_m2 = dict(THREADS["t1"]["messages"][1])
+mp.msgs = [(THREADS["t1"]["messages"][0], "<p>Original DRAWING REGISTER</p>", "", [], {}),
+           (_m2, "<p>Reply text</p><br>On 1:34 PM, A wrote:<blockquote><p>Original DRAWING REGISTER</p></blockquote>", "", [], {})]
+mp.cur = "t1"; mp._qopen = set(); mp.stack.setCurrentIndex(1)
+mp._clear_thread(); mp._render_thread(); app.processEvents()
+_txt = " | ".join(b.toPlainText() for b in _live(U._AutoBrowser))
+assert "Reply text" in _txt and _txt.count("DRAWING REGISTER") == 1, _txt
+_qb = [b for b in _live(U._QPB) if b.text() == "Show quoted text"]
+assert len(_qb) == 1
+_qb[0].click(); app.processEvents()
+_txt = " | ".join(b.toPlainText() for b in _live(U._AutoBrowser))
+assert _txt.count("DRAWING REGISTER") == 2 and not [b for b in _live(U._QPB) if b.text() == "Show quoted text"], _txt
+print("ok35")
