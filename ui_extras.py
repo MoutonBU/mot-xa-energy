@@ -2038,8 +2038,8 @@ _RD_RES = {}
 
 
 def _css(style, name):
-    m = re.search(r"(?is)(?<![-\w])" + name + r"\s*:\s*([^;\"']+)", style or "")
-    return m.group(1).strip() if m else ""
+    ms = re.findall(r"(?is)(?<![-\w])" + name + r"\s*:\s*([^;\"']+)", style or "")
+    return ms[-1].strip() if ms else ""            # the last one wins, as in CSS
 
 
 def _rd_color(v):
@@ -2264,6 +2264,54 @@ def mail_pdf_pixmap(data, height):
         return QPixmap.fromImage(img)
     except Exception:
         return QPixmap()
+
+
+def mail_dark(body):
+    """Qt ignores the dark-mode rules (@media prefers-color-scheme) that the program's own designed emails carry, so in the dark theme they are applied by hand:
+    the dark colours are written into the elements, the dark logo replaces the light one. Returns (html, page colour or None)."""
+    m = re.search(r"(?is)@media\s*\(\s*prefers-color-scheme\s*:\s*dark\s*\)\s*\{(.*?)\n\}", body)
+    if not m:
+        return body, None
+    rules = {}
+    for cm in re.finditer(r"(?is)\.([\w-]+)\s*\{([^}]*)\}", m.group(1)):
+        decl = {}
+        for d in cm.group(2).split(";"):
+            if ":" in d:
+                k, v = d.split(":", 1)
+                k, v = k.strip().lower(), re.sub(r"(?i)\s*!important", "", v).strip()
+                if k in ("background-color", "color", "border-color"):
+                    decl[k] = v
+        if decl:
+            rules[cm.group(1)] = decl
+    page = (rules.get("pg") or {}).get("background-color")
+    body = re.sub(r"(?is)<img\b[^>]*\bclass\s*=\s*[\"']lgl[\"'][^>]*>", "", body)                   # the light-mode logo goes, the dark-mode one stays
+    body = re.sub(r"(?is)(<img\b[^>]*\bclass\s*=\s*[\"']lgd[\"'][^>]*style\s*=\s*[\"'])[^\"']*(display\s*:\s*none;?|max-height\s*:\s*0;?|overflow\s*:\s*hidden;?|mso-hide\s*:\s*all;?)+", r"\1", body)
+
+    def tag(t):
+        t0 = t.group(0)
+        cls = re.search(r"(?is)\bclass\s*=\s*[\"']([^\"']*)[\"']", t0)
+        if not cls:
+            return t0
+        props = {}
+        for c in cls.group(1).split():
+            props.update(rules.get(c, {}))
+        if not props:
+            return t0
+        sm = re.search(r"(?is)\bstyle\s*=\s*\"([^\"]*)\"", t0)
+        sty = sm.group(1) if sm else ""
+        if "border-color" in props:
+            sty = re.sub(r"(?is)(border\s*:\s*[\d.]+px\s+\w+\s+)(#[0-9a-fA-F]{3,8}|rgba?\([^)]*\))", lambda q: q.group(1) + props["border-color"], sty)
+        extra = "".join("%s:%s;" % (k, v) for k, v in props.items() if k != "border-color")
+        sty2 = (sty.rstrip(";") + ";" if sty else "") + extra
+        t1 = t0.replace(sm.group(0), 'style="%s"' % sty2, 1) if sm else t0[:-1] + ' style="%s">' % sty2
+        if "background-color" in props:
+            if re.search(r"(?is)\sbgcolor\s*=", t1):
+                t1 = re.sub(r"(?is)(\sbgcolor\s*=\s*)(\"[^\"]*\"|'[^']*')", lambda q: q.group(1) + '"%s"' % props["background-color"], t1, 1)
+            else:
+                t1 = t1[:-1] + ' bgcolor="%s">' % props["background-color"]
+        return t1
+    body = re.sub(r"(?is)<(?:table|td|th|tr|div|span|b|p|body|a)\b[^>]*\bclass\s*=[^>]*>", tag, body)
+    return body, page
 
 
 def mail_trusted_image(url):
@@ -2691,12 +2739,14 @@ class MailToast(_QW):
     """The corner pop-up for new mail (like the orders one): who it is from, the subject and the first lines, with Open and Dismiss."""
     G = 14
 
-    def __init__(self, rows, icon, on_open):
+    def __init__(self, rows, icon, on_open, pal=None):
         super().__init__(None, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self._rows, self._open_cb = rows, on_open
+        # pal: (card, text, muted, row background, accent): the mail tab's own dark or light colours
+        self._pal = pal = pal or ("#1d2025", "#f2f4f6", "#aab0b8", "#2a2e35", "#d8132b")
         self.setFixedWidth(420 + 2 * self.G)
         v = _VB(self)
         g = self.G
@@ -2710,27 +2760,27 @@ class MailToast(_QW):
             lg.setScaledContents(False)
         top.addWidget(lg)
         n = len(rows)
-        top.addWidget(_QL("<div style='font-size:18px;font-weight:800;color:#ffffff'>%s</div><div style='font-size:12px;color:#c4cad2'>Gmail</div>" % (
-            "New email" if n == 1 else "%d new emails" % n)), 1)
+        top.addWidget(_QL("<div style='font-size:18px;font-weight:800;color:%s'>%s</div><div style='font-size:12px;color:%s'>Gmail</div>" % (
+            pal[1], "New email" if n == 1 else "%d new emails" % n, pal[2])), 1)
         v.addLayout(top)
         for r in rows[:3]:
-            lab = _QL("<b style='font-size:14px'>%s</b><br><span style='font-size:13px'>%s</span><br><span style='color:#aab0b8;font-size:12px'>%s</span>" % (
-                _html.escape(r["from"]), _html.escape(r["subject"] or "(no subject)"), _html.escape(r["snippet"])))
+            lab = _QL("<b style='font-size:14px'>%s</b><br><span style='font-size:13px'>%s</span><br><span style='color:%s;font-size:12px'>%s</span>" % (
+                _html.escape(r["from"]), _html.escape(r["subject"] or "(no subject)"), pal[2], _html.escape(r["snippet"])))
             lab.setWordWrap(True)
             lab.setTextFormat(Qt.TextFormat.RichText)
-            lab.setStyleSheet("background:#2a2e35;color:#f2f4f6;border-radius:9px;padding:8px 11px;")
+            lab.setStyleSheet("background:%s;color:%s;border-radius:9px;padding:8px 11px;" % (pal[3], pal[1]))
             v.addWidget(lab)
         if n > 3:
             more = _QL("and %d more..." % (n - 3))
-            more.setStyleSheet("color:#aab0b8;")
+            more.setStyleSheet("color:%s;" % pal[2])
             v.addWidget(more)
         bt = _HB()
         bt.setSpacing(8)
-        for text, fn, look in (("Open", self._open, "background:#d8132b;color:#ffffff;font-weight:800;"), ("Dismiss", self.close, "background:#3a3f46;color:#e6e8eb;")):
+        for text, fn, look in (("Open", self._open, "background:%s;color:#ffffff;font-weight:800;" % pal[4]), ("Dismiss", self.close, "background:%s;color:%s;" % (pal[3], pal[1]))):
             b = _QPB(text)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setMinimumHeight(32)
-            b.setStyleSheet("QPushButton{border:none;border-radius:8px;padding:0 18px;font-size:13px;%s}QPushButton:hover{border:2px solid #ffffff;}" % look)
+            b.setStyleSheet("QPushButton{border:none;border-radius:8px;padding:0 18px;font-size:13px;%s}QPushButton:hover{border:2px solid %s;}" % (look, pal[1]))
             b.clicked.connect(fn)
             bt.addWidget(b)
         v.addLayout(bt)
@@ -2748,15 +2798,17 @@ class MailToast(_QW):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         g = self.G
         card = QRectF(self.rect()).adjusted(g, g, -g, -g)
-        col = QColor("#e8334a")
+        col = QColor(self._pal[4])
         for i in range(g, 0, -1):
             c = QColor(col)
             c.setAlphaF(max(0.0, 0.34 * (1 - i / float(g)) ** 1.6))
             p.setPen(QPen(c, 2))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(card.adjusted(-i, -i, i, i), 14 + i, 14 + i)
-        p.setBrush(QColor("#1d2025"))
-        p.setPen(QPen(QColor(232, 51, 74, 190), 2.2))
+        p.setBrush(QColor(self._pal[0]))
+        ec = QColor(self._pal[4])
+        ec.setAlpha(190)
+        p.setPen(QPen(ec, 2.2))
         p.drawRoundedRect(card, 14, 14)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(col)
@@ -3139,7 +3191,8 @@ class MailPage(_QW):
                 except Exception:
                     pass
             ic = self.host.windowIcon().pixmap(64, 64) if hasattr(self.host, "windowIcon") else None
-            t = MailToast(rows, ic, self._toast_open)
+            bg_, fg_, mute_, line_ = self.colors()
+            t = MailToast(rows, ic, self._toast_open, (bg_, fg_, mute_, "#2a2e35" if not self.is_light() else "#f1f3f5", "#d8132b"))
             self._toast = t
             ag = (self.screen() or QApplication.primaryScreen()).availableGeometry()
             t.move(ag.right() - t.width() - 14, ag.bottom() - t.height() - 14)
@@ -3841,13 +3894,16 @@ class MailPage(_QW):
             hd.setSizePolicy(_QSP.Policy.Ignored, _QSP.Policy.Preferred)
             cv.addWidget(hd)
             b = _AutoBrowser()
-            b.setStyleSheet("QTextBrowser{background:#ffffff;color:#202124;border-radius:6px;padding:6px;}")
             body = html
+            page_bg = None
             if body:
                 body = re.sub(r"(?is)<(script|iframe|object|embed|link)\b.*?(</\1>|/>)", "", body)
                 body = re.sub(r"(?is)<script.*?>.*?</script>", "", body)
             else:
                 body = "<pre style='font-family:Arial;white-space:pre-wrap'>%s</pre>" % _html.escape(plain or m.get("snippet", ""))
+            if html and not self.is_light():                          # the program's dark look reaches the email too (for emails that carry their own dark colours)
+                body, page_bg = mail_dark(body)
+            b.setStyleSheet("QTextBrowser{background:%s;color:%s;border-radius:6px;padding:6px;}" % (page_bg or "#ffffff", "#eceef0" if page_bg else "#202124"))
             body = mail_fix_images(body, b.document(), inline, bool(self.S.get("mail_images")), max(320, self.sa.viewport().width() - 90))
             hidden = [] if self.S.get("mail_images") else [u for u in mail_web_images(html) if not mail_trusted_image(u)]
             if hidden:

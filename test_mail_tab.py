@@ -358,3 +358,11 @@ _lay = _H2(); _lay.addStretch(1)
 mp._thumbs("mm", [{"name": "a.pdf", "mime": "application/pdf", "size": len(_pdfb), "id": "", "data": __import__("base64").urlsafe_b64encode(_pdfb).decode()}], _lay)
 assert wait(lambda: _lay.count() >= 2), "no preview button"
 print("ok17")
+
+# dark theme: the email's own dark colours are applied; the pop-up takes the mail tab's colours
+_dh = '<style>\n@media (prefers-color-scheme: dark){\n .pg{background-color:#0E0F12 !important;}\n .cd{background-color:#23262D !important;border-color:#383C45 !important;}\n .tx{color:#D7D9DE !important;}\n .lgl{display:none !important;}\n}\n</style><body class="pg" style="background-color:#FFFFFF;"><table class="cd" bgcolor="#F2F2F2" style="background-color:#F2F2F2;border:1px solid #C9C9C9;"><tr><td class="tx" style="color:#111;">x</td></tr></table><img class="lgl" src="cid:a"><img class="lgd" src="cid:b" style="display:none;max-height:0;">'
+_do, _pg = U.mail_dark(_dh)
+assert _pg == "#0E0F12" and 'bgcolor="#23262D"' in _do and "color:#D7D9DE" in _do and "border:1px solid #383C45" in _do and 'cid:a' not in _do and "display:none" not in _do.split("cid:b")[1], _do
+_tp = U.MailToast([{"from": "A", "subject": "S", "snippet": "x", "tid": "t"}], None, lambda r: None, ("#ffffff", "#1c1f23", "#6b727b", "#f1f3f5", "#d8132b"))
+assert _tp._pal[0] == "#ffffff"; _tp.close()
+print("ok18")
