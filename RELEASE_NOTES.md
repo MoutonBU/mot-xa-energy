@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: 1.86.334
+Current version: 1.86.335
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Mail tab: an email signature sent from another person's program (or another account of yours) could appear broken in Mail: the photo part too small and the right-hand pieces too big, with the text oversized and out of place, although it looked right in Gmail. The signature is now recognised by its pictures and laid out at its real proportions even when Gmail has removed the program's size marks from it.
 - Zoom for the whole program, like the browser: hold Ctrl and turn the mouse wheel anywhere (Mail, costing, register, invoicing, every tool), or press Ctrl + and Ctrl - (Ctrl 0 goes back to 100%). The steps are 50%, 67%, 75%, 80%, 90%, 100%, 110%, 125%, 150%, 175%, 200%, 250% and 300%. The magnifier button at the top right, next to the Online AI button, shows a small bar with - 125% + and Reset. Text, buttons, boxes, tables, the Mail list and open emails all follow, and the zoom you left it on is kept next time. The drawings, plans and maps that already zoom with Ctrl + wheel (and the PDF preview) keep doing that on their own.
 - Mail tab: new mail now shows in the list within about a second of reaching Gmail (the check runs about every second, and no longer stops while the search box has the cursor). Fixed a fault where, after switching accounts, the automatic check could stay stuck and the list stop updating until Mail was reopened. The Refresh button now always asks Gmail again (it used to do nothing when the program thought nothing had changed) and also refreshes the folder counts.
 - Mail tab: the scroll bars now match the theme: slim, rounded, no arrow buttons, tinted with the open account's colour when you hover them. The side panel no longer has a sideways bar; long label names end in "..." instead.

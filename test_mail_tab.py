@@ -743,3 +743,15 @@ mp._tick(); assert mp._busy and wait(lambda: "profile" in _calls, 4), _calls
 mo.gmail_call = _prev2
 M.save_settings = _save0
 print("ok38")
+
+# a signature that arrives without our data-t / data-pw marks (the sender's mail service removed them) is still laid out at its own size
+import re
+from PySide6.QtGui import QTextDocument as _QTD2
+_S2 = {"sig_name": "A B", "sig_role": "R", "sig_phone": "+27123456789", "sig_email": "a@b.com", "mail_address": "a@b.com"}
+_h2, _jp2, _ = U.mail_sig_html(_S2)
+_in2 = {("mcpsig%d" % i): d for i, d in enumerate(_jp2)}
+_wd = lambda h: [int(x) for x in re.findall(r'<img src="mimg:///[^"]*" width="(\d+)"', h)]
+_ref = _wd(U.mail_fix_images("<body>x" + _h2 + "</body>", _QTD2(), _in2, True, 2300))
+_got = _wd(U.mail_fix_images("<body>x" + re.sub(r'\sdata-(?:t|pw)="[^"]*"', "", _h2) + "</body>", _QTD2(), _in2, True, 2300))
+assert _ref and len(_ref) == len(_got) and all(abs(a - b) <= 1 for a, b in zip(_ref, _got)) and max(_got) <= 342 + 278, (_ref, _got)
+print("ok39")

@@ -2078,12 +2078,60 @@ def mail_fit_widths(body, maxw):
 _PIXC = {}
 
 
+def _sig_px_plain(body, maxw):
+    """The same signature when the sender's mail service has removed our data-t / data-pw marks (Gmail does this for some senders): the structure is
+    recognised by its picture names (cid:mcpsig0...) and every percentage width is turned into pixels from the table it sits in."""
+    m0 = re.search(r'(?is)<table\b[^>]*table-layout\s*:\s*fixed[^>]*>\s*<tr>\s*<td\b[^>]*>\s*(?:<a\b[^>]*>\s*)?<img\b[^>]*cid:mcpsig0', body)
+    if not m0:
+        return body
+    start = m0.start()
+    depth, pos, end = 0, start, None
+    for t in re.finditer(r"(?is)<(/?)table\b", body[start:]):
+        depth += -1 if t.group(1) else 1
+        if depth == 0:
+            end = start + t.end()
+            end = body.find(">", end) + 1
+            break
+    if end is None:
+        return body
+    T = max(200, min(620, int(maxw)))
+    stack = [float(T)]                                        # the width available to what is inside
+    out, last = [], start
+    for t in re.finditer(r"(?is)<(/?)(table|td)\b[^>]*>", body[start:end]):
+        tag, closing, name = t.group(0), t.group(1), t.group(2).lower()
+        out.append(body[last:start + t.start()])
+        last = start + t.end()
+        if closing:
+            if len(stack) > 1:
+                stack.pop()
+            out.append(tag)
+            continue
+        wm = re.search(r'(?i)\swidth\s*=\s*["\']?\s*([\d.]+)\s*(%?)', tag)
+        avail = stack[-1]
+        if wm and wm.group(2):
+            px = max(1, int(round(avail * float(wm.group(1)) / 100.0)))
+        elif wm:
+            px = max(1, int(float(wm.group(1))))
+        else:
+            px = int(avail)
+        if name == "td" and wm and wm.group(2):
+            tag = re.sub(r'(?i)\swidth\s*=\s*["\'][^"\']*["\']', "", tag, count=1)
+            tag = tag[:-1] + ' width="%d" data-pw="%d">' % (px, px)
+        elif name == "table" and wm and wm.group(2):
+            tag = re.sub(r'(?i)\swidth\s*=\s*["\'][^"\']*["\']', "", tag, count=1)
+            tag = tag[:-1] + ' width="%d">' % px
+        out.append(tag)
+        stack.append(float(px))
+    out.append(body[last:end])
+    return body[:start] + "".join(out) + body[end:]
+
+
 def mail_sig_px(body, maxw):
     """Our own signature (a left picture and linked pieces on the right): the text engine sizes percentage widths inside it wrongly,
     so every piece gets its width in pixels, worked out from the width the email has."""
     m = re.search(r'<table\b[^>]*\bdata-t="(\d+)"', body)
     if not m:
-        return body
+        return _sig_px_plain(body, maxw)
     T = max(200, min(int(m.group(1)), int(maxw)))
 
     def fix(mm):
