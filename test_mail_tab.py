@@ -188,3 +188,17 @@ mp.label = "INBOX"; mp.query = ""
 mp.load_list(reset=True)
 assert wait(lambda: mp.list.count() == 2)
 print("ok6")
+
+# Gmail signature pictures (hosted by Google) show without pressing anything
+url = "https://ci3.googleusercontent.com/mail-sig/AIorK4zr8kiQJ7zs8yAvmTPzrLFCfyN8A33yBZfc9DnqiXtW8WyIhLL5HDg1vH3lvE6OCcqveYDEJg6NxREG"
+assert U.mail_trusted_image(url) and not U.mail_trusted_image("https://evil.example/mail-sig/x.png") and not U.mail_trusted_image("http://ci3.googleusercontent.com/mail-sig/x")
+th2 = {"id": "tw", "messages": [{"id": "m9", "payload": {"mimeType": "text/html", "headers": [], "body": {"data": _b.urlsafe_b64encode(('<p>x</p><div><img src="%s"></div><img src="https://tracker.example/p.png">' % url).encode()).decode()}}}]}
+fetched = []
+U._web_picture = lambda u: (fetched.append(u), png)[1]
+S["mail_images"] = False
+mo.gmail_call = lambda S_, method, path, params=None, body=None, timeout=60: th2 if path == "threads/tw" else _old(S_, method, path, params, body, timeout)
+mp._topen.clear()
+got = mp._fetch_thread("tw")[1][0][4]
+assert fetched == [url] and "url:" + url in got, (fetched, list(got))
+mo.gmail_call = _old
+print("ok7")

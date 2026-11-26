@@ -1882,6 +1882,12 @@ def mail_fix_images(body, doc, inline, remote_ok):
     return _IMG_RE.sub(one, body)
 
 
+def mail_trusted_image(url):
+    """Gmail signature pictures live on Google's own servers; those show without asking (the 'Show pictures' button is for the rest of the web)."""
+    u = url.lower()
+    return u.startswith("https://") and ".googleusercontent.com/mail-sig/" in u
+
+
 def mail_web_images(html):
     """The http(s) picture addresses in an email body (what 'Show pictures' would fetch)."""
     out = []
@@ -3034,8 +3040,8 @@ class MailPage(_QW):
                         inline[a["cid"].lower()] = mail_b64(a["data"])
                     else:
                         todo.append((inline, a["cid"].lower(), lambda p="messages/%s/attachments/%s" % (m["id"], a["id"]): self.mo.gmail_bytes(self.S, p)))
-            if self.S.get("mail_images"):
-                for u in mail_web_images(html)[:8]:
+            for u in mail_web_images(html)[:8]:
+                if self.S.get("mail_images") or mail_trusted_image(u):
                     todo.append((inline, "url:" + u, lambda u=u: _web_picture(u)))
             res.append((m, html, plain, atts, inline))
 
@@ -3168,7 +3174,7 @@ class MailPage(_QW):
             else:
                 body = "<pre style='font-family:Arial;white-space:pre-wrap'>%s</pre>" % _html.escape(plain or m.get("snippet", ""))
             body = mail_fix_images(body, b.document(), inline, bool(self.S.get("mail_images")))
-            hidden = [] if self.S.get("mail_images") else mail_web_images(html)
+            hidden = [] if self.S.get("mail_images") else [u for u in mail_web_images(html) if not mail_trusted_image(u)]
             if hidden:
                 bar = _QPB("Show pictures from the web in this email")
                 bar.clicked.connect(self._show_pictures)

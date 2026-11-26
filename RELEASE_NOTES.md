@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: 1.86.291
+Current version: 1.86.292
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Mail tab: Gmail signature pictures (hosted by Google) now show straight away without pressing Show pictures.
 - Mail tab now fills the whole window (no ribbon, left bar or step strip), with Home and Switch tool at its top left. Signature pictures load whatever their file type, up to 12 MB, and show the reason when one cannot load. Lists load in one batched request instead of one request per conversation.
 - Mail tab: pictures in emails no longer show the big grey missing-picture box. Pictures that cannot be shown are dropped, embedded (data:) pictures now show, and pictures hosted on the web show after pressing "Show pictures from the web in this email" once (it then remembers).
 - Mail tab: signature pictures inside emails now show (only the pictures an email uses are fetched, with no 12-picture limit); label groups start closed; lists you have seen show instantly while Gmail refreshes them; the first conversations are loaded in the background so they open at once.
