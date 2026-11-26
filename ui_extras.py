@@ -3307,8 +3307,9 @@ class ToastIcon(_QW):
     """The animated picture on a pop-up. kind "mail": an envelope flies in, its flap opens, a letter rises out and a badge pops with the number of new emails.
     kind "order": a price tag (the Orders card's picture) drops in on its string, swings, rings and gets ticked, with the number of new orders."""
 
-    def __init__(self, kind, color, count=1, urgent=False, size=64, parent=None):
+    def __init__(self, kind, color, count=1, urgent=False, size=64, bg="#1d2025", parent=None):
         super().__init__(parent)
+        self.bg = bg
         from PySide6.QtCore import QVariantAnimation
         self.kind, self.col, self.count, self.urgent = kind, QColor(color), max(0, int(count)), bool(urgent)
         self.setFixedSize(size, size)
@@ -3402,47 +3403,56 @@ class ToastIcon(_QW):
         else:
             self._paint_order(p, T, col, pg)
 
+    def _line_pen(self, col, w=1.6):
+        return QPen(col, w, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+
     def _paint_mail(self, p, T, col, pg):
+        """The Mail card's picture (thin line envelope, the program's icon style) that flies in, opens its flap and lifts a letter out."""
         k = self._back(pg(T, 0.0, 0.75))
+        away = self._cub(pg(T, 3.7, 4.3))
         ping = pg(T, 0.55, 1.4)
         if 0 < ping < 1:
             c = QColor(col)
-            c.setAlphaF(0.55 * (1 - ping))
-            p.setPen(QPen(c, 2.0))
+            c.setAlphaF(0.5 * (1 - ping))
+            p.setPen(QPen(c, 1.6))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawEllipse(QPointF(32, 36), 14 + 20 * ping, 14 + 20 * ping)
-        away = self._cub(pg(T, 3.7, 4.3))                                       # at the end it slides out and the loop starts again
-        ex, ey = (1 - k) * -30 + away * 40, (1 - k) * -34 - away * 6
+        fo = self._cub(pg(T, 0.85, 1.35)) * (1 - self._cub(pg(T, 3.3, 3.75)))
+        lt = self._cub(pg(T, 1.3, 2.0)) * (1 - self._cub(pg(T, 3.2, 3.7)))
+        bg = QColor(self.bg)
         p.save()
-        p.translate(32 + ex, 37 + ey)
+        p.translate(32 + (1 - k) * -30 + away * 40, 36 + (1 - k) * -34 - away * 6)
         p.rotate((1 - k) * -22)
-        sc = max(0.05, 0.3 + 0.7 * k) * (1 - 0.6 * away)
+        sc = max(0.05, 0.3 + 0.7 * k) * (1 - 0.6 * away) * 2.0
         p.scale(sc, sc)
-        dark, light = col.darker(135), col.lighter(125)
-        fo = self._cub(pg(T, 0.85, 1.35)) * (1 - self._cub(pg(T, 3.3, 3.75)))      # flap: 0 closed .. 1 open
-        lt = self._cub(pg(T, 1.3, 2.0)) * (1 - self._cub(pg(T, 3.2, 3.7)))         # letter: how far it has risen
-        p.setPen(QPen(col.lighter(150), 2.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-        p.setBrush(dark)
-        p.drawRoundedRect(QRectF(-21, -12, 42, 29), 5, 5)                        # back of the envelope
-        apex = 5 - 29 * fo
-        if fo > 0.5:                                                              # open flap sits behind the letter
-            p.setBrush(light)
-            p.drawPolygon([QPointF(-21, -12), QPointF(21, -12), QPointF(0, apex)])
-        p.save()                                                                  # the letter
-        p.setPen(QPen(QColor("#c9ced6"), 1.2))
-        p.setBrush(QColor("#ffffff"))
-        p.drawRoundedRect(QRectF(-14, -10 - 17 * lt, 28, 24), 2.5, 2.5)
-        p.setPen(QPen(QColor("#aab3bf"), 1.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-        for i, wd in enumerate((18, 14, 18)):
-            yy = -5 - 17 * lt + i * 5.5
-            p.drawLine(QPointF(-9, yy), QPointF(-9 + wd, yy))
-        p.restore()
-        p.setPen(QPen(col.lighter(150), 2.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-        p.setBrush(col)
-        p.drawPolygon([QPointF(-21, -9), QPointF(0, 6), QPointF(21, -9), QPointF(21, 15), QPointF(-21, 15)])    # the front pocket
-        if fo <= 0.5:
-            p.setBrush(light)
-            p.drawPolygon([QPointF(-21, -12), QPointF(21, -12), QPointF(0, apex)])
+        p.translate(-12, -12)
+        pen = self._line_pen(col)
+        p.setPen(pen)
+        p.setBrush(bg)
+        p.drawRoundedRect(QRectF(3, 5, 18, 14), 2, 2)                                   # the back
+        apex = 13 - 12 * fo
+        if fo > 0.02:                                                                    # the open flap
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPolyline([QPointF(3.5, 7), QPointF(12, apex), QPointF(20.5, 7)])
+        ly = 11 - 8.5 * lt                                                               # the letter, rising out
+        p.setBrush(bg)
+        p.drawRoundedRect(QRectF(6.5, ly, 11, 9), 1, 1)
+        p.setPen(self._line_pen(col, 1.1))
+        p.drawLine(QPointF(8.7, ly + 3), QPointF(15.3, ly + 3))
+        p.drawLine(QPointF(8.7, ly + 5.6), QPointF(13.2, ly + 5.6))
+        poly = QPainterPath()
+        poly.moveTo(3, 7.2)
+        poly.lineTo(12, 13)
+        poly.lineTo(21, 7.2)
+        poly.lineTo(21, 19)
+        poly.lineTo(3, 19)
+        poly.closeSubpath()
+        rr = QPainterPath()
+        rr.addRoundedRect(QRectF(3, 5, 18, 14), 2, 2)
+        pocket = rr.intersected(poly)
+        p.setBrush(bg)
+        p.setPen(self._line_pen(col))
+        p.drawPath(pocket)                                                               # the front pocket hides the letter's foot
         p.restore()
         self._badge(p, 51, 14, self._back(pg(T, 1.9, 2.4)) * (1 - away))
         for sx, sy, t0 in ((10, 14, 2.3), (54, 44, 2.7), (14, 52, 3.0)):
@@ -3451,56 +3461,38 @@ class ToastIcon(_QW):
                 self._spark(p, sx, sy, 3 + 3 * math.sin(ph / 0.7 * math.pi), math.sin(ph / 0.7 * math.pi))
 
     def _paint_order(self, p, T, col, pg):
-        import math
+        """The Orders card's picture (thin line tag): drops in on its hole, swings, rings and gets ticked."""
         k = self._bounce(pg(T, 0.0, 0.8))
         away = self._cub(pg(T, 3.7, 4.2)) if not self.urgent else self._cub(pg(T, 2.9, 3.3))
         rate = 1.6 if self.urgent else 1.15
         sw = max(0.0, T - 0.55)
-        ang = 30 * math.exp(-1.3 * sw) * math.cos(2 * math.pi * rate * sw) if T > 0.55 else 0.0
+        ang = 28 * math.exp(-1.3 * sw) * math.cos(2 * math.pi * rate * sw) if T > 0.55 else 0.0
         ping = pg(T, 0.55, 1.3)
         if 0 < ping < 1:
             c = QColor(col)
-            c.setAlphaF(0.6 * (1 - ping))
-            p.setPen(QPen(c, 2.2))
+            c.setAlphaF(0.55 * (1 - ping))
+            p.setPen(QPen(c, 1.8))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawEllipse(QPointF(32, 36), 12 + 22 * ping, 12 + 22 * ping)
-        if 0.6 < T < 1.4:                                                          # little rays where it lands
-            rr = self._cub(pg(T, 0.6, 1.3))
-            c = QColor(col.lighter(140))
-            c.setAlphaF(max(0.0, 1 - rr))
-            p.setPen(QPen(c, 2.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-            for i in range(8):
-                a = i * math.pi / 4 + 0.3
-                p.drawLine(QPointF(32 + math.cos(a) * (16 + 6 * rr), 38 + math.sin(a) * (16 + 6 * rr)), QPointF(32 + math.cos(a) * (21 + 9 * rr), 38 + math.sin(a) * (21 + 9 * rr)))
+        bg = QColor(self.bg)
         p.save()
-        p.translate(32, 8 + (1 - k) * -48 - away * 46)                             # the hook point at the top; the tag hangs from it
-        p.rotate(ang)
-        p.setPen(QPen(QColor("#e8ecf0"), 1.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        p.translate(32, 36 + (1 - k) * -46 - away * 46)
+        p.scale(2.1, 2.1)
+        p.translate(0, -1.5)
+        p.rotate(ang)                                                                      # swings around the hole
+        p.translate(-8.3, -8.3)
+        pen = self._line_pen(col)
+        p.setPen(pen)
         p.setBrush(Qt.BrushStyle.NoBrush)
-        string = QPainterPath()
-        string.moveTo(0, 0)
-        string.quadTo(5, 8, -3, 14)
-        p.drawPath(string)
-        p.translate(-3, 14)
-        p.rotate(-45)                                                              # the tag, corner down like the Orders card's picture
-        p.setPen(QPen(col.lighter(145), 2.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-        fc = QColor(col)
-        fc.setAlphaF(0.30)
-        p.setBrush(fc)
-        body = QPainterPath()
-        body.addRoundedRect(QRectF(-13, -4, 26, 34), 5, 5)
-        body.moveTo(0, 0)
-        p.drawPath(body)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor("#1d2025"))
-        p.drawEllipse(QPointF(0, 2.5), 2.6, 2.6)
-        tk = pg(T, 1.7, 2.3)                                                       # the tick draws itself on the tag
+        from PySide6.QtSvg import QSvgRenderer
+        svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="%s" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">'
+               '<path d="M3.5 12.2V4.5a1 1 0 0 1 1-1h7.7l8.3 8.3a1.4 1.4 0 0 1 0 2l-6.2 6.2a1.4 1.4 0 0 1-2 0z"/><circle cx="8.3" cy="8.3" r="1.3"/></svg>' % col.name())
+        QSvgRenderer(svg.encode("utf-8")).render(p, QRectF(0, 0, 24, 24))
+        tk = pg(T, 1.7, 2.3)
         if tk > 0:
-            p.rotate(45)
-            p.setPen(QPen(QColor("#ffffff"), 3.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-            pts = [QPointF(-7, 12), QPointF(-2, 17), QPointF(8, 6)]
-            seg1 = min(1.0, tk * 2)
-            seg2 = max(0.0, tk * 2 - 1)
+            pts = [QPointF(9.3, 14.2), QPointF(11.6, 16.5), QPointF(16.2, 11.6)]
+            seg1, seg2 = min(1.0, tk * 2), max(0.0, tk * 2 - 1)
+            p.setPen(self._line_pen(QColor("#ffffff"), 2.1))
             p.drawLine(pts[0], QPointF(pts[0].x() + (pts[1].x() - pts[0].x()) * seg1, pts[0].y() + (pts[1].y() - pts[0].y()) * seg1))
             if seg2 > 0:
                 p.drawLine(pts[1], QPointF(pts[1].x() + (pts[2].x() - pts[1].x()) * seg2, pts[1].y() + (pts[2].y() - pts[1].y()) * seg2))
@@ -3531,7 +3523,7 @@ class MailToast(_QW):
         v.setSpacing(8)
         top = _HB()
         n = len(rows)
-        top.addWidget(ToastIcon("mail", ACCENT[0], n, size=64))                  # an envelope that flies in, opens and shows the number of new emails
+        top.addWidget(ToastIcon("mail", "#4aa3df", n, size=64, bg=pal[0]))                  # an envelope that flies in, opens and shows the number of new emails
         top.addWidget(_QL("<div style='font-size:18px;font-weight:800;color:%s'>%s</div><div style='font-size:12px;color:%s'>Gmail</div>" % (
             pal[1], "New email" if n == 1 else "%d new emails" % n, pal[2])), 1)
         v.addLayout(top)
