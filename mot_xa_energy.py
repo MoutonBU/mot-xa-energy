@@ -14774,6 +14774,7 @@ class MainWindow(QMainWindow):
         g = QGridLayout()
         g.setSpacing(24)
         for i, (title, sub, ico, tgt) in enumerate((
+                ("Mail", "Your Gmail inbox, live: read, reply and send with your signature, without leaving the program.", "mail", "Mail"),
                 ("Drawing register", "Issue drawings by email, with the sheet index and what is still to come.", "clipboard", "Drawing register"),
                 ("Orders", "The client's orders and changes, house by house. Watches your Gmail for new orders and flags the urgent ones.", "tag", "Orders"),
                 ("Invoicing", "Numbered invoices with VAT as a PDF. Only the people you allow can open it.", "pdf", "Invoicing"),
@@ -14781,8 +14782,7 @@ class MainWindow(QMainWindow):
                 ("Costing", "Fixtures, materials and the budget for a job.", "calc", "Costing"),
                 ("SANS", "Light and ventilation, energy and coverage checks for the building regulations.", "sun", "SANS"),
                 ("Site and areas", "Building lines on the stand, the sewer, water and electrical lines to the house, and the area schedule with unit mix and floor area ratio.", "land", "Building lines"),
-                ("Guidelines review", "Check the plans against the estate's architectural guidelines and the council's or state's checklist.", "shield", "Guidelines review"),
-                ("Mail", "Your Gmail inbox, live: read, reply and send with your signature, without leaving the program.", "mail", "Mail"))):
+                ("Guidelines review", "Check the plans against the estate's architectural guidelines and the council's or state's checklist.", "shield", "Guidelines review"))):
             g.addWidget(tile(title, sub, ico, tgt), i // 3, i % 3)
         for k in (0, 1, 2):
             g.setRowStretch(k, 1)
