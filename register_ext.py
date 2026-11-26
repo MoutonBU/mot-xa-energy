@@ -2182,7 +2182,7 @@ class OrderToast(QWidget):
         top = QHBoxLayout()
         n = sum(r["count"] for r in rows)
         import ui_extras
-        top.addWidget(ui_extras.ToastIcon("order", "#ff3a4d" if urgent else "#e2a93f", n or sum(r.get("changes", 0) for r in rows) or 1, urgent=urgent, size=64))    # a tag that drops in, swings and gets ticked
+        top.addWidget(ui_extras.ToastIcon("order", "#ff1f3a" if urgent else ui_extras.ACCENT[0], n or sum(r.get("changes", 0) for r in rows) or 1, urgent=urgent, size=64))    # a tag that drops in, swings and gets ticked
         c = sum(r.get("changes", 0) for r in rows)
         sub = ("%d new order%s" % (n, "" if n == 1 else "s") if n else "") + (" and " if n and c else "") + ("%d change%s" % (c, "" if c == 1 else "s") if c else "")
         t = QLabel("<div style='font-size:21px;font-weight:900;color:%s'>%s</div><div style='font-size:13px;color:#c4cad2'>%s</div>" % (

@@ -1,12 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: 1.86.337
+Current version: 1.86.338
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
-- **Animated pop-ups.** A new email now pops up with an envelope that flies in, opens and lifts out a letter with the number of new mails; a new order pops up with a price tag that drops in, swings, rings and gets ticked (red and faster when urgent).
+- **Animated pop-ups.** A new email now pops up with an envelope that flies in, opens and lifts out a letter with the number of new mails; a new order pops up with a price tag that drops in, swings, rings and gets ticked (brighter red and faster when urgent); both use the program theme colour.
 - Zoom (Ctrl + wheel, magnifier) is now many times faster: a zoom step took about 8 seconds, it now takes about half a second, and several quick wheel turns are added together and drawn once. The percentage on the little bar changes at once; sizes and text change first and the colours/borders follow a moment later. (The program-wide and window-wide style sheets are no longer applied again at every step; only the rail and the ribbon carry the shell's look.)
 - Mail tab: an email signature sent from another person's program (or another account of yours) could appear broken in Mail: the photo part too small and the right-hand pieces too big, with the text oversized and out of place, although it looked right in Gmail. The signature is now recognised by its pictures and laid out at its real proportions even when Gmail has removed the program's size marks from it.
 - Zoom for the whole program, like the browser: hold Ctrl and turn the mouse wheel anywhere (Mail, costing, register, invoicing, every tool), or press Ctrl + and Ctrl - (Ctrl 0 goes back to 100%). The steps are 50%, 67%, 75%, 80%, 90%, 100%, 110%, 125%, 150%, 175%, 200%, 250% and 300%. The magnifier button at the top right, next to the Online AI button, shows a small bar with - 125% + and Reset. Text, buttons, boxes, tables, the Mail list and open emails all follow, and the zoom you left it on is kept next time. The drawings, plans and maps that already zoom with Ctrl + wheel (and the PDF preview) keep doing that on their own.

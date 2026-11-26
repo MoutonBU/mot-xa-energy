@@ -3531,7 +3531,7 @@ class MailToast(_QW):
         v.setSpacing(8)
         top = _HB()
         n = len(rows)
-        top.addWidget(ToastIcon("mail", pal[4], n, size=64))                  # an envelope that flies in, opens and shows the number of new emails
+        top.addWidget(ToastIcon("mail", ACCENT[0], n, size=64))                  # an envelope that flies in, opens and shows the number of new emails
         top.addWidget(_QL("<div style='font-size:18px;font-weight:800;color:%s'>%s</div><div style='font-size:12px;color:%s'>Gmail</div>" % (
             pal[1], "New email" if n == 1 else "%d new emails" % n, pal[2])), 1)
         v.addLayout(top)
