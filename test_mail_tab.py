@@ -245,9 +245,11 @@ try:
     raise SystemExit("budget not enforced")
 except RuntimeError as e:
     assert "catching up" in str(e)
-mo._UNITS.clear(); mo._UNITS.append((_t.time(), 1000)); mo._BUDGET[0] = 8000.0
-mo._quota_hit()
+mo._UNITS.clear(); mo._UNITS.append((_t.time(), 1000)); mo._BUDGET[0] = 8000.0; _Sb = {}
+mo._quota_hit(_Sb)
 assert mo.gmail_blocked() > 20 and mo._BUDGET[0] == 600.0, (mo.gmail_blocked(), mo._BUDGET[0])
+assert _Sb["gmail_budget"] == 600.0
+mo._BUDGET[0] = 8000.0; mo._learned(_Sb); assert mo._BUDGET[0] == 600.0
 mo._BLOCK[0] = 0.0; mo._BUDGET[0] = 8000.0; mo._UNITS.clear()
 assert mo.gmail_cost("GET", "threads/abc?format=full") == 10 and mo.gmail_cost("GET", "profile") == 1
 

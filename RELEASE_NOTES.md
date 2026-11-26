@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: 1.86.295
+Current version: 1.86.296
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Mail tab starts with a lower Gmail per-minute budget and remembers the lowest limit Google has ever refused, so the quota message cannot come back after a restart.
 - Mail tab: a per-minute budget keeps the program under Gmail's limit (and learns lower if Google ever refuses), lists you have seen come back instantly while the mailbox has not changed, clicking Inbox again leaves an open email, and wide emails such as the drawing register are cut down to fit the view and re-fit when the window is resized.
 - Mail tab: pictures Qt cannot read (for example webp) now fall back to OpenCV, web pictures ask for png/jpeg first, and when a picture still cannot be read the message says what it really was.
 - Mail tab restyled to the program's own look: a rounded left column you can drag wider or narrower (it remembers the width), pill tabs for Primary/Promotions/Social/Updates, matching Home, Switch tool, pager and Light/Dark buttons; the list paints faster.
