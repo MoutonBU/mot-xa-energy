@@ -67,7 +67,7 @@ def signed_in(S, provider):
     return bool(S.get(PROVIDERS[provider]["refresh"]))
 
 
-def sign_in(S, provider, hint="", timeout=240, opener=webbrowser.open, extra_scope=""):
+def sign_in(S, provider, hint="", timeout=240, opener=webbrowser.open, extra_scope="", chooser=False):
     """Opens the browser, waits for the redirect on a local port, swaps the code for a refresh token. Returns the account's email."""
     P = PROVIDERS[provider]
     cid = _g(S, P["id"])
@@ -102,7 +102,7 @@ def sign_in(S, provider, hint="", timeout=240, opener=webbrowser.open, extra_sco
     params = {"client_id": cid, "redirect_uri": redirect, "response_type": "code", "scope": (P["scope"] + " " + extra_scope).strip(), "state": state,
               "code_challenge": _b64u(hashlib.sha256(verifier.encode()).digest()), "code_challenge_method": "S256"}
     if provider == "gmail":
-        params.update({"access_type": "offline", "prompt": "consent"})
+        params.update({"access_type": "offline", "prompt": "consent select_account" if chooser else "consent"})
         if hint:
             params["login_hint"] = hint
     elif hint:
@@ -194,10 +194,10 @@ def send(S, provider, msg, thread_id=""):
         raise RuntimeError("%s (%s)" % (err or "the mail service refused it", st))
 
 
-def sign_in_thread(S, provider, hint, done, extra_scope=""):
+def sign_in_thread(S, provider, hint, done, extra_scope="", chooser=False):
     def work():
         try:
-            done(True, sign_in(S, provider, hint, extra_scope=extra_scope) or hint)
+            done(True, sign_in(S, provider, hint, extra_scope=extra_scope, chooser=chooser) or hint)
         except Exception as e:
             done(False, str(e))
     threading.Thread(target=work, daemon=True).start()

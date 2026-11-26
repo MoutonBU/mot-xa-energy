@@ -3134,6 +3134,93 @@ class MailPulse(_QW):
         p.end()
 
 
+MAIL_ACC_COLS = ("#4aa3df", "#e2a93f", "#55b57a", "#a587e0", "#d9628f", "#f0795a", "#36b3a6", "#c08e5c")
+
+
+class MailAcct:
+    """The settings as one Gmail account of the Mail tab sees them: that account's own sign-in, address and change marker; everything else is shared.
+    The main account (the one the rest of the program uses) is passed straight through, so nothing changes for it."""
+    OWN = {"google_refresh": "refresh", "gmail_modify": "modify", "gmail_read": "read", "mail_address": "address", "mail_notify_hid": "hid"}
+
+    def __init__(self, G, acct=None):
+        self.G, self.a = G, acct
+
+    def _own(self, k):
+        return self.a is not None and not self.a.get("main") and k in self.OWN
+
+    def get(self, k, d=None):
+        if self._own(k):
+            v = self.a.get(self.OWN[k])
+            return d if v is None else v
+        if k == "mail_provider" and self.a is not None and not self.a.get("main"):
+            return "gmail"
+        return self.G.get(k, d)
+
+    def __getitem__(self, k):
+        v = self.get(k, None)
+        if v is None:
+            raise KeyError(k)
+        return v
+
+    def __setitem__(self, k, v):
+        if self._own(k):
+            self.a[self.OWN[k]] = v
+        else:
+            self.G[k] = v
+
+    def __contains__(self, k):
+        return self.get(k, None) is not None
+
+    def setdefault(self, k, d=None):
+        if k not in self:
+            self[k] = d
+        return self.get(k)
+
+    def pop(self, k, d=None):
+        v = self.get(k, d)
+        if self._own(k):
+            self.a.pop(self.OWN[k], None)
+        else:
+            self.G.pop(k, None)
+        return v
+
+
+class _AccTile(_QF):
+    """One Gmail account as a square like the ones on the home screen: a coloured initial, the address and what is waiting; click to switch, right-click for more."""
+
+    def __init__(self, letter, line1, line2, col, active, pal, click, menu=None):
+        super().__init__()
+        self._click, self._menu = click, menu
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedHeight(54)
+        self.setMinimumWidth(170)
+        self.setObjectName("acctile")
+        h = _HB(self)
+        h.setContentsMargins(10, 6, 14, 6)
+        h.setSpacing(10)
+        sq = _QL(letter)
+        sq.setFixedSize(34, 34)
+        sq.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sq.setStyleSheet("background:%s;color:#ffffff;border-radius:9px;font-weight:800;font-size:16px;" % col)
+        sq.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        lab = _QL("<b style='font-size:13px'>%s</b><br><span style='color:%s;font-size:11px'>%s</span>" % (_html.escape(line1), pal["muted"], _html.escape(line2)))
+        lab.setTextFormat(Qt.TextFormat.RichText)
+        lab.setStyleSheet("background:transparent;color:%s;" % pal["text"])
+        lab.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        h.addWidget(sq)
+        h.addWidget(lab, 1)
+        import app_shell as _as
+        bg = _as._mix(pal["rail"], col, 0.16) if active else pal["rail"]
+        self.setStyleSheet("QFrame#acctile{background:%s;border:%s;border-radius:12px;} QFrame#acctile:hover{background:%s;}" % (
+            bg, ("2px solid " + col) if active else ("1px solid " + pal["line"]), _as._mix(pal["hover"], col, 0.12)))
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.RightButton and self._menu:
+            self._menu(e.globalPosition().toPoint())
+        elif e.button() == Qt.MouseButton.LeftButton:
+            self._click()
+
+
 class MailToast(_QW):
     """The corner pop-up for new mail (like the orders one): who it is from, the subject and the first lines, with Open and Dismiss."""
     G = 14
@@ -3163,8 +3250,9 @@ class MailToast(_QW):
             pal[1], "New email" if n == 1 else "%d new emails" % n, pal[2])), 1)
         v.addLayout(top)
         for r in rows[:3]:
-            lab = _QL("<b style='font-size:14px'>%s</b><br><span style='font-size:13px'>%s</span><br><span style='color:%s;font-size:12px'>%s</span>" % (
-                _html.escape(r["from"]), _html.escape(r["subject"] or "(no subject)"), pal[2], _html.escape(r["snippet"])))
+            lab = _QL("<b style='font-size:14px'>%s</b><br><span style='font-size:13px'>%s</span><br><span style='color:%s;font-size:12px'>%s</span>%s" % (
+                _html.escape(r["from"]), _html.escape(r["subject"] or "(no subject)"), pal[2], _html.escape(r["snippet"]),
+                ("<br><span style='color:%s;font-size:11px'>to %s</span>" % (pal[4], _html.escape(r["acct"]))) if r.get("multi") and r.get("acct") else ""))
             lab.setWordWrap(True)
             lab.setTextFormat(Qt.TextFormat.RichText)
             lab.setStyleSheet("background:%s;color:%s;border-radius:9px;padding:8px 11px;" % (pal[3], pal[1]))
@@ -3218,10 +3306,14 @@ class MailPage(_QW):
     """The Mail tab: the Gmail account as a live, fast view with the program's own look. Sign-in uses the same Google permission as the rest of the program."""
     _done = _Signal(object, object, object)
     _signed = _Signal(bool, str)
+    _added = _Signal(bool, str, object)
 
     def __init__(self, host, S, is_light, get_M):
         super().__init__()
-        self.host, self.S, self.is_light, self.get_M = host, S, is_light, get_M
+        self.host, self.G, self.is_light, self.get_M = host, S, is_light, get_M
+        self._main, self._acc_tag, self._accst, self._acc_sig = {"main": True}, 0, {}, None
+        self._act = self._by_addr(S.get("mail_default")) or self._main          # the account marked as default is the one Mail opens on
+        self.S = MailAcct(S, self._act)
         import mail_oauth
         self.mo = mail_oauth
         self.label, self.query, self.cat = "INBOX", "", 0
@@ -3232,6 +3324,7 @@ class MailPage(_QW):
         self._loaded = False
         self._done.connect(lambda cb, res, err: cb(res, err))
         self._signed.connect(self._after_signin)
+        self._added.connect(self._after_added)
         self.setObjectName("mailpage")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         root = _VB(self)
@@ -3258,6 +3351,11 @@ class MailPage(_QW):
         self.set_btn.clicked.connect(self._settings_menu)
         top.addWidget(self.set_btn)
         root.addLayout(top)
+        self.acc_bar = _QW()                                      # the Gmail accounts as squares, like the home screen
+        self.acc_lay = _HB(self.acc_bar)
+        self.acc_lay.setContentsMargins(0, 0, 0, 0)
+        self.acc_lay.setSpacing(10)
+        root.addWidget(self.acc_bar)
         self.connect_box = _QF()
         cv = _VB(self.connect_box)
         self.connect_msg = _QL("")
@@ -3422,10 +3520,191 @@ class MailPage(_QW):
         self._refresh_state()
         self.restyle()
 
+    # ---------------------------------------------- several Gmail accounts: squares to switch between them, one is the default
+    def _accounts(self):
+        """[the main account (the one the whole program uses)] + the accounts added in the Mail tab."""
+        self._main["address"] = str(self.G.get("mail_address") or "")
+        self._main.setdefault("color", MAIL_ACC_COLS[0])
+        extra = [a for a in (self.G.get("mail_accounts") or []) if isinstance(a, dict) and a.get("address")]
+        return [self._main] + extra
+
+    def _by_addr(self, addr):
+        addr = str(addr or "").strip().lower()
+        if not addr:
+            return None
+        for a in self._accounts():
+            if str(a.get("address", "")).lower() == addr:
+                return a
+        return None
+
+    def _acc_key(self, a):
+        return "main" if a.get("main") else str(a.get("address", "")).lower()
+
+    def _acc_ready(self, a):
+        S = MailAcct(self.G, a)
+        return bool(self.mo.configured(S, "gmail") and self.mo.signed_in(S, "gmail") and S.get("gmail_modify"))
+
+    def _rebuild_acc_bar(self, force=False):
+        accs = self._accounts()
+        pal = self._pal()
+        dflt = self._by_addr(self.G.get("mail_default")) or self._main
+        sig = (self._acc_key(self._act), self._acc_key(dflt), self.is_light(), tuple((a.get("address"), a.get("unread"), a.get("color")) for a in accs),
+               self._counts_keep.get("INBOX") if hasattr(self, "_counts_keep") else None)
+        shown = self.ready() or len(accs) > 1
+        self.acc_bar.setVisible(shown)
+        if sig == self._acc_sig and not force:
+            return
+        self._acc_sig = sig
+        while self.acc_lay.count():
+            it = self.acc_lay.takeAt(0)
+            if it.widget():
+                it.widget().hide()
+                it.widget().deleteLater()
+        if not shown:
+            return
+        for i, a in enumerate(accs):
+            addr = str(a.get("address") or "")
+            if not addr:
+                continue
+            active = a is self._act
+            unread = ((getattr(self, "_counts_keep", {}) or {}).get("INBOX") or (0, 0))[0] if active else a.get("unread")
+            bits = []
+            if a is dflt:
+                bits.append("\u2605 default")
+            if unread:
+                bits.append("%s unread" % unread)
+            col = a.get("color") or MAIL_ACC_COLS[i % len(MAIL_ACC_COLS)]
+            t = _AccTile(addr[:1].upper() or "?", addr, "  \u00b7  ".join(bits) or "inbox", col, active, pal,
+                         lambda a=a: self._switch_account(a.get("address")), lambda pos, a=a: self._tile_menu(a, pos))
+            t.setToolTip("%s\nClick to switch to this account; right-click to make it the default" % addr)
+            self.acc_lay.addWidget(t)
+        add = _AccTile("+", "Add account", "another Gmail", "#8a9099", False, pal, self._add_account)
+        add.setMinimumWidth(150)
+        self.acc_lay.addWidget(add)
+        self.acc_lay.addStretch(1)
+
+    def _tile_menu(self, a, pos):
+        from PySide6.QtWidgets import QMenu
+        m = QMenu(self)
+        m.addAction("Switch to this account", lambda: self._switch_account(a.get("address")))
+        m.addAction("Make this my default account", lambda: self._make_default(a))
+        if not a.get("main"):
+            m.addSeparator()
+            m.addAction("Remove this account from Mail", lambda: self._remove_account(a))
+        m.exec(pos)
+
+    def _make_default(self, a):
+        self.G["mail_default"] = str(a.get("address") or "")
+        try:
+            self.get_M().save_settings()
+        except Exception:
+            pass
+        self.say("%s is now the account Mail opens on." % a.get("address"))
+        self._rebuild_acc_bar(True)
+
+    _ST_KEYS = ("_topen", "_lcache", "labels", "lcol", "_hid", "_counts_keep", "me", "label", "query", "cat", "rows", "tokens")
+
+    def _switch_account(self, addr):
+        acc = self._by_addr(addr)
+        if acc is None or acc is self._act:
+            return
+        self._accst[self._acc_key(self._act)] = {k: getattr(self, k, None) for k in self._ST_KEYS}
+        self._act = acc
+        self.S = MailAcct(self.G, acc)
+        self._acc_tag += 1
+        st = self._accst.get(self._acc_key(acc))
+        fresh = dict(_topen={}, _lcache={}, labels=[], lcol={}, _hid=None, _counts_keep={}, me="", label="INBOX", query="", cat=0, rows=[], tokens=[""])
+        for k in self._ST_KEYS:
+            setattr(self, k, (st or fresh)[k] if (st or fresh).get(k) is not None else fresh[k])
+        self._tlock, self._tpend, self._tbusy, self._qopen = {}, {}, set(), set()
+        self._pw_busy, self.cur, self.thread_view, self.msgs = False, None, None, []
+        self.gen += 1
+        self.search.blockSignals(True)
+        self.search.setText("")
+        self.search.blockSignals(False)
+        self.stack.setCurrentIndex(0)
+        self._clear_thread()
+        if not st:
+            self._disk_load()                                       # that account's last view from disk: mail on screen at once
+        self.cats.blockSignals(True)
+        self.cats.setCurrentIndex(self.cat)
+        self.cats.blockSignals(False)
+        self._loaded = False
+        self._fill_side()
+        self.rows = list(self.rows)
+        hit = self._lcache.get((self.label, "", self.cat, ""))
+        if hit:
+            self.rows, self.next_token = list(hit[0]), hit[1]
+        self._fill_list()
+        self._refresh_state()
+        self._rebuild_acc_bar(True)
+        self.ensure_loaded()
+        QTimer.singleShot(0, lambda: self.say(""))
+
+    def _add_account(self):
+        if not (self.mo.configured(self.G, "gmail") and self._main.get("address") is not None):
+            return
+        self.say("Waiting for Google in your browser: choose the Gmail account to add...")
+        scratch = dict(self.G)                                      # the new sign-in is kept apart from the program's own account
+        scratch["gmail_read"] = True
+        scratch["gmail_modify"] = True
+        scratch["google_refresh"] = ""
+        self.mo.sign_in_thread(scratch, "gmail", "", lambda ok, m: self._added.emit(ok, m, scratch), extra_scope=self.mo.GMAIL_MODIFY, chooser=True)
+
+    def _after_added(self, ok, msg, scratch):
+        if not ok or not msg:
+            self.say(msg or "adding the account did not finish", True)
+            return
+        addr = msg.strip().lower()
+        old = self._by_addr(addr)
+        if old is not None and old.get("main"):
+            self.say("%s is already your main account." % addr)
+            return
+        lst = self.G.setdefault("mail_accounts", [])
+        if old is not None:
+            old["refresh"] = scratch.get("google_refresh", "")
+            old["modify"], old["read"] = True, True
+        else:
+            used = {a.get("color") for a in self._accounts()}
+            col = next((c for c in MAIL_ACC_COLS if c not in used), MAIL_ACC_COLS[len(lst) % len(MAIL_ACC_COLS)])
+            lst.append({"address": addr, "refresh": scratch.get("google_refresh", ""), "modify": bool(scratch.get("gmail_modify", True)),
+                        "read": True, "hid": "", "color": col})
+        try:
+            self.get_M().save_settings()
+        except Exception:
+            pass
+        self._rebuild_acc_bar(True)
+        self._switch_account(addr)
+        self.say("Added %s." % addr)
+
+    def _remove_account(self, a):
+        if a.get("main"):
+            return
+        if _QMB.question(self, "Remove account", "Remove %s from the Mail tab?\nThe mail stays in Gmail; you can add the account again later." % a.get("address")) != _QMB.StandardButton.Yes:
+            return
+        if a is self._act:
+            self._switch_account(self._main.get("address"))
+        self.G["mail_accounts"] = [x for x in (self.G.get("mail_accounts") or []) if x is not a]
+        if str(self.G.get("mail_default") or "").lower() == str(a.get("address", "")).lower():
+            self.G["mail_default"] = ""
+        self._accst.pop(self._acc_key(a), None)
+        try:
+            import os as _o
+            _o.remove(self._disk_path(a))
+        except Exception:
+            pass
+        try:
+            self.get_M().save_settings()
+        except Exception:
+            pass
+        self._rebuild_acc_bar(True)
+
     # ---------------------------------------------- the last mailbox view is kept on disk, so Mail opens with mail on screen at once
-    def _disk_path(self):
+    def _disk_path(self, acc=None):
         import os as _o
-        return _o.path.join(_o.path.dirname(self.get_M().SETTINGS_PATH), "mail_cache.json")
+        acc = acc or self._act
+        nm = "mail_cache.json" if (acc is None or acc.get("main")) else "mail_cache_%s.json" % re.sub(r"[^a-z0-9]+", "_", str(acc.get("address", "")).lower())
+        return _o.path.join(_o.path.dirname(self.get_M().SETTINGS_PATH), nm)
 
     def _disk_load(self):
         import json as _j
@@ -3516,10 +3795,14 @@ class MailPage(_QW):
         self.thread_host.setStyleSheet("background:%s;" % bg)
         self.connect_box.setStyleSheet("QFrame{background:%s;border:none;}" % bg)
         self._row_cache_reset()
+        self._rebuild_acc_bar(True)
 
     def _settings_menu(self):
         from PySide6.QtWidgets import QMenu
         m = QMenu(self)
+        m.addAction("Add another Gmail account...", self._add_account)
+        m.addAction("Make this account my default", lambda: self._make_default(self._act))
+        m.addSeparator()
         m.addAction("My email signature...", self._edit_signature)
         w_ = m.addAction("Always show emails on white")
         w_.setCheckable(True)
@@ -3576,14 +3859,20 @@ class MailPage(_QW):
             QTimer.singleShot(6000, lambda: self.status.setText("") if self.status.text() == _html.escape(text) else None)
 
     # --------------------------------------------------------------- plumbing
-    def run(self, fn, cb):
+    def run(self, fn, cb, any_account=False):
+        tag = self._acc_tag
+
+        def cb2(res, err):
+            if any_account or tag == self._acc_tag:                 # an answer for an account you have since left is dropped
+                cb(res, err)
+
         def work():
             try:
                 res, err = fn(), None
             except Exception as e:
                 res, err = None, str(e)
             try:
-                self._done.emit(cb, res, err)
+                self._done.emit(cb2, res, err)
             except RuntimeError:
                 pass                                              # the window was closed while this was running
         _th.Thread(target=work, daemon=True).start()
@@ -3609,6 +3898,7 @@ class MailPage(_QW):
                 self.connect_btn.setEnabled(True)
         else:
             self.account.setText(self.S.get("mail_address", ""))
+        self._rebuild_acc_bar()
 
     def _signin(self):
         self.connect_btn.setEnabled(False)
@@ -3646,13 +3936,19 @@ class MailPage(_QW):
 
     # ------------------------------------------------------------- new-mail pop-up (works while the window is hidden in the tray)
     def _notify_tick(self):
-        S = self.S
-        if getattr(self, "_nbusy", False) or not S.get("mail_notify", True) or not self.ready() or self.mo.gmail_blocked():
+        G = self.G
+        if getattr(self, "_nbusy", False) or not G.get("mail_notify", True) or self.mo.gmail_blocked():
+            return
+        accs = [a for a in self._accounts() if self._acc_ready(a)]
+        if not accs:
             return
         self._nbusy = True
         mo = self.mo
+        due = _time.time() - self.__dict__.get("_ucnt", 0) > 20          # the unread counts on the squares are refreshed every 20 s
+        multi = len(self._accounts()) > 1
 
-        def work():
+        def one(a):
+            S = MailAcct(G, a)
             hid = S.get("mail_notify_hid")
             if not hid:
                 return mo.gmail_call(S, "GET", "profile").get("historyId", ""), []
@@ -3676,30 +3972,57 @@ class MailPage(_QW):
                 hd = {x.get("name", "").lower(): x.get("value", "") for x in g.get("payload", {}).get("headers", [])}
                 nm, ad = _parseaddr(hd.get("from", ""))
                 rows.append({"from": nm or ad or "Unknown sender", "subject": hd.get("subject", ""), "snippet": _html.unescape(g.get("snippet", ""))[:150],
-                             "tid": g.get("threadId", mid)})
+                             "tid": g.get("threadId", mid), "acct": str(S.get("mail_address", "")), "multi": multi})
             return h.get("historyId") or hid, rows
+
+        def work():
+            out = []
+            for a in accs:                                               # every account is watched, whichever one is open
+                try:
+                    hid, rows = one(a)
+                except Exception:
+                    continue
+                unread = None
+                if due and a is not self._act:
+                    try:
+                        unread = mo.gmail_call(MailAcct(G, a), "GET", "labels/INBOX").get("threadsUnread")
+                    except Exception:
+                        unread = None
+                out.append((a, hid, rows, unread))
+            return out
 
         def done(res, err):
             self._nbusy = False
+            if due:
+                self._ucnt = _time.time()
             if err or not res:
                 return
-            hid, rows = res
-            if hid:
-                S["mail_notify_hid"] = hid
-            if rows:
-                self._show_toast(rows)
-                for r_ in rows:
-                    self._topen.pop(r_.get("tid"), None)             # the read-ahead of the other conversations stays
-                if self.isVisible() and self.label == "INBOX" and not self.query and self.stack.currentIndex() == 0:
-                    self.load_labels(quiet=True)
-                    self.load_list(reset=False, quiet=True)               # the new mail is in the list the moment the pop-up shows
-        self.run(work, done)
+            allrows = []
+            for a, hid, rows, unread in res:
+                if hid:
+                    MailAcct(G, a)["mail_notify_hid"] = hid
+                if unread is not None:
+                    a["unread"] = unread
+                allrows += rows
+                if rows and a is self._act:
+                    for r_ in rows:
+                        self._topen.pop(r_.get("tid"), None)             # the read-ahead of the other conversations stays
+                    if self.isVisible() and self.label == "INBOX" and not self.query and self.stack.currentIndex() == 0:
+                        self.load_labels(quiet=True)
+                        self.load_list(reset=False, quiet=True)               # the new mail is in the list the moment the pop-up shows
+            if allrows:
+                self._show_toast(allrows)
+            self._rebuild_acc_bar()
+        self.run(work, done, any_account=True)
 
     def _show_toast(self, rows):
         try:
             w = self.window()
             if w.isActiveWindow() and self.isVisible() and self.host.main_tabs.currentWidget() is self:
-                return                                              # you are looking at the mail right now
+                here = str(self.S.get("mail_address", "")).lower()
+                rows = [r for r in rows if str(r.get("acct", "")).lower() != here]       # you are looking at this account's mail right now; another account's mail still pops up
+                if not rows:
+                    return
             old = getattr(self, "_toast", None)
             if old is not None:
                 try:
@@ -3727,6 +4050,8 @@ class MailPage(_QW):
             h.raise_()
             h.activateWindow()
             h.main_tabs.setCurrentWidget(self)
+            if row.get("acct") and str(row["acct"]).lower() != str(self.S.get("mail_address", "")).lower():
+                self._switch_account(row["acct"])                   # the mail came in on another account: open that one
             self.open_thread(row.get("tid", ""), row.get("subject", ""))
         except Exception:
             pass
@@ -4109,6 +4434,7 @@ class MailPage(_QW):
                 self.me = me.lower()
             counts = dict(getattr(self, "_counts_keep", {}), **counts)
             self._counts_keep = counts
+            QTimer.singleShot(0, self._rebuild_acc_bar)
             sg = lambda ls: [(x.get("id"), x.get("name"), (x.get("color") or {}).get("backgroundColor")) for x in ls]
             if sg(labs) != sg(self.labels):
                 self.labels = labs

@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: 1.86.329
+Current version: 1.86.330
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Mail tab: several Gmail accounts. Squares across the top of Mail (the same look as the home screen) show each account with its coloured initial, address, whether it is the default and how many unread; click one to switch at once (each account keeps its own list and opened emails in memory and on disk, so switching is instant), right-click for Make default or Remove. The square "Add account" (or Settings, Add another Gmail account) opens Google's account chooser. Accounts added here are used by the Mail tab only; the rest of the program (orders, drawing register) keeps using the account it had. Mail opens on the account you marked as default.
+- Mail tab: new-mail pop-ups now watch every account, not only the open one. The pop-up names the account the mail came in on (for example "to studio@mot.co.za"); Open switches to that account and opens the conversation. Mail that arrives on the account you are looking at does not pop up, as before. Replies are sent from the account that is open.
 - Mail tab: in a conversation, the earlier email quoted inside a reply is now hidden behind "Show quoted text" (it is already in the conversation above, drawn properly). Replies sent from older versions carried a damaged copy of it (logo gone, square corners, red bars instead of dots); that copy no longer shows unless you ask for it. This also makes long conversations open faster, because the big quoted tables are not laid out.
 - Mail tab, speed: drawing-register style emails (big tables, rounded boxes) were laid out two to three times when opened; they are now laid out once (a thread of three heavy messages went from 630 ms to 190 ms in the program's own test).
 - Mail tab, speed: the stored read-ahead of conversations was thrown away every time Gmail's change marker moved and every 90 seconds, so many opens went back to Gmail. Now only the conversations that actually received a new message lose their stored copy, and sending a reply only refreshes that conversation.

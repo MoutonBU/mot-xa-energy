@@ -648,3 +648,51 @@ _qb[0].click(); app.processEvents()
 _txt = " | ".join(b.toPlainText() for b in _live(U._AutoBrowser))
 assert _txt.count("DRAWING REGISTER") == 2 and not [b for b in _live(U._QPB) if b.text() == "Show quoted text"], _txt
 print("ok35")
+
+# several Gmail accounts: squares to switch, each with its own mail, a default, and pop-ups from the account that is not open
+mp.stack.setCurrentIndex(0)
+_save0 = M.save_settings; M.save_settings = lambda *a, **k: None          # the test must not write the real settings file
+_prev = mo.gmail_call
+_BT = {"id": "tb1", "messages": [msg(7, "Client B <c@b.com>", "Mail for B", ["INBOX", "UNREAD"])]}
+_hist = {"n": 0}
+def _fake2(S, method, path, params=None, body=None, timeout=60):
+    if S.get("google_refresh") == "rB":
+        if path == "labels": return {"labels": [{"id": "INBOX", "type": "system"}]}
+        if path == "profile": return {"emailAddress": "b@x.com", "historyId": "50"}
+        if path == "labels/INBOX": return {"threadsUnread": 7, "threadsTotal": 70}
+        if path.startswith("labels/"): return {"threadsUnread": 7, "threadsTotal": 70}
+        if path == "threads": return {"threads": [{"id": "tb1", "snippet": "B mail"}]}
+        if path == "history":
+            _hist["n"] += 1
+            return {"history": [{"messagesAdded": [{"message": {"id": "m7", "labelIds": ["INBOX"]}}]}], "historyId": "51"} if _hist["n"] == 1 else {"history": [], "historyId": "51"}
+        if path == "messages/m7": return {"threadId": "tb1", "snippet": "hello B", "payload": {"headers": [{"name": "From", "value": "Client B <c@b.com>"}, {"name": "Subject", "value": "Mail for B"}]}}
+        if path.startswith("threads/"): return _BT
+        return {}
+    return _prev(S, method, path, params, body, timeout)
+mo.gmail_call = _fake2
+S["mail_accounts"] = [{"address": "b@x.com", "refresh": "rB", "modify": True, "read": True, "hid": "", "color": "#e2a93f"}]
+S["mail_default"] = ""
+mp._rebuild_acc_bar(True); app.processEvents()
+_tiles = [mp.acc_lay.itemAt(i).widget() for i in range(mp.acc_lay.count()) if isinstance(mp.acc_lay.itemAt(i).widget(), U._AccTile)]
+assert len(_tiles) == 3, len(_tiles)                                   # me@x.com, b@x.com, + Add account
+_rowsA = [r["id"] for r in mp.rows]
+mp._switch_account("b@x.com"); assert mp.S.get("mail_address") == "b@x.com" and mp.S.get("google_refresh") == "rB" and S.get("google_refresh") == "r"
+assert wait(lambda: [r["id"] for r in mp.rows] == ["tb1"], 6), [r["id"] for r in mp.rows]
+assert wait(lambda: any(("7" in mp.side.item(i).text()) for i in range(mp.side.count())), 6)
+mp._switch_account("me@x.com"); assert [r["id"] for r in mp.rows] == _rowsA and mp.S.get("google_refresh") == "r", ([r["id"] for r in mp.rows], _rowsA)
+# default account
+mp._make_default(mp._by_addr("b@x.com")); assert S["mail_default"] == "b@x.com"
+_m2 = U.MailPage(w, S, M.light, lambda: M); assert _m2._act.get("address") == "b@x.com" and _m2.S.get("google_refresh") == "rB"; _m2.deleteLater()
+# a mail that arrives on the account that is not open pops up, naming the account, and opening it switches to it
+_got = []
+mp._show_toast = lambda rows: _got.extend(rows)
+S["mail_notify"] = True; mp._nbusy = False; S["mail_notify_hid"] = "10"; mp._by_addr("b@x.com")["hid"] = "50"
+mp._notify_tick()
+assert wait(lambda: _got, 6), "no pop-up for the other account"
+assert _got[0]["acct"] == "b@x.com" and _got[0]["subject"] == "Mail for B" and _got[0]["multi"], _got
+mp._toast_open(_got[0]); assert mp.S.get("mail_address") == "b@x.com"
+mo.gmail_call = _prev
+S["mail_accounts"] = []; S["mail_default"] = ""
+mp._switch_account("me@x.com")
+M.save_settings = _save0
+print("ok36")
