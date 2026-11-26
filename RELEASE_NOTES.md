@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: 1.86.323
+Current version: 1.86.324
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Mail tab: a reply or forward now shows the original email exactly as in the reading view (the logo, the rounded boxes and the red stripe) in its own pane below your empty pane to type in, instead of squeezing it into the editor (which lost the logo and squared the corners). Sending puts your text and signature first, then the original with its pictures. The quote is laid out again only once you stop resizing the window.
+- Mail tab: an email with a logo or a few pictures no longer flashes when it opens: the pictures are given a moment to arrive with the text, so it is drawn once (slower pictures still follow the text, as before).
 - Home screen: the cards start with Mail (top left), then Drawing register, then Orders; the other tools follow in their usual order.
 - Mail tab: reply, reply to all and forward now open with an empty line at the top to type in (the quote sits below it), without the pictures of the original (the logo and signature banner showed as two broken file boxes and made resizing the window slow and laggy). Text you type is dark on the white pane, so it can be seen.
 - Mail tab: switching between dark and light while Mail is open left it half dark (black sidebar and buttons with unreadable text on a white page). Mail now restyles itself, and redraws the open email, the moment the look is switched.

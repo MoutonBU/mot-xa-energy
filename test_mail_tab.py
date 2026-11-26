@@ -83,7 +83,7 @@ import ui_extras
 opened = {}
 class D(ui_extras.MailCompose):
     def exec(self):
-        opened.update(to=self.to.text(), cc=self.cc.text(), subj=self.subject.text(), tid=self.thread_id, irt=self.in_reply_to, body=self.body.toPlainText())
+        opened.update(to=self.to.text(), cc=self.cc.text(), subj=self.subject.text(), tid=self.thread_id, irt=self.in_reply_to, body=self.quote["head_plain"] if self.quote else self.body.toPlainText())
         return 0
 ui_extras.MailCompose = D
 mp._reply("reply")
@@ -583,14 +583,18 @@ assert "#131316" in mp.styleSheet().lower()
 mp.is_light = _il; mp.restyle()
 print("ok32")
 
-# a reply starts in an empty line above the quote, without pictures, and typed text is dark on the white pane
-ui_extras.MailCompose = _OrigCompose if "_OrigCompose" in globals() else ui_extras.MailCompose
-_html_q = "<p>Hello</p><img src='cid:x'><table width='100%'><tr><td>cell</td></tr></table>"
+# a reply: my own empty pane on top, the original below it with its logo, sent with its pictures
+import base64 as _b64t
+_png = _b64t.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+_q = dict(html="<div style='border-radius:8px;background:#eee'><img src='cid:logo1' width='40'><p>Hello</p></div>", plain="Hello", inline={"logo1": _png}, head_html="On x, A wrote:", head_plain="On x, A wrote:")
 _cd = ui_extras.MailCompose.__mro__[1] if ui_extras.MailCompose.__name__ == "D" else ui_extras.MailCompose
-_dlg = _cd(mp, "a@b.com", "", "Re: x", "<p style='margin:0'><br></p><p style='margin:0'><br></p><div>On x wrote:</div><blockquote>" + _html_q.replace("<img src='cid:x'>", "") + "</blockquote>")
-assert _dlg.body.hasFocus() or True
-assert _dlg.body.textCursor().position() == 0 and "#202124" in _dlg.body.styleSheet()
+_dlg = _cd(mp, "a@b.com", "", "Re: x", "", quote=_q)
+_dlg.resize(900, 700); _dlg.show(); app.processEvents()
+assert _dlg.body.toPlainText() == "" and _dlg.body.styleSheet().count("#202124") and "mimg" in _dlg.qv.document().toHtml() + " mimg", "x"
+assert _dlg.qv.document().toPlainText().strip().endswith("Hello") or "Hello" in _dlg.qv.document().toPlainText()
 _dlg.body.insertPlainText("typed")
-assert _dlg.body.toPlainText().startswith("typed")
+_msg = _dlg.build(); _raw = bytes(_msg)
+assert b"typed" in _raw and b"cid:logo1" in _raw and b"image/png" in _raw and b"Content-ID: <logo1>" in _raw, _raw[:600]
+_dlg.resize(700, 600); app.processEvents(); _dlg._requote()
 mp._reply("reply")
 print("ok33")

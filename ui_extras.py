@@ -2573,7 +2573,7 @@ def mail_sig_html(S):
     return _SIGC[key]
 
 
-def mail_compose(S, to="", cc="", bcc="", subject="", html_body="", plain_body="", files=(), in_reply_to="", references="", signature=True):
+def mail_compose(S, to="", cc="", bcc="", subject="", html_body="", plain_body="", files=(), in_reply_to="", references="", signature=True, quote_html="", quote_plain="", quote_inline=None):
     """The finished email: plain and HTML, my signature picture (or my signature lines) at the end, and the attachments."""
     msg = _EmailMessage()
     me = S.get("mail_address") or S.get("sig_email") or ""
@@ -2607,8 +2607,18 @@ def mail_compose(S, to="", cc="", bcc="", subject="", html_body="", plain_body="
     elif sig_text:
         html_full += "<br>-- <br>" + "<br>".join(_html.escape(x) for x in sig_text.split("\n"))
         plain_full += "\n\n-- \n" + sig_text
+    if quote_html:                                                  # the original email goes below my text and signature, as it was sent (its pictures travel with it)
+        html_full += quote_html
+        plain_full += quote_plain
     msg.set_content(plain_full or " ")
     msg.add_alternative(html_full, subtype="html")
+    _done = set()
+    for _ref in re.findall(r"(?i)cid:([^\"'\s>)]+)", quote_html or ""):
+        _data = (quote_inline or {}).get(_ref.lower())
+        _kind = mail_sniff(_data) if _data else ""
+        if _data and _ref.lower() not in _done and _kind in ("png", "jpeg", "gif", "webp"):
+            _done.add(_ref.lower())
+            msg.get_payload()[1].add_related(_data, maintype="image", subtype=_kind, cid="<%s>" % _ref, filename=_ref.split("@")[0][:40] + "." + ("jpg" if _kind == "jpeg" else _kind), disposition="inline")
     for _i, _b in enumerate(sig_jp):
         msg.get_payload()[1].add_related(_b, maintype="image", subtype="jpeg", cid="<mcpsig%d>" % _i, filename="signature%d.jpg" % _i, disposition="inline")
     import mimetypes
@@ -2839,9 +2849,10 @@ class _AutoBrowser(_QTB):
 class MailCompose(_QD):
     """New email, reply, reply to all or forward, with my signature. Sends through the Gmail account that is signed in."""
 
-    def __init__(self, page, to="", cc="", subject="", html_body="", in_reply_to="", references="", thread_id=""):
+    def __init__(self, page, to="", cc="", subject="", html_body="", in_reply_to="", references="", thread_id="", quote=None):
         super().__init__(page)
         self.page, self.S = page, page.S
+        self.quote, self._qw = quote, 0
         self.in_reply_to, self.references, self.thread_id = in_reply_to, references, thread_id
         self.files = []
         self.setWindowTitle("New message")
@@ -2894,7 +2905,37 @@ class MailCompose(_QD):
             self.body.setHtml(html_body)
             from PySide6.QtGui import QTextCursor as _TC
             self.body.moveCursor(_TC.MoveOperation.Start)
-        v.addWidget(self.body, 1)
+        if quote:
+            # a reply: my own empty pane on top, the original email below it, drawn exactly as in the reading view (logo, rounded boxes)
+            from PySide6.QtWidgets import QSplitter as _SP
+            self.body.setStyleSheet("QTextEdit{background:#ffffff;color:#202124;border:1px solid #d9dde2;border-radius:8px;padding:6px;}")
+            self.body.setPlaceholderText("Type your reply here")
+            sp = _SP(Qt.Orientation.Vertical)
+            sp.setChildrenCollapsible(False)
+            sp.addWidget(self.body)
+            host = QWidget()
+            hv = _VB(host)
+            hv.setContentsMargins(0, 0, 0, 0)
+            self.quote_lbl = _QL(quote["head_html"])
+            self.quote_lbl.setTextFormat(Qt.TextFormat.RichText)
+            self.quote_lbl.setWordWrap(True)
+            self.quote_lbl.setStyleSheet("color:#8a9099;")
+            hv.addWidget(self.quote_lbl)
+            self.qv = QTextBrowser()
+            self.qv.setOpenLinks(False)
+            self.qv.setStyleSheet("QTextBrowser{background:#ffffff;color:#202124;border:1px solid #d9dde2;border-radius:8px;padding:6px;}")
+            hv.addWidget(self.qv, 1)
+            sp.addWidget(host)
+            sp.setStretchFactor(0, 1)
+            sp.setStretchFactor(1, 3)
+            sp.setSizes([170, 430])
+            v.addWidget(sp, 1)
+            self._rq = QTimer(self)
+            self._rq.setSingleShot(True)
+            self._rq.setInterval(150)
+            self._rq.timeout.connect(self._requote)
+        else:
+            v.addWidget(self.body, 1)
         self.status = _QL("")
         self.status.setWordWrap(True)
         v.addWidget(self.status)
@@ -2908,7 +2949,25 @@ class MailCompose(_QD):
         row.addWidget(cl)
         row.addStretch(1)
         v.addLayout(row)
-        (self.body if html_body else self.subject if to else self.to).setFocus()      # a reply starts in the empty line above the quote
+        (self.body if (html_body or quote) else self.subject if to else self.to).setFocus()      # a reply starts in the empty pane above the quote
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        if self.quote:
+            self._requote()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if self.quote and self.isVisible():
+            self._rq.start()                                          # the quote is laid out again once the resizing stops, not at every step
+
+    def _requote(self):
+        q = self.quote
+        w = max(320, self.qv.viewport().width() - 24)
+        if not q or abs(w - self._qw) < 30:
+            return
+        self._qw = w
+        self.qv.setHtml(mail_fix_images(q["html"], self.qv.document(), q["inline"], bool(self.S.get("mail_images")), w))
 
     def _show_cc(self):
         for k in ("cc", "bcc"):
@@ -2923,8 +2982,16 @@ class MailCompose(_QD):
             self.att_lbl.setText("Attached: " + ", ".join(os.path.basename(f) for f in self.files))
 
     def build(self):
+        q = self.quote
+        extra = {}
+        if q:
+            qp = q["plain"] or _html.unescape(re.sub(r"(?is)<(br|/p|/div|/tr)\b[^>]*>", "\n", re.sub(r"(?is)<(style|script)\b.*?</\1>", "", q["html"])))
+            qp = re.sub(r"<[^>]+>", "", qp)
+            extra = dict(quote_html="<br><div style='color:#5f6368;font-family:Arial,sans-serif;font-size:13px'>%s</div><blockquote style='margin:0 0 0 8px;border-left:2px solid #bbb;padding-left:10px'>%s</blockquote>" % (q["head_html"], q["html"]),
+                         quote_plain="\n\n" + q["head_plain"] + "\n" + "\n".join("> " + x for x in qp.strip().splitlines()),
+                         quote_inline=q["inline"])
         return mail_compose(self.S, self.to.text().strip(), self.cc.text().strip(), self.bcc.text().strip(), self.subject.text().strip(),
-                            self._html(), self.body.toPlainText(), self.files, self.in_reply_to, self.references, self.sig.isChecked())
+                            self._html(), self.body.toPlainText(), self.files, self.in_reply_to, self.references, self.sig.isChecked(), **extra)
 
     def _html(self):
         h = self.body.toHtml()
@@ -4544,7 +4611,12 @@ class MailPage(_QW):
         QTimer.singleShot(10000, lambda: self._slow_open(tid, subject))
 
         def work():
-            return self._fetch_thread(tid)
+            out = self._fetch_thread(tid)
+            if len(self._tpend.get(tid) or ()) <= 6:                 # a few pictures (a logo): given a moment to come with the text, so the email is drawn once and does not jump
+                _w = _th.Thread(target=lambda: self._thread_images(tid), daemon=True)
+                _w.start()
+                _w.join(0.7)                                         # slower than that: the text goes first and the pictures follow
+            return out
 
         _t_open = _time.time()
 
@@ -4845,19 +4917,18 @@ class MailPage(_QW):
         subj2 = subj if re.match(r"(?i)\s*(re|fwd?):", subj) else pre + subj
         when = mail_date_text(m.get("internalDate", 0))
         quote = html or "<pre style='font-family:Arial;white-space:pre-wrap'>%s</pre>" % _html.escape(plain or "")
-        quote = re.sub(r"(?is)<(script|style|iframe|object|embed|link|svg)\b.*?(</\1>|/>)", "", quote)
-        quote = re.sub(r"(?is)<img\b[^>]*>", "", quote)                    # pictures (logo, signature banner) stay out of the quote: broken boxes and a slow, laggy window
-        quote = re.sub(r"(?i)\s(width|height)\s*=\s*[\"']?\d+%[\"']?", "", quote)
+        quote = re.sub(r"(?is)<(script|iframe|object|embed|link)\b.*?(</\1>|/>)", "", quote)
         if kind == "forward":
-            head = "<p style='margin:0'><br></p><p style='margin:0'><br></p><div style='color:#5f6368'>---------- Forwarded message ----------<br>From: %s<br>Date: %s<br>Subject: %s<br>To: %s<br><br>" % (
-                _html.escape(mail_header(m, "From")), _html.escape(mail_header(m, "Date")), _html.escape(subj), _html.escape(mail_header(m, "To")))
-            body = head + "</div><br>" + quote
+            hd_ = [("From", mail_header(m, "From")), ("Date", mail_header(m, "Date")), ("Subject", subj), ("To", mail_header(m, "To"))]
+            head_html = "---------- Forwarded message ----------<br>" + "<br>".join("%s: %s" % (k_, _html.escape(v_)) for k_, v_ in hd_)
+            head_plain = "---------- Forwarded message ----------\n" + "\n".join("%s: %s" % x for x in hd_)
             to = ""
         else:
-            body = "<p style='margin:0'><br></p><p style='margin:0'><br></p><div style='color:#5f6368'>On %s, %s wrote:</div><blockquote style='margin:0 0 0 8px;border-left:2px solid #bbb;padding-left:10px'>%s</blockquote>" % (
-                _html.escape(when), _html.escape(mail_name(mail_header(m, "From"))), quote)
-        d = MailCompose(self, to, cc, subj2, body, in_reply_to=mail_header(m, "Message-ID") or mail_header(m, "Message-Id"),
-                        references=mail_header(m, "References"), thread_id="" if kind == "forward" else (self.thread_view or {}).get("id", ""))
+            head_html = "On %s, %s wrote:" % (_html.escape(when), _html.escape(mail_name(mail_header(m, "From"))))
+            head_plain = "On %s, %s wrote:" % (when, mail_name(mail_header(m, "From")))
+        q_ = dict(html=quote, plain=plain or "", inline=inline, head_html=head_html, head_plain=head_plain)
+        d = MailCompose(self, to, cc, subj2, "", in_reply_to=mail_header(m, "Message-ID") or mail_header(m, "Message-Id"),
+                        references=mail_header(m, "References"), thread_id="" if kind == "forward" else (self.thread_view or {}).get("id", ""), quote=q_)
         d.exec()
 
     def compose(self):
