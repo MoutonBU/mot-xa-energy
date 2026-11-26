@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: 1.86.331
+Current version: 1.86.332
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Mail tab: the scroll bars now match the theme: slim, rounded, no arrow buttons, tinted with the open account's colour when you hover them. The side panel no longer has a sideways bar; long label names end in "..." instead.
 - Mail tab: each Gmail account now has its own colour and can have its own profile photo. Switching to an account (for example the yellow one) tints the whole Mail tab in that colour: buttons, selection, tabs and the new-mail pop-up. Right-click an account square, Choose profile photo, to put a picture on it (it is cropped to a square and shown on the square instead of the letter); Remove profile photo and Account colour (eight colours) are in the same menu.
 - Mail tab: several Gmail accounts. Squares across the top of Mail (the same look as the home screen) show each account with its coloured initial, address, whether it is the default and how many unread; click one to switch at once (each account keeps its own list and opened emails in memory and on disk, so switching is instant), right-click for Make default or Remove. The square "Add account" (or Settings, Add another Gmail account) opens Google's account chooser. Accounts added here are used by the Mail tab only; the rest of the program (orders, drawing register) keeps using the account it had. Mail opens on the account you marked as default.
 - Mail tab: new-mail pop-ups now watch every account, not only the open one. The pop-up names the account the mail came in on (for example "to studio@mot.co.za"); Open switches to that account and opens the conversation. Mail that arrives on the account you are looking at does not pop up, as before. Replies are sent from the account that is open.

@@ -3402,6 +3402,9 @@ class MailPage(_QW):
         self.side = _QLW()
         self.side.setFrameShape(_QF.Shape.NoFrame)
         self.side.setIconSize(_QSize(14, 14))
+        self.side.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)   # long label names are cut with ... instead of a sideways bar
+        self.side.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.side.setVerticalScrollMode(_AIV.ScrollMode.ScrollPerPixel)
         self.side.currentItemChanged.connect(self._side_changed)
         self.side.itemClicked.connect(self._side_clicked)
         self.side.viewport().installEventFilter(self)
@@ -3857,7 +3860,15 @@ class MailPage(_QW):
             "#mailpage QTabBar::tab:hover{background:%(hover)s;color:%(fg)s;} "
             "#mailpage QTabBar::tab:selected{background:%(sel)s;color:%(fg)s;border:1px solid %(hotline)s;font-weight:700;} "
             "#mailpage QLineEdit{background:%(rail)s;color:%(fg)s;border:1px solid %(pline)s;border-radius:10px;padding:6px 12px;} "
-            "#mailpage QLineEdit:focus{border:1px solid %(accent)s;}" %
+            "#mailpage QLineEdit:focus{border:1px solid %(accent)s;}" 
+            "#mailpage QScrollBar:vertical{background:transparent;width:10px;margin:4px 2px;border:none;} "
+            "#mailpage QScrollBar:horizontal{background:transparent;height:10px;margin:2px 4px;border:none;} "
+            "#mailpage QScrollBar::handle:vertical{background:%(pline)s;border-radius:3px;min-height:36px;margin:0 1px;} "
+            "#mailpage QScrollBar::handle:horizontal{background:%(pline)s;border-radius:3px;min-width:36px;margin:1px 0;} "
+            "#mailpage QScrollBar::handle:vertical:hover,#mailpage QScrollBar::handle:horizontal:hover{background:%(accent)s;} "
+            "#mailpage QScrollBar::add-line,#mailpage QScrollBar::sub-line{width:0;height:0;background:none;border:none;} "
+            "#mailpage QScrollBar::add-page,#mailpage QScrollBar::sub-page{background:transparent;} "
+            "#mailpage QAbstractScrollArea::corner{background:transparent;} " %
             dict(bg=bg, fg=fg, line=line, rail=p["rail"], pline=p["line"], accent=p["accent"], hover=p["hover"], muted=p["muted"], sel=p["sel"], hotline=p["hotline"]))
         self.cats.setDrawBase(False)
         self.compose_btn.setStyleSheet("QPushButton{background:%s;color:#ffffff;font-weight:700;font-size:14px;padding:14px 22px;border-radius:12px;text-align:left;border:none;} "
