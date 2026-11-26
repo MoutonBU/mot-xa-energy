@@ -700,3 +700,212 @@ def install_shell(win, make_icon, light_fn):
     restyle()
     refresh()
     return rail, ribbon
+
+
+# ------------------------------------------------------------------ zoom: Ctrl + mouse wheel, like the browser
+import re as _re
+ZOOM = [1.0]                                           # the whole program's zoom factor (1.0 = 100%)
+ZOOM_STEPS = (0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0)
+_ZPX = _re.compile(r"(?<![\w.#-])(\d+(?:\.\d+)?)px(?!_r)")
+_ZRAD = _re.compile(r"(border(?:-[a-z]+)*-radius\s*:\s*)(\d+(?:\.\d+)?)px")
+_ZFONT = [None]                                        # the program's normal font before any zoom
+_ZSAVE = [None]                                        # called with the factor when it changes (the program stores it)
+
+
+def zs(css):
+    """Style sheet text with every size in pixels multiplied by the zoom (hairlines stay one pixel)."""
+    f = ZOOM[0]
+    if not isinstance(css, str) or abs(f - 1.0) < 0.001 or "px" not in css:
+        return css
+
+    def r(m):
+        v = float(m.group(1))
+        return m.group(0) if v <= 1.0 else "%dpx" % max(1, round(v * f))
+    css = _ZRAD.sub(lambda m: "%s%dpx_r" % (m.group(1), max(1, round(float(m.group(2)) * (f ** 0.5)))) if float(m.group(2)) > 1 else m.group(0), css)   # corners grow less than the text
+    return _ZPX.sub(r, css).replace("px_r", "px")
+
+
+def zn(n):
+    """A size in pixels at the current zoom (for things the program draws itself)."""
+    return int(round(n * ZOOM[0]))
+
+
+def _zw(w, force=False):
+    """Bring one widget to the current zoom: its fixed sizes, margins, spacing, fonts and style sheet (once per zoom level)."""
+    d = w.__dict__
+    f = ZOOM[0]
+    if d.get("_zf", 1.0) == f and not force:
+        return
+    try:
+        if w.window().__dict__.get("_zskip"):                 # the zoom bar itself keeps its size
+            return
+    except Exception:
+        pass
+    from PySide6.QtWidgets import QLabel as _L
+    b = d.get("_zb")
+    if b is None:
+        lay = w.layout()
+        b = d["_zb"] = dict(
+            mn=(w.minimumWidth(), w.minimumHeight()), mx=(w.maximumWidth(), w.maximumHeight()),
+            font=(w.font() if w.testAttribute(Qt.WidgetAttribute.WA_SetFont) else None),
+            lay=((lay.contentsMargins().left(), lay.contentsMargins().top(), lay.contentsMargins().right(), lay.contentsMargins().bottom(), lay.spacing())
+                 if lay is not None else None),
+            icon=(w.iconSize() if hasattr(w, "iconSize") else None),
+            hdr=((w.horizontalHeader().defaultSectionSize(), w.verticalHeader().defaultSectionSize()) if hasattr(w, "verticalHeader") and hasattr(w, "horizontalHeader") else None))
+    BIG = 16777215
+    try:
+        mn, mx = b["mn"], b["mx"]
+        if mn[0] or mn[1]:
+            w.setMinimumSize(int(round(mn[0] * f)), int(round(mn[1] * f)))
+        if mx[0] < BIG or mx[1] < BIG:
+            w.setMaximumSize(BIG if mx[0] >= BIG else int(round(mx[0] * f)), BIG if mx[1] >= BIG else int(round(mx[1] * f)))
+        if b["font"] is not None:
+            ft = type(b["font"])(b["font"])
+            if ft.pixelSize() > 0:
+                ft.setPixelSize(max(1, int(round(ft.pixelSize() * f))))
+            elif ft.pointSizeF() > 0:
+                ft.setPointSizeF(ft.pointSizeF() * f)
+            w.setFont(ft)
+        if b["lay"] is not None:
+            lay = w.layout()
+            l_, t_, r_, bt_, sp_ = b["lay"]
+            lay.setContentsMargins(int(round(l_ * f)), int(round(t_ * f)), int(round(r_ * f)), int(round(bt_ * f)))
+            if sp_ >= 0:
+                lay.setSpacing(int(round(sp_ * f)))
+        if b["icon"] is not None and b["icon"].width() > 0:
+            w.setIconSize(QSize(int(round(b["icon"].width() * f)), int(round(b["icon"].height() * f))))
+        if b["hdr"] is not None:
+            w.horizontalHeader().setDefaultSectionSize(max(8, int(round(b["hdr"][0] * f))))
+            w.verticalHeader().setDefaultSectionSize(max(8, int(round(b["hdr"][1] * f))))
+        css = d.get("_zcss")
+        from PySide6.QtWidgets import QPushButton as _PB
+        fixedw = isinstance(w, _PB) and bool(w.text()) and b["mn"][0] > 0 and b["mn"][0] == b["mx"][0]
+        if css is not None or fixedw:
+            extra = "\nQPushButton{padding-left:2px;padding-right:2px;}" if (fixedw and f != 1.0) else ""     # a small fixed-width button (like < >) keeps room for its text
+            _REAL_SS[0](w, (zs(css) if css else "") + extra)
+        if isinstance(w, _L) and d.get("_raw_txt") and "px" in d["_raw_txt"]:
+            _L.setText(w, zs(_LT[0](d["_raw_txt"])))
+    except Exception:
+        pass
+    d["_zf"] = f
+
+
+_REAL_SS = [None]            # the real QWidget.setStyleSheet (set by the program)
+_LT = [lambda t: t]          # the program's light-mode text translation
+
+
+def install_zoom(app, win, real_set_ss, lt, save=None):
+    """Hook the zoom into the program: Ctrl + wheel anywhere, Ctrl + / - / 0, and every widget that is shown follows the zoom."""
+    from PySide6.QtCore import QEvent, QObject
+    from PySide6.QtGui import QFont, QKeySequence, QShortcut
+    _REAL_SS[0], _LT[0], _ZSAVE[0] = real_set_ss, lt, save
+    _ZFONT[0] = QFont(app.font())
+
+    def custom_wheel(w):
+        """A drawing or map that zooms itself with Ctrl + wheel keeps doing so."""
+        c = w
+        while c is not None:
+            if getattr(c, "_own_zoom", False):
+                return True
+            c = c.parentWidget()
+        return False
+
+    class F(QObject):
+        acc = 0
+
+        def eventFilter(s, obj, ev):
+            t = ev.type()
+            if t == QEvent.Type.Show and isinstance(obj, QWidget):
+                if obj.__dict__.get("_zf", 1.0) != ZOOM[0]:
+                    _zw(obj)
+            elif t == QEvent.Type.Wheel and isinstance(obj, QWidget) and (ev.modifiers() & Qt.KeyboardModifier.ControlModifier):
+                if custom_wheel(obj):
+                    return False
+                s.acc += ev.angleDelta().y()
+                n = int(s.acc / 120)
+                if n:
+                    s.acc -= n * 120
+                    step_zoom(1 if n > 0 else -1, abs(n))
+                return True
+            return False
+    flt = F(app)
+    app.installEventFilter(flt)
+    win._zoom_filter = flt
+    for key, fn in (("Ctrl++", lambda: step_zoom(1)), ("Ctrl+=", lambda: step_zoom(1)), ("Ctrl+-", lambda: step_zoom(-1)), ("Ctrl+0", lambda: set_zoom(1.0))):
+        sc = QShortcut(QKeySequence(key), win)
+        sc.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        sc.activated.connect(fn)
+        win.__dict__.setdefault("_zoom_keys", []).append(sc)
+    win._zoom_app = app
+
+
+def step_zoom(sign, n=1):
+    f = ZOOM[0]
+    for _ in range(max(1, n)):
+        if sign > 0:
+            f = next((v for v in ZOOM_STEPS if v > f + 0.001), ZOOM_STEPS[-1])
+        else:
+            f = next((v for v in reversed(ZOOM_STEPS) if v < f - 0.001), ZOOM_STEPS[0])
+    set_zoom(f)
+
+
+def set_zoom(f, announce=True):
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance()
+    f = max(ZOOM_STEPS[0], min(ZOOM_STEPS[-1], float(f)))
+    if abs(f - ZOOM[0]) < 0.001:
+        if announce:
+            _announce()
+        return
+    ZOOM[0] = f
+    base = _ZFONT[0]
+    if base is not None:
+        ft = type(base)(base)
+        if ft.pointSizeF() > 0:
+            ft.setPointSizeF(ft.pointSizeF() * f)
+        elif ft.pixelSize() > 0:
+            ft.setPixelSize(max(1, int(round(ft.pixelSize() * f))))
+        app.setFont(ft)
+    raw = app.__dict__.get("_zraw") if hasattr(app, "__dict__") else None
+    if raw is not None:
+        _REAL_APP_SS[0](app, zs(raw))
+    ws = [w for w in app.allWidgets() if w.isVisible()]
+    tops = [w for w in ws if w.isWindow()]
+    for t in tops:
+        t.setUpdatesEnabled(False)
+    try:
+        for w in ws:
+            _zw(w, True)
+        for w in app.allWidgets():
+            if hasattr(w, "_on_zoom"):
+                try:
+                    w._on_zoom()
+                except Exception:
+                    pass
+    finally:
+        for t in tops:
+            t.setUpdatesEnabled(True)
+            t.update()
+    if _ZSAVE[0]:
+        try:
+            _ZSAVE[0](f)
+        except Exception:
+            pass
+    if announce:
+        _announce()
+
+
+_REAL_APP_SS = [None]
+_ANNOUNCE = [None]
+
+
+def _announce():
+    if _ANNOUNCE[0]:
+        try:
+            _ANNOUNCE[0]()
+        except Exception:
+            pass
+
+
+def zoom_pct():
+    return "%d%%" % round(ZOOM[0] * 100)

@@ -12,6 +12,7 @@ UNITS = (("millimetres", 0.001), ("centimetres", 0.01), ("metres", 1.0))
 
 
 class Preview(QWidget):
+    _own_zoom = True                                 # Ctrl + wheel zooms this drawing, not the whole program
     def __init__(self, dlg):
         super().__init__()
         self.dlg = dlg

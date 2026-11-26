@@ -3068,14 +3068,39 @@ class QLabel(_QtW.QLabel):
     def __init__(self, *a, **k):
         if a and isinstance(a[0], str):
             self._raw_txt = a[0]
-        super().__init__(*[_lt(x) for x in a], **k)
+        super().__init__(*[_zsh.zs(_lt(x)) for x in a], **k)
 
     def setText(self, t):
         self._raw_txt = t if isinstance(t, str) else None
-        super().setText(_lt(t))
+        super().setText(_zsh.zs(_lt(t)))
 
 
-_orig_setSS = _QtW.QWidget.setStyleSheet
+_real_setSS = _QtW.QWidget.setStyleSheet
+import app_shell as _zsh
+
+
+def _orig_setSS(w, css):
+    """Every style sheet of the program passes here: the sizes in pixels follow the zoom (Ctrl + wheel)."""
+    try:
+        w.__dict__["_zcss"] = css
+    except Exception:
+        pass
+    _real_setSS(w, _zsh.zs(css))
+
+
+_real_app_ss = _QtW.QApplication.setStyleSheet
+
+
+def _app_set_ss(self, css):
+    try:
+        self.__dict__["_zraw"] = css
+    except Exception:
+        pass
+    _real_app_ss(self, _zsh.zs(css))
+
+
+_QtW.QApplication.setStyleSheet = _app_set_ss
+_zsh._REAL_APP_SS[0] = _real_app_ss
 
 
 def _set_ss(self, t):
@@ -4849,6 +4874,7 @@ class ProvTabs(_QTabBar):
 
 
 class CompassWidget(QWidget):
+    _own_zoom = True                                 # Ctrl + wheel zooms this drawing, not the whole program
     """Draggable north arrow. angle = degrees clockwise from the top of the plan."""
     changed = Signal(float)
     def __init__(self, angle=0.0, parent=None):
@@ -8446,6 +8472,7 @@ ZA_ZONE_COLOURS = {"1": "#b9873a", "2": "#6f9a62", "3": "#b04a2c", "4": "#4f86b0
 
 
 class ZaZoneMap(QWidget):
+    _own_zoom = True                                 # Ctrl + wheel zooms this drawing, not the whole program
     """Clickable map of South Africa. Shading comes from the SANS 10400-XA Annex C town table (each spot takes
     the zone of the nearest listed town); borders are the nine provinces. Click anywhere to pick the province
     and the nearest listed town, which sets the energy zone."""
@@ -13325,13 +13352,13 @@ class MainWindow(QMainWindow):
             try:
                 d_ = w_.__dict__
                 if d_.get("_raw_txt") is not None and isinstance(w_, QLabel):
-                    _QtW.QLabel.setText(w_, _lt(d_["_raw_txt"]))
+                    _QtW.QLabel.setText(w_, _zsh.zs(_lt(d_["_raw_txt"])))
                 raw_ = d_.get("_raw_ss")
                 if raw_ and studio() and not w_.isVisible():
                     d_["_ss_stale"] = True               # restyled when it is shown
                 elif raw_:
                     new_ = _lt(raw_)
-                    if new_ != w_.styleSheet():          # restyling is the slow part: skip what did not change
+                    if _zsh.zs(new_) != w_.styleSheet():          # restyling is the slow part: skip what did not change
                         _orig_setSS(w_, new_)
                         d_.pop("_thk", None)
             except Exception:
@@ -21707,6 +21734,7 @@ Energy Efficiency Report (SANS 10400-XA)</span><br>
                 return False
         wheel = _Wheel(d)
         scroll.viewport().installEventFilter(wheel)
+        scroll.viewport()._own_zoom = True                    # this viewer zooms its own page with Ctrl + wheel
         zin.clicked.connect(lambda: step(1))
         zout.clicked.connect(lambda: step(-1))
         zbox.activated.connect(lambda _i: apply_zoom())
@@ -22442,6 +22470,67 @@ class GlassCard(QFrame):
         p.drawPath(path)
 
 
+def _zoom_icon_set(win):
+    """The magnifier drawn on the button (dark or light look)."""
+    from PySide6.QtGui import QPainter as _P, QPen as _Pn, QPixmap as _Pm, QIcon as _Ic, QColor as _C
+    col = _C("#2a2d33") if light() else _C("#eceef0")
+    pm = _Pm(40, 40)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = _P(pm)
+    p.setRenderHint(_P.RenderHint.Antialiasing, True)
+    p.setPen(_Pn(col, 3.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+    p.drawEllipse(7, 7, 18, 18)
+    p.drawLine(23, 23, 33, 33)
+    p.setPen(_Pn(col, 2.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+    p.drawLine(12, 16, 20, 16)
+    p.drawLine(16, 12, 16, 20)
+    p.end()
+    win.zoom_btn.setIcon(_Ic(pm))
+    win.zoom_btn.setIconSize(QSize(18, 18))
+
+
+def _zoom_bubble(win, toggle=False):
+    """The little bar under the magnifier (like the browser's): - 125% + Reset. It shows while you zoom and goes away by itself."""
+    b = getattr(win, "_zoom_box", None)
+    if b is not None and b.isVisible() and toggle:
+        b.hide()
+        return
+    if b is None:
+        from PySide6.QtWidgets import QFrame as _F, QHBoxLayout as _H
+        b = win._zoom_box = _F(win, Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
+        b.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        b._zskip = True
+        h = _H(b)
+        h.setContentsMargins(8, 6, 8, 6)
+        h.setSpacing(6)
+        b._minus, b._plus, b._reset = QPushButton("\u2212"), QPushButton("+"), QPushButton("Reset")
+        b._pct = QLabel("100%")
+        b._pct.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        b._pct.setMinimumWidth(48)
+        for x, wd in ((b._minus, 30), (b._plus, 30), (b._reset, 54)):
+            x.setFixedSize(wd, 26)
+            x.setCursor(Qt.CursorShape.PointingHandCursor)
+        b._minus.clicked.connect(lambda _c=False: _zsh.step_zoom(-1))
+        b._plus.clicked.connect(lambda _c=False: _zsh.step_zoom(1))
+        b._reset.clicked.connect(lambda _c=False: _zsh.set_zoom(1.0))
+        h.addWidget(b._minus)
+        h.addWidget(b._pct)
+        h.addWidget(b._plus)
+        h.addWidget(b._reset)
+        b.setStyleSheet("QFrame{background:#1d2025;border:1px solid #3a3f46;border-radius:12px;} QLabel{color:#eceef0;font-weight:700;border:none;background:transparent;} "
+                        "QPushButton{background:#2a2e35;color:#eceef0;border:1px solid #3a3f46;border-radius:9px;font-weight:600;} QPushButton:hover{background:#363b44;}")
+        b._t = QTimer(b)
+        b._t.setSingleShot(True)
+        b._t.timeout.connect(b.hide)
+    b._pct.setText(_zsh.zoom_pct())
+    b.adjustSize()
+    g = win.zoom_btn.mapToGlobal(win.zoom_btn.rect().bottomRight())
+    b.move(g.x() - b.width() + 4, g.y() + 6)
+    b.show()
+    b.raise_()
+    b._t.start(2600)
+
+
 def apply_glass_theme(app, win):
     app.setStyle("Fusion")
     if studio():
@@ -22483,6 +22572,15 @@ def apply_glass_theme(app, win):
     spacer.setCursor(Qt.CursorShape.PointingHandCursor)
     spacer.clicked.connect(win.toggle_mode)
     win.mode_btn = spacer
+    zb_ = QPushButton()                       # the magnifier: zoom the whole program (also Ctrl + mouse wheel, Ctrl + and Ctrl -, Ctrl 0)
+    zb_.setFixedSize(28, 26)
+    zb_.setCursor(Qt.CursorShape.PointingHandCursor)
+    zb_.setToolTip("Zoom the whole program: Ctrl + mouse wheel (Ctrl + / Ctrl - / Ctrl 0)")
+    zb_.setStyleSheet("QPushButton{padding:0px;background:#17171b;border:1px solid #26262c;border-radius:12px;} QPushButton:hover{background:#1f1f24;}")
+    win.zoom_btn = zb_
+    win._zoom_icon = lambda w_=win: _zoom_icon_set(w_)
+    _zoom_icon_set(win)
+    zb_.clicked.connect(lambda _c=False, w_=win: _zoom_bubble(w_, toggle=True))
     mid = QVBoxLayout()
     mid.setSpacing(4)
     mark = QLabel()
@@ -22506,14 +22604,28 @@ def apply_glass_theme(app, win):
     # both sides get the same width, so the logo sits exactly over the middle of the page
     lw_, rw_ = QWidget(), QWidget()
     for w_, wid_, al_ in ((lw_, spacer, Qt.AlignmentFlag.AlignLeft), (rw_, pill, Qt.AlignmentFlag.AlignRight)):
-        w_.setFixedWidth(170)
+        w_.setFixedWidth(206)
         hl_ = QHBoxLayout(w_)
         hl_.setContentsMargins(0, 0, 0, 0)
-        hl_.addWidget(wid_, 0, al_ | Qt.AlignmentFlag.AlignTop)
+        hl_.setSpacing(6)
+        if w_ is rw_:
+            hl_.addStretch(1)
+            hl_.addWidget(zb_, 0, Qt.AlignmentFlag.AlignTop)                # next to the Online AI button, top right
+            hl_.addWidget(wid_, 0, Qt.AlignmentFlag.AlignTop)
+        else:
+            hl_.addWidget(wid_, 0, al_ | Qt.AlignmentFlag.AlignTop)
     head.addWidget(lw_, 0, Qt.AlignmentFlag.AlignTop)
     head.addLayout(mid, 1)
     head.addWidget(rw_, 0, Qt.AlignmentFlag.AlignTop)
     lay.addLayout(head)
+    _zsh.install_zoom(app, win, _real_setSS, _lt, save=lambda f: (SETTINGS.__setitem__("ui_zoom", f), save_settings()))
+    _zsh._ANNOUNCE[0] = lambda w_=win: _zoom_bubble(w_)
+    try:
+        _z0 = float(SETTINGS.get("ui_zoom") or 1.0)
+        if abs(_z0 - 1.0) > 0.001:
+            _zsh.set_zoom(_z0, announce=False)            # the zoom you left it on
+    except Exception:
+        pass
     win.refresh_mode_pill()
     win._pill_timer = QTimer(win)                    # searches run in the background: keep the balance on the button up to date
     win._pill_timer.timeout.connect(win.refresh_mode_pill)

@@ -438,6 +438,7 @@ def _norm(s):
 
 
 class PlanView(QGraphicsView):
+    _own_zoom = True                                 # Ctrl + wheel zooms this drawing, not the whole program
     room_clicked = Signal(object)           # the room (its dict)
 
     def __init__(self):

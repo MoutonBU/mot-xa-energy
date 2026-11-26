@@ -249,6 +249,7 @@ class NoteEdit(_QPTE):
 
 
 class View(QGraphicsView):
+    _own_zoom = True                                 # Ctrl + wheel zooms this drawing, not the whole program
     """Detail preview. Drag = move the drawing, wheel = zoom, click a note = select it (Ctrl adds),
     Shift+drag = select every note in a box, Delete = remove the selected notes, F = fit, Esc = clear."""
     clicked = Signal(float, float, int)      # x, y (drawing units), 1 = left / 2 = right

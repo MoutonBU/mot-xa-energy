@@ -1773,6 +1773,7 @@ class SpinPic(QWidget):
 
 # ==================================================================== Mail tab: a live view of the Gmail account
 # Nothing is downloaded or kept: every list and message is fetched from Gmail when it is opened and drawn on screen.
+import app_shell as _ZSH
 import base64 as _b64
 import datetime as _dt
 import html as _html
@@ -2098,6 +2099,7 @@ def mail_fix_images(body, doc, inline, remote_ok, maxw=700):
     """Make every picture in an email either show or vanish (never Qt's big grey 'missing picture' box).
     cid: pictures come from the attachments, data: pictures are decoded, web pictures show only when fetched (inline['url:...'])."""
     seen = {}
+    body = _ZSH.zs(body)                                      # the program's zoom (Ctrl + wheel) makes the email's own sizes bigger or smaller too
     cm = [int(x) for x in re.findall(r"(?is)(?<![-\w])max-width\s*:\s*(\d+)\s*px", body)]
     cm = [x for x in cm if x >= 300]
     imgw = max(cm) if cm and max(cm) < maxw else maxw          # pictures never wider than the email's own column
@@ -2687,13 +2689,14 @@ class _MailRow(_QSID):
         self.page = page
 
     def sizeHint(self, opt, idx):
-        return _QSize(400, self.H)
+        return _QSize(400, _ZSH.zn(self.H))
 
     def _cols(self, r):
         return QRect(r.left() + 26, r.top() + 12, 20, 20), QRect(r.left() + 56, r.top() + 10, 24, 24)
 
     def _st(self, opt):
-        key = (opt.font.toString(), self.page.is_light())
+        z = _ZSH.ZOOM[0]
+        key = (opt.font.toString(), self.page.is_light(), z)
         if getattr(self, "_key", None) != key:
             self._key = key
             bg, fg, mute, line = self.page.colors()
@@ -2702,6 +2705,9 @@ class _MailRow(_QSID):
             fb = _QFont(opt.font)
             fb.setBold(True)
             fs = _QFont(opt.font)
+            for ft_ in (fn, fb, fs):                              # the row is drawn at the zoom with a transform: its fonts stay at the unzoomed size
+                if z != 1.0 and ft_.pointSizeF() > 0:
+                    ft_.setPointSizeF(ft_.pointSizeF() / z)
             fs.setPointSizeF(fs.pointSizeF() + 2)
             self._c = dict(fg=QColor(fg), mute=QColor(mute), line=QColor(line), red=QColor("#4aa3df"), white=QColor("#ffffff"), gold=QColor("#e0a800"),
                            pen_mute=QPen(QColor(mute), 1.4), pen_white=QPen(QColor("#ffffff"), 2), pen_line=QPen(QColor(line)),
@@ -2716,6 +2722,11 @@ class _MailRow(_QSID):
         sel = bool(opt.state & QStyle_State_Selected)
         hov = bool(opt.state & QStyle_State_MouseOver)
         p.save()
+        z = _ZSH.ZOOM[0]
+        if z != 1.0:
+            p.translate(r.topLeft())
+            p.scale(z, z)
+            r = QRect(0, 0, int(r.width() / z) + 1, int(r.height() / z) + 1)
         p.fillRect(r, c["rows"][(int(unread), int(sel), int(hov))])
         p.setPen(c["pen_line"])
         p.drawLine(r.left(), r.bottom(), r.right(), r.bottom())
@@ -2772,8 +2783,14 @@ class _MailRow(_QSID):
 
     def editorEvent(self, ev, model, opt, idx):
         if ev.type() == QEvent.Type.MouseButtonRelease and ev.button() == Qt.MouseButton.LeftButton:
-            cb, st = self._cols(opt.rect)
+            z = _ZSH.ZOOM[0]
+            rr = opt.rect
             pos = ev.position().toPoint() if hasattr(ev, "position") else ev.pos()
+            if z != 1.0:
+                cb, st = self._cols(QRect(0, 0, int(rr.width() / z), int(rr.height() / z)))
+                pos = pos.__class__(int((pos.x() - rr.left()) / z), int((pos.y() - rr.top()) / z))
+            else:
+                cb, st = self._cols(rr)
             if cb.adjusted(-4, -4, 4, 4).contains(pos):
                 model.setData(idx, not bool(idx.data(ROLE_CHECK)), ROLE_CHECK)
                 self.page.update_bulk()
@@ -3883,6 +3900,15 @@ class MailPage(_QW):
         self._row_cache_reset()
         self._rebuild_acc_bar(True)
 
+    def _on_zoom(self):
+        """The program's zoom changed (Ctrl + wheel): colours, rows and the open email are redrawn at the new size."""
+        self.restyle()
+        if self.ready() and self.list.count():
+            self._fill_list()
+        if self.cur and self.stack.currentIndex() == 1 and getattr(self, "msgs", None):
+            self._clear_thread()
+            self._render_thread()
+
     def _settings_menu(self):
         from PySide6.QtWidgets import QMenu
         m = QMenu(self)
@@ -4746,7 +4772,7 @@ class MailPage(_QW):
             it.setData(ROLE_CHECK, False)
             it.setData(ROLE_CLIP, r["attach"])
             it.setData(ROLE_LABS, self._label_cols(r.get("labels")))
-            it.setSizeHint(_QSize(400, _MailRow.H))
+            it.setSizeHint(_QSize(400, _ZSH.zn(_MailRow.H)))
             self.list.addItem(it)
         self.list.setUpdatesEnabled(True)
         n = len(self.rows)

@@ -117,6 +117,7 @@ class _FootprintPreview(QWidget):
 
 # ------------------------------------------------------------------ the plan
 class ServicesView(QWidget):
+    _own_zoom = True                                 # Ctrl + wheel zooms this drawing, not the whole program
     def __init__(self, page):
         super().__init__()
         self.page = page

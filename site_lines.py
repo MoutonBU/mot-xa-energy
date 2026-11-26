@@ -120,6 +120,7 @@ def analyse(v, edges, buildings, max_cov, max_far, floor_area):
 
 
 class PlanView(QWidget):
+    _own_zoom = True                                 # Ctrl + wheel zooms this drawing, not the whole program
     """The stand, its building lines and the buildings, drawn on a sheet over the survey drawing. Mouse wheel zooms, a drag on
     empty space (or the middle button) pans, a drag on a building moves it. Tools: trace the stand or a building, calibrate."""
 
