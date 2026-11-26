@@ -426,7 +426,9 @@ assert "#eceef0" in _l and "#7cb7f0" in _l and "#999999" in _l and 'color="#ecee
 print("ok22")
 
 # the drop-down arrows of the labels still toggle with the colour squares in front
-from PySide6.QtTest import QTest as _QTe
+from PySide6.QtCore import QPoint as _QP, QPointF as _QPF
+from PySide6.QtGui import QMouseEvent as _QME
+from PySide6.QtCore import QEvent as _QEv
 mp.labels = [{"id": "Label_1", "name": "City Dev", "type": "user"}, {"id": "Label_2", "name": "City Dev/Zandspruit", "type": "user"}]
 mp.lcol = {}; S.pop("mail_collapsed", None); mp._fill_side()
 def _row(n):
@@ -435,7 +437,8 @@ _it = _row("City Dev"); _r = mp.side.visualItemRect(_it)
 _hit = []
 for _x in range(_r.left(), _r.left() + 90, 2):
     S.pop("mail_collapsed", None)
-    _QTe.mouseClick(mp.side.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, __import__("PySide6.QtCore", fromlist=["QPoint"]).QPoint(_x, _r.center().y()))
+    _pt = _QPF(_x, _r.center().y())
+    app.sendEvent(mp.side.viewport(), _QME(_QEv.Type.MouseButtonPress, _pt, mp.side.viewport().mapToGlobal(_pt), Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier))
     if S.get("mail_collapsed") is not None:
         _hit.append(_x - _r.left())
 print("arrow clickable at", _hit[:1], _hit[-1:], "icon", mp.side.iconSize())
