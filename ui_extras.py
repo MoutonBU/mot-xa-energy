@@ -2851,10 +2851,24 @@ class _AutoBrowser(_QTB):
         return _QSize(0, 20)
 
     def _fit(self):
+        if self.__dict__.get("_fitting"):
+            return                                       # setting the height resizes the view, which asked for another fit: one pass is enough
         w = max(200, self.viewport().width())
-        self.document().setTextWidth(w)
-        self.horizontalScrollBar().setValue(0)
-        self.setFixedHeight(int(self.document().size().height()) + 14)
+        doc = self.document()
+        if w == self.__dict__.get("_fw") and self.__dict__.get("_fh") is not None and doc.revision() == self.__dict__.get("_frev"):
+            return                                       # same width, same text: the height is already right (laying out a big table again is the slow part)
+        self._fitting = True
+        try:
+            if w != self.__dict__.get("_fw"):
+                doc.setTextWidth(w)
+                self._fw = w
+            self.horizontalScrollBar().setValue(0)
+            h = int(doc.size().height()) + 14
+            self._fh, self._frev = h, doc.revision()
+            if self.height() != h:
+                self.setFixedHeight(h)
+        finally:
+            self._fitting = False
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -3647,7 +3661,8 @@ class MailPage(_QW):
                 S["mail_notify_hid"] = hid
             if rows:
                 self._show_toast(rows)
-                self._topen.clear()
+                for r_ in rows:
+                    self._topen.pop(r_.get("tid"), None)             # the read-ahead of the other conversations stays
                 if self.isVisible() and self.label == "INBOX" and not self.query and self.stack.currentIndex() == 0:
                     self.load_labels(quiet=True)
                     self.load_list(reset=False, quiet=True)               # the new mail is in the list the moment the pop-up shows
@@ -3697,24 +3712,47 @@ class MailPage(_QW):
         import time as _t
         self._busy = True
 
+        old_ = self._hid
+
+        def work():
+            cur = self.mo.gmail_call(self.S, "GET", "profile").get("historyId", "")
+            tids = []
+            if old_ is not None and cur and cur != old_:           # what changed: only those conversations lose their read-ahead copy
+                try:
+                    h = self.mo.gmail_call(self.S, "GET", "history", {"startHistoryId": old_, "historyTypes": "messageAdded", "maxResults": 100})
+                    tids = [(ma.get("message") or {}).get("threadId") for rec in (h.get("history") or []) for ma in (rec.get("messagesAdded") or [])]
+                except Exception:
+                    tids = None                                      # the marker was too old: forget them all
+            return cur, tids
+
         def done(res, err):
             self._busy = False
-            if err or not res:
+            if err or not res or not res[0]:
                 return
-            changed = self._hid is not None and res != self._hid
-            self._hid = res
+            hid, tids = res
+            changed = self._hid is not None and hid != self._hid
+            self._hid = hid
+            if changed:
+                if tids is None:
+                    self._topen.clear()
+                for t_ in (tids or ()):
+                    self._topen.pop(t_, None)
             if changed or _t.time() - self._last_full > 90:
                 self._last_full = _t.time()
-                self._topen.clear()
                 self.load_labels(quiet=True)
                 self.load_list(reset=False, quiet=True)
-        self.run(lambda: self.mo.gmail_call(self.S, "GET", "profile").get("historyId", ""), done)
+        self.run(work, done)
 
     # ------------------------------------------------------------- sidebar
     def resizeEvent(self, e):
         super().resizeEvent(e)
         if self.stack.currentIndex() == 1 and getattr(self, "msgs", None) and abs(self.sa.viewport().width() - getattr(self, "_rw", 0)) > 80:
-            QTimer.singleShot(250, self._rerender)
+            t_ = self.__dict__.get("_rrt")
+            if t_ is None:
+                t_ = self._rrt = QTimer(self)
+                t_.setSingleShot(True)
+                t_.timeout.connect(self._rerender)
+            t_.start(220)                                        # drawn again once, when the dragging stops (not every quarter second while it goes on)
 
     def _rerender(self):
         if self.stack.currentIndex() == 1 and getattr(self, "msgs", None) and abs(self.sa.viewport().width() - getattr(self, "_rw", 0)) > 80:
@@ -5057,6 +5095,6 @@ class MailPage(_QW):
         MailCompose(self).exec()
 
     def after_send(self):
-        self._topen.clear()
+        self._topen.pop(self.cur, None)
         if self.label == "SENT" or self.label == "INBOX":
             self.load_list(reset=False, quiet=True)

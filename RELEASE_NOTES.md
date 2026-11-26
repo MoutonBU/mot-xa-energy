@@ -1,11 +1,14 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: 1.86.327
+Current version: 1.86.328
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Mail tab, speed: drawing-register style emails (big tables, rounded boxes) were laid out two to three times when opened; they are now laid out once (a thread of three heavy messages went from 630 ms to 190 ms in the program's own test).
+- Mail tab, speed: the stored read-ahead of conversations was thrown away every time Gmail's change marker moved and every 90 seconds, so many opens went back to Gmail. Now only the conversations that actually received a new message lose their stored copy, and sending a reply only refreshes that conversation.
+- Mail tab: dragging the window edge no longer redraws the open email every quarter second; it is drawn once when you stop.
 - Mail tab: the PDFs and pictures of an email now show their previews straight away (no "Show previews" button, no limit of 16), wrapped to the width of the window so none run off to the right. They load six at a time and are kept in memory, so opening or saving one is instant. Click a preview for Open or Save as; the PDFs no longer also appear as separate buttons below (other files such as Word documents still do), and Save all covers every file.
 - Mail tab: the time above each email is now when it arrived in your own time zone (for example Thu, 26 Nov 2026  15:14). It used to also show the sender's own header time, cut short, which read hours off (07:14 for a mail sent at 15:14).
 - Mail tab: while the pictures of an email are still arriving, the pieces not yet loaded are left empty instead of showing "[picture not loaded]" (which stretched out letter by letter and broke the email signature banner apart). The message only appears when a picture really failed to load, with the reason.
