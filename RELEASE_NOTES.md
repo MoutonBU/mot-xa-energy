@@ -1,11 +1,13 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: 1.86.305
+Current version: 1.86.306
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Mail tab: labels now show their colour: a small square (one per label, up to three) in front of the tick box on every row, and in the label list on the left. Right-click a label to change its colour (Gmail's palette), and pick a colour when creating one.
+- Mail tab: right-click any email for Open, Mark as read or unread, Star, Label as (tick or untick labels, with colours), Archive and Delete; it works on all ticked emails when you right-click a ticked one. The tick box at the top is now labelled Select all.
 - Every tool now wears its home-screen card colour on its tabs, icons and accents (costing purple, light and ventilation yellow, XA energy orange, coverage pink, orders, site, guidelines and the rest); Mail is blue, including the new-mail pop-up, Compose button and selections.
 - Mail tab: Settings button at the top right with My email signature (the same editor as the drawing register: name, position, phone, email and photo) and a switch for the new-mail pop-up.
 - Mail tab: conversations open at once (the first eight are loaded ahead, hovering loads one, and a loaded one shows with no waiting); received emails now show on white, which fixes the cut corners of the signature banner.

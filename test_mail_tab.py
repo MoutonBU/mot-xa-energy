@@ -377,3 +377,17 @@ mp.open_thread("t1", "x")
 assert mp.thread_lay.count() > 1 and mp.msgs, "a conversation in memory must show without waiting"
 assert hasattr(mp, "set_btn") and hasattr(mp, "_edit_signature")
 print("ok19")
+
+# label colours: squares before the tick box, colours in the side list, labelling a row updates it at once
+mp.labels = [{"id": "Label_1", "name": "City Dev", "type": "user", "color": {"backgroundColor": "#16a766", "textColor": "#ffffff"}}, {"id": "Label_2", "name": "Plain", "type": "user"}]
+mp.lcol = {x["id"]: (x.get("color") or {}).get("backgroundColor") or U.MAIL_NOCOL for x in mp.labels}
+mp._fill_side()
+assert any(mp.side.item(i).icon().isNull() is False for i in range(mp.side.count()) if mp.side.item(i).data(Qt.ItemDataRole.UserRole + 2)), "side swatches"
+assert mp._label_cols(["INBOX", "Label_1", "Label_2"]) == ["#16a766", U.MAIL_NOCOL]
+mp.rows[0]["labels"] = ["INBOX"]; mp._fill_list()
+assert not mp.list.item(0).data(U.ROLE_LABS)
+mp.modify([mp.rows[0]["id"]], add=["Label_1"])
+assert wait(lambda: mp.list.item(0).data(U.ROLE_LABS) == ["#16a766"]), mp.list.item(0).data(U.ROLE_LABS)
+assert mp.sel_all.text() == "Select all"
+mp.list.item(0).setData(U.ROLE_LABS, ["#16a766","#4a86e8"]); mp.resize(1200,700); mp.list.grab().save("/tmp/lst.png")
+print("ok20")

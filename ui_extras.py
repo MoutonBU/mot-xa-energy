@@ -1798,6 +1798,24 @@ from PySide6.QtWidgets import (QAbstractItemView as _AIV, QCheckBox as _QCheck, 
 MAIL_SYSTEM = [("INBOX", "Inbox"), ("STARRED", "Starred"), ("SENT", "Sent"), ("DRAFT", "Drafts"), ("SPAM", "Spam"), ("TRASH", "Trash"), ("ALL", "All Mail")]
 MAIL_CATEGORIES = [("CATEGORY_PERSONAL", "Primary"), ("CATEGORY_PROMOTIONS", "Promotions"), ("CATEGORY_SOCIAL", "Social"), ("CATEGORY_UPDATES", "Updates")]
 ROLE_THREAD, ROLE_SENDER, ROLE_SUBJECT, ROLE_SNIP, ROLE_DATE, ROLE_UNREAD, ROLE_STAR, ROLE_CHECK, ROLE_CLIP = [Qt.ItemDataRole.UserRole + i for i in range(1, 10)]
+ROLE_LABS = Qt.ItemDataRole.UserRole + 10          # the colours of the user labels on a conversation
+# Gmail only accepts colours from its own palette
+MAIL_PALETTE = [("Red", "#fb4c2f"), ("Orange", "#ffad47"), ("Yellow", "#fad165"), ("Green", "#16a766"), ("Mint", "#43d692"), ("Blue", "#4a86e8"),
+                ("Purple", "#a479e2"), ("Pink", "#f691b3"), ("Grey", "#999999")]
+MAIL_NOCOL = "#8a93a3"
+
+
+def mail_swatch(col, n=14):
+    pm = QPixmap(n, n)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(col))
+    p.drawRoundedRect(1, 1, n - 2, n - 2, 3, 3)
+    p.end()
+    return _QIcon(pm)
+
 
 
 def mail_b64(d):
@@ -2492,7 +2510,7 @@ class _MailRow(_QSID):
         return _QSize(400, self.H)
 
     def _cols(self, r):
-        return QRect(r.left() + 10, r.top() + 12, 20, 20), QRect(r.left() + 40, r.top() + 10, 24, 24)
+        return QRect(r.left() + 26, r.top() + 12, 20, 20), QRect(r.left() + 56, r.top() + 10, 24, 24)
 
     def _st(self, opt):
         key = (opt.font.toString(), self.page.is_light())
@@ -2522,6 +2540,15 @@ class _MailRow(_QSID):
         p.setPen(c["pen_line"])
         p.drawLine(r.left(), r.bottom(), r.right(), r.bottom())
         cb, st = self._cols(r)
+        labs = idx.data(ROLE_LABS) or []
+        if labs:                                                   # one little square per label, in the label's own colour, before the tick box
+            n_ = min(3, len(labs))
+            sq = 9 if n_ > 1 else 12
+            y0 = r.top() + (r.height() - (n_ * sq + (n_ - 1) * 2)) // 2
+            p.setPen(Qt.PenStyle.NoPen)
+            for k_ in range(n_):
+                p.setBrush(QColor(labs[k_]))
+                p.drawRoundedRect(r.left() + 8, y0 + k_ * (sq + 2), 12, sq, 2, 2)
         checked = bool(idx.data(ROLE_CHECK))
         p.setPen(c["pen_mute"])
         p.setBrush(c["red"] if checked else Qt.BrushStyle.NoBrush)
@@ -2535,7 +2562,7 @@ class _MailRow(_QSID):
         p.setPen(c["gold"] if starred else c["mute"])
         p.drawText(st, Qt.AlignmentFlag.AlignCenter, "\u2605" if starred else "\u2606")
         ft, fm = (f["b"], f["mb"]) if unread else (f["n"], f["mn"])
-        x0 = r.left() + 76
+        x0 = r.left() + 92
         wname = 190
         mid = Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
         p.setFont(ft)
@@ -2828,6 +2855,7 @@ class MailPage(_QW):
         self.label, self.query, self.cat = "INBOX", "", 0
         self.tokens, self.gen, self.me = [""], 0, ""
         self.rows, self.labels, self.cur = [], [], None
+        self.lcol = {}
         self.thread_view = None
         self._loaded = False
         self._done.connect(lambda cb, res, err: cb(res, err))
@@ -2913,7 +2941,8 @@ class MailPage(_QW):
         lpv = _VB(lp)
         lpv.setContentsMargins(0, 0, 0, 0)
         tb = _HB()
-        self.sel_all = _QCheck()
+        self.sel_all = _QCheck("Select all")
+        self.sel_all.setToolTip("Tick every conversation on this page; then mark them read, archive, delete or label them in one go")
         self.sel_all.toggled.connect(self._select_all)
         tb.addWidget(self.sel_all)
         self.refresh_btn = _QPB("Refresh")
@@ -2958,6 +2987,8 @@ class MailPage(_QW):
         self.list.setVerticalScrollMode(_AIV.ScrollMode.ScrollPerPixel)
         self.list.itemClicked.connect(self._open_item)
         self.list.itemEntered.connect(self._hover_item)
+        self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.list.customContextMenuRequested.connect(self._row_menu)
         self._topen = {}
         self._tlock = {}
         self._lcache = {}
@@ -3338,6 +3369,7 @@ class MailPage(_QW):
             it.setData(Qt.ItemDataRole.UserRole + 1, base)
             it.setData(Qt.ItemDataRole.UserRole + 2, full)
             it.setData(Qt.ItemDataRole.UserRole + 3, (ind, has_kids))
+            it.setIcon(mail_swatch(self.lcol.get(lid, MAIL_NOCOL)))
             self.side.addItem(it)
         for i in range(self.side.count()):
             if self.side.item(i).data(Qt.ItemDataRole.UserRole) == self.label:
@@ -3399,6 +3431,14 @@ class MailPage(_QW):
                 k = cb.findData(parent)
                 cb.setCurrentIndex(max(0, k))
             v.addWidget(cb)
+        cc = None
+        if not name:
+            v.addWidget(_QL("Colour"))
+            cc = _QCombo()
+            cc.addItem("(none)", "")
+            for nm_, hx in MAIL_PALETTE:
+                cc.addItem(mail_swatch(hx), nm_, hx)
+            v.addWidget(cc)
         row = _HB()
         row.addStretch(1)
         ok = _QPB("Create" if not name else "Rename")
@@ -3411,6 +3451,7 @@ class MailPage(_QW):
         v.addLayout(row)
         if d.exec() != _QD.DialogCode.Accepted or not le.text().strip():
             return None
+        self._dlg_col = cc.currentData() if cc else ""
         return le.text().strip().replace("/", "-"), (cb.currentData() if cb else "")
 
     def new_label(self, parent=""):
@@ -3418,9 +3459,13 @@ class MailPage(_QW):
         if not r or self._need_modify():
             return
         full = (r[1] + "/" if r[1] else "") + r[0]
+        col = getattr(self, "_dlg_col", "")
 
         def work():
-            return self.mo.gmail_call(self.S, "POST", "labels", body={"name": full, "labelListVisibility": "labelShow", "messageListVisibility": "show"})
+            body = {"name": full, "labelListVisibility": "labelShow", "messageListVisibility": "show"}
+            if col:
+                body["color"] = {"backgroundColor": col, "textColor": "#ffffff"}
+            return self.mo.gmail_call(self.S, "POST", "labels", body=body)
 
         def done(res, err):
             if err:
@@ -3440,7 +3485,15 @@ class MailPage(_QW):
         a1 = m.addAction("New label inside it")
         a2 = m.addAction("Rename")
         a3 = m.addAction("Delete label")
+        cm = m.addMenu("Colour")
+        cacts = {cm.addAction(mail_swatch(hx), nm_): hx for nm_, hx in MAIL_PALETTE}
         act = m.exec(self.side.viewport().mapToGlobal(pos))
+        if act in cacts:
+            hx = cacts[act]
+            if not self._need_modify():
+                self.run(lambda: self.mo.gmail_call(self.S, "PUT", "labels/" + lid, body={"id": lid, "name": full, "color": {"backgroundColor": hx, "textColor": "#ffffff"}}),
+                         lambda res, err: (self.say(err, True) if err else (self.say("Colour changed in Gmail"), self.load_labels(quiet=True))))
+            return
         if act is a1:
             self.new_label(full)
         elif act is a2:
@@ -3454,13 +3507,74 @@ class MailPage(_QW):
                 self.run(lambda: self.mo.gmail_call(self.S, "DELETE", "labels/" + lid),
                          lambda res, err: (self.say(err, True) if err else (self.say("Label deleted in Gmail"), self.load_labels(quiet=True))))
 
+    def _label_cols(self, ids):
+        user = {l for _n, _i, l, _f in mail_label_tree(self.labels)}
+        return [self.lcol.get(i, MAIL_NOCOL) for i in (ids or []) if i in user]
+
+    def _row_menu(self, pos):
+        it = self.list.itemAt(pos)
+        if it is None:
+            return
+        tid = it.data(ROLE_THREAD)
+        ids = self.checked_ids() if it.data(ROLE_CHECK) else [tid]
+        rows = {r["id"]: r for r in self.rows}
+        have = set.intersection(*[set((rows.get(t) or {}).get("labels") or []) for t in ids]) if ids else set()
+        m = _QMenu(self)
+        a_open = m.addAction("Open")
+        m.addSeparator()
+        a_read = m.addAction("Mark as read")
+        a_unr = m.addAction("Mark as unread")
+        a_star = m.addAction("Star / unstar")
+        m.addSeparator()
+        lm = m.addMenu("Label as")
+        tree = mail_label_tree(self.labels)
+        acts = {}
+        for nm, ind, lid, full in tree:
+            a = lm.addAction(mail_swatch(self.lcol.get(lid, MAIL_NOCOL)), full)
+            a.setCheckable(True)
+            a.setChecked(lid in have)
+            acts[a] = (lid, full)
+        if tree:
+            lm.addSeparator()
+        a_new = lm.addAction("Create new label...")
+        m.addSeparator()
+        a_arc = m.addAction("Archive")
+        a_del = m.addAction("Delete")
+        act = m.exec(self.list.viewport().mapToGlobal(pos))
+        if act is None:
+            return
+        if act is a_open:
+            self.open_thread(tid, it.data(ROLE_SUBJECT) or "")
+        elif act is a_read:
+            self.act("read", ids)
+        elif act is a_unr:
+            self.act("unread", ids)
+        elif act is a_star:
+            on = not bool(it.data(ROLE_STAR))
+            for t in ids:
+                r_ = self._row_of(t)
+                if r_ >= 0:
+                    self.toggle_star(t, on, r_)
+        elif act is a_arc:
+            self.act("archive", ids)
+        elif act is a_del:
+            self.act("trash", ids)
+        elif act is a_new:
+            self.new_label()
+        elif act in acts:
+            lid, full = acts[act]
+            if lid in have:
+                self.modify(ids, remove=[lid], cb=lambda: self.say("Removed " + full))
+            else:
+                self.modify(ids, add=[lid], cb=lambda: self.say("Labelled " + full))
+
     def _fill_label_menu(self):
         self.label_menu.clear()
         tree = mail_label_tree(self.labels)
         if not tree:
             self.label_menu.addAction("No labels yet").setEnabled(False)
         for nm, ind, lid, full in tree:
-            a = self.label_menu.addAction(full)
+            a = self.label_menu.addAction(mail_swatch(self.lcol.get(lid, MAIL_NOCOL)), full)
             a.triggered.connect(lambda _=False, lid=lid, full=full: self.modify(self.checked_ids() or ([self.cur] if self.cur else []), add=[lid],
                                                                               cb=lambda: self.say("Labelled " + full)))
         self.label_menu.addSeparator()
@@ -3525,9 +3639,17 @@ class MailPage(_QW):
                 self.me = me.lower()
             counts = dict(getattr(self, "_counts_keep", {}), **counts)
             self._counts_keep = counts
-            if [x.get("id") for x in labs] != [x.get("id") for x in self.labels]:
+            sg = lambda ls: [(x.get("id"), x.get("name"), (x.get("color") or {}).get("backgroundColor")) for x in ls]
+            if sg(labs) != sg(self.labels):
                 self.labels = labs
+                self.lcol = {x.get("id"): (x.get("color") or {}).get("backgroundColor") or MAIL_NOCOL for x in labs}
                 self._fill_side()
+                for i in range(self.list.count()):
+                    it = self.list.item(i)
+                    r_ = self.rows[i] if i < len(self.rows) else None
+                    if r_:
+                        it.setData(ROLE_LABS, self._label_cols(r_.get("labels")))
+                self.list.viewport().update()
             self._apply_counts()
         self.run(work, done)
 
@@ -3683,6 +3805,7 @@ class MailPage(_QW):
             it.setData(ROLE_STAR, r["starred"])
             it.setData(ROLE_CHECK, False)
             it.setData(ROLE_CLIP, r["attach"])
+            it.setData(ROLE_LABS, self._label_cols(r.get("labels")))
             it.setSizeHint(_QSize(400, _MailRow.H))
             self.list.addItem(it)
         self.list.setUpdatesEnabled(True)
@@ -3742,6 +3865,16 @@ class MailPage(_QW):
                 return
             self._lcache.clear()
             self._topen.clear()
+            if not trash:
+                for t in tids:                                              # the squares in front of the rows follow at once
+                    for r_ in self.rows:
+                        if r_["id"] == t:
+                            ls = (set(r_.get("labels") or []) | set(add)) - set(remove)
+                            r_["labels"] = sorted(ls)
+                            k_ = self._row_of(t)
+                            if k_ >= 0:
+                                self.list.item(k_).setData(ROLE_LABS, self._label_cols(r_["labels"]))
+                self.list.viewport().update()
             if cb:
                 cb()
             self.load_labels(quiet=True)
@@ -3783,7 +3916,7 @@ class MailPage(_QW):
 
     # ------------------------------------------------------------- reading
     def _open_item(self, it):
-        if self.list.viewport().mapFromGlobal(QCursor.pos()).x() < 70:
+        if self.list.viewport().mapFromGlobal(QCursor.pos()).x() < 88:
             return                                  # that click was on the tick box or the star
         tid = it.data(ROLE_THREAD)
         self.open_thread(tid, it.data(ROLE_SUBJECT) or "")
