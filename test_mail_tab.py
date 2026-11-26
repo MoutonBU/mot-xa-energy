@@ -34,7 +34,7 @@ mo.gmail_call = fake
 
 w = M.MainWindow()
 S = M.SETTINGS
-S.update({"google_client_id": "x", "google_refresh": "r", "gmail_modify": True, "gmail_read": True, "mail_address": "me@x.com", "mail_provider": "gmail"})
+S.update({"google_client_id": "x", "google_refresh": "r", "gmail_modify": True, "gmail_read": True, "mail_address": "me@x.com", "mail_provider": "gmail", "mail_collapsed": []})
 mp = w.mail_page
 assert mp is not None and w.main_tabs.tabText(w.main_tabs.indexOf(mp)) == "Mail"
 mp._refresh_state()
@@ -119,6 +119,11 @@ assert not any("Zandspruit" in t for t in texts()) and any("▸ City Dev" in t f
 S["mail_collapsed"] = []
 mp._fill_side()
 assert any("Zandspruit" in t for t in texts())
+S.pop("mail_collapsed", None)
+mp._fill_side()
+assert not any("Zandspruit" in t for t in texts()), texts()          # groups start closed
+S["mail_collapsed"] = []
+mp._fill_side()
 # a label created here is created in Gmail
 mp._label_dialog = lambda title, name="", parent="": ("Quotes", "City Dev")
 gcalls.clear()
@@ -129,3 +134,19 @@ mp.list.item(0).setData(M.ROLE_CHECK if hasattr(M, "ROLE_CHECK") else mo.ROLE_CH
 mp.modify(["t1"], add=["Label_1"])
 assert wait(lambda: any(c[1] == "threads/t1/modify" and c[3]["addLabelIds"] == ["Label_1"] for c in gcalls))
 print("ok2")
+
+# inline signature pictures: found whatever the case of the cid, fetched only when the body uses them
+import base64 as _b
+html = "<p>hi</p><img src=\"cid:Image001.PNG@01DC\"><img src=\"cid:Image002.PNG@01DC\">"
+th = {"id": "tz", "messages": [{"id": "m1", "payload": {"mimeType": "multipart/related", "headers": [], "parts": [
+    {"mimeType": "text/html", "body": {"data": _b.urlsafe_b64encode(html.encode()).decode()}},
+    {"mimeType": "image/png", "filename": "image001.png", "headers": [{"name": "Content-ID", "value": "<image001.png@01dc>"}], "body": {"attachmentId": "A1", "size": 900}},
+    {"mimeType": "image/png", "filename": "image002.png", "headers": [{"name": "Content-ID", "value": "<image002.png@01dc>"}], "body": {"attachmentId": "A2", "size": 900}},
+    {"mimeType": "image/png", "filename": "image003.png", "headers": [{"name": "Content-ID", "value": "<image003.png@01dc>"}], "body": {"attachmentId": "A3", "size": 900}}]}}]}
+fetched = []
+_old = mo.gmail_call
+mo.gmail_call = lambda S, method, path, params=None, body=None, timeout=60: th if path == "threads/tz" else {"data": _b.urlsafe_b64encode(b"PNGDATA").decode()} if "attachments" in path else _old(S, method, path, params, body, timeout)
+got = mp._fetch_thread("tz")[1][0][4]
+assert sorted(got) == ["image001.png@01dc", "image002.png@01dc"] and got["image001.png@01dc"] == b"PNGDATA", got
+mo.gmail_call = _old
+print("ok3")

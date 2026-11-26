@@ -2304,6 +2304,7 @@ class MailPage(_QW):
         self.list.itemClicked.connect(self._open_item)
         self.list.itemEntered.connect(self._hover_item)
         self._topen = {}
+        self._lcache = {}
         self._tbusy = set()
         lpv.addWidget(self.list, 1)
         self.stack.addWidget(lp)
@@ -2473,6 +2474,9 @@ class MailPage(_QW):
 
     # ------------------------------------------------------------- sidebar
     def _collapsed(self):
+        if "mail_collapsed" not in self.S:                       # first time: every group starts closed
+            names = {full for _n, _i, _l, full in mail_label_tree(self.labels)}
+            return {n for n in names if any(o.startswith(n + "/") for o in names)}
         return set(self.S.get("mail_collapsed") or [])
 
     def _fill_side(self):
@@ -2720,7 +2724,12 @@ class MailPage(_QW):
         tok = self.tokens[-1] if self.tokens else ""
         label, query, cat = self.label, self.query, self.cat
         self.cats.setVisible(label == "INBOX" and not query)
-        if not quiet:
+        key = (label, query, cat, tok)
+        hit = self._lcache.get(key)
+        if hit and not quiet:
+            self.rows, self.next_token = list(hit[0]), hit[1]
+            self._fill_list()                                   # show what we had at once, then refresh below
+        elif not quiet:
             self.say("Loading...")
 
         def work():
@@ -2777,7 +2786,7 @@ class MailPage(_QW):
                     if i >= len(ids):
                         return
                     one(i)
-            ws = [_thr.Thread(target=worker) for _ in range(min(8, len(ids)))]
+            ws = [_thr.Thread(target=worker) for _ in range(min(12, len(ids)))]
             for w in ws:
                 w.start()
             for w in ws:
@@ -2791,10 +2800,18 @@ class MailPage(_QW):
                 self.say(err, True)
                 return
             ths, nxt = res
+            rows = [r for r in (mail_thread_row(t, self.me) for t in ths if t) if r]
+            sig = lambda rs: [(r["id"], r["unread"], r["starred"], r["count"], r["snippet"]) for r in rs]
+            same = sig(rows) == sig(self.rows) and nxt == self.next_token and self.list.count() == len(rows)
             self.next_token = nxt
-            self.rows = [r for r in (mail_thread_row(t, self.me) for t in ths if t) if r]
-            self._fill_list()
-            self.say("" if self.rows or True else "")
+            self.rows = rows
+            self._lcache[key] = (list(rows), nxt)
+            if len(self._lcache) > 40:
+                self._lcache.pop(next(iter(self._lcache)))
+            if not same:
+                self._fill_list()
+            self.say("")
+            self._prefetch()
         self.run(work, done)
 
     def _fill_list(self):
@@ -2928,13 +2945,14 @@ class MailPage(_QW):
         todo = []
         for m in th.get("messages", []) or []:
             html, plain, atts = mail_parts(m.get("payload"))
+            refs = {x.lower() for x in re.findall(r"(?i)cid:([^\"'\s>)]+)", html or "")}
             inline = {}
             for a in atts:
-                if a["cid"] and a["mime"].startswith("image/") and a["size"] < 600000:
+                if a["cid"] and a["cid"].lower() in refs and a["mime"].startswith("image/") and a["size"] < 3000000:
                     if a["data"]:
-                        inline[a["cid"]] = mail_b64(a["data"])
+                        inline[a["cid"].lower()] = mail_b64(a["data"])
                     else:
-                        todo.append((inline, a["cid"], "messages/%s/attachments/%s" % (m["id"], a["id"])))
+                        todo.append((inline, a["cid"].lower(), "messages/%s/attachments/%s" % (m["id"], a["id"])))
             res.append((m, html, plain, atts, inline))
 
         def get(t):
@@ -2942,7 +2960,17 @@ class MailPage(_QW):
                 t[0][t[1]] = self.mo.gmail_bytes(self.S, t[2])
             except Exception:
                 pass
-        ws = [_th.Thread(target=get, args=(t,)) for t in todo[:12]]
+        q = list(todo[:40])
+        lk = _th.Lock()
+
+        def worker():
+            while True:
+                with lk:
+                    if not q:
+                        return
+                    t = q.pop()
+                get(t)
+        ws = [_th.Thread(target=worker) for _ in range(min(10, len(q)))]
         for w in ws:
             w.start()
         for w in ws:
@@ -2952,6 +2980,22 @@ class MailPage(_QW):
         if len(self._topen) > 30:
             self._topen.pop(next(iter(self._topen)))
         return out
+
+    def _prefetch(self):
+        # the first few conversations are loaded in the background so the first clicks open at once
+        ids = [r["id"] for r in self.rows[:4] if r["id"] not in self._topen and r["id"] not in self._tbusy]
+        if not ids or not self.ready():
+            return
+        self._tbusy.update(ids)
+
+        def work():
+            for t in ids:
+                try:
+                    self._fetch_thread(t)
+                except Exception:
+                    pass
+            return True
+        self.run(work, lambda res, err: self._tbusy.difference_update(ids))
 
     def _hover_item(self, it):
         # start fetching a conversation as soon as the pointer rests on it, so the click opens it from memory
@@ -3024,13 +3068,16 @@ class MailPage(_QW):
                 body = re.sub(r"(?is)<script.*?>.*?</script>", "", body)
             else:
                 body = "<pre style='font-family:Arial;white-space:pre-wrap'>%s</pre>" % _html.escape(plain or m.get("snippet", ""))
-            for cid, data in inline.items():
-                img = QPixmap()
-                img.loadFromData(data)
-                b.document().addResource(QTextDocument.ResourceType.ImageResource, QUrl("cid:" + cid), img)
+            for ref in {x for x in re.findall(r"(?i)cid:([^\"'\s>)]+)", html or "")}:
+                data = inline.get(ref.lower())
+                if data:
+                    img = QPixmap()
+                    img.loadFromData(data)
+                    b.document().addResource(QTextDocument.ResourceType.ImageResource, QUrl("cid:" + ref), img)
             b.setHtml(body)
             cv.addWidget(b)
-            files = [a for a in atts if a["name"] and not (a["cid"] and a["mime"].startswith("image/") and a["cid"] in inline)]
+            used = {x.lower() for x in re.findall(r"(?i)cid:([^\"'\s>)]+)", html or "")}
+            files = [a for a in atts if a["name"] and not (a["cid"] and a["mime"].startswith("image/") and a["cid"].lower() in used)]
             if files:
                 row = _HB()
                 for a in files[:12]:
