@@ -2077,6 +2077,23 @@ def mail_fit_widths(body, maxw):
 _PIXC = {}
 
 
+def mail_sig_px(body, maxw):
+    """Our own signature (a left picture and linked pieces on the right): the text engine sizes percentage widths inside it wrongly,
+    so every piece gets its width in pixels, worked out from the width the email has."""
+    m = re.search(r'<table\b[^>]*\bdata-t="(\d+)"', body)
+    if not m:
+        return body
+    T = max(200, min(int(m.group(1)), int(maxw)))
+
+    def fix(mm):
+        tag = mm.group(0)
+        pw = float(mm.group(1))
+        px = max(1, int(round(T * pw / 100.0)))
+        tag = re.sub(r'(?i)\swidth="[^"]*"', "", tag, count=1)
+        return tag[:-1] + ' width="%d">' % px
+    return re.sub(r'<(?:table|td)\b[^>]*\bdata-pw="([\d.]+)"[^>]*>', fix, body)
+
+
 def mail_fix_images(body, doc, inline, remote_ok, maxw=700):
     """Make every picture in an email either show or vanish (never Qt's big grey 'missing picture' box).
     cid: pictures come from the attachments, data: pictures are decoded, web pictures show only when fetched (inline['url:...'])."""
@@ -2131,11 +2148,17 @@ def mail_fix_images(body, doc, inline, remote_ok, maxw=700):
             pct = float((w_attr.group(1) if w_attr and w_attr.group(2) else (w_sty.group(1) if w_sty and w_sty.group(2) == "%" else 100)) or 100)
             share = 1.0
             td = m.string.rfind("<td", max(0, m.start() - 400), m.start())
+            cellpx = 0
             if td >= 0:
-                tm = re.search(r"(?is)\bwidth\s*=\s*[\"']?\s*([\d.]+)\s*%", m.string[td:m.string.find(">", td) + 1])
+                ttag = m.string[td:m.string.find(">", td) + 1]
+                tm = re.search(r"(?is)\bwidth\s*=\s*[\"']?\s*([\d.]+)\s*%", ttag)
                 if tm:
                     share = float(tm.group(1)) / 100.0
-            target = int(imgw * pct / 100.0 * share)
+                else:
+                    tp = re.search(r"(?is)\bwidth\s*=\s*[\"']?\s*(\d+)\s*[\"' >]", ttag)
+                    if tp and "data-pw" in ttag:
+                        cellpx = int(tp.group(1))                    # our own signature: the cell's width in pixels is the picture's width
+            target = int(cellpx * pct / 100.0) if cellpx else int(imgw * pct / 100.0 * share)
         else:
             target = pw
         target = max(1, min(target, imgw))
@@ -2159,7 +2182,7 @@ def mail_fix_images(body, doc, inline, remote_ok, maxw=700):
     pix = {}
     made = set()
     dpr = _dpr()
-    return mail_round(mail_fit_widths(mail_maxwidth(_IMG_RE.sub(one, mail_fix_rows(mail_drop_hidden(body))), maxw), maxw), doc)
+    return mail_round(mail_fit_widths(mail_maxwidth(_IMG_RE.sub(one, mail_fix_rows(mail_sig_px(mail_drop_hidden(body), maxw))), maxw), maxw), doc)
 
 
 _RD_OPEN = re.compile(r"""(?is)<(td|table|div|span)\b[^>]*?border-radius[^>]*>""")
@@ -2541,15 +2564,7 @@ def mail_sig_html(S):
     web = "www.mcparchitecture.co.za"
     href = {"tel": "tel:" + lt.get("tel", ""), "mail": "mailto:" + lt.get("email", ""), "web": "https://" + web}
     alt = {"tel": lt.get("phone", ""), "mail": lt.get("email", ""), "web": web}
-    tb = ""
-    for _h, cells in rows:
-        tds = ""
-        for idx, x0, x1, kind in cells:
-            img = '<img src="cid:mcpsig%d" width="100%%" alt="%s" style="display:block;width:100%%;height:auto;border:0;">' % (idx, _html.escape(alt.get(kind, "") or "Signature"))
-            if kind:
-                img = '<a href="%s" style="text-decoration:none;">%s</a>' % (_html.escape(href[kind]), img)
-            tds += '<td width="%.3f%%" style="padding:0;font-size:0;line-height:0;">%s</td>' % ((x1 - x0) * 100.0 / float(cells[-1][2]), img)
-        tb += '<table width="100%%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;table-layout:fixed;"><tr>%s</tr></table>' % tds
+    tb = sig_banner.table_html(rows, href, alt, _html.escape, cap=620)
     html = '<br><table width="620" cellpadding="0" cellspacing="0" border="0" style="width:100%%;max-width:620px;"><tr><td style="border-radius:12px;overflow:hidden;">%s</td></tr></table>' % tb
     plain = "\n".join(x for x in (lt.get("name", ""), lt.get("role", ""), lt.get("phone", ""), lt.get("email", ""), web) if x)
     if len(_SIGC) > 4:

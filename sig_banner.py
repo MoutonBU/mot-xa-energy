@@ -177,16 +177,17 @@ def link_text(S):
 
 
 def slices(S, width=1250, quality=92):
-    """The banner cut into pieces so the phone, the email and the website can each be a real link.
-    Returns (rows, jpegs): rows is a list of (height_px, [(index, x0, x1, kind), ...]) in the 1875 wide design;
-    kind is "", "tel", "mail" or "web"."""
-    lt = link_text(S)
+    """The banner cut so the phone, the email and the website can each be a real link, WITHOUT cutting through the logo:
+    the left part (photo and logo) is one single picture, and only the right part is cut into rows.
+    Returns (spec, jpegs): spec = {"left": (jpeg index, left width px, total width px), "rows": [(height, [(index, x0, x1, kind), ...])]},
+    the x values of the rows counted from the left edge of the right part; kind is "", "tel", "mail" or "web"."""
     full = _rounded(S, width)
     k = width / float(W)
     ymap = lambda y: int(round(y * k))
     L = layout(S)
-    row1 = [(0, 840, "")]
-    cur = 840
+    SPLIT = 840
+    ixs = ymap(SPLIT)
+    row1, cur = [], SPLIT
     for key, kind in (("phone", "tel"), ("mail", "mail")):
         if key in L:
             x0, x1 = (L[key]["x0"] - 10), L[key]["end"] + 12
@@ -196,18 +197,42 @@ def slices(S, width=1250, quality=92):
             cur = x1
     row1.append((cur, W, ""))
     pe = L["web"]["end"] + 12
-    spec = [(0, 222, [(0, W, "")]), (222, 274, row1), (274, 282, [(0, W, "")]),
-            (282, 332, [(0, 840, ""), (840, pe, "web"), (pe, W, "")]), (332, H, [(0, W, "")])]
-    rows, jp = [], []
+    spec = [(0, 222, [(SPLIT, W, "")]), (222, 274, row1), (274, 282, [(SPLIT, W, "")]),
+            (282, 332, [(SPLIT, pe, "web"), (pe, W, "")]), (332, H, [(SPLIT, W, "")])]
+    jp = [_jpg(full.copy(0, 0, ixs, full.height()), quality)]
+    rows = []
     for y0, y1, cells in spec:
         r = []
         for x0, x1, kind in cells:
             ix0, ix1 = ymap(x0), (width if x1 >= W else ymap(x1))
             piece = full.copy(ix0, ymap(y0), ix1 - ix0, (full.height() if y1 >= H else ymap(y1)) - ymap(y0))
-            r.append((len(jp), ix0, ix1, kind))
+            r.append((len(jp), ix0 - ixs, ix1 - ixs, kind))
             jp.append(_jpg(piece, quality))
         rows.append((y1 - y0, r))
-    return rows, jp
+    return {"left": (0, ixs, width), "rows": rows}, jp
+
+
+def table_html(spec, href, alt, esc, cid="cid:mcpsig%d", cap=620):
+    """The signature as a table: one tall picture on the left (the logo is never cut) and the linked pieces stacked on the right.
+    Widths are percentages (mail programs scale them); data-pw carries each width as a percentage of the whole, which the program's own
+    mail view turns into pixels (its text engine sizes nested percentage tables badly)."""
+    li, ixs, width = spec["left"]
+    rw = float(width - ixs)
+    right = ""
+    for _h, cells in spec["rows"]:
+        tds = ""
+        for idx, x0, x1, kind in cells:
+            img = '<img src="%s" width="100%%" alt="%s" style="display:block;width:100%%;height:auto;border:0;">' % (cid % idx, esc(alt.get(kind, "")) or "Signature")
+            if kind:
+                img = '<a href="%s" style="text-decoration:none;">%s</a>' % (esc(href[kind]), img)
+            tds += '<td width="%.3f%%" data-pw="%.3f" style="padding:0;font-size:0;line-height:0;">%s</td>' % ((x1 - x0) * 100.0 / rw, (x1 - x0) * 100.0 / width, img)
+        right += ('<table width="100%%" data-pw="%.3f" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;table-layout:fixed;"><tr>%s</tr></table>'
+                  % (rw * 100.0 / width, tds))
+    left = '<img src="%s" width="100%%" alt="MCP Architecture" style="display:block;width:100%%;height:auto;border:0;">' % (cid % li)
+    return ('<table width="100%%" data-t="%d" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;table-layout:fixed;"><tr>'
+            '<td width="%.3f%%" data-pw="%.3f" valign="top" style="padding:0;font-size:0;line-height:0;">%s</td>'
+            '<td width="%.3f%%" data-pw="%.3f" valign="top" style="padding:0;font-size:0;line-height:0;">%s</td></tr></table>'
+            % (cap, ixs * 100.0 / width, ixs * 100.0 / width, left, rw * 100.0 / width, rw * 100.0 / width, right))
 
 
 def prepare_photo(src_path, dest_path):

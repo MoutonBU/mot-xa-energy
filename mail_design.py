@@ -351,15 +351,8 @@ def build(subject, body, logo_src="cid:mcplogo", attached="", logo_dark_src="", 
                    '<div style="font-size:16px;line-height:26px;">%s</div></div>'
                    % (FONT, STRONG, _e(nm), RED, _e(rl), "<br>".join(
                        '<a class="st" href="%s" style="color:%s;text-decoration:none;">%s</a>' % (_e(href[k]), STRONG, _e(alt[k])) for k in ("tel", "mail", "web") if alt[k])))
-            tb = ""
-            for _h, cells in rows:
-                tds = ""
-                for idx, x0, x1, kind in cells:
-                    img = ('<img src="cid:mcpsig%d" width="100%%" alt="%s" style="display:block;width:100%%;height:auto;border:0;">' % (idx, _e(alt.get(kind, "")) or "Signature"))
-                    if kind:
-                        img = '<a href="%s" style="text-decoration:none;">%s</a>' % (_e(href[kind]), img)
-                    tds += '<td width="%.3f%%" style="padding:0;font-size:0;line-height:0;">%s</td>' % ((x1 - x0) * 100.0 / float(cells[-1][2]), img)
-                tb += '<table width="100%%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;table-layout:fixed;"><tr>%s</tr></table>' % tds
+            import sig_banner as _sb
+            tb = _sb.table_html(rows, href, alt, _e, cap=680)
             sections += ('<tr><td style="padding:26px 0 0 0;font-family:%s;font-size:12px;letter-spacing:3px;font-weight:700;color:%s;">REGARDS</td></tr>' % (FONT, RED)
                          + '<tr><td style="padding:10px 0 0 0;"><div class="sgd" style="max-width:680px;border-radius:12px;overflow:hidden;">%s</div>%s</td></tr>' % (tb, mob))
         elif r[0] == "G" and sig_src:

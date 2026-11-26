@@ -521,3 +521,15 @@ _t0 = _tm3.time(); mp.act("trash")
 assert _tm3.time() - _t0 < 0.2 and mp.list.count() == 7
 mo.gmail_call = _old4
 print("ok27")
+
+# the signature banner: the logo side is ONE picture (never cut through the logo); only the right side is cut into linked rows
+import sig_banner as _sb
+_S2 = {"sig_name": "Mouton Burger", "sig_role": "CG", "sig_phone": "+27 71 873 2219", "sig_email": "m@x.co.za", "mail_address": "m@x.co.za"}
+_spec, _jp = _sb.slices(_S2)
+assert _spec["left"][0] == 0 and _spec["left"][1] > 500 and len(_spec["rows"]) == 5
+assert sum(r[0] for r in _spec["rows"]) == _sb.H
+_h2, _jp2, _ = U.mail_sig_html(_S2)
+assert 'data-t="620"' in _h2 and _h2.count("<img") == len(_jp2) and "tel:" in _h2 and "mailto:" in _h2
+_px = U.mail_sig_px(_h2, 500)
+assert 'data-pw' in _px and 'width="%d"' % round(500 * _spec["left"][1] / float(_spec["left"][2])) in _px
+print("ok28")
