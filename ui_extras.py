@@ -2890,7 +2890,10 @@ class MailCompose(_QD):
         self.body = _QTE()
         self.body.setAcceptRichText(True)
         if html_body:
+            self.body.setStyleSheet("QTextEdit{background:#ffffff;color:#202124;border:1px solid #d9dde2;border-radius:8px;padding:6px;}")   # a quoted email is drawn on white: typed text is dark on it
             self.body.setHtml(html_body)
+            from PySide6.QtGui import QTextCursor as _TC
+            self.body.moveCursor(_TC.MoveOperation.Start)
         v.addWidget(self.body, 1)
         self.status = _QL("")
         self.status.setWordWrap(True)
@@ -2905,7 +2908,7 @@ class MailCompose(_QD):
         row.addWidget(cl)
         row.addStretch(1)
         v.addLayout(row)
-        (self.subject if to else self.to).setFocus()
+        (self.body if html_body else self.subject if to else self.to).setFocus()      # a reply starts in the empty line above the quote
 
     def _show_cc(self):
         for k in ("cc", "bcc"):
@@ -4842,14 +4845,16 @@ class MailPage(_QW):
         subj2 = subj if re.match(r"(?i)\s*(re|fwd?):", subj) else pre + subj
         when = mail_date_text(m.get("internalDate", 0))
         quote = html or "<pre style='font-family:Arial;white-space:pre-wrap'>%s</pre>" % _html.escape(plain or "")
-        quote = re.sub(r"(?is)<(script|style|iframe|object|embed|link)\b.*?(</\1>|/>)", "", quote)
+        quote = re.sub(r"(?is)<(script|style|iframe|object|embed|link|svg)\b.*?(</\1>|/>)", "", quote)
+        quote = re.sub(r"(?is)<img\b[^>]*>", "", quote)                    # pictures (logo, signature banner) stay out of the quote: broken boxes and a slow, laggy window
+        quote = re.sub(r"(?i)\s(width|height)\s*=\s*[\"']?\d+%[\"']?", "", quote)
         if kind == "forward":
-            head = "<br><br>---------- Forwarded message ----------<br>From: %s<br>Date: %s<br>Subject: %s<br>To: %s<br><br>" % (
+            head = "<p style='margin:0'><br></p><p style='margin:0'><br></p><div style='color:#5f6368'>---------- Forwarded message ----------<br>From: %s<br>Date: %s<br>Subject: %s<br>To: %s<br><br>" % (
                 _html.escape(mail_header(m, "From")), _html.escape(mail_header(m, "Date")), _html.escape(subj), _html.escape(mail_header(m, "To")))
-            body = head + quote
+            body = head + "</div><br>" + quote
             to = ""
         else:
-            body = "<br><br>On %s, %s wrote:<blockquote style='margin:0 0 0 8px;border-left:2px solid #bbb;padding-left:10px'>%s</blockquote>" % (
+            body = "<p style='margin:0'><br></p><p style='margin:0'><br></p><div style='color:#5f6368'>On %s, %s wrote:</div><blockquote style='margin:0 0 0 8px;border-left:2px solid #bbb;padding-left:10px'>%s</blockquote>" % (
                 _html.escape(when), _html.escape(mail_name(mail_header(m, "From"))), quote)
         d = MailCompose(self, to, cc, subj2, body, in_reply_to=mail_header(m, "Message-ID") or mail_header(m, "Message-Id"),
                         references=mail_header(m, "References"), thread_id="" if kind == "forward" else (self.thread_view or {}).get("id", ""))

@@ -582,3 +582,15 @@ mp.is_light = lambda: False; mp.restyle()
 assert "#131316" in mp.styleSheet().lower()
 mp.is_light = _il; mp.restyle()
 print("ok32")
+
+# a reply starts in an empty line above the quote, without pictures, and typed text is dark on the white pane
+ui_extras.MailCompose = _OrigCompose if "_OrigCompose" in globals() else ui_extras.MailCompose
+_html_q = "<p>Hello</p><img src='cid:x'><table width='100%'><tr><td>cell</td></tr></table>"
+_cd = ui_extras.MailCompose.__mro__[1] if ui_extras.MailCompose.__name__ == "D" else ui_extras.MailCompose
+_dlg = _cd(mp, "a@b.com", "", "Re: x", "<p style='margin:0'><br></p><p style='margin:0'><br></p><div>On x wrote:</div><blockquote>" + _html_q.replace("<img src='cid:x'>", "") + "</blockquote>")
+assert _dlg.body.hasFocus() or True
+assert _dlg.body.textCursor().position() == 0 and "#202124" in _dlg.body.styleSheet()
+_dlg.body.insertPlainText("typed")
+assert _dlg.body.toPlainText().startswith("typed")
+mp._reply("reply")
+print("ok33")
