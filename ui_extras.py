@@ -2980,7 +2980,10 @@ class MailPage(_QW):
                 res, err = fn(), None
             except Exception as e:
                 res, err = None, str(e)
-            self._done.emit(cb, res, err)
+            try:
+                self._done.emit(cb, res, err)
+            except RuntimeError:
+                pass                                              # the window was closed while this was running
         _th.Thread(target=work, daemon=True).start()
 
     def ready(self):
