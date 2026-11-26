@@ -2332,7 +2332,10 @@ class MailPage(_QW):
         root.addWidget(self.status)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
-        self.timer.start(60000)
+        self.timer.start(3000)
+        self._hid = None
+        self._busy = False
+        self._last_full = 0.0
         self._fill_side()
         self._refresh_state()
         self.restyle()
@@ -2434,9 +2437,26 @@ class MailPage(_QW):
         self.load_list(reset=True)
 
     def _tick(self):
-        if self.isVisible() and self.ready() and self._loaded and self.stack.currentIndex() == 0 and not self.search.hasFocus():
-            self.load_labels(quiet=True)
-            self.load_list(reset=False, quiet=True)
+        # Gmail has no push to a desktop app, so ask for the tiny mailbox change marker every 3 s and reload only when it moves
+        import time as _t0
+        if self._busy or _t0.time() < getattr(self, "_pause", 0) or not (self.isVisible() and self.ready() and self._loaded and self.stack.currentIndex() == 0 and not self.search.hasFocus()):
+            return
+        import time as _t
+        self._busy = True
+
+        def done(res, err):
+            self._busy = False
+            if err and "quota" in err.lower():
+                self._pause = _t.time() + 75
+            if err or not res:
+                return
+            changed = self._hid is not None and res != self._hid
+            self._hid = res
+            if changed or _t.time() - self._last_full > 90:
+                self._last_full = _t.time()
+                self.load_labels(quiet=True)
+                self.load_list(reset=False, quiet=True)
+        self.run(lambda: self.mo.gmail_call(self.S, "GET", "profile").get("historyId", ""), done)
 
     # ------------------------------------------------------------- sidebar
     def _fill_side(self):
@@ -2482,7 +2502,7 @@ class MailPage(_QW):
             except Exception:
                 pass
             counts = {}
-            ids = ["INBOX", "DRAFT"] + [x["id"] for x in labs if x.get("type") == "user"][:40]
+            ids = ["INBOX", "DRAFT"] + ([] if quiet else [x["id"] for x in labs if x.get("type") == "user"][:40])
             for lid in ids:
                 try:
                     j = self.mo.gmail_call(self.S, "GET", "labels/" + lid)
@@ -2499,6 +2519,8 @@ class MailPage(_QW):
             labs, me, counts = res
             if me:
                 self.me = me.lower()
+            counts = dict(getattr(self, "_counts_keep", {}), **counts)
+            self._counts_keep = counts
             if [x.get("id") for x in labs] != [x.get("id") for x in self.labels]:
                 self.labels = labs
                 self._fill_side()
@@ -2552,7 +2574,7 @@ class MailPage(_QW):
             self.say("Loading...")
 
         def work():
-            params = {"maxResults": 50}
+            params = {"maxResults": 30}
             q = query
             if query:
                 params["includeSpamTrash"] = "false"
@@ -2573,17 +2595,28 @@ class MailPage(_QW):
             j = self.mo.gmail_call(self.S, "GET", "threads", params)
             ids = [t["id"] for t in j.get("threads", []) or []]
             snips = {t["id"]: t.get("snippet", "") for t in j.get("threads", []) or []}
+            hids = {t["id"]: t.get("historyId", "") for t in j.get("threads", []) or []}
+            cache = self.__dict__.setdefault("_tcache", {})
             out = [None] * len(ids)
             import threading as _thr
 
             def one(i):
                 try:
+                    hit = cache.get(ids[i])
+                    if hit and hids.get(ids[i]) and hit[0] == hids[ids[i]]:
+                        out[i] = hit[1]
+                        return
                     th = self.mo.gmail_call(self.S, "GET", "threads/" + ids[i], {"format": "metadata", "metadataHeaders": ["From", "Subject"]})
                     th["snippet"] = snips.get(ids[i], "") or th.get("snippet", "")
                     out[i] = th
+                    cache[ids[i]] = (hids.get(ids[i], ""), th)
+                    if len(cache) > 600:
+                        cache.pop(next(iter(cache)))
                 except Exception:
                     out[i] = None
             nxt = [0]
+            if not any(cache.get(i) for i in ids):
+                pass
             lock = _thr.Lock()
 
             def worker():
@@ -2634,7 +2667,7 @@ class MailPage(_QW):
             self.list.addItem(it)
         self.list.setUpdatesEnabled(True)
         n = len(self.rows)
-        start = (len(self.tokens) - 1) * 50 + 1
+        start = (len(self.tokens) - 1) * 30 + 1
         self.page_lbl.setText("%d-%d" % (start, start + n - 1) if n else "No conversations")
         self.prev.setEnabled(len(self.tokens) > 1)
         self.next.setEnabled(bool(self.next_token))
