@@ -1788,7 +1788,7 @@ def _formataddr(a):
 from email.utils import getaddresses as _getaddr, parseaddr as _parseaddr
 
 from PySide6.QtCore import QRect, QSize as _QSize, Signal as _Signal
-from PySide6.QtGui import QTextDocument
+from PySide6.QtGui import QIcon as _QIcon, QTextDocument
 from PySide6.QtGui import QFont as _QFont, QFontMetrics as _QFM
 from PySide6.QtWidgets import (QAbstractItemView as _AIV, QCheckBox as _QCheck, QFileDialog as _QFD, QHBoxLayout as _HB, QLineEdit as _QLE, QListWidget as _QLW,
                                QListWidgetItem as _QLWI, QMessageBox as _QMB, QPushButton as _QPB, QSplitter as _QSplit, QStackedWidget as _QStack, QStyledItemDelegate as _QSID,
@@ -1892,6 +1892,31 @@ _W_ATTR = re.compile(r"""(?is)\bwidth\s*=\s*["']?\s*(\d+)\s*(%?)""")
 _W_STYLE = re.compile(r"""(?is)(?<![-\w])width\s*:\s*(\d+(?:\.\d+)?)\s*(px|%)""")
 
 
+def _dpr():
+    try:
+        return max(1.0, float(QApplication.primaryScreen().devicePixelRatio()))
+    except Exception:
+        return 1.0
+
+
+def mail_drop_hidden(body):
+    """Qt ignores display:none, so the dark-mode logo, the phone-only signature and other hidden parts would all show at once. They are removed."""
+    body = re.sub(r"(?is)<img\b[^>]*display\s*:\s*none[^>]*>", "", body)
+    for _ in range(20):
+        m = re.search(r"(?is)<(div|table|span|td|tr|p)\b[^>]*display\s*:\s*none[^>]*>", body)
+        if not m:
+            break
+        name = m.group(1).lower()
+        depth, end = 1, None
+        for t in re.finditer(r"(?is)<(/?)" + name + r"\b[^>]*>", body[m.end():]):
+            depth += -1 if t.group(1) else 1
+            if depth == 0:
+                end = m.end() + t.end()
+                break
+        body = body[:m.start()] + (body[end:] if end else body[m.end():])
+    return body
+
+
 def mail_fit_widths(body, maxw):
     """Fixed widths wider than the window (600/900 px tables, min-width) become 100% so the email fits its view."""
     body = re.sub(r"(?is)(?:min-width|min-height)\s*:\s*[\d.]+\s*(?:px|pt|%)?\s*;?", "", body)
@@ -1969,12 +1994,12 @@ def mail_fix_images(body, doc, inline, remote_ok, maxw=700):
         if target > pw * 2:
             target = pw * 2
         h = max(1, int(round(target * ph / float(max(1, pw)))))
-        rk = "%s_%d" % (key, target)
+        rk = "%s_%d_%d" % (key, target, int(dpr * 100))
         if rk not in made:
             made.add(rk)
             im2 = pix[key]
             if target != pw:                                    # a smooth resize here, because Qt's text view would otherwise squash it roughly (jagged edges)
-                im2 = im2.scaled(target, h, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                im2 = im2.scaled(int(target * dpr), int(h * dpr), Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
             doc.addResource(QTextDocument.ResourceType.ImageResource, QUrl(rk), im2)
         t2 = _ATTR_DROP.sub("", tag)
         t2 = _SRC_RE.sub('src="%s" width="%d" height="%d"' % (rk, target, h), t2, 1)
@@ -1982,7 +2007,8 @@ def mail_fix_images(body, doc, inline, remote_ok, maxw=700):
     dims = {}
     pix = {}
     made = set()
-    return mail_round(mail_fit_widths(mail_maxwidth(_IMG_RE.sub(one, body), maxw), maxw), doc)
+    dpr = _dpr()
+    return mail_round(mail_fit_widths(mail_maxwidth(_IMG_RE.sub(one, mail_drop_hidden(body)), maxw), maxw), doc)
 
 
 _RD_OPEN = re.compile(r"""(?is)<(td|table|div|span)\b[^>]*?border-radius[^>]*>""")
@@ -2011,7 +2037,7 @@ def _rd_corner(doc, r, fill, line, bw, pos):
     key = "mrc:///%s_%d_%s_%s_%d_%s" % (fill.name(QColor.NameFormat.HexArgb) if fill else "n", r, line.name() if line else "n", pos, bw, id(doc))
     if key in _RD_RES:
         return key
-    k = 4
+    k = max(2, int(math.ceil(_dpr())))
     im = QPixmap(2 * r * k, 2 * r * k)
     im.fill(Qt.GlobalColor.transparent)
     p = QPainter(im)
@@ -2119,7 +2145,7 @@ def mail_round(body, doc):
             tw = fm.horizontalAdvance(txt)
             h = max(fm.height(), px) + pt + pb
             w = max(tw + pl + pr, h if r >= h // 2 else 0)
-            k = 3
+            k = max(2, int(math.ceil(_dpr())))
             im = QPixmap(w * k, h * k)
             im.fill(Qt.GlobalColor.transparent)
             pp = QPainter(im)
@@ -2621,6 +2647,82 @@ class MailCompose(_QD):
         self.page.after_send()
 
 
+class MailToast(_QW):
+    """The corner pop-up for new mail (like the orders one): who it is from, the subject and the first lines, with Open and Dismiss."""
+    G = 14
+
+    def __init__(self, rows, icon, on_open):
+        super().__init__(None, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self._rows, self._open_cb = rows, on_open
+        self.setFixedWidth(420 + 2 * self.G)
+        v = _VB(self)
+        g = self.G
+        v.setContentsMargins(g + 16, g + 12, g + 16, g + 12)
+        v.setSpacing(8)
+        top = _HB()
+        lg = _QL()
+        if icon is not None and not icon.isNull():
+            lg.setPixmap(icon.scaledToHeight(int(40 * _dpr()), Qt.TransformationMode.SmoothTransformation))
+            lg.setFixedHeight(40)
+            lg.setScaledContents(False)
+        top.addWidget(lg)
+        n = len(rows)
+        top.addWidget(_QL("<div style='font-size:18px;font-weight:800;color:#ffffff'>%s</div><div style='font-size:12px;color:#c4cad2'>Gmail</div>" % (
+            "New email" if n == 1 else "%d new emails" % n)), 1)
+        v.addLayout(top)
+        for r in rows[:3]:
+            lab = _QL("<b style='font-size:14px'>%s</b><br><span style='font-size:13px'>%s</span><br><span style='color:#aab0b8;font-size:12px'>%s</span>" % (
+                _html.escape(r["from"]), _html.escape(r["subject"] or "(no subject)"), _html.escape(r["snippet"])))
+            lab.setWordWrap(True)
+            lab.setTextFormat(Qt.TextFormat.RichText)
+            lab.setStyleSheet("background:#2a2e35;color:#f2f4f6;border-radius:9px;padding:8px 11px;")
+            v.addWidget(lab)
+        if n > 3:
+            more = _QL("and %d more..." % (n - 3))
+            more.setStyleSheet("color:#aab0b8;")
+            v.addWidget(more)
+        bt = _HB()
+        bt.setSpacing(8)
+        for text, fn, look in (("Open", self._open, "background:#d8132b;color:#ffffff;font-weight:800;"), ("Dismiss", self.close, "background:#3a3f46;color:#e6e8eb;")):
+            b = _QPB(text)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setMinimumHeight(32)
+            b.setStyleSheet("QPushButton{border:none;border-radius:8px;padding:0 18px;font-size:13px;%s}QPushButton:hover{border:2px solid #ffffff;}" % look)
+            b.clicked.connect(fn)
+            bt.addWidget(b)
+        v.addLayout(bt)
+        self.adjustSize()
+        QTimer.singleShot(14000, self.close)
+
+    def _open(self):
+        try:
+            self._open_cb(self._rows[0])
+        finally:
+            self.close()
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        g = self.G
+        card = QRectF(self.rect()).adjusted(g, g, -g, -g)
+        col = QColor("#e8334a")
+        for i in range(g, 0, -1):
+            c = QColor(col)
+            c.setAlphaF(max(0.0, 0.34 * (1 - i / float(g)) ** 1.6))
+            p.setPen(QPen(c, 2))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(card.adjusted(-i, -i, i, i), 14 + i, 14 + i)
+        p.setBrush(QColor("#1d2025"))
+        p.setPen(QPen(QColor(232, 51, 74, 190), 2.2))
+        p.drawRoundedRect(card, 14, 14)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(col)
+        p.drawRoundedRect(QRectF(card.left(), card.top() + 14, 5, card.height() - 28), 2.5, 2.5)
+
+
 class MailPage(_QW):
     """The Mail tab: the Gmail account as a live, fast view with the program's own look. Sign-in uses the same Google permission as the rest of the program."""
     _done = _Signal(object, object, object)
@@ -2802,6 +2904,10 @@ class MailPage(_QW):
         self.status.setWordWrap(True)
         root.addWidget(self.status)
         self.timer = QTimer(self)
+        self._ntimer = QTimer(self)
+        self._ntimer.timeout.connect(self._notify_tick)
+        self._ntimer.start(20000)
+        QTimer.singleShot(6000, self._notify_tick)
         self.timer.timeout.connect(self._tick)
         self.timer.start(3000)
         self._hid = None
@@ -2931,6 +3037,87 @@ class MailPage(_QW):
         self._loaded = True
         self.load_labels()
         self.load_list(reset=True)
+
+    # ------------------------------------------------------------- new-mail pop-up (works while the window is hidden in the tray)
+    def _notify_tick(self):
+        S = self.S
+        if getattr(self, "_nbusy", False) or not S.get("mail_notify", True) or not self.ready() or self.mo.gmail_blocked():
+            return
+        self._nbusy = True
+        mo = self.mo
+
+        def work():
+            hid = S.get("mail_notify_hid")
+            if not hid:
+                return mo.gmail_call(S, "GET", "profile").get("historyId", ""), []
+            try:
+                h = mo.gmail_call(S, "GET", "history", {"startHistoryId": hid, "historyTypes": "messageAdded", "labelId": "INBOX", "maxResults": 50})
+            except Exception:
+                return mo.gmail_call(S, "GET", "profile").get("historyId", ""), []         # the marker was too old: start again from now
+            ids = []
+            for rec in h.get("history", []) or []:
+                for ma in rec.get("messagesAdded", []) or []:
+                    m = ma.get("message", {})
+                    lb = m.get("labelIds") or []
+                    if m.get("id") and "INBOX" in lb and "SENT" not in lb and "DRAFT" not in lb and m["id"] not in ids:
+                        ids.append(m["id"])
+            rows = []
+            for mid in ids[-5:]:
+                try:
+                    g = mo.gmail_call(S, "GET", "messages/" + mid, {"format": "metadata", "metadataHeaders": ["From", "Subject"]})
+                except Exception:
+                    continue
+                hd = {x.get("name", "").lower(): x.get("value", "") for x in g.get("payload", {}).get("headers", [])}
+                nm, ad = _parseaddr(hd.get("from", ""))
+                rows.append({"from": nm or ad or "Unknown sender", "subject": hd.get("subject", ""), "snippet": _html.unescape(g.get("snippet", ""))[:150],
+                             "tid": g.get("threadId", mid)})
+            return h.get("historyId") or hid, rows
+
+        def done(res, err):
+            self._nbusy = False
+            if err or not res:
+                return
+            hid, rows = res
+            if hid:
+                S["mail_notify_hid"] = hid
+            if rows:
+                self._show_toast(rows)
+        self.run(work, done)
+
+    def _show_toast(self, rows):
+        try:
+            w = self.window()
+            if w.isActiveWindow() and self.isVisible() and self.host.main_tabs.currentWidget() is self:
+                return                                              # you are looking at the mail right now
+            old = getattr(self, "_toast", None)
+            if old is not None:
+                try:
+                    old.close()
+                except Exception:
+                    pass
+            ic = self.host.windowIcon().pixmap(64, 64) if hasattr(self.host, "windowIcon") else None
+            t = MailToast(rows, ic, self._toast_open)
+            self._toast = t
+            ag = (self.screen() or QApplication.primaryScreen()).availableGeometry()
+            t.move(ag.right() - t.width() - 14, ag.bottom() - t.height() - 14)
+            t.show()
+            try:
+                QApplication.alert(w, 0)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _toast_open(self, row):
+        h = self.host
+        try:
+            h.showNormal()
+            h.raise_()
+            h.activateWindow()
+            h.main_tabs.setCurrentWidget(self)
+            self.open_thread(row.get("tid", ""), row.get("subject", ""))
+        except Exception:
+            pass
 
     def _tick(self):
         # Gmail has no push to a desktop app, so ask for the tiny mailbox change marker every 3 s and reload only when it moves
@@ -3644,6 +3831,20 @@ class MailPage(_QW):
                     used_w += w_ + 6
                 if cur:
                     rows.append(cur)
+                tools = _HB()
+                if len(files) >= 2:
+                    sa_ = _QPB("Save all (%d)" % len(files))
+                    sa_.setToolTip("Save every attachment of this email into one folder you choose (it remembers the folder)")
+                    sa_.clicked.connect(lambda _=False, fl=files, mid=m["id"]: self._save_all(mid, fl))
+                    tools.addWidget(sa_)
+                tools.addStretch(1)
+                th_ = [a for a in files if a["mime"].startswith("image/") and a["mime"] in ("image/jpeg", "image/png", "image/gif", "image/webp", "image/bmp") and a["size"] < 6000000][:6]
+                thumbs = _HB()
+                thumbs.addStretch(1)
+                if th_:
+                    cv.addLayout(thumbs)
+                    self._thumbs(m["id"], th_, thumbs)
+                cv.addLayout(tools)
                 for rw in rows:
                     row = _HB()
                     for txt, a in rw:
@@ -3655,6 +3856,101 @@ class MailPage(_QW):
                     cv.addLayout(row)
             self.thread_lay.addWidget(card)
         self.thread_lay.addStretch(1)
+
+    def _thumbs(self, mid, imgs, lay):
+        """Small previews of picture attachments, fetched in the background; click one to open it."""
+        tid = self.cur
+
+        def work():
+            out = []
+            for a in imgs:
+                try:
+                    data = mail_b64(a["data"]) if a.get("data") else self.mo.gmail_bytes(self.S, "messages/%s/attachments/%s" % (mid, a["id"]))
+                    out.append((a, data))
+                except Exception:
+                    continue
+            return out
+
+        def done(res, err):
+            if err or not res or self.cur != tid or self.stack.currentIndex() != 1:
+                return
+            try:
+                for a, data in res:
+                    pm = mail_pixmap(data)
+                    if pm.isNull():
+                        continue
+                    d = _dpr()
+                    pm2 = pm.scaledToHeight(int(110 * d), Qt.TransformationMode.SmoothTransformation)
+                    pm2.setDevicePixelRatio(d)
+                    b = _QPB()
+                    b.setIcon(_QIcon(pm2))
+                    b.setIconSize(pm2.deviceIndependentSize().toSize())
+                    b.setFlat(True)
+                    b.setToolTip(a["name"] + "  (click to open)")
+                    b.setCursor(Qt.CursorShape.PointingHandCursor)
+                    b.clicked.connect(lambda _=False, a=a, data=data: self._open_bytes(a["name"], data))
+                    lay.insertWidget(lay.count() - 1, b)
+            except RuntimeError:
+                pass                                                      # the email was closed before the previews arrived
+        self.run(work, done)
+
+    def _open_bytes(self, name, data):
+        import tempfile
+        d = tempfile.mkdtemp(prefix="mailatt_")
+        path = os.path.join(d, re.sub(r"[\\/:*?\"<>|]", "_", name) or "attachment")
+        with open(path, "wb") as f:
+            f.write(data)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+    def _save_all(self, mid, files):
+        start = self.S.get("mail_save_dir") or os.path.join(os.path.expanduser("~"), "Downloads")
+        dest = _QFD.getExistingDirectory(self, "Save all attachments to", start)
+        if not dest:
+            return
+        self.S["mail_save_dir"] = dest
+        try:
+            self.get_M().save_settings()
+        except Exception:
+            pass
+        self.say("Downloading %d attachment%s..." % (len(files), "" if len(files) == 1 else "s"))
+
+        def work():
+            names, lock, errs, saved = set(), _th.Lock(), [], []
+
+            def one(a):
+                try:
+                    data = mail_b64(a["data"]) if a.get("data") else self.mo.gmail_bytes(self.S, "messages/%s/attachments/%s" % (mid, a["id"]))
+                    base, ext = os.path.splitext(re.sub(r"[\\/:*?\"<>|]", "_", a["name"]) or "attachment")
+                    with lock:
+                        nm, k = base + ext, 1
+                        while nm.lower() in names or os.path.exists(os.path.join(dest, nm)):
+                            k += 1
+                            nm = "%s (%d)%s" % (base, k, ext)
+                        names.add(nm.lower())
+                    with open(os.path.join(dest, nm), "wb") as f:
+                        f.write(data)
+                    saved.append(nm)
+                except Exception as e:
+                    errs.append(str(e))
+            ts = []
+            for a in files:
+                while len([t for t in ts if t.is_alive()]) >= 4:
+                    _time.sleep(0.02)
+                t = _th.Thread(target=one, args=(a,), daemon=True)
+                t.start()
+                ts.append(t)
+            for t in ts:
+                t.join()
+            return len(saved), errs
+        def done(res, err):
+            if err:
+                self.say(err, True)
+                return
+            n, errs = res
+            self.say("Saved %d of %d attachments to %s%s" % (n, len(files), dest, ("  (" + errs[0] + ")") if errs else ""), bool(errs))
+            if n and not os.environ.get("MOT_TEST"):
+                QDesktopServices.openUrl(QUrl.fromLocalFile(dest))
+        self.run(work, done)
 
     def _save_attachment(self, mid, a):
         dest, _ = _QFD.getSaveFileName(self, "Save attachment", os.path.join(os.path.expanduser("~"), "Downloads", a["name"]))

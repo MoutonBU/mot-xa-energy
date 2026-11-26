@@ -304,3 +304,41 @@ assert "border-radius" not in _out and "mrc:///" in _out and "width=\"704\"" in 
 _b.resize(900, 400); _b.setHtml(_out); _b.document().setTextWidth(900)
 assert _b.document().size().height() > 40
 print("ok12")
+
+# hidden dark-mode logo and phone-only blocks are dropped
+_hid = '<img src="cid:a" class="lgl" width="150"><img src="cid:b" class="lgd" style="display:none;max-height:0;" width="150"><div style="display:none;max-height:0"><div>mobile</div></div><p>keep</p>'
+_o = U.mail_drop_hidden(_hid)
+assert "cid:b" not in _o and "mobile" not in _o and "cid:a" in _o and "keep" in _o, _o
+print("ok13")
+
+# new-mail pop-up: history says a message was added -> one pop-up row with sender, subject and the first lines
+import tempfile as _tf
+os.environ["MOT_TEST"] = "1"
+_old2 = mo.gmail_call
+def _fake(S_, method, path, params=None, body=None, timeout=60):
+    if path == "history":
+        return {"historyId": "99", "history": [{"messagesAdded": [{"message": {"id": "n1", "labelIds": ["INBOX", "UNREAD"]}}]}]}
+    if path == "messages/n1":
+        return {"threadId": "tn1", "snippet": "Please see the new drawings &amp; revise", "payload": {"headers": [{"name": "From", "value": "Dewann <d@x.co.za>"}, {"name": "Subject", "value": "New drawings"}]}}
+    return _old2(S_, method, path, params, body, timeout)
+mo.gmail_call = _fake
+S["mail_notify_hid"] = "50"; S["mail_notify"] = True
+_shown = []
+mp._show_toast = lambda rows: _shown.append(rows)
+mp._nbusy = False
+mp._notify_tick()
+assert wait(lambda: _shown), "no pop-up"
+assert _shown[0][0]["from"] == "Dewann" and _shown[0][0]["subject"] == "New drawings" and "&amp;" not in _shown[0][0]["snippet"] and S["mail_notify_hid"] == "99"
+mo.gmail_call = _old2
+_t = U.MailToast(_shown[0], None, lambda r: None); _t.show(); app.processEvents(); assert _t.width() > 300; _t.close()
+print("ok14")
+
+# save all attachments into one folder
+_d = _tf.mkdtemp()
+_files = [{"name": "a.pdf", "mime": "application/pdf", "size": 3, "id": "", "cid": "", "data": __import__("base64").urlsafe_b64encode(b"abc").decode()},
+          {"name": "a.pdf", "mime": "application/pdf", "size": 3, "id": "", "cid": "", "data": __import__("base64").urlsafe_b64encode(b"xyz").decode()}]
+U._QFD.getExistingDirectory = staticmethod(lambda *a, **k: _d)
+mp._save_all("mm", _files)
+assert wait(lambda: len(os.listdir(_d)) == 2), os.listdir(_d)
+assert sorted(os.listdir(_d)) == ["a (2).pdf", "a.pdf"]
+print("ok15")

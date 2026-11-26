@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: 1.86.300
+Current version: 1.86.301
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Mail tab: a corner pop-up for new mail, like the one for orders (who it is from, the subject and the first lines, with Open and Dismiss); it also works while the program is hidden in the tray, and it can be switched off with the setting mail_notify. Emails with a hidden dark-mode logo or phone-only signature no longer show the extra logo; logos, corners and pictures are drawn at your screen's real resolution so they are sharp; attachments get a Save all button (one folder, remembered) and picture attachments show small previews you can click to open.
 - Costing: new Builder's quantities export (PDF, CSV and a preview, on the Costing ribbon and beside the materials buttons). It lists the quantities by trade (concrete in m3, reinforcing steel, bricks, plaster, insulation, roof trusses and timber, and so on) with no prices, rates, markups or fees, and two empty columns (Your rate, Amount) for the builder to fill in with his own suppliers.
 - Mail tab: emails you write now use the drawing register's signature (the banner cut into pieces), so the phone number, email and website are live links; signature and email pictures are resized smoothly instead of jagged, signature pictures that were hidden by zero-height text now show, and a capped-width email (such as the drawing register) is centred reliably at any window size. Opening a heavy email now takes about 20 milliseconds to prepare.
 - Drawing register emails: the signature pieces now add up to the full width (they were drawn at two thirds).

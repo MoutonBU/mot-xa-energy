@@ -12609,7 +12609,8 @@ class MainWindow(QMainWindow):
         try:
             from PySide6.QtWidgets import QSystemTrayIcon
             from PySide6.QtGui import QGuiApplication
-            if getattr(self, "_really_quit", False) or not SETTINGS.get("inbox_on") or not QSystemTrayIcon.isSystemTrayAvailable():
+            mail_on = bool(SETTINGS.get("mail_notify", True) and SETTINGS.get("gmail_read") and SETTINGS.get("google_refresh"))
+            if getattr(self, "_really_quit", False) or not (SETTINGS.get("inbox_on") or mail_on) or not QSystemTrayIcon.isSystemTrayAvailable():
                 return False
             if QGuiApplication.instance().isSavingSession():
                 return False
