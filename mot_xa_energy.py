@@ -3083,6 +3083,7 @@ def _orig_setSS(w, css):
     """Every style sheet of the program passes here: the sizes in pixels follow the zoom (Ctrl + wheel)."""
     try:
         w.__dict__["_zcss"] = css
+        w.__dict__["_zlast"] = _zsh.zs(css)
     except Exception:
         pass
     _real_setSS(w, _zsh.zs(css))
@@ -3096,7 +3097,7 @@ def _app_set_ss(self, css):
         self.__dict__["_zraw"] = css
     except Exception:
         pass
-    _real_app_ss(self, _zsh.zs(css))
+    _real_app_ss(self, css)                       # the program-wide sheet is not scaled: setting it again restyles every widget (seconds)
 
 
 _QtW.QApplication.setStyleSheet = _app_set_ss

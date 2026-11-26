@@ -648,9 +648,10 @@ def install_shell(win, make_icon, light_fn):
         if state["light"] != is_l:
             state["light"] = is_l
             state["acc"] = None
-            body.setStyleSheet(_qss(_palette0(is_l)))
-            rail.setStyleSheet("")
-            ribbon.setStyleSheet("")
+            base = state["base"] = _qss(_palette0(is_l))        # only the rail and the ribbon wear it (not the whole window, which would restyle every page: slow to zoom)
+            body.setStyleSheet("")
+            rail.setStyleSheet(base)
+            ribbon.setStyleSheet(base)
             ribbon.acc_q, ribbon.acc_key = "", None
             for pg_ in ribbon.pages.values():
                 pg_.setStyleSheet("")
@@ -660,7 +661,7 @@ def install_shell(win, make_icon, light_fn):
         if state.get("acc") != (is_l, ACC[0]):                    # the open tool's colour: only the rail and the ribbon are restyled
             state["acc"] = (is_l, ACC[0])
             q = _qss(_palette(is_l)) if ACC[0] else ""
-            rail.setStyleSheet(q)
+            rail.setStyleSheet(q or state.get("base", ""))
             ribbon.acc_q, ribbon.acc_key = q, state["acc"]
             ribbon.apply_acc(ribbon.stack.currentWidget())
             ribbon.icon_names()
@@ -730,7 +731,37 @@ def zn(n):
     return int(round(n * ZOOM[0]))
 
 
-def _zw(w, force=False):
+def _zss(w):
+    """The style sheet part of the zoom for one widget (the slow part: it is applied after the sizes and fonts, in a second step)."""
+    d = w.__dict__
+    f = ZOOM[0]
+    b = d.get("_zb")
+    if b is None:
+        return
+    try:
+        css = d.get("_zcss")
+        from PySide6.QtWidgets import QPushButton as _PB, QLabel as _L
+        fixedw = isinstance(w, _PB) and bool(w.text()) and b["mn"][0] > 0 and b["mn"][0] == b["mx"][0]
+        if css is not None or fixedw:
+            extra = "\nQPushButton{padding-left:2px;padding-right:2px;}" if (fixedw and f != 1.0) else ""     # a small fixed-width button (like < >) keeps room for its text
+            new = (zs(css) if css else "") + extra
+            if new != d.get("_zlast"):       # a style sheet that did not change is not applied again
+                _REAL_SS[0](w, new)
+            d["_zlast"] = new
+        if isinstance(w, _L) and d.get("_raw_txt") and "px" in d["_raw_txt"]:
+            _L.setText(w, zs(_LT[0](d["_raw_txt"])))
+    except Exception:
+        pass
+
+
+def _zss_all():
+    from PySide6.QtWidgets import QApplication
+    for w in QApplication.instance().allWidgets():
+        if w.isVisible() and w.__dict__.get("_zb") is not None:
+            _zss(w)
+
+
+def _zw(w, force=False, defer=False):
     """Bring one widget to the current zoom: its fixed sizes, margins, spacing, fonts and style sheet (once per zoom level)."""
     d = w.__dict__
     f = ZOOM[0]
@@ -777,14 +808,8 @@ def _zw(w, force=False):
         if b["hdr"] is not None:
             w.horizontalHeader().setDefaultSectionSize(max(8, int(round(b["hdr"][0] * f))))
             w.verticalHeader().setDefaultSectionSize(max(8, int(round(b["hdr"][1] * f))))
-        css = d.get("_zcss")
-        from PySide6.QtWidgets import QPushButton as _PB
-        fixedw = isinstance(w, _PB) and bool(w.text()) and b["mn"][0] > 0 and b["mn"][0] == b["mx"][0]
-        if css is not None or fixedw:
-            extra = "\nQPushButton{padding-left:2px;padding-right:2px;}" if (fixedw and f != 1.0) else ""     # a small fixed-width button (like < >) keeps room for its text
-            _REAL_SS[0](w, (zs(css) if css else "") + extra)
-        if isinstance(w, _L) and d.get("_raw_txt") and "px" in d["_raw_txt"]:
-            _L.setText(w, zs(_LT[0](d["_raw_txt"])))
+        if not defer:
+            _zss(w)
     except Exception:
         pass
     d["_zf"] = f
@@ -839,18 +864,36 @@ def install_zoom(app, win, real_set_ss, lt, save=None):
     win._zoom_app = app
 
 
+_PEND = [None]
+_TIMER = [None]
+
+
 def step_zoom(sign, n=1):
-    f = ZOOM[0]
+    """One step up or down. Several quick wheel notches are added together and drawn once (about 25 ms later), so the wheel never waits for a redraw."""
+    f = _PEND[0] if _PEND[0] is not None else ZOOM[0]
     for _ in range(max(1, n)):
         if sign > 0:
             f = next((v for v in ZOOM_STEPS if v > f + 0.001), ZOOM_STEPS[-1])
         else:
             f = next((v for v in reversed(ZOOM_STEPS) if v < f - 0.001), ZOOM_STEPS[0])
-    set_zoom(f)
+    _PEND[0] = f
+    _announce()                                           # the percentage on the little bar changes at once
+    if _TIMER[0] is None:
+        _TIMER[0] = QTimer()
+        _TIMER[0].setSingleShot(True)
+        _TIMER[0].timeout.connect(_flush)
+    _TIMER[0].start(25)
+
+
+def _flush():
+    f, _PEND[0] = _PEND[0], None
+    if f is not None:
+        set_zoom(f, announce=False)
 
 
 def set_zoom(f, announce=True):
     from PySide6.QtWidgets import QApplication
+    _PEND[0] = None
     app = QApplication.instance()
     f = max(ZOOM_STEPS[0], min(ZOOM_STEPS[-1], float(f)))
     if abs(f - ZOOM[0]) < 0.001:
@@ -866,16 +909,13 @@ def set_zoom(f, announce=True):
         elif ft.pixelSize() > 0:
             ft.setPixelSize(max(1, int(round(ft.pixelSize() * f))))
         app.setFont(ft)
-    raw = app.__dict__.get("_zraw") if hasattr(app, "__dict__") else None
-    if raw is not None:
-        _REAL_APP_SS[0](app, zs(raw))
     ws = [w for w in app.allWidgets() if w.isVisible()]
     tops = [w for w in ws if w.isWindow()]
     for t in tops:
         t.setUpdatesEnabled(False)
     try:
         for w in ws:
-            _zw(w, True)
+            _zw(w, True, defer=True)
         for w in app.allWidgets():
             if hasattr(w, "_on_zoom"):
                 try:
@@ -886,6 +926,7 @@ def set_zoom(f, announce=True):
         for t in tops:
             t.setUpdatesEnabled(True)
             t.update()
+    QTimer.singleShot(0, _zss_all)                              # the style sheets follow right after (the window answers first)
     if _ZSAVE[0]:
         try:
             _ZSAVE[0](f)
@@ -908,4 +949,4 @@ def _announce():
 
 
 def zoom_pct():
-    return "%d%%" % round(ZOOM[0] * 100)
+    return "%d%%" % round((_PEND[0] if _PEND[0] is not None else ZOOM[0]) * 100)
