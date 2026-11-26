@@ -244,8 +244,15 @@ def gmail_call(S, method, path, params=None, body=None, timeout=60):
             else:
                 S["gmail_read"] = False
             raise RuntimeError("Google did not allow this: press Allow Gmail again in the Mail tab (%s)" % e.code)
+        if e.code == 403 and ("not been used" in body_ or "disabled" in body_ or "accessnotconfigured" in body_):
+            raise RuntimeError("The Gmail API is switched off in your Google Cloud project. Open console.cloud.google.com, APIs & Services, Library, search Gmail API and press Enable (403)")
         if e.code in (401, 403, 429):
-            raise RuntimeError("Gmail said wait a moment (%s); press refresh" % e.code)
+            why = ""
+            try:
+                why = json.loads(body_).get("error", {}).get("message", "")[:160]
+            except Exception:
+                why = body_[:160]
+            raise RuntimeError("Gmail refused (%s): %s" % (e.code, why or "no reason given"))
         raise RuntimeError("Gmail answered %s" % e.code)
     except urllib.error.URLError as e:
         raise RuntimeError("could not reach Gmail (%s)" % getattr(e, "reason", e))

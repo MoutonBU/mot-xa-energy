@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: 1.86.283
+Current version: 1.86.284
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Mail tab now shows Google's real reason when Gmail refuses a request (for example the Gmail API not being enabled in the Google Cloud project).
 - New Mail tab: a live Gmail view (inbox, labels, search, read, reply, forward, compose with your signature, star/archive/trash). Nothing is stored on the PC. Sign in again once to allow Gmail changes.
 - Costing finish levels now have their own South African price per item at budget, mid-range, high-end and luxury (tiles, windows by glazing, doors, kitchen units and worktops, ceilings, paint, roof covering, light fittings, appliances, handrails) instead of one factor for everything. Electrical point rates were raised to the market range. The prices are anchored to public 2025/26 South African price guides and are listed in TIERS in materials.py; the Rates tab shows the mid-range figure.
 - Costing finish level: the fit-out rates now start at mid-range instead of the cheapest. Levels are 1 budget (rates as listed), 2 mid-range (x1.25, the new default), 3 high-end (x1.7), 4 luxury (x2.3). Structure, services and rates you imported are not scaled.
