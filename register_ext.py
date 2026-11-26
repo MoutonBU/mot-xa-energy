@@ -685,7 +685,7 @@ def mail_ready(S):
     return bool(S.get("smtp_host") and S.get("mail_address") or S.get("smtp_host") and S.get("smtp_user"))
 
 
-def deliver(S, m, bcc_me=False):
+def deliver(S, m, bcc_me=False, thread_id=""):
     """Send m through the chosen account. The copy to myself is a Bcc header (web services) or an extra recipient (mail server)."""
     import mail_oauth
     k = S.get("mail_provider") or "smtp"
@@ -693,7 +693,7 @@ def deliver(S, m, bcc_me=False):
     if k in ("gmail", "outlook"):
         if bcc_me and me:
             m["Bcc"] = me
-        mail_oauth.send(S, k, m)
+        mail_oauth.send(S, k, m, thread_id) if thread_id else mail_oauth.send(S, k, m)
         return
     c = {x: S.get(x, "") for x in ("smtp_host", "smtp_port", "smtp_security", "smtp_user", "smtp_pass")}
     rc = [a for hdr in ("To", "Cc") for a in addresses(m[hdr] or "")] + ([me] if bcc_me and me else [])

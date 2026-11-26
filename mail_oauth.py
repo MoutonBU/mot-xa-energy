@@ -75,6 +75,8 @@ def sign_in(S, provider, hint="", timeout=240, opener=webbrowser.open, extra_sco
         raise RuntimeError("the one-time setup (client ID) has not been entered")
     if provider == "gmail" and S.get("gmail_read") is not False and S.get("gmail_read") and GMAIL_READ not in extra_scope:
         extra_scope = (extra_scope + " " + GMAIL_READ).strip()       # reading was allowed before: a later sign-in keeps it
+    if provider == "gmail" and S.get("gmail_modify") and GMAIL_MODIFY not in extra_scope:
+        extra_scope = (extra_scope + " " + GMAIL_MODIFY).strip()     # so does the permission to archive, star and delete in the Mail tab
     verifier = _b64u(secrets.token_bytes(48))
     state = secrets.token_urlsafe(12)
     got = {}
@@ -127,7 +129,9 @@ def sign_in(S, provider, hint="", timeout=240, opener=webbrowser.open, extra_sco
         raise RuntimeError(tok.get("error_description") or tok.get("error") or "no sign-in token came back (%s)" % st)
     S[P["refresh"]] = tok["refresh_token"]
     if provider == "gmail":
-        S["gmail_read"] = "gmail.readonly" in str(tok.get("scope", "")) or "gmail.readonly" in extra_scope
+        sc_ = str(tok.get("scope", "")) + " " + extra_scope
+        S["gmail_modify"] = "gmail.modify" in sc_
+        S["gmail_read"] = "gmail.readonly" in sc_ or "gmail.modify" in sc_      # changing mail includes reading it
     c = _claims(tok.get("id_token", ""))
     return c.get("email") or c.get("preferred_username") or hint
 
@@ -146,7 +150,8 @@ def access_token(S, provider):
     st, txt = post(P["token"], form)
     tok = json.loads(txt or "{}")
     if provider == "gmail" and st == 200 and tok.get("scope"):
-        S["gmail_read"] = "gmail.readonly" in str(tok["scope"])           # what Google really allowed
+        S["gmail_modify"] = "gmail.modify" in str(tok["scope"])
+        S["gmail_read"] = "gmail.readonly" in str(tok["scope"]) or S["gmail_modify"]           # what Google really allowed
     if st != 200 or "access_token" not in tok:
         if tok.get("error") == "invalid_grant":
             raise RuntimeError("Google ended the Gmail sign-in (it does this after 7 days while the Google project is in Testing: set its publishing status to In production once, then sign in one last time)")
@@ -154,12 +159,15 @@ def access_token(S, provider):
     return tok["access_token"]
 
 
-def send(S, provider, msg):
-    """msg is an email.message.EmailMessage with From/To/Subject (and Cc/Bcc headers) set."""
+def send(S, provider, msg, thread_id=""):
+    """msg is an email.message.EmailMessage with From/To/Subject (and Cc/Bcc headers) set. thread_id keeps a Gmail reply in its conversation."""
     tok = access_token(S, provider)
     mime = bytes(msg)
     if provider == "gmail":
-        st, txt = post("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", raw=json.dumps({"raw": _b64u(mime)}).encode(),
+        body_ = {"raw": _b64u(mime)}
+        if thread_id:
+            body_["threadId"] = thread_id
+        st, txt = post("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", raw=json.dumps(body_).encode(),
                        headers={"Authorization": "Bearer " + tok, "Content-Type": "application/json"})
         ok = st == 200
     else:
@@ -207,3 +215,44 @@ def gmail_get(S, path, params=None, timeout=60):
         if e.code in (401, 403, 429):
             raise RuntimeError("Gmail said wait a moment (%s); it tries again by itself" % e.code)
         raise RuntimeError("Gmail answered %s" % e.code)
+
+
+GMAIL_MODIFY = "https://www.googleapis.com/auth/gmail.modify"
+
+
+def gmail_call(S, method, path, params=None, body=None, timeout=60):
+    """Any call to https://gmail.googleapis.com/gmail/v1/users/me/<path> (GET, POST ...); returns the decoded JSON. Used by the Mail tab."""
+    tok = access_token(S, "gmail")
+    url = "https://gmail.googleapis.com/gmail/v1/users/me/" + path + (("?" + urllib.parse.urlencode(params, doseq=True)) if params else "")
+    data = json.dumps(body).encode() if body is not None else None
+    hdr = {"Authorization": "Bearer " + tok}
+    if data is not None:
+        hdr["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, headers=hdr, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8", "replace") or "{}")
+    except urllib.error.HTTPError as e:
+        body_ = ""
+        try:
+            body_ = e.read().decode("utf-8", "replace").lower()
+        except Exception:
+            pass
+        if e.code in (401, 403) and ("insufficient" in body_ or "scope" in body_):
+            if method != "GET":
+                S["gmail_modify"] = False
+            else:
+                S["gmail_read"] = False
+            raise RuntimeError("Google did not allow this: press Allow Gmail again in the Mail tab (%s)" % e.code)
+        if e.code in (401, 403, 429):
+            raise RuntimeError("Gmail said wait a moment (%s); press refresh" % e.code)
+        raise RuntimeError("Gmail answered %s" % e.code)
+    except urllib.error.URLError as e:
+        raise RuntimeError("could not reach Gmail (%s)" % getattr(e, "reason", e))
+
+
+def gmail_bytes(S, path, timeout=120):
+    """Raw GET (attachments come back as JSON with base64 data, decoded here)."""
+    j = gmail_call(S, "GET", path, timeout=timeout)
+    d = j.get("data", "")
+    return base64.urlsafe_b64decode(d + "=" * (-len(d) % 4))

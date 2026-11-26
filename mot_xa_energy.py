@@ -9768,6 +9768,14 @@ class MainWindow(QMainWindow):
         except Exception as e_:
             print("tool not started: site_services", e_)
             self.services_page = None
+        self.mail_page = None
+        try:
+            import ui_extras as ux_mail
+            self.mail_page = ux_mail.MailPage(self, SETTINGS, light, lambda: sys.modules[type(self).__module__])
+            self.main_tabs.addTab(self.mail_page, "Mail")
+        except Exception as e_:
+            print("tool not started: mail", e_)
+            self.mail_page = None
         self._build_home()
 
         self.assign_table = QTableWidget(0, 8)
@@ -14652,7 +14660,7 @@ class MainWindow(QMainWindow):
 
     def _build_launcher(self):
         TILE_COL = {"Drawing register": "#36b3a6", "Orders": "#e2a93f", "Invoicing": "#55b57a", "Detail tool": "#5b9be6", "Costing": "#a587e0", "SANS": "#ff4056",
-                    "Site and areas": "#c08e5c", "Guidelines review": "#93a0b4", "Light & Ventilation": "#e8b84a", "Energy (XA)": "#f0795a", "Coverage & FAR": "#d9628f"}      # muted, one hue per tool
+                    "Site and areas": "#c08e5c", "Guidelines review": "#93a0b4", "Light & Ventilation": "#e8b84a", "Energy (XA)": "#f0795a", "Coverage & FAR": "#d9628f", "Mail": "#4aa3df"}      # muted, one hue per tool
         """The start screen: four big squares and nothing else. The left bar and the ribbon only show once you are inside one."""
         def tile(title, sub, ico, target):
             b = QPushButton()
@@ -14729,7 +14737,8 @@ class MainWindow(QMainWindow):
                 ("Costing", "Fixtures, materials and the budget for a job.", "calc", "Costing"),
                 ("SANS", "Light and ventilation, energy and coverage checks for the building regulations.", "sun", "SANS"),
                 ("Site and areas", "Building lines on the stand, the sewer, water and electrical lines to the house, and the area schedule with unit mix and floor area ratio.", "land", "Building lines"),
-                ("Guidelines review", "Check the plans against the estate's architectural guidelines and the council's or state's checklist.", "shield", "Guidelines review"))):
+                ("Guidelines review", "Check the plans against the estate's architectural guidelines and the council's or state's checklist.", "shield", "Guidelines review"),
+                ("Mail", "Your Gmail inbox, live: read, reply and send with your signature, without leaving the program.", "mail", "Mail"))):
             g.addWidget(tile(title, sub, ico, tgt), i // 3, i % 3)
         for k in (0, 1, 2):
             g.setRowStretch(k, 1)

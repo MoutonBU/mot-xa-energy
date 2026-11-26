@@ -1769,3 +1769,1132 @@ class SpinPic(QWidget):
         p = QPainter(self)
         p.drawImage(self.rect(), self.img)
         p.end()
+
+
+# ==================================================================== Mail tab: a live view of the Gmail account
+# Nothing is downloaded or kept: every list and message is fetched from Gmail when it is opened and drawn on screen.
+import base64 as _b64
+import datetime as _dt
+import html as _html
+import json as _json
+import threading as _th
+import time as _time
+from email.message import EmailMessage as _EmailMessage
+def _formataddr(a):
+    nm, ad = a
+    return '"%s" <%s>' % (nm.replace('"', ''), ad) if nm else ad
+
+
+from email.utils import getaddresses as _getaddr, parseaddr as _parseaddr
+
+from PySide6.QtCore import QRect, QSize as _QSize, Signal as _Signal
+from PySide6.QtGui import QTextDocument
+from PySide6.QtGui import QFont as _QFont, QFontMetrics as _QFM
+from PySide6.QtWidgets import (QAbstractItemView as _AIV, QCheckBox as _QCheck, QFileDialog as _QFD, QHBoxLayout as _HB, QLineEdit as _QLE, QListWidget as _QLW,
+                               QListWidgetItem as _QLWI, QMessageBox as _QMB, QPushButton as _QPB, QSplitter as _QSplit, QStackedWidget as _QStack, QStyledItemDelegate as _QSID,
+                               QTabBar as _QTabBar, QTextBrowser as _QTB, QTextEdit as _QTE, QVBoxLayout as _VB, QWidget as _QW, QLabel as _QL, QDialog as _QD, QFrame as _QF,
+                               QScrollArea as _QSA)
+
+MAIL_SYSTEM = [("INBOX", "Inbox"), ("STARRED", "Starred"), ("SENT", "Sent"), ("DRAFT", "Drafts"), ("SPAM", "Spam"), ("TRASH", "Trash"), ("ALL", "All Mail")]
+MAIL_CATEGORIES = [("category:primary", "Primary"), ("category:promotions", "Promotions"), ("category:social", "Social"), ("category:updates", "Updates")]
+ROLE_THREAD, ROLE_SENDER, ROLE_SUBJECT, ROLE_SNIP, ROLE_DATE, ROLE_UNREAD, ROLE_STAR, ROLE_CHECK, ROLE_CLIP = [Qt.ItemDataRole.UserRole + i for i in range(1, 10)]
+
+
+def mail_b64(d):
+    d = d or ""
+    return _b64.urlsafe_b64decode(d + "=" * (-len(d) % 4))
+
+
+def mail_header(msg, name):
+    for h in (msg.get("payload") or {}).get("headers", []) or []:
+        if str(h.get("name", "")).lower() == name.lower():
+            return str(h.get("value", ""))
+    return ""
+
+
+def mail_parts(payload):
+    """(html, plain, attachments) of one Gmail message payload. attachments: [{name, mime, size, id, cid, data}]."""
+    out = {"html": [], "plain": [], "att": []}
+
+    def walk(p):
+        if not p:
+            return
+        mime = str(p.get("mimeType", "")).lower()
+        body = p.get("body") or {}
+        name = p.get("filename") or ""
+        hdrs = {str(h.get("name", "")).lower(): str(h.get("value", "")) for h in p.get("headers", []) or []}
+        cid = hdrs.get("content-id", "").strip("<> ")
+        if name or (body.get("attachmentId") and not mime.startswith("text/")):
+            out["att"].append({"name": name or "attachment", "mime": mime, "size": int(body.get("size", 0) or 0), "id": body.get("attachmentId", ""),
+                               "cid": cid, "data": body.get("data", "")})
+        elif mime == "text/html" and body.get("data"):
+            out["html"].append(mail_b64(body["data"]).decode("utf-8", "replace"))
+        elif mime == "text/plain" and body.get("data"):
+            out["plain"].append(mail_b64(body["data"]).decode("utf-8", "replace"))
+        for c in p.get("parts", []) or []:
+            walk(c)
+    walk(payload)
+    return "".join(out["html"]), "\n".join(out["plain"]), out["att"]
+
+
+def mail_date_text(ms, now=None):
+    try:
+        d = _dt.datetime.fromtimestamp(int(ms) / 1000.0)
+    except Exception:
+        return ""
+    now = now or _dt.datetime.now()
+    if d.date() == now.date():
+        return d.strftime("%I:%M %p").lstrip("0")
+    if d.year == now.year:
+        return d.strftime("%b ") + str(d.day)
+    return d.strftime("%d/%m/%Y")
+
+
+def mail_name(addr_field):
+    n, a = _parseaddr(addr_field or "")
+    return (n or a.split("@")[0] or addr_field or "").strip().strip('"')
+
+
+def mail_thread_row(th, me=""):
+    """One row for the list from a Gmail thread (format=metadata): who, subject, snippet, date, unread, starred, count."""
+    msgs = th.get("messages") or []
+    if not msgs:
+        return None
+    me = (me or "").lower()
+    names, seen = [], set()
+    for m in msgs:
+        fr = mail_header(m, "From")
+        a = _parseaddr(fr)[1].lower()
+        n = "me" if (me and a == me) else mail_name(fr)
+        if n and n not in seen:
+            seen.add(n)
+            names.append(n)
+    last = msgs[-1]
+    labels = set()
+    for m in msgs:
+        labels.update(m.get("labelIds") or [])
+    first = msgs[0]
+    unread = any("UNREAD" in (m.get("labelIds") or []) for m in msgs)
+    shown = ", ".join(names[:3]) + ("" if len(names) <= 3 else " ..")
+    attach = any(((m.get("payload") or {}).get("parts")) and any((p.get("filename") for p in (m.get("payload") or {}).get("parts", []))) for m in msgs)
+    return {"id": th.get("id", ""), "sender": shown, "count": len(msgs), "subject": mail_header(first, "Subject") or "(no subject)",
+            "snippet": _html.unescape(th.get("snippet") or last.get("snippet") or ""), "date": int(last.get("internalDate", 0) or 0), "unread": unread,
+            "starred": "STARRED" in labels, "attach": attach, "labels": sorted(labels)}
+
+
+def mail_label_tree(labels):
+    """User labels in the order Gmail shows them: [(display name, indent, id)]; 'Clty Dev/Zandspruit' sits under 'Clty Dev'."""
+    sysids = {k for k, _ in MAIL_SYSTEM} | {"IMPORTANT", "CHAT", "UNREAD", "CATEGORY_PERSONAL", "CATEGORY_SOCIAL", "CATEGORY_PROMOTIONS", "CATEGORY_UPDATES", "CATEGORY_FORUMS"}
+    out = []
+    for lb in sorted([x for x in labels if x.get("type") == "user" or (x.get("id") not in sysids and not str(x.get("id", "")).startswith("CATEGORY_") and x.get("type") != "system")],
+                     key=lambda x: str(x.get("name", "")).lower()):
+        nm = str(lb.get("name", ""))
+        out.append((nm.split("/")[-1], nm.count("/"), lb.get("id", ""), nm))
+    return out
+
+
+def mail_compose(S, to="", cc="", bcc="", subject="", html_body="", plain_body="", files=(), in_reply_to="", references="", signature=True):
+    """The finished email: plain and HTML, my signature picture (or my signature lines) at the end, and the attachments."""
+    msg = _EmailMessage()
+    me = S.get("mail_address") or S.get("sig_email") or ""
+    nm = str(S.get("sig_name", "") or "").strip()
+    if me:
+        msg["From"] = _formataddr((nm, me)) if nm else me
+    for k, v in (("To", to), ("Cc", cc), ("Bcc", bcc)):
+        if str(v).strip():
+            msg[k] = v
+    msg["Subject"] = subject
+    if in_reply_to:
+        msg["In-Reply-To"] = in_reply_to
+        msg["References"] = (references + " " + in_reply_to).strip()
+    sig_png, sig_text = None, ""
+    if signature:
+        try:
+            import sig_banner
+            if sig_banner.available(S):
+                sig_png = sig_banner.jpeg_bytes(S)
+        except Exception:
+            sig_png = None
+        if sig_png is None:
+            try:
+                from register_ext import signature_text
+                sig_text = signature_text(S, "")
+            except Exception:
+                sig_text = ""
+    html_full = "<div style=\"font-family:Arial,sans-serif;font-size:14px;color:#202124\">" + html_body + "</div>"
+    plain_full = plain_body
+    if sig_png is not None:
+        html_full += "<br><img src=\"cid:mcpsig\" alt=\"signature\" style=\"max-width:620px\">"
+    elif sig_text:
+        html_full += "<br>-- <br>" + "<br>".join(_html.escape(x) for x in sig_text.split("\n"))
+        plain_full += "\n\n-- \n" + sig_text
+    msg.set_content(plain_full or " ")
+    msg.add_alternative(html_full, subtype="html")
+    if sig_png is not None:
+        msg.get_payload()[1].add_related(sig_png, maintype="image", subtype="jpeg", cid="<mcpsig>", filename="signature.jpg", disposition="inline")
+    import mimetypes
+    for f in files:
+        try:
+            with open(f, "rb") as fh:
+                data = fh.read()
+            mt, _ = mimetypes.guess_type(f)
+            mt = mt or "application/octet-stream"
+            msg.add_attachment(data, maintype=mt.split("/")[0], subtype=mt.split("/")[1], filename=os.path.basename(f))
+        except Exception:
+            raise RuntimeError("could not read the attachment %s" % f)
+    return msg
+
+
+class _MailRow(_QSID):
+    """One conversation in the list: checkbox, star, who, subject - snippet, date. Unread is bold and brighter, like Gmail."""
+    H = 44
+
+    def __init__(self, page):
+        super().__init__(page)
+        self.page = page
+
+    def sizeHint(self, opt, idx):
+        return _QSize(400, self.H)
+
+    def _cols(self, r):
+        return QRect(r.left() + 10, r.top() + 12, 20, 20), QRect(r.left() + 40, r.top() + 10, 24, 24)
+
+    def paint(self, p, opt, idx):
+        bg, fg, mute, line = self.page.colors()
+        r = opt.rect
+        unread = bool(idx.data(ROLE_UNREAD))
+        sel = bool(opt.state & QStyle_State_Selected)
+        hov = bool(opt.state & QStyle_State_MouseOver)
+        p.save()
+        p.fillRect(r, QColor(self.page.row_color(unread, sel, hov)))
+        p.setPen(QColor(line))
+        p.drawLine(r.left(), r.bottom(), r.right(), r.bottom())
+        cb, st = self._cols(r)
+        p.setPen(QPen(QColor(mute), 1.4))
+        p.setBrush(QColor("#d8132b") if idx.data(ROLE_CHECK) else Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(cb.adjusted(2, 2, -2, -2), 3, 3)
+        if idx.data(ROLE_CHECK):
+            p.setPen(QPen(QColor("#ffffff"), 2))
+            p.drawLine(cb.left() + 6, cb.center().y(), cb.left() + 9, cb.center().y() + 3)
+            p.drawLine(cb.left() + 9, cb.center().y() + 3, cb.left() + 15, cb.center().y() - 4)
+        starred = bool(idx.data(ROLE_STAR))
+        f = _QFont(opt.font)
+        f.setPointSizeF(f.pointSizeF() + 2)
+        p.setFont(f)
+        p.setPen(QColor("#e0a800") if starred else QColor(mute))
+        p.drawText(st, Qt.AlignmentFlag.AlignCenter, "★" if starred else "☆")
+        f = _QFont(opt.font)
+        f.setBold(unread)
+        p.setFont(f)
+        p.setPen(QColor(fg))
+        x0 = r.left() + 76
+        wname = 190
+        fm = _QFM(f)
+        who = idx.data(ROLE_SENDER) or ""
+        p.drawText(QRect(x0, r.top(), wname, r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, fm.elidedText(who, Qt.TextElideMode.ElideRight, wname))
+        dw = 84
+        dtxt = idx.data(ROLE_DATE) or ""
+        fd = _QFont(opt.font)
+        fd.setBold(unread)
+        p.setFont(fd)
+        p.setPen(QColor(fg if unread else mute))
+        p.drawText(QRect(r.right() - dw - 12, r.top(), dw, r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, dtxt)
+        sx = x0 + wname + 12
+        if idx.data(ROLE_CLIP):
+            p.setFont(_QFont(opt.font))
+            p.setPen(QColor(mute))
+            p.drawText(QRect(sx, r.top(), 18, r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, "\u29c9")
+            sx += 20
+        avail = r.right() - dw - 28 - sx
+        subj = idx.data(ROLE_SUBJECT) or ""
+        fs = _QFont(opt.font)
+        fs.setBold(unread)
+        fms = _QFM(fs)
+        subj_txt = subj
+        sw = min(fms.horizontalAdvance(subj_txt) + 6, int(avail * 0.62))
+        p.setFont(fs)
+        p.setPen(QColor(fg))
+        p.drawText(QRect(sx, r.top(), sw, r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, fms.elidedText(subj_txt, Qt.TextElideMode.ElideRight, sw))
+        fn = _QFont(opt.font)
+        fn.setBold(False)
+        p.setFont(fn)
+        p.setPen(QColor(mute))
+        fmn = _QFM(fn)
+        rest = avail - sw - 10
+        if rest > 30:
+            p.drawText(QRect(sx + sw + 10, r.top(), rest, r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                       fmn.elidedText("- " + (idx.data(ROLE_SNIP) or ""), Qt.TextElideMode.ElideRight, rest))
+        p.restore()
+
+    def editorEvent(self, ev, model, opt, idx):
+        if ev.type() == QEvent.Type.MouseButtonRelease and ev.button() == Qt.MouseButton.LeftButton:
+            cb, st = self._cols(opt.rect)
+            pos = ev.position().toPoint() if hasattr(ev, "position") else ev.pos()
+            if cb.adjusted(-4, -4, 4, 4).contains(pos):
+                model.setData(idx, not bool(idx.data(ROLE_CHECK)), ROLE_CHECK)
+                self.page.update_bulk()
+                return True
+            if st.adjusted(-4, -4, 4, 4).contains(pos):
+                self.page.toggle_star(idx.data(ROLE_THREAD), not bool(idx.data(ROLE_STAR)), idx.row())
+                return True
+        return False
+
+
+from PySide6.QtWidgets import QStyle as _QStyle
+QStyle_State_Selected = _QStyle.StateFlag.State_Selected
+QStyle_State_MouseOver = _QStyle.StateFlag.State_MouseOver
+
+
+class _AutoBrowser(_QTB):
+    """A message body that is as tall as its text, so the whole conversation scrolls as one page like Gmail."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFrameShape(_QF.Shape.NoFrame)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setOpenExternalLinks(True)
+        self.document().documentLayout().documentSizeChanged.connect(lambda *_: self._fit())
+
+    def _fit(self):
+        w = max(200, self.viewport().width())
+        self.document().setTextWidth(w)
+        self.setFixedHeight(int(self.document().size().height()) + 14)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._fit()
+
+    def wheelEvent(self, e):
+        e.ignore()                                   # the wheel scrolls the page, not each message
+
+
+class MailCompose(_QD):
+    """New email, reply, reply to all or forward, with my signature. Sends through the Gmail account that is signed in."""
+
+    def __init__(self, page, to="", cc="", subject="", html_body="", in_reply_to="", references="", thread_id=""):
+        super().__init__(page)
+        self.page, self.S = page, page.S
+        self.in_reply_to, self.references, self.thread_id = in_reply_to, references, thread_id
+        self.files = []
+        self.setWindowTitle("New message")
+        self.resize(760, 640)
+        v = _VB(self)
+        g = {}
+        for key, lab in (("to", "To"), ("cc", "Cc"), ("bcc", "Bcc"), ("subject", "Subject")):
+            row = _HB()
+            l = _QL(lab)
+            l.setFixedWidth(60)
+            e = _QLE()
+            row.addWidget(l)
+            row.addWidget(e, 1)
+            v.addLayout(row)
+            g[key] = (l, e)
+        self.to, self.cc, self.bcc, self.subject = (g[k][1] for k in ("to", "cc", "bcc", "subject"))
+        self.to.setText(to)
+        self.cc.setText(cc)
+        self.subject.setText(subject)
+        for k in ("cc", "bcc"):
+            if not (cc if k == "cc" else ""):
+                g[k][0].hide()
+                g[k][1].hide()
+        self._extra = g
+        try:
+            import contacts
+            for le in (self.to, self.cc, self.bcc):
+                contacts.attach(le, page.get_M)
+        except Exception:
+            pass
+        bar = _HB()
+        self.bcc_btn = _QPB("Cc / Bcc")
+        self.bcc_btn.clicked.connect(self._show_cc)
+        att = _QPB("Attach files...")
+        att.clicked.connect(self._attach)
+        self.sig = _QCheck("Add my signature")
+        self.sig.setChecked(True)
+        bar.addWidget(self.bcc_btn)
+        bar.addWidget(att)
+        bar.addWidget(self.sig)
+        bar.addStretch(1)
+        v.addLayout(bar)
+        self.att_lbl = _QL("")
+        self.att_lbl.setWordWrap(True)
+        v.addWidget(self.att_lbl)
+        self.body = _QTE()
+        self.body.setAcceptRichText(True)
+        if html_body:
+            self.body.setHtml(html_body)
+        v.addWidget(self.body, 1)
+        self.status = _QL("")
+        self.status.setWordWrap(True)
+        v.addWidget(self.status)
+        row = _HB()
+        self.send_btn = _QPB("Send")
+        self.send_btn.setStyleSheet("QPushButton{background:#d8132b;color:#ffffff;font-weight:700;padding:8px 26px;border-radius:6px;}")
+        self.send_btn.clicked.connect(self._send)
+        cl = _QPB("Discard")
+        cl.clicked.connect(self.reject)
+        row.addWidget(self.send_btn)
+        row.addWidget(cl)
+        row.addStretch(1)
+        v.addLayout(row)
+        (self.subject if to else self.to).setFocus()
+
+    def _show_cc(self):
+        for k in ("cc", "bcc"):
+            self._extra[k][0].show()
+            self._extra[k][1].show()
+        self.bcc_btn.hide()
+
+    def _attach(self):
+        fs, _ = _QFD.getOpenFileNames(self, "Attach files")
+        if fs:
+            self.files += fs
+            self.att_lbl.setText("Attached: " + ", ".join(os.path.basename(f) for f in self.files))
+
+    def build(self):
+        return mail_compose(self.S, self.to.text().strip(), self.cc.text().strip(), self.bcc.text().strip(), self.subject.text().strip(),
+                            self._html(), self.body.toPlainText(), self.files, self.in_reply_to, self.references, self.sig.isChecked())
+
+    def _html(self):
+        h = self.body.toHtml()
+        m = re.search(r"<body[^>]*>(.*)</body>", h, re.S | re.I)
+        return m.group(1) if m else h
+
+    def _send(self):
+        if not self.to.text().strip():
+            self.status.setText("Type who it is for in To.")
+            return
+        try:
+            msg = self.build()
+        except Exception as e:
+            self.status.setText(str(e))
+            return
+        self.send_btn.setEnabled(False)
+        self.status.setText("Sending...")
+
+        def work():
+            from register_ext import deliver
+            deliver(self.S, msg, thread_id=self.thread_id)
+            return True
+        self.page.run(work, self._sent)
+
+    def _sent(self, ok, err):
+        if err:
+            self.send_btn.setEnabled(True)
+            self.status.setText("Not sent: %s" % err)
+            return
+        self.accept()
+        self.page.say("Sent.")
+        self.page.after_send()
+
+
+class MailPage(_QW):
+    """The Mail tab: the Gmail account as a live, fast view with the program's own look. Sign-in uses the same Google permission as the rest of the program."""
+    _done = _Signal(object, object, object)
+    _signed = _Signal(bool, str)
+
+    def __init__(self, host, S, is_light, get_M):
+        super().__init__()
+        self.host, self.S, self.is_light, self.get_M = host, S, is_light, get_M
+        import mail_oauth
+        self.mo = mail_oauth
+        self.label, self.query, self.cat = "INBOX", "", 0
+        self.tokens, self.gen, self.me = [""], 0, ""
+        self.rows, self.labels, self.cur = [], [], None
+        self.thread_view = None
+        self._loaded = False
+        self._done.connect(lambda cb, res, err: cb(res, err))
+        self._signed.connect(self._after_signin)
+        self.setObjectName("mailpage")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        root = _VB(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        top = _HB()
+        self.search = _QLE()
+        self.search.setPlaceholderText("Search mail  (for example: from:dewann has:attachment)")
+        self.search.setClearButtonEnabled(True)
+        self.search.returnPressed.connect(self._do_search)
+        self.account = _QL("")
+        top.addWidget(self.search, 1)
+        top.addWidget(self.account)
+        root.addLayout(top)
+        self.connect_box = _QF()
+        cv = _VB(self.connect_box)
+        self.connect_msg = _QL("")
+        self.connect_msg.setWordWrap(True)
+        self.connect_msg.setTextFormat(Qt.TextFormat.RichText)
+        self.connect_btn = _QPB("Sign in with Google and allow Gmail")
+        self.connect_btn.setStyleSheet("QPushButton{background:#d8132b;color:#ffffff;font-weight:700;padding:10px 24px;border-radius:6px;}")
+        self.connect_btn.clicked.connect(self._signin)
+        cv.addStretch(1)
+        cv.addWidget(self.connect_msg, 0, Qt.AlignmentFlag.AlignHCenter)
+        cv.addWidget(self.connect_btn, 0, Qt.AlignmentFlag.AlignHCenter)
+        cv.addStretch(2)
+        root.addWidget(self.connect_box, 1)
+        self.main = _QW()
+        mh = _HB(self.main)
+        mh.setContentsMargins(0, 0, 0, 0)
+        left = _QW()
+        left.setFixedWidth(232)
+        lv = _VB(left)
+        lv.setContentsMargins(0, 0, 0, 0)
+        self.compose_btn = _QPB("  Compose")
+        self.compose_btn.setStyleSheet("QPushButton{background:#d8132b;color:#ffffff;font-weight:700;font-size:14px;padding:14px 22px;border-radius:14px;text-align:left;}")
+        self.compose_btn.clicked.connect(lambda: self.compose())
+        lv.addWidget(self.compose_btn)
+        self.side = _QLW()
+        self.side.setFrameShape(_QF.Shape.NoFrame)
+        self.side.currentItemChanged.connect(self._side_changed)
+        lv.addWidget(self.side, 1)
+        mh.addWidget(left)
+        self.stack = _QStack()
+        mh.addWidget(self.stack, 1)
+        # the list page
+        lp = _QW()
+        lpv = _VB(lp)
+        lpv.setContentsMargins(0, 0, 0, 0)
+        tb = _HB()
+        self.sel_all = _QCheck()
+        self.sel_all.toggled.connect(self._select_all)
+        tb.addWidget(self.sel_all)
+        self.refresh_btn = _QPB("Refresh")
+        self.refresh_btn.clicked.connect(lambda: self.load_list(reset=False))
+        self.bulk = []
+        for txt, fn in (("Archive", lambda: self.act("archive")), ("Delete", lambda: self.act("trash")), ("Mark as read", lambda: self.act("read")), ("Mark as unread", lambda: self.act("unread"))):
+            b = _QPB(txt)
+            b.clicked.connect(fn)
+            b.setVisible(False)
+            self.bulk.append(b)
+        tb.addWidget(self.refresh_btn)
+        for b in self.bulk:
+            tb.addWidget(b)
+        tb.addStretch(1)
+        self.page_lbl = _QL("")
+        self.prev = _QPB("<")
+        self.next = _QPB(">")
+        self.prev.setFixedWidth(34)
+        self.next.setFixedWidth(34)
+        self.prev.clicked.connect(self._prev)
+        self.next.clicked.connect(self._next)
+        tb.addWidget(self.page_lbl)
+        tb.addWidget(self.prev)
+        tb.addWidget(self.next)
+        lpv.addLayout(tb)
+        self.cats = _QTabBar()
+        for _q, nm in MAIL_CATEGORIES:
+            self.cats.addTab(nm)
+        self.cats.setExpanding(False)
+        self.cats.currentChanged.connect(self._cat_changed)
+        lpv.addWidget(self.cats)
+        self.list = _QLW()
+        self.list.setFrameShape(_QF.Shape.NoFrame)
+        self.list.setMouseTracking(True)
+        self.list.setItemDelegate(_MailRow(self))
+        self.list.setVerticalScrollMode(_AIV.ScrollMode.ScrollPerPixel)
+        self.list.itemClicked.connect(self._open_item)
+        lpv.addWidget(self.list, 1)
+        self.stack.addWidget(lp)
+        # the reading page
+        rp = _QW()
+        rv = _VB(rp)
+        rv.setContentsMargins(0, 0, 0, 0)
+        rb = _HB()
+        back = _QPB("← Back")
+        back.clicked.connect(self._back)
+        rb.addWidget(back)
+        self.read_btns = {}
+        for key, txt in (("archive", "Archive"), ("trash", "Delete"), ("unread", "Mark as unread"), ("reply", "Reply"), ("replyall", "Reply all"), ("forward", "Forward"), ("web", "Open in browser")):
+            b = _QPB(txt)
+            b.clicked.connect(lambda _=False, k=key: self._read_action(k))
+            rb.addWidget(b)
+            self.read_btns[key] = b
+        rb.addStretch(1)
+        rv.addLayout(rb)
+        self.subject_lbl = _QL("")
+        self.subject_lbl.setWordWrap(True)
+        f = _QFont()
+        f.setPointSize(16)
+        self.subject_lbl.setFont(f)
+        rv.addWidget(self.subject_lbl)
+        self.sa = _QSA()
+        self.sa.setWidgetResizable(True)
+        self.sa.setFrameShape(_QF.Shape.NoFrame)
+        self.thread_host = _QW()
+        self.thread_lay = _VB(self.thread_host)
+        self.thread_lay.setContentsMargins(0, 0, 8, 0)
+        self.sa.setWidget(self.thread_host)
+        rv.addWidget(self.sa, 1)
+        self.stack.addWidget(rp)
+        root.addWidget(self.main, 1)
+        self.status = _QL("")
+        self.status.setWordWrap(True)
+        root.addWidget(self.status)
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._tick)
+        self.timer.start(60000)
+        self._fill_side()
+        self._refresh_state()
+        self.restyle()
+
+    # ----------------------------------------------------------------- look
+    def colors(self):
+        """(page, text, muted text, line) in the program's own dark or light look."""
+        if self.is_light():
+            return "#ffffff", "#1c1f23", "#6b727b", "#d9dde2"
+        return "#1f2125", "#eceef0", "#8a9099", "#30353b"
+
+    def restyle(self):
+        bg, fg, mute, line = self.colors()
+        sel, hov = ("#fbe3e6", "#eef1f5") if self.is_light() else ("#3a2328", "#2a2e34")
+        self.setStyleSheet("#mailpage{background:%s;} #mailpage QLabel{color:%s;background:transparent;} #mailpage QCheckBox{color:%s;} "
+                           "#mailpage QFrame#mcard{border:1px solid %s;border-radius:8px;} #mailpage QScrollArea{background:%s;border:none;} "
+                           "#mailpage QTabBar::tab{color:%s;padding:10px 22px;background:transparent;border:none;} "
+                           "#mailpage QTabBar::tab:selected{color:%s;border-bottom:3px solid #d8132b;font-weight:700;}" % (bg, fg, fg, line, bg, mute, fg))
+        self.side.setStyleSheet("QListWidget{background:%s;color:%s;border:none;outline:0;} QListWidget::item{padding:7px 14px;border-radius:15px;} "
+                                "QListWidget::item:selected{background:%s;color:%s;font-weight:700;} QListWidget::item:hover{background:%s;}" % (bg, fg, sel, fg, hov))
+        self.list.setStyleSheet("QListWidget{background:%s;border:none;outline:0;}" % bg)
+        self.thread_host.setStyleSheet("background:%s;" % bg)
+        self.connect_box.setStyleSheet("QFrame{background:%s;border:none;}" % bg)
+
+    def row_color(self, unread, sel, hov):
+        if self.is_light():
+            return "#fbe3e6" if sel else "#e8ecf1" if hov else ("#ffffff" if unread else "#f2f4f7")
+        return "#3a2328" if sel else "#2e3238" if hov else ("#24262b" if unread else "#1b1d21")
+
+    def say(self, text, err=False):
+        self.status.setText(("<span style='color:#e03050'>%s</span>" % _html.escape(text)) if err else _html.escape(text))
+        self.status.setTextFormat(Qt.TextFormat.RichText)
+        if text and not err:
+            QTimer.singleShot(6000, lambda: self.status.setText("") if self.status.text() == _html.escape(text) else None)
+
+    # --------------------------------------------------------------- plumbing
+    def run(self, fn, cb):
+        def work():
+            try:
+                res, err = fn(), None
+            except Exception as e:
+                res, err = None, str(e)
+            self._done.emit(cb, res, err)
+        _th.Thread(target=work, daemon=True).start()
+
+    def ready(self):
+        return bool(self.mo.configured(self.S, "gmail") and self.mo.signed_in(self.S, "gmail") and self.S.get("gmail_modify"))
+
+    def _refresh_state(self):
+        ok = self.ready()
+        self.connect_box.setVisible(not ok)
+        self.main.setVisible(ok)
+        if not ok:
+            if not self.mo.configured(self.S, "gmail"):
+                self.connect_msg.setText("<h3>Mail</h3>Gmail sign-in is not set up in this program yet (Email account, then Gmail).")
+                self.connect_btn.setEnabled(False)
+            elif self.mo.signed_in(self.S, "gmail"):
+                self.connect_msg.setText("<h3>Mail</h3>To read and manage your mail here, press the button, sign in with Google and press Allow.<br>"
+                                         "Google will say the program is not verified: press Advanced, then continue.<br>Nothing is copied to this computer; the mail stays in Gmail.")
+                self.connect_btn.setEnabled(True)
+            else:
+                self.connect_msg.setText("<h3>Mail</h3>Sign in with Google and press Allow to read and manage your Gmail here.<br>"
+                                         "Google will say the program is not verified: press Advanced, then continue.<br>Nothing is copied to this computer; the mail stays in Gmail.")
+                self.connect_btn.setEnabled(True)
+        else:
+            self.account.setText(self.S.get("mail_address", ""))
+
+    def _signin(self):
+        self.connect_btn.setEnabled(False)
+        self.connect_msg.setText("<h3>Mail</h3>Waiting for Google in your browser...")
+        self.mo.sign_in_thread(self.S, "gmail", self.S.get("mail_address", ""), lambda ok, m: self._signed.emit(ok, m), extra_scope=self.mo.GMAIL_MODIFY)
+
+    def _after_signin(self, ok, msg):
+        if ok:
+            if msg and not self.S.get("mail_address"):
+                self.S["mail_address"] = msg
+            self.S["mail_provider"] = self.S.get("mail_provider") or "gmail"
+            try:
+                self.get_M().save_settings()
+            except Exception:
+                pass
+        else:
+            self.say(msg or "sign-in did not finish", True)
+        self._refresh_state()
+        if ok:
+            self._loaded = False
+            self.ensure_loaded()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self.restyle()
+        self.ensure_loaded()
+
+    def ensure_loaded(self):
+        if self._loaded or not self.ready():
+            return
+        self._loaded = True
+        self.load_labels()
+        self.load_list(reset=True)
+
+    def _tick(self):
+        if self.isVisible() and self.ready() and self._loaded and self.stack.currentIndex() == 0 and not self.search.hasFocus():
+            self.load_labels(quiet=True)
+            self.load_list(reset=False, quiet=True)
+
+    # ------------------------------------------------------------- sidebar
+    def _fill_side(self):
+        self.side.blockSignals(True)
+        self.side.clear()
+        for lid, nm in MAIL_SYSTEM:
+            it = _QLWI(nm)
+            it.setData(Qt.ItemDataRole.UserRole, lid)
+            it.setData(Qt.ItemDataRole.UserRole + 1, nm)
+            self.side.addItem(it)
+        hdr = _QLWI("Labels")
+        hdr.setFlags(Qt.ItemFlag.NoItemFlags)
+        f = hdr.font()
+        f.setBold(True)
+        hdr.setFont(f)
+        self.side.addItem(hdr)
+        for nm, ind, lid, full in mail_label_tree(self.labels):
+            it = _QLWI("    " * ind + nm)
+            it.setData(Qt.ItemDataRole.UserRole, lid)
+            it.setData(Qt.ItemDataRole.UserRole + 1, "    " * ind + nm)
+            self.side.addItem(it)
+        for i in range(self.side.count()):
+            if self.side.item(i).data(Qt.ItemDataRole.UserRole) == self.label:
+                self.side.setCurrentRow(i)
+                break
+        self.side.blockSignals(False)
+
+    def _side_changed(self, cur, _prev):
+        if cur is None or cur.data(Qt.ItemDataRole.UserRole) is None:
+            return
+        self.label = cur.data(Qt.ItemDataRole.UserRole)
+        self.search.clear()
+        self.query = ""
+        self.stack.setCurrentIndex(0)
+        self.load_list(reset=True)
+
+    def load_labels(self, quiet=False):
+        def work():
+            labs = self.mo.gmail_call(self.S, "GET", "labels").get("labels", [])
+            prof = {}
+            try:
+                prof = self.mo.gmail_call(self.S, "GET", "profile")
+            except Exception:
+                pass
+            counts = {}
+            ids = ["INBOX", "DRAFT"] + [x["id"] for x in labs if x.get("type") == "user"][:40]
+            for lid in ids:
+                try:
+                    j = self.mo.gmail_call(self.S, "GET", "labels/" + lid)
+                    counts[lid] = (int(j.get("threadsUnread", 0) or 0), int(j.get("threadsTotal", 0) or 0))
+                except Exception:
+                    pass
+            return labs, prof.get("emailAddress", ""), counts
+
+        def done(res, err):
+            if err:
+                if not quiet:
+                    self.say(err, True)
+                return
+            labs, me, counts = res
+            if me:
+                self.me = me.lower()
+            if [x.get("id") for x in labs] != [x.get("id") for x in self.labels]:
+                self.labels = labs
+                self._fill_side()
+            for i in range(self.side.count()):
+                it = self.side.item(i)
+                lid = it.data(Qt.ItemDataRole.UserRole)
+                if lid in counts:
+                    un, tot = counts[lid]
+                    n = tot if lid == "DRAFT" else un
+                    base = it.data(Qt.ItemDataRole.UserRole + 1)
+                    it.setText("%s   %d" % (base, n) if n else base)
+                    f = it.font()
+                    f.setBold(bool(un) and lid != "DRAFT")
+                    it.setFont(f)
+        self.run(work, done)
+
+    # ---------------------------------------------------------------- list
+    def _do_search(self):
+        self.query = self.search.text().strip()
+        self.stack.setCurrentIndex(0)
+        self.load_list(reset=True)
+
+    def _cat_changed(self, i):
+        self.cat = i
+        if self.label == "INBOX" and not self.query:
+            self.load_list(reset=True)
+
+    def _prev(self):
+        if len(self.tokens) > 1:
+            self.tokens.pop()
+            self.load_list(reset=False, keep_tokens=True)
+
+    def _next(self):
+        if self.next_token:
+            self.tokens.append(self.next_token)
+            self.load_list(reset=False, keep_tokens=True)
+
+    next_token = ""
+
+    def load_list(self, reset=True, quiet=False, keep_tokens=False):
+        if not self.ready():
+            return
+        if reset:
+            self.tokens = [""]
+        self.gen += 1
+        gen = self.gen
+        tok = self.tokens[-1] if self.tokens else ""
+        label, query, cat = self.label, self.query, self.cat
+        self.cats.setVisible(label == "INBOX" and not query)
+        if not quiet:
+            self.say("Loading...")
+
+        def work():
+            params = {"maxResults": 50}
+            q = query
+            if query:
+                params["includeSpamTrash"] = "false"
+            else:
+                if label == "ALL":
+                    pass
+                elif label in ("TRASH", "SPAM"):
+                    params["labelIds"] = [label]
+                    params["includeSpamTrash"] = "true"
+                else:
+                    params["labelIds"] = [label]
+                if label == "INBOX":
+                    q = MAIL_CATEGORIES[max(0, min(cat, len(MAIL_CATEGORIES) - 1))][0]
+            if q:
+                params["q"] = q
+            if tok:
+                params["pageToken"] = tok
+            j = self.mo.gmail_call(self.S, "GET", "threads", params)
+            ids = [t["id"] for t in j.get("threads", []) or []]
+            snips = {t["id"]: t.get("snippet", "") for t in j.get("threads", []) or []}
+            out = [None] * len(ids)
+            import threading as _thr
+
+            def one(i):
+                try:
+                    th = self.mo.gmail_call(self.S, "GET", "threads/" + ids[i], {"format": "metadata", "metadataHeaders": ["From", "Subject"]})
+                    th["snippet"] = snips.get(ids[i], "") or th.get("snippet", "")
+                    out[i] = th
+                except Exception:
+                    out[i] = None
+            nxt = [0]
+            lock = _thr.Lock()
+
+            def worker():
+                while True:
+                    with lock:
+                        i = nxt[0]
+                        nxt[0] += 1
+                    if i >= len(ids):
+                        return
+                    one(i)
+            ws = [_thr.Thread(target=worker) for _ in range(min(8, len(ids)))]
+            for w in ws:
+                w.start()
+            for w in ws:
+                w.join()
+            return out, j.get("nextPageToken", "")
+
+        def done(res, err):
+            if gen != self.gen:
+                return
+            if err:
+                self.say(err, True)
+                return
+            ths, nxt = res
+            self.next_token = nxt
+            self.rows = [r for r in (mail_thread_row(t, self.me) for t in ths if t) if r]
+            self._fill_list()
+            self.say("" if self.rows or True else "")
+        self.run(work, done)
+
+    def _fill_list(self):
+        sel = self.cur
+        self.list.setUpdatesEnabled(False)
+        self.list.clear()
+        for r in self.rows:
+            it = _QLWI()
+            who = r["sender"] + (" %d" % r["count"] if r["count"] > 1 else "")
+            it.setData(ROLE_THREAD, r["id"])
+            it.setData(ROLE_SENDER, who)
+            it.setData(ROLE_SUBJECT, r["subject"])
+            it.setData(ROLE_SNIP, r["snippet"])
+            it.setData(ROLE_DATE, mail_date_text(r["date"]))
+            it.setData(ROLE_UNREAD, r["unread"])
+            it.setData(ROLE_STAR, r["starred"])
+            it.setData(ROLE_CHECK, False)
+            it.setData(ROLE_CLIP, r["attach"])
+            it.setSizeHint(_QSize(400, _MailRow.H))
+            self.list.addItem(it)
+        self.list.setUpdatesEnabled(True)
+        n = len(self.rows)
+        start = (len(self.tokens) - 1) * 50 + 1
+        self.page_lbl.setText("%d-%d" % (start, start + n - 1) if n else "No conversations")
+        self.prev.setEnabled(len(self.tokens) > 1)
+        self.next.setEnabled(bool(self.next_token))
+        self.sel_all.blockSignals(True)
+        self.sel_all.setChecked(False)
+        self.sel_all.blockSignals(False)
+        self.update_bulk()
+
+    def checked_ids(self):
+        return [self.list.item(i).data(ROLE_THREAD) for i in range(self.list.count()) if self.list.item(i).data(ROLE_CHECK)]
+
+    def update_bulk(self):
+        on = bool(self.checked_ids())
+        for b in self.bulk:
+            b.setVisible(on)
+        self.list.viewport().update()
+
+    def _select_all(self, on):
+        for i in range(self.list.count()):
+            self.list.item(i).setData(ROLE_CHECK, bool(on))
+        self.update_bulk()
+
+    def _row_of(self, tid):
+        for i in range(self.list.count()):
+            if self.list.item(i).data(ROLE_THREAD) == tid:
+                return i
+        return -1
+
+    # ----------------------------------------------------------- actions
+    def _need_modify(self):
+        if self.S.get("gmail_modify"):
+            return False
+        self.say("Press Allow Gmail again: changing mail needs one more permission.", True)
+        self._refresh_state()
+        return True
+
+    def modify(self, tids, add=(), remove=(), trash=False, cb=None):
+        if self._need_modify() or not tids:
+            return
+
+        def work():
+            for t in tids:
+                if trash:
+                    self.mo.gmail_call(self.S, "POST", "threads/%s/trash" % t, body={})
+                else:
+                    self.mo.gmail_call(self.S, "POST", "threads/%s/modify" % t, body={"addLabelIds": list(add), "removeLabelIds": list(remove)})
+            return True
+
+        def done(res, err):
+            if err:
+                self.say(err, True)
+                return
+            if cb:
+                cb()
+            self.load_labels(quiet=True)
+        self.run(work, done)
+
+    def toggle_star(self, tid, on, row):
+        it = self.list.item(row)
+        if it is None:
+            return
+        it.setData(ROLE_STAR, on)
+        self.list.viewport().update()
+        self.modify([tid], add=["STARRED"] if on else [], remove=[] if on else ["STARRED"])
+
+    def act(self, what, ids=None):
+        ids = ids or self.checked_ids() or ([self.cur] if self.cur else [])
+        if not ids:
+            return
+
+        def removed():
+            for t in ids:
+                r = self._row_of(t)
+                if r >= 0:
+                    self.list.takeItem(r)
+            self.rows = [x for x in self.rows if x["id"] not in ids]
+            self.update_bulk()
+        if what == "archive":
+            self.modify(ids, remove=["INBOX"], cb=removed)
+        elif what == "trash":
+            self.modify(ids, trash=True, cb=removed)
+        elif what in ("read", "unread"):
+            def flip():
+                for t in ids:
+                    r = self._row_of(t)
+                    if r >= 0:
+                        self.list.item(r).setData(ROLE_UNREAD, what == "unread")
+                        self.list.item(r).setData(ROLE_CHECK, False)
+                self.update_bulk()
+            self.modify(ids, add=["UNREAD"] if what == "unread" else [], remove=[] if what == "unread" else ["UNREAD"], cb=flip)
+
+    # ------------------------------------------------------------- reading
+    def _open_item(self, it):
+        if self.list.viewport().mapFromGlobal(QCursor.pos()).x() < 70:
+            return                                  # that click was on the tick box or the star
+        tid = it.data(ROLE_THREAD)
+        self.open_thread(tid, it.data(ROLE_SUBJECT) or "")
+        if it.data(ROLE_UNREAD):
+            it.setData(ROLE_UNREAD, False)
+            self.modify([tid], remove=["UNREAD"])
+
+    def open_thread(self, tid, subject=""):
+        self.cur = tid
+        self.stack.setCurrentIndex(1)
+        self.subject_lbl.setText(subject)
+        self._clear_thread()
+        busy = _QL("Opening...")
+        self.thread_lay.addWidget(busy)
+
+        def work():
+            th = self.mo.gmail_call(self.S, "GET", "threads/" + tid, {"format": "full"})
+            res = []
+            for m in th.get("messages", []) or []:
+                html, plain, atts = mail_parts(m.get("payload"))
+                inline = {}
+                for a in atts:
+                    if a["cid"] and a["mime"].startswith("image/") and a["size"] < 600000:
+                        try:
+                            inline[a["cid"]] = mail_b64(a["data"]) if a["data"] else self.mo.gmail_bytes(self.S, "messages/%s/attachments/%s" % (m["id"], a["id"]))
+                        except Exception:
+                            pass
+                res.append((m, html, plain, atts, inline))
+            return th, res
+
+        def done(res, err):
+            if tid != self.cur:
+                return
+            self._clear_thread()
+            if err:
+                self.thread_lay.addWidget(_QL("Could not open it: " + err))
+                return
+            th, msgs = res
+            self.thread_view = th
+            self.msgs = msgs
+            self._render_thread()
+        self.run(work, done)
+
+    def _clear_thread(self):
+        while self.thread_lay.count():
+            w = self.thread_lay.takeAt(0).widget()
+            if w:
+                w.deleteLater()
+
+    def _render_thread(self):
+        bg, fg, mute, line = self.colors()
+        n = len(self.msgs)
+        for i, (m, html, plain, atts, inline) in enumerate(self.msgs):
+            card = _QF()
+            card.setStyleSheet("QFrame#mcard{border:1px solid %s;border-radius:8px;}" % line)
+            card.setObjectName("mcard")
+            cv = _VB(card)
+            fr = mail_header(m, "From")
+            to = mail_header(m, "To")
+            cc = mail_header(m, "Cc")
+            hd = _QL("<b>%s</b> &lt;%s&gt; &nbsp; <span style='color:%s'>%s</span><br><span style='color:%s'>to %s%s</span>" % (
+                _html.escape(mail_name(fr)), _html.escape(_parseaddr(fr)[1]), mute, _html.escape(mail_date_text(m.get("internalDate", 0)) + "  " + mail_header(m, "Date")[:25]), mute,
+                _html.escape(to or "me"), _html.escape(("   cc " + cc) if cc else "")))
+            hd.setTextFormat(Qt.TextFormat.RichText)
+            hd.setWordWrap(True)
+            cv.addWidget(hd)
+            b = _AutoBrowser()
+            b.setStyleSheet("QTextBrowser{background:#ffffff;color:#202124;border-radius:6px;padding:6px;}")
+            body = html
+            if body:
+                body = re.sub(r"(?is)<(script|iframe|object|embed|link)\b.*?(</\1>|/>)", "", body)
+                body = re.sub(r"(?is)<script.*?>.*?</script>", "", body)
+            else:
+                body = "<pre style='font-family:Arial;white-space:pre-wrap'>%s</pre>" % _html.escape(plain or m.get("snippet", ""))
+            for cid, data in inline.items():
+                img = QPixmap()
+                img.loadFromData(data)
+                b.document().addResource(QTextDocument.ResourceType.ImageResource, QUrl("cid:" + cid), img)
+            b.setHtml(body)
+            cv.addWidget(b)
+            files = [a for a in atts if a["name"] and not (a["cid"] and a["mime"].startswith("image/") and a["cid"] in inline)]
+            if files:
+                row = _HB()
+                for a in files[:12]:
+                    bt = _QPB("%s  (%s)" % (a["name"][:34], ("%.1f MB" % (a["size"] / 1048576.0)) if a["size"] > 1048576 else ("%d KB" % max(1, a["size"] // 1024))))
+                    bt.clicked.connect(lambda _=False, a=a, mid=m["id"]: self._save_attachment(mid, a))
+                    row.addWidget(bt)
+                row.addStretch(1)
+                cv.addLayout(row)
+            self.thread_lay.addWidget(card)
+        self.thread_lay.addStretch(1)
+
+    def _save_attachment(self, mid, a):
+        dest, _ = _QFD.getSaveFileName(self, "Save attachment", os.path.join(os.path.expanduser("~"), "Downloads", a["name"]))
+        if not dest:
+            return
+        self.say("Downloading %s..." % a["name"])
+
+        def work():
+            data = mail_b64(a["data"]) if a.get("data") else self.mo.gmail_bytes(self.S, "messages/%s/attachments/%s" % (mid, a["id"]))
+            with open(dest, "wb") as f:
+                f.write(data)
+            return dest
+        self.run(work, lambda res, err: self.say(("Saved " + res) if not err else err, bool(err)))
+
+    def _back(self):
+        self.stack.setCurrentIndex(0)
+        self.cur = None
+
+    def _read_action(self, key):
+        if key in ("archive", "trash", "unread"):
+            if self.cur:
+                self.act(key, [self.cur])
+            self._back()
+        elif key == "web":
+            self._open_web()
+        elif key in ("reply", "replyall", "forward"):
+            self._reply(key)
+
+    def _open_web(self):
+        if not getattr(self, "msgs", None):
+            return
+        import tempfile
+        import webbrowser
+        m, html, plain, atts, inline = self.msgs[-1]
+        body = html or "<pre>%s</pre>" % _html.escape(plain)
+        for cid, data in inline.items():
+            body = body.replace("cid:" + cid, "data:image/png;base64," + _b64.b64encode(data).decode())
+        p = os.path.join(tempfile.mkdtemp(prefix="mailview_"), "message.html")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("<meta charset='utf-8'>" + body)
+        webbrowser.open("file:///" + p.replace("\\", "/"))
+
+    def _reply(self, kind):
+        if not getattr(self, "msgs", None):
+            return
+        m, html, plain, atts, inline = self.msgs[-1]
+        subj = mail_header(m, "Subject")
+        fr = mail_header(m, "Reply-To") or mail_header(m, "From")
+        me = (self.S.get("mail_address") or self.me or "").lower()
+        sent_by_me = _parseaddr(mail_header(m, "From"))[1].lower() == me
+        to = mail_header(m, "To") if sent_by_me else fr
+        cc = ""
+        if kind == "replyall":
+            others = [a for a in _getaddr([mail_header(m, "To"), mail_header(m, "Cc")]) if a[1] and a[1].lower() != me and a[1].lower() != _parseaddr(fr)[1].lower()]
+            cc = ", ".join(_formataddr(a) for a in others)
+        pre = "Fwd: " if kind == "forward" else "Re: "
+        subj2 = subj if re.match(r"(?i)\s*(re|fwd?):", subj) else pre + subj
+        when = mail_date_text(m.get("internalDate", 0))
+        quote = html or "<pre style='font-family:Arial;white-space:pre-wrap'>%s</pre>" % _html.escape(plain or "")
+        quote = re.sub(r"(?is)<(script|style|iframe|object|embed|link)\b.*?(</\1>|/>)", "", quote)
+        if kind == "forward":
+            head = "<br><br>---------- Forwarded message ----------<br>From: %s<br>Date: %s<br>Subject: %s<br>To: %s<br><br>" % (
+                _html.escape(mail_header(m, "From")), _html.escape(mail_header(m, "Date")), _html.escape(subj), _html.escape(mail_header(m, "To")))
+            body = head + quote
+            to = ""
+        else:
+            body = "<br><br>On %s, %s wrote:<blockquote style='margin:0 0 0 8px;border-left:2px solid #bbb;padding-left:10px'>%s</blockquote>" % (
+                _html.escape(when), _html.escape(mail_name(mail_header(m, "From"))), quote)
+        d = MailCompose(self, to, cc, subj2, body, in_reply_to=mail_header(m, "Message-ID") or mail_header(m, "Message-Id"),
+                        references=mail_header(m, "References"), thread_id="" if kind == "forward" else (self.thread_view or {}).get("id", ""))
+        d.exec()
+
+    def compose(self):
+        MailCompose(self).exec()
+
+    def after_send(self):
+        if self.label == "SENT" or self.label == "INBOX":
+            self.load_list(reset=False, quiet=True)
