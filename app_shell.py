@@ -11,7 +11,9 @@ SUBJECTS = [(0, "Project", "home"), (6, "Drawing register", "clipboard"), (10, "
             (3, "Coverage && FAR", "building"), (4, "Detail notes", "ruler"), (5, "Costing", "calc"),
             (8, "Building lines", "compass"), (12, "House placing", "land"), (9, "Guidelines review", "check_circle")]
 CTX = {13: "sans", 11: "invoicing", 10: "orders", 1: "sans", 2: "sans", 3: "sans", 4: "detail", 5: "costing", 6: "register", 7: "site", 8: "site", 9: "rules", 12: "site"}      # which tool a main tab belongs to
-TOOL_COL = {"sans": "#d8132b", "invoicing": "#2e9e6b", "orders": "#e0a020", "detail": "#3b82f6", "costing": "#8b5cf6", "register": "#14b8a6", "site": "#c08e5c", "rules": "#8a9099"}      # each tool has its own colour
+TOOL_COL = {"sans": "#d8132b", "invoicing": "#55b57a", "orders": "#e2a93f", "detail": "#5b9be6", "costing": "#a587e0", "register": "#36b3a6", "site": "#c08e5c", "rules": "#93a0b4",
+            "lv": "#e8b84a", "xa": "#f0795a", "cov": "#d9628f", "mail": "#4aa3df"}      # each tool has its own colour: the same as its card on the home screen
+TAB_KEY = {"Light && Ventilation": "lv", "Light & Ventilation": "lv", "Energy (XA)": "xa", "Coverage && FAR": "cov", "Coverage & FAR": "cov", "Mail": "mail"}
 PSUB_ICONS = {"Drawings": "clipboard", "Orders": "tag", "Client changes": "edit", "Sent and revisions": "export",
               "Fixtures and sanitary ware": "drop", "Building materials": "layers", "Whole building and budget": "calc"}
 LV_SUBS = [(0, "Windows", "window"), (1, "Doors", "door"), (2, "Rooms", "room"), (3, "Results", "results"), (4, "Plan", "plan")]
@@ -264,9 +266,10 @@ class Rail(QFrame):
                     sb.setProperty("on", on)
                     sb.style().unpolish(sb)
                     sb.style().polish(sb)
+        key_ = TAB_KEY.get(self.win.main_tabs.tabText(cur), ctx)
         if hasattr(w_, "set_accent"):
-            w_.set_accent(ctx)
-        col_ = TOOL_COL.get(ctx, "#d8132b")
+            w_.set_accent(key_)
+        col_ = TOOL_COL.get(key_, "#d8132b")
         if hasattr(self, "stripe") and self.__dict__.get("_stripe_col") != col_:
             self._stripe_col = col_
             self.stripe.setStyleSheet("background:%s;border-radius:1px;" % col_)

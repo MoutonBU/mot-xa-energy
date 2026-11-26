@@ -2505,7 +2505,7 @@ class _MailRow(_QSID):
             fb.setBold(True)
             fs = _QFont(opt.font)
             fs.setPointSizeF(fs.pointSizeF() + 2)
-            self._c = dict(fg=QColor(fg), mute=QColor(mute), line=QColor(line), red=QColor("#d8132b"), white=QColor("#ffffff"), gold=QColor("#e0a800"),
+            self._c = dict(fg=QColor(fg), mute=QColor(mute), line=QColor(line), red=QColor("#4aa3df"), white=QColor("#ffffff"), gold=QColor("#e0a800"),
                            pen_mute=QPen(QColor(mute), 1.4), pen_white=QPen(QColor("#ffffff"), 2), pen_line=QPen(QColor(line)),
                            rows={(u, s_, h): QColor(self.page.row_color(u, s_, h)) for u in (0, 1) for s_ in (0, 1) for h in (0, 1)})
             self._f = dict(n=fn, b=fb, star=fs, mn=_QFM(fn), mb=_QFM(fb))
@@ -2676,7 +2676,7 @@ class MailCompose(_QD):
         v.addWidget(self.status)
         row = _HB()
         self.send_btn = _QPB("Send")
-        self.send_btn.setStyleSheet("QPushButton{background:#d8132b;color:#ffffff;font-weight:700;padding:8px 26px;border-radius:6px;}")
+        self.send_btn.setStyleSheet("QPushButton{background:#4aa3df;color:#ffffff;font-weight:700;padding:8px 26px;border-radius:6px;}")
         self.send_btn.clicked.connect(self._send)
         cl = _QPB("Discard")
         cl.clicked.connect(self.reject)
@@ -2746,7 +2746,7 @@ class MailToast(_QW):
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self._rows, self._open_cb = rows, on_open
         # pal: (card, text, muted, row background, accent): the mail tab's own dark or light colours
-        self._pal = pal = pal or ("#1d2025", "#f2f4f6", "#aab0b8", "#2a2e35", "#d8132b")
+        self._pal = pal = pal or ("#1d2025", "#f2f4f6", "#aab0b8", "#2a2e35", "#4aa3df")
         self.setFixedWidth(420 + 2 * self.G)
         v = _VB(self)
         g = self.G
@@ -2853,6 +2853,10 @@ class MailPage(_QW):
         self.account = _QL("")
         top.addWidget(self.search, 1)
         top.addWidget(self.account)
+        self.set_btn = _QPB("Settings  \u25be")
+        self.set_btn.setToolTip("Your email signature and the new-mail pop-up")
+        self.set_btn.clicked.connect(self._settings_menu)
+        top.addWidget(self.set_btn)
         root.addLayout(top)
         self.connect_box = _QF()
         cv = _VB(self.connect_box)
@@ -2860,7 +2864,7 @@ class MailPage(_QW):
         self.connect_msg.setWordWrap(True)
         self.connect_msg.setTextFormat(Qt.TextFormat.RichText)
         self.connect_btn = _QPB("Sign in with Google and allow Gmail")
-        self.connect_btn.setStyleSheet("QPushButton{background:#d8132b;color:#ffffff;font-weight:700;padding:10px 24px;border-radius:6px;}")
+        self.connect_btn.setStyleSheet("QPushButton{background:#4aa3df;color:#ffffff;font-weight:700;padding:10px 24px;border-radius:6px;}")
         self.connect_btn.clicked.connect(self._signin)
         cv.addStretch(1)
         cv.addWidget(self.connect_msg, 0, Qt.AlignmentFlag.AlignHCenter)
@@ -2877,7 +2881,7 @@ class MailPage(_QW):
         lv.setContentsMargins(8, 8, 8, 8)
         lv.setSpacing(6)
         self.compose_btn = _QPB("  Compose")
-        self.compose_btn.setStyleSheet("QPushButton{background:#d8132b;color:#ffffff;font-weight:700;font-size:14px;padding:14px 22px;border-radius:14px;text-align:left;}")
+        self.compose_btn.setStyleSheet("QPushButton{background:#4aa3df;color:#ffffff;font-weight:700;font-size:14px;padding:14px 22px;border-radius:14px;text-align:left;}")
         self.compose_btn.clicked.connect(lambda: self.compose())
         lv.addWidget(self.compose_btn)
         self.side = _QLW()
@@ -2955,6 +2959,7 @@ class MailPage(_QW):
         self.list.itemClicked.connect(self._open_item)
         self.list.itemEntered.connect(self._hover_item)
         self._topen = {}
+        self._tlock = {}
         self._lcache = {}
         self._tbusy = set()
         lpv.addWidget(self.list, 1)
@@ -3010,6 +3015,18 @@ class MailPage(_QW):
         self.restyle()
 
     # ----------------------------------------------------------------- look
+    MAIL_BLUE = "#4aa3df"                      # the Mail card's colour on the home screen
+
+    def _pal(self):
+        """The program's palette in the Mail card's blue: selection, accents and the hot tint all follow it."""
+        import app_shell
+        old = app_shell.ACC[0]
+        app_shell.ACC[0] = self.MAIL_BLUE
+        try:
+            return app_shell._palette(self.is_light())
+        finally:
+            app_shell.ACC[0] = old
+
     def colors(self):
         """(page, text, muted text, line) in the program's own dark or light look."""
         if self.is_light():
@@ -3017,8 +3034,7 @@ class MailPage(_QW):
         return "#1f2125", "#eceef0", "#8a9099", "#30353b"
 
     def restyle(self):
-        import app_shell
-        p = app_shell._palette0(self.is_light())
+        p = self._pal()
         bg, fg, mute, line = self.colors()
         self.setStyleSheet(
             "#mailpage{background:%(bg)s;} #mailpage QLabel{color:%(fg)s;background:transparent;} #mailpage QCheckBox{color:%(fg)s;} "
@@ -3038,8 +3054,8 @@ class MailPage(_QW):
             "#mailpage QLineEdit:focus{border:1px solid %(accent)s;}" %
             dict(bg=bg, fg=fg, line=line, rail=p["rail"], pline=p["line"], accent=p["accent"], hover=p["hover"], muted=p["muted"], sel=p["sel"], hotline=p["hotline"]))
         self.cats.setDrawBase(False)
-        self.compose_btn.setStyleSheet("QPushButton{background:#d8132b;color:#ffffff;font-weight:700;font-size:14px;padding:14px 22px;border-radius:12px;text-align:left;border:none;} "
-                                       "QPushButton:hover{background:#e0243a;}")
+        self.compose_btn.setStyleSheet("QPushButton{background:%s;color:#ffffff;font-weight:700;font-size:14px;padding:14px 22px;border-radius:12px;text-align:left;border:none;} "
+                                       "QPushButton:hover{background:%s;}" % (self.MAIL_BLUE, "#6bb8ea"))
         self.side.setStyleSheet("QListWidget{background:transparent;color:%s;border:none;outline:0;} QListWidget::item{padding:7px 12px;border-radius:9px;} "
                                 "QListWidget::item:selected{background:%s;color:%s;font-weight:700;border-left:3px solid %s;} QListWidget::item:hover{background:%s;}"
                                 % (p["text"], p["sel"], p["text"], p["accent"], p["hover"]))
@@ -3047,6 +3063,33 @@ class MailPage(_QW):
         self.thread_host.setStyleSheet("background:%s;" % bg)
         self.connect_box.setStyleSheet("QFrame{background:%s;border:none;}" % bg)
         self._row_cache_reset()
+
+    def _settings_menu(self):
+        from PySide6.QtWidgets import QMenu
+        m = QMenu(self)
+        m.addAction("My email signature...", self._edit_signature)
+        a = m.addAction("Pop-up when new mail arrives")
+        a.setCheckable(True)
+        a.setChecked(bool(self.S.get("mail_notify", True)))
+        a.toggled.connect(self._set_notify)
+        m.exec(self.set_btn.mapToGlobal(self.set_btn.rect().bottomLeft()))
+
+    def _set_notify(self, on):
+        self.S["mail_notify"] = bool(on)
+        try:
+            self.get_M().save_settings()
+        except Exception:
+            pass
+
+    def _edit_signature(self):
+        """The same signature editor as in the drawing register: name, position, phone, email and photo."""
+        import register_ext
+        M = self.get_M()
+        if register_ext.SignatureDialog(M, self).exec():
+            try:
+                _SIGC.clear()
+            except Exception:
+                pass
 
     def _row_cache_reset(self):
         d = self.list.itemDelegate()
@@ -3056,8 +3099,8 @@ class MailPage(_QW):
 
     def row_color(self, unread, sel, hov):
         if self.is_light():
-            return "#fbe3e6" if sel else "#e8ecf1" if hov else ("#ffffff" if unread else "#f2f4f7")
-        return "#3a2328" if sel else "#2e3238" if hov else ("#24262b" if unread else "#1b1d21")
+            return "#dcedf9" if sel else "#e8ecf1" if hov else ("#ffffff" if unread else "#f2f4f7")
+        return "#233647" if sel else "#2e3238" if hov else ("#24262b" if unread else "#1b1d21")
 
     def say(self, text, err=False):
         self.status.setText(("<span style='color:#e03050'>%s</span>" % _html.escape(text)) if err else _html.escape(text))
@@ -3192,7 +3235,7 @@ class MailPage(_QW):
                     pass
             ic = self.host.windowIcon().pixmap(64, 64) if hasattr(self.host, "windowIcon") else None
             bg_, fg_, mute_, line_ = self.colors()
-            t = MailToast(rows, ic, self._toast_open, (bg_, fg_, mute_, "#2a2e35" if not self.is_light() else "#f1f3f5", "#d8132b"))
+            t = MailToast(rows, ic, self._toast_open, (bg_, fg_, mute_, "#2a2e35" if not self.is_light() else "#f1f3f5", self.MAIL_BLUE))
             self._toast = t
             ag = (self.screen() or QApplication.primaryScreen()).availableGeometry()
             t.move(ag.right() - t.width() - 14, ag.bottom() - t.height() - 14)
@@ -3750,8 +3793,15 @@ class MailPage(_QW):
 
     def _fetch_thread(self, tid):
         hit = self._topen.get(tid)
-        if hit and _time.time() - hit[0] < 120:
+        if hit and _time.time() - hit[0] < 900:
             return hit[1]
+        with self._tlock.setdefault(tid, _th.Lock()):                      # a click on a conversation that is being fetched waits for it instead of fetching again
+            hit = self._topen.get(tid)
+            if hit and _time.time() - hit[0] < 900:
+                return hit[1]
+            return self._fetch_thread2(tid)
+
+    def _fetch_thread2(self, tid):
         th = self.mo.gmail_call(self.S, "GET", "threads/" + tid, {"format": "full"})
         res = []
         todo = []
@@ -3813,7 +3863,7 @@ class MailPage(_QW):
 
     def _prefetch(self):
         # the first few conversations are loaded in the background so the first clicks open at once
-        ids = [r["id"] for r in self.rows[:4] if r["id"] not in self._topen and r["id"] not in self._tbusy]
+        ids = [r["id"] for r in self.rows[:8] if r["id"] not in self._topen and r["id"] not in self._tbusy]
         if not ids or not self.ready():
             return
         self._tbusy.update(ids)
@@ -3848,6 +3898,11 @@ class MailPage(_QW):
         self.stack.setCurrentIndex(1)
         self.subject_lbl.setText(subject)
         self._clear_thread()
+        hit = self._topen.get(tid)
+        if hit and _time.time() - hit[0] < 900:                       # already in memory: shown at once, no waiting and no flicker
+            self.thread_view, self.msgs = hit[1]
+            self._render_thread()
+            return
         busy = _QL("Opening...")
         self.thread_lay.addWidget(busy)
 
@@ -3901,8 +3956,7 @@ class MailPage(_QW):
                 body = re.sub(r"(?is)<script.*?>.*?</script>", "", body)
             else:
                 body = "<pre style='font-family:Arial;white-space:pre-wrap'>%s</pre>" % _html.escape(plain or m.get("snippet", ""))
-            if html and not self.is_light():                          # the program's dark look reaches the email too (for emails that carry their own dark colours)
-                body, page_bg = mail_dark(body)
+            # received emails stay on white, as the sender designed them (the dark rendering cut the corners of the signature banner)
             b.setStyleSheet("QTextBrowser{background:%s;color:%s;border-radius:6px;padding:6px;}" % (page_bg or "#ffffff", "#eceef0" if page_bg else "#202124"))
             body = mail_fix_images(body, b.document(), inline, bool(self.S.get("mail_images")), max(320, self.sa.viewport().width() - 90))
             hidden = [] if self.S.get("mail_images") else [u for u in mail_web_images(html) if not mail_trusted_image(u)]

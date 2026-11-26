@@ -1,11 +1,14 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: 1.86.304
+Current version: 1.86.305
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Every tool now wears its home-screen card colour on its tabs, icons and accents (costing purple, light and ventilation yellow, XA energy orange, coverage pink, orders, site, guidelines and the rest); Mail is blue, including the new-mail pop-up, Compose button and selections.
+- Mail tab: Settings button at the top right with My email signature (the same editor as the drawing register: name, position, phone, email and photo) and a switch for the new-mail pop-up.
+- Mail tab: conversations open at once (the first eight are loaded ahead, hovering loads one, and a loaded one shows with no waiting); received emails now show on white, which fixes the cut corners of the signature banner.
 - Mail tab: in the dark look, emails with their own dark colours (such as the drawing register) now show them (dark page and cards, light text, the dark-mode logo), as other email programs do; the new-mail pop-up takes the mail tab's dark or light colours and its red accent.
 - Mail tab: PDF attachments now show a small first-page preview (using the PDF reader already in the program), like picture attachments; emails with many attachments get a Show previews button instead of downloading them all at once. Signature pictures in emails sent by earlier versions (drawn at two thirds of the width) are stretched to the full width so they line up with the cards above.
 - Crisper PDF reports everywhere: the light and ventilation, XA energy, rational design, coverage and FAR, register and sheet-index reports were written at a low 96 dpi, which made text and logos look rough. They are now drawn at 384 dpi (same layout, sharper text, lines, corners and logo), the invoice PDF is written at 300 dpi, and the in-program PDF preview is drawn at your screen's real resolution so it is sharp on scaled displays.

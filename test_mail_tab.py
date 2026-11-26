@@ -366,3 +366,14 @@ assert _pg == "#0E0F12" and 'bgcolor="#23262D"' in _do and "color:#D7D9DE" in _d
 _tp = U.MailToast([{"from": "A", "subject": "S", "snippet": "x", "tid": "t"}], None, lambda r: None, ("#ffffff", "#1c1f23", "#6b727b", "#f1f3f5", "#d8132b"))
 assert _tp._pal[0] == "#ffffff"; _tp.close()
 print("ok18")
+
+# accent = the Mail card's blue; opening a conversation already in memory is immediate; settings hold the signature editor
+import app_shell as _sh
+assert _sh.TOOL_COL["mail"] == "#4aa3df" and _sh.TOOL_COL["costing"] == "#a587e0" and _sh.TAB_KEY["Mail"] == "mail" and _sh.TAB_KEY["Energy (XA)"] == "xa"
+assert mp._pal()["accent"] != _sh._palette0(True)["accent"] and "4aa3df" in mp.compose_btn.styleSheet()
+mp.open_thread("t1", "x"); assert wait(lambda: mp.stack.currentIndex() == 1 and mp.thread_lay.count() > 1)
+mp.stack.setCurrentIndex(0)
+mp.open_thread("t1", "x")
+assert mp.thread_lay.count() > 1 and mp.msgs, "a conversation in memory must show without waiting"
+assert hasattr(mp, "set_btn") and hasattr(mp, "_edit_signature")
+print("ok19")
