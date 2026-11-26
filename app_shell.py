@@ -658,10 +658,11 @@ def install_shell(win, make_icon, light_fn):
         cur = mt.currentIndex()
         lp = cur in (getattr(win, "launcher_idx", None) or ())
         ribbon.show_for(cur)
-        ribbon.setVisible(not lp)
+        full = mt.currentWidget() is getattr(win, "mail_page", None) and getattr(win, "mail_page", None) is not None     # Mail uses the whole window
+        ribbon.setVisible(not lp and not full)
         ss = getattr(win, "step_strip", None)
         if ss is not None:
-            ss.setVisible(not lp)
+            ss.setVisible(not lp and not full)
         rail.sync()
         rd = getattr(win, "rd", {}) or {}
         rail.title.setText((rd.get("project") or "").strip() or "Unnamed project")
@@ -672,7 +673,7 @@ def install_shell(win, make_icon, light_fn):
             rail.badge[1].setText("%d / %d" % (ok, len(res)))
         else:
             rail.badge[1].setText("")
-        rail.setVisible(win.width() >= 900 and not lp)
+        rail.setVisible(win.width() >= 900 and not lp and not full)
 
     mt.currentChanged.connect(lambda _i: refresh())
     if getattr(win, "site_page", None) is not None:

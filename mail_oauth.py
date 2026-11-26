@@ -300,6 +300,42 @@ def gmail_call(S, method, path, params=None, body=None, timeout=60):
     raise RuntimeError("Gmail answered %s" % code)
 
 
+def gmail_batch(S, paths, timeout=60):
+    """Up to 100 GET calls in ONE round trip (Gmail's batch endpoint): returns a list of decoded JSON (None where one failed), or None if the batch itself failed."""
+    if not paths:
+        return []
+    tok = access_token(S, "gmail")
+    bd = "mot" + secrets.token_hex(8)
+    parts = []
+    for i, p in enumerate(paths[:100]):
+        parts.append("--%s\r\nContent-Type: application/http\r\nContent-ID: <item%d>\r\n\r\nGET /gmail/v1/users/me/%s\r\n\r\n" % (bd, i, p))
+    data = ("".join(parts) + "--%s--\r\n" % bd).encode()
+    hdr = {"Authorization": "Bearer " + tok, "Content-Type": "multipart/mixed; boundary=" + bd, "Accept-Encoding": "identity"}
+    try:
+        code, raw = _gmail_http("POST", "/batch/gmail/v1", hdr, data, timeout)
+    except Exception:
+        return None
+    if code != 200:
+        return None
+    text = raw.decode("utf-8", "replace")
+    out = [None] * len(paths[:100])
+    for chunk in text.split("\r\n--")[0:]:
+        m = None
+        import re as _re
+        m = _re.search(r"Content-ID:\s*<response-item(\d+)>", chunk, _re.I)
+        if not m:
+            continue
+        k = int(m.group(1))
+        body = chunk.split("\r\n\r\n", 2)
+        if len(body) < 3 or " 200 " not in body[1].split("\r\n")[0] + " ":
+            continue
+        try:
+            out[k] = json.loads(body[2].strip().rsplit("\r\n--", 1)[0])
+        except Exception:
+            out[k] = None
+    return out
+
+
 def gmail_bytes(S, path, timeout=120):
     """Raw GET (attachments come back as JSON with base64 data, decoded here)."""
     j = gmail_call(S, "GET", path, timeout=timeout)

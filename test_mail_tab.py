@@ -31,6 +31,7 @@ def fake(S, method, path, params=None, body=None, timeout=60):
         return THREADS[path.split("/")[1]]
     return {}
 mo.gmail_call = fake
+mo.gmail_batch = lambda *a, **k: None
 
 w = M.MainWindow()
 S = M.SETTINGS
@@ -163,3 +164,27 @@ out = U.mail_fix_images(body, dd, {"a@x": png, "bad@x": b"notanimage", "url:http
 assert out.count("<img") == 3 and "MISSING" not in out and "d.png" not in out and "BAD" not in out, out
 assert U.mail_web_images(body) == ["https://a.b/c.png?x=1&y=2", "https://a.b/d.png"]
 print("ok4")
+
+# the Mail tab takes the whole window: no ribbon, rail or step strip, but Home and Switch tool stay
+w.main_tabs.setCurrentWidget(mp)
+app.processEvents()
+import app_shell
+w.shell_refresh() if hasattr(w, "shell_refresh") else None
+for _ in range(3):
+    app.processEvents()
+w._shell_timer.timeout.emit()
+assert w.shell_ribbon.isHidden() and w.shell_rail.isHidden() and w.step_strip.isHidden(), (w.shell_ribbon.isHidden(), w.shell_rail.isHidden(), w.step_strip.isHidden())
+labels = [b.text() for b in mp.findChildren(__import__("PySide6.QtWidgets", fromlist=["QPushButton"]).QPushButton)]
+assert any("Home" in t for t in labels) and any("Switch tool" in t for t in labels)
+w.main_tabs.setCurrentIndex(w.main_tabs.indexOf(w.plan_page) if getattr(w, "plan_page", None) is not None else 0)
+w._shell_timer.timeout.emit()
+print("ok5")
+
+# the batch path: the missing conversations come from ONE call
+mo.gmail_batch = lambda S, paths, timeout=60: [{"id": p.split("/")[1].split("?")[0], "messages": THREADS["t1"]["messages"]} for p in paths]
+mp._tcache = {}
+mp._lcache = {}
+mp.label = "INBOX"; mp.query = ""
+mp.load_list(reset=True)
+assert wait(lambda: mp.list.count() == 2)
+print("ok6")

@@ -1866,12 +1866,15 @@ def mail_fix_images(body, doc, inline, remote_ok):
         elif src.lower().startswith(("http://", "https://")):
             data = inline.get("url:" + src)
         if not data:
+            if src.lower().startswith("cid:"):
+                why = inline.get("err:" + src[4:].strip().lower())
+                return "<span style='color:#8a9099;font-size:11px'>[picture not loaded%s]</span>" % ((": " + _html.escape(str(why))) if why else "")
             return ""
         key = seen.get(src)
         if key is None:
             img = QPixmap()
             if not img.loadFromData(data) or img.isNull():
-                return ""
+                return "<span style='color:#8a9099;font-size:11px'>[picture format not supported]</span>"
             key = "mimg:///%d" % len(seen)
             seen[src] = key
             doc.addResource(QTextDocument.ResourceType.ImageResource, QUrl(key), img)
@@ -2271,6 +2274,15 @@ class MailPage(_QW):
         root = _VB(self)
         root.setContentsMargins(8, 8, 8, 8)
         top = _HB()
+        home = _QPB("\u2039  Home")
+        home.setToolTip("Back to the start screen")
+        home.clicked.connect(lambda: self.host.main_tabs.setCurrentIndex(self.host.launcher_idx[0]))
+        sw = _QPB("Switch tool  \u25be")
+        sw.setToolTip("Jump straight to another tool")
+        sw.clicked.connect(lambda _=False, b=sw: getattr(self.host, "shell_rail").\
+                           _switch_menu(b) if getattr(self.host, "shell_rail", None) is not None else None)
+        top.addWidget(home)
+        top.addWidget(sw)
         self.search = _QLE()
         self.search.setPlaceholderText("Search mail  (for example: from:dewann has:attachment)")
         self.search.setClearButtonEnabled(True)
@@ -2833,9 +2845,18 @@ class MailPage(_QW):
                         cache.pop(next(iter(cache)))
                 except Exception:
                     out[i] = None
+            need = [i for i in range(len(ids)) if not (cache.get(ids[i]) and hids.get(ids[i]) and cache[ids[i]][0] == hids[ids[i]])]
+            if len(need) > 1 and hasattr(self.mo, "gmail_batch"):            # all the missing conversations in ONE request
+                try:
+                    got = self.mo.gmail_batch(self.S, ["threads/%s?format=metadata&metadataHeaders=From&metadataHeaders=Subject" % ids[i] for i in need])
+                except Exception:
+                    got = None
+                if got:
+                    for i, th in zip(need, got):
+                        if th:
+                            th["snippet"] = snips.get(ids[i], "") or th.get("snippet", "")
+                            cache[ids[i]] = (hids.get(ids[i], ""), th)
             nxt = [0]
-            if not any(cache.get(i) for i in ids):
-                pass
             lock = _thr.Lock()
 
             def worker():
@@ -3008,7 +3029,7 @@ class MailPage(_QW):
             refs = {x.lower() for x in re.findall(r"(?i)cid:([^\"'\s>)]+)", html or "")}
             inline = {}
             for a in atts:
-                if a["cid"] and a["cid"].lower() in refs and a["mime"].startswith("image/") and a["size"] < 3000000:
+                if a["cid"] and a["cid"].lower() in refs and a["size"] < 12000000:
                     if a["data"]:
                         inline[a["cid"].lower()] = mail_b64(a["data"])
                     else:
@@ -3019,12 +3040,15 @@ class MailPage(_QW):
             res.append((m, html, plain, atts, inline))
 
         def get(t):
-            try:
-                v = t[2]()
-                if v:
-                    t[0][t[1]] = v
-            except Exception:
-                pass
+            for k in (0, 1):
+                try:
+                    v = t[2]()
+                    if v:
+                        t[0][t[1]] = v
+                    break
+                except Exception as e:
+                    if k:
+                        t[0]["err:" + t[1]] = str(e)[:80]
         q = list(todo[:60])
         lk = _th.Lock()
 
@@ -3152,7 +3176,7 @@ class MailPage(_QW):
             b.setHtml(body)
             cv.addWidget(b)
             used = {x.lower() for x in re.findall(r"(?i)cid:([^\"'\s>)]+)", html or "")}
-            files = [a for a in atts if a["name"] and not (a["cid"] and a["mime"].startswith("image/") and a["cid"].lower() in used)]
+            files = [a for a in atts if a["name"] and not (a["cid"] and a["cid"].lower() in used)]
             if files:
                 row = _HB()
                 for a in files[:12]:

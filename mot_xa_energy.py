@@ -10259,7 +10259,7 @@ class MainWindow(QMainWindow):
 
     def _update_steps(self):
         try:
-            self.step_strip.setVisible(self.main_tabs.currentIndex() not in (getattr(self, "launcher_idx", None) or ()))
+            self.step_strip.setVisible(self.main_tabs.currentIndex() not in (getattr(self, "launcher_idx", None) or ()) and self.main_tabs.currentWidget() is not getattr(self, "mail_page", None))
             self.step_strip.update_states(self._step_states())
         except Exception:
             pass
