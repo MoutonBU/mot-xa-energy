@@ -1901,10 +1901,16 @@ def mail_fit_widths(body, maxw):
     return body
 
 
+_PIXC = {}
+
+
 def mail_fix_images(body, doc, inline, remote_ok, maxw=700):
     """Make every picture in an email either show or vanish (never Qt's big grey 'missing picture' box).
     cid: pictures come from the attachments, data: pictures are decoded, web pictures show only when fetched (inline['url:...'])."""
     seen = {}
+    cm = [int(x) for x in re.findall(r"(?is)(?<![-\w])max-width\s*:\s*(\d+)\s*px", body)]
+    cm = [x for x in cm if x >= 300]
+    imgw = max(cm) if cm and max(cm) < maxw else maxw          # pictures never wider than the email's own column
 
     def one(m):
         tag = m.group(0)
@@ -1927,13 +1933,20 @@ def mail_fix_images(body, doc, inline, remote_ok, maxw=700):
             return ""
         key = seen.get(src)
         if key is None:
-            img = mail_pixmap(data)
+            hk = hash(data)
+            img = _PIXC.get(hk)
+            if img is None:
+                img = mail_pixmap(data)
+                if not img.isNull():
+                    if len(_PIXC) > 60:
+                        _PIXC.clear()
+                    _PIXC[hk] = img
             if img.isNull():
                 return "<span style='color:#8a9099;font-size:11px'>[picture could not be read: %s, %d KB]</span>" % (_html.escape(mail_sniff(data)), max(1, len(data) // 1024))
             key = "mimg:///%d" % len(seen)
             seen[src] = key
-            doc.addResource(QTextDocument.ResourceType.ImageResource, QUrl(key), img)
             dims[key] = (img.width(), img.height())
+            pix[key] = img
         pw, ph = dims[key]
         w_attr = _W_ATTR.search(tag)
         w_sty = _W_STYLE.search(tag)
@@ -1941,17 +1954,34 @@ def mail_fix_images(body, doc, inline, remote_ok, maxw=700):
             target = int(w_attr.group(1))
         elif w_sty and w_sty.group(2) == "px":
             target = int(float(w_sty.group(1)))
-        elif w_attr or w_sty:                                   # a percentage: that share of the window, never blown up more than 2x
-            pct = float((w_attr.group(1) if w_attr else w_sty.group(1)) or 100) if (w_attr and w_attr.group(2)) or (w_sty and w_sty.group(2) == "%") else 100.0
-            target = min(int(maxw * pct / 100.0), pw * 2)
+        elif w_attr or w_sty:                                   # a percentage of its cell (a signature cut into pieces: each cell has its own share)
+            pct = float((w_attr.group(1) if w_attr and w_attr.group(2) else (w_sty.group(1) if w_sty and w_sty.group(2) == "%" else 100)) or 100)
+            share = 1.0
+            td = m.string.rfind("<td", max(0, m.start() - 400), m.start())
+            if td >= 0:
+                tm = re.search(r"(?is)\bwidth\s*=\s*[\"']?\s*([\d.]+)\s*%", m.string[td:m.string.find(">", td) + 1])
+                if tm:
+                    share = float(tm.group(1)) / 100.0
+            target = int(imgw * pct / 100.0 * share)
         else:
             target = pw
-        target = max(1, min(target, maxw))
+        target = max(1, min(target, imgw))
+        if target > pw * 2:
+            target = pw * 2
         h = max(1, int(round(target * ph / float(max(1, pw)))))
+        rk = "%s_%d" % (key, target)
+        if rk not in made:
+            made.add(rk)
+            im2 = pix[key]
+            if target != pw:                                    # a smooth resize here, because Qt's text view would otherwise squash it roughly (jagged edges)
+                im2 = im2.scaled(target, h, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            doc.addResource(QTextDocument.ResourceType.ImageResource, QUrl(rk), im2)
         t2 = _ATTR_DROP.sub("", tag)
-        t2 = _SRC_RE.sub('src="%s" width="%d" height="%d"' % (key, target, h), t2, 1)
+        t2 = _SRC_RE.sub('src="%s" width="%d" height="%d"' % (rk, target, h), t2, 1)
         return t2
     dims = {}
+    pix = {}
+    made = set()
     return mail_round(mail_fit_widths(mail_maxwidth(_IMG_RE.sub(one, body), maxw), maxw), doc)
 
 
@@ -2032,12 +2062,15 @@ def _rd_strip(style):
     return ";".join(keep)
 
 
+_RD_TAGS = {n: re.compile(r"(?is)<(/?)" + n + r"\b[^>]*>") for n in ("td", "table", "div", "span")}
+
+
 def _rd_close(body, name, pos):
     depth = 1
-    for m in re.finditer(r"(?is)<(/?)" + name + r"\b[^>]*>", body[pos:]):
+    for m in _RD_TAGS[name].finditer(body, pos):
         depth += -1 if m.group(1) else 1
         if depth == 0:
-            return pos + m.start(), pos + m.end()
+            return m.start(), m.end()
     return None
 
 
@@ -2049,11 +2082,7 @@ def _rd_attr(tag, name):
 def mail_round(body, doc):
     """Qt's text view cannot draw rounded corners. Every box with border-radius is rebuilt from small rounded-corner pictures
     (and small coloured pills become one picture), so cards, bars and chips look as they do in Gmail."""
-    for _ in range(400):
-        ms = list(_RD_OPEN.finditer(body))
-        if not ms:
-            break
-        m = ms[-1]
+    for m in reversed(list(_RD_OPEN.finditer(body))):
         tag, name = m.group(0), m.group(1).lower()
         style = _rd_attr(tag, "style")
         rad = _css(style, "border-radius")
@@ -2115,6 +2144,7 @@ def mail_round(body, doc):
         bgattr = (' bgcolor="%s"' % fill.name()) if fill is not None and fill.alpha() > 0 else ""
         bl = ("border-%s:%dpx solid %s;" % ("%s", bw, line.name())) if line is not None and bw else ""
         side = lambda s: ('style="%s"' % (bl % s)) if bl else ""
+        edge = lambda s: ('style="%sfont-size:1px;line-height:1px;"' % (bl % s if bl else ""))
         sp = 'valign="top" style="font-size:1px;line-height:1px;"'
         cpad = "padding:%dpx %dpx %dpx %dpx;" % (max(0, pt - r), max(0, pr - r), max(0, pb - r), max(0, pl - r))
         if name == "td":
@@ -2138,13 +2168,13 @@ def mail_round(body, doc):
             head, tail, inner_w = "", "", ("%dpx" % int(float(_css(style, "width")[:-2]))) if _css(style, "width").endswith("px") else "100%"
         al = _rd_attr(tag, "align")
         wrap = ('<table width="%s" cellspacing="0" cellpadding="0" border="0"%s>'
-                '<tr><td width="%d" height="%d" %s>%s</td><td%s %s height="%d" %s></td><td width="%d" %s>%s</td></tr>'
+                '<tr><td width="%d" height="%d" %s>%s</td><td%s height="%d" valign="top" %s></td><td width="%d" %s>%s</td></tr>'
                 '<tr><td width="%d"%s %s></td><td%s%s>%s</td><td width="%d"%s %s></td></tr>'
-                '<tr><td width="%d" height="%d" %s>%s</td><td%s %s height="%d" %s></td><td width="%d" %s>%s</td></tr></table>') % (
+                '<tr><td width="%d" height="%d" %s>%s</td><td%s height="%d" valign="top" %s></td><td width="%d" %s>%s</td></tr></table>') % (
             inner_w, (' align="%s"' % al) if al and name == "table" else "",
-            r, r, sp, c("tl"), bgattr, side("top"), r, sp, r, sp, c("tr"),
+            r, r, sp, c("tl"), bgattr, r, edge("top"), r, sp, c("tr"),
             r, bgattr, side("left"), bgattr, (' style="%s"' % cpad) if cpad else "", core, r, bgattr, side("right"),
-            r, r, sp, c("bl"), bgattr, side("bottom"), r, sp, r, sp, c("br"))
+            r, r, sp, c("bl"), bgattr, r, edge("bottom"), r, sp, c("br"))
         out = (head + wrap + tail) if name == "td" else wrap
         body = body[:m.start()] + out + body[end[1]:]
     return body
@@ -2152,20 +2182,22 @@ def mail_round(body, doc):
 
 def mail_maxwidth(body, maxw=700):
     """Qt ignores max-width. An email that caps its column (max-width:680px) is shown in a centred column of that width."""
-    cols = [int(n) for n in re.findall(r"(?is)<(?:table|td|div)\b[^>]*?(?<![-\w])max-width\s*:\s*(\d+)\s*px", body)]
-    cols = [n for n in cols if n >= 300]
+    body = re.sub(r"(?is)(?<![-\w])(?:line-height|font-size)\s*:\s*0(?:px|pt)?\s*(?:;|(?=[\"']))", "", body)     # zero-height lines would hide the pictures in them
+    mm = re.search(r"(?is)<(?:table|td|div)\b[^>]*?(?<![-\w])max-width\s*:\s*(\d+)\s*px", body)
+    lead = re.sub(r"(?is)<head\b.*?</head>|<style\b.*?</style>|<[^>]*>|&nbsp;|\s", "", body[:mm.start()]) if mm else "x"
+    cols = [int(mm.group(1))] if mm and not lead and int(mm.group(1)) >= 300 else []     # only when the whole email sits in the capped column
     body = re.sub(r"(?is)(?<![-\w])max-width\s*:\s*[\d.]+\s*(?:px|%)\s*;?", "", body)
     if not cols or max(cols) >= maxw:
         return body
     n = max(cols)
-    side = max(0, (maxw + 90 - n - 24) // 2)
-    box = '<div style="margin-left:%dpx;margin-right:%dpx;">' % (side, side)
+    head = '<table width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td></td><td width="' + str(n + 24) + '" valign="top">'
+    tail = '</td><td></td></tr></table>'
     m = re.search(r"(?is)<body\b[^>]*>", body)
     if m:
         e = body.lower().rfind("</body>")
         e = len(body) if e < 0 else e
-        return body[:m.end()] + box + body[m.end():e] + "</div>" + body[e:]
-    return box + body + "</div>"
+        return body[:m.end()] + head + body[m.end():e] + tail + body[e:]
+    return head + body + tail
 
 
 def mail_trusted_image(url):
@@ -2248,6 +2280,41 @@ def mail_label_tree(labels):
     return out
 
 
+_SIGC = {}
+
+
+def mail_sig_html(S):
+    """My signature as the drawing register builds it: the banner cut into pieces, so the phone number, the email and the website are live links.
+    Returns (html, [jpeg bytes for cid mcpsig0, mcpsig1, ...], plain text); cached until the signature settings change."""
+    import sig_banner
+    if not sig_banner.available(S):
+        return "", [], ""
+    key = tuple(str(S.get(k, "")) for k in ("sig_name", "sig_role", "sig_phone", "sig_email", "mail_address", "sig_photo", "sig_company"))
+    hit = _SIGC.get(key)
+    if hit:
+        return hit
+    rows, jp = sig_banner.slices(S)
+    lt = sig_banner.link_text(S)
+    web = "www.mcparchitecture.co.za"
+    href = {"tel": "tel:" + lt.get("tel", ""), "mail": "mailto:" + lt.get("email", ""), "web": "https://" + web}
+    alt = {"tel": lt.get("phone", ""), "mail": lt.get("email", ""), "web": web}
+    tb = ""
+    for _h, cells in rows:
+        tds = ""
+        for idx, x0, x1, kind in cells:
+            img = '<img src="cid:mcpsig%d" width="100%%" alt="%s" style="display:block;width:100%%;height:auto;border:0;">' % (idx, _html.escape(alt.get(kind, "") or "Signature"))
+            if kind:
+                img = '<a href="%s" style="text-decoration:none;">%s</a>' % (_html.escape(href[kind]), img)
+            tds += '<td width="%.3f%%" style="padding:0;font-size:0;line-height:0;">%s</td>' % ((x1 - x0) * 100.0 / float(cells[-1][2]), img)
+        tb += '<table width="100%%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;table-layout:fixed;"><tr>%s</tr></table>' % tds
+    html = '<br><table width="620" cellpadding="0" cellspacing="0" border="0" style="width:100%%;max-width:620px;"><tr><td style="border-radius:12px;overflow:hidden;">%s</td></tr></table>' % tb
+    plain = "\n".join(x for x in (lt.get("name", ""), lt.get("role", ""), lt.get("phone", ""), lt.get("email", ""), web) if x)
+    if len(_SIGC) > 4:
+        _SIGC.clear()
+    _SIGC[key] = (html, jp, plain)
+    return _SIGC[key]
+
+
 def mail_compose(S, to="", cc="", bcc="", subject="", html_body="", plain_body="", files=(), in_reply_to="", references="", signature=True):
     """The finished email: plain and HTML, my signature picture (or my signature lines) at the end, and the attachments."""
     msg = _EmailMessage()
@@ -2262,15 +2329,13 @@ def mail_compose(S, to="", cc="", bcc="", subject="", html_body="", plain_body="
     if in_reply_to:
         msg["In-Reply-To"] = in_reply_to
         msg["References"] = (references + " " + in_reply_to).strip()
-    sig_png, sig_text = None, ""
+    sig_html, sig_jp, sig_text = "", [], ""
     if signature:
         try:
-            import sig_banner
-            if sig_banner.available(S):
-                sig_png = sig_banner.jpeg_bytes(S)
+            sig_html, sig_jp, sig_text = mail_sig_html(S)
         except Exception:
-            sig_png = None
-        if sig_png is None:
+            sig_html, sig_jp, sig_text = "", [], ""
+        if not sig_html:
             try:
                 from register_ext import signature_text
                 sig_text = signature_text(S, "")
@@ -2278,15 +2343,16 @@ def mail_compose(S, to="", cc="", bcc="", subject="", html_body="", plain_body="
                 sig_text = ""
     html_full = "<div style=\"font-family:Arial,sans-serif;font-size:14px;color:#202124\">" + html_body + "</div>"
     plain_full = plain_body
-    if sig_png is not None:
-        html_full += "<br><img src=\"cid:mcpsig\" alt=\"signature\" style=\"max-width:620px\">"
+    if sig_html:
+        html_full += sig_html
+        plain_full += "\n\n-- \n" + sig_text
     elif sig_text:
         html_full += "<br>-- <br>" + "<br>".join(_html.escape(x) for x in sig_text.split("\n"))
         plain_full += "\n\n-- \n" + sig_text
     msg.set_content(plain_full or " ")
     msg.add_alternative(html_full, subtype="html")
-    if sig_png is not None:
-        msg.get_payload()[1].add_related(sig_png, maintype="image", subtype="jpeg", cid="<mcpsig>", filename="signature.jpg", disposition="inline")
+    for _i, _b in enumerate(sig_jp):
+        msg.get_payload()[1].add_related(_b, maintype="image", subtype="jpeg", cid="<mcpsig%d>" % _i, filename="signature%d.jpg" % _i, disposition="inline")
     import mimetypes
     for f in files:
         try:
