@@ -6,7 +6,7 @@ import math
 import sys
 
 from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPoint, QPointF, QRectF, QSize, QTimer, Qt, QUrl, QVariantAnimation
-from PySide6.QtGui import QPixmap, QTransform, QBrush, QColor, QDesktopServices, QIcon, QCursor, QPalette, QPainter, QPen, QRadialGradient
+from PySide6.QtGui import QImage, QPixmap, QTransform, QBrush, QColor, QDesktopServices, QIcon, QCursor, QPalette, QPainter, QPen, QRadialGradient
 from PySide6.QtWidgets import (QAbstractButton, QApplication, QGraphicsDropShadowEffect, QGraphicsOpacityEffect, QTabWidget, QToolTip, QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QTextBrowser, QVBoxLayout, QWidget)
 
 GREEN, AMBER, GREY, RED = "#2e9e5b", "#d9a21b", "#8a8f98", "#C8102E"
@@ -1899,6 +1899,28 @@ def _dpr():
         return 1.0
 
 
+_TR_RE = re.compile(r"(?is)<tr\b[^>]*>((?:(?!<tr\b|<table\b).)*?)</tr>")
+_TDP_RE = re.compile(r"(?is)(<td\b[^>]*?\bwidth\s*=\s*[\"']?)([\d.]+)(\s*%)")
+
+
+def mail_fix_rows(body):
+    """A row of cells with percentage widths that adds up to less than 100 % (signature pieces sent by earlier versions) is stretched to the full row."""
+    def row(m):
+        cells = re.findall(r"(?is)<td\b[^>]*>", m.group(1))
+        pcts = []
+        for c in cells:
+            pm = re.search(r"(?is)\bwidth\s*=\s*[\"']?([\d.]+)\s*%", c)
+            if not pm:
+                return m.group(0)
+            pcts.append(float(pm.group(1)))
+        tot = sum(pcts)
+        if not pcts or tot >= 99.0 or tot < 40.0:
+            return m.group(0)
+        k = 100.0 / tot
+        return m.group(0).replace(m.group(1), _TDP_RE.sub(lambda q: q.group(1) + ("%.3f" % (float(q.group(2)) * k)) + q.group(3), m.group(1)), 1)
+    return _TR_RE.sub(row, body)
+
+
 def mail_drop_hidden(body):
     """Qt ignores display:none, so the dark-mode logo, the phone-only signature and other hidden parts would all show at once. They are removed."""
     body = re.sub(r"(?is)<img\b[^>]*display\s*:\s*none[^>]*>", "", body)
@@ -2008,7 +2030,7 @@ def mail_fix_images(body, doc, inline, remote_ok, maxw=700):
     pix = {}
     made = set()
     dpr = _dpr()
-    return mail_round(mail_fit_widths(mail_maxwidth(_IMG_RE.sub(one, mail_drop_hidden(body)), maxw), maxw), doc)
+    return mail_round(mail_fit_widths(mail_maxwidth(_IMG_RE.sub(one, mail_fix_rows(mail_drop_hidden(body))), maxw), maxw), doc)
 
 
 _RD_OPEN = re.compile(r"""(?is)<(td|table|div|span)\b[^>]*?border-radius[^>]*>""")
@@ -2224,6 +2246,24 @@ def mail_maxwidth(body, maxw=700):
         e = len(body) if e < 0 else e
         return body[:m.end()] + head + body[m.end():e] + tail + body[e:]
     return head + body + tail
+
+
+def mail_pdf_pixmap(data, height):
+    """The first page of a PDF as a picture of the given height (PyMuPDF, which the program already contains)."""
+    try:
+        try:
+            import pymupdf as fitz
+        except ImportError:
+            import fitz
+        doc = fitz.open(stream=data, filetype="pdf")
+        pg = doc[0]
+        sc = height / float(pg.rect.height or 1)
+        pix = pg.get_pixmap(matrix=fitz.Matrix(sc, sc), alpha=False)
+        img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format.Format_RGB888).copy()
+        doc.close()
+        return QPixmap.fromImage(img)
+    except Exception:
+        return QPixmap()
 
 
 def mail_trusted_image(url):
@@ -3841,12 +3881,19 @@ class MailPage(_QW):
                     sa_.clicked.connect(lambda _=False, fl=files, mid=m["id"]: self._save_all(mid, fl))
                     tools.addWidget(sa_)
                 tools.addStretch(1)
-                th_ = [a for a in files if a["mime"].startswith("image/") and a["mime"] in ("image/jpeg", "image/png", "image/gif", "image/webp", "image/bmp") and a["size"] < 6000000][:6]
+                th_ = [a for a in files if ((a["mime"] in ("image/jpeg", "image/png", "image/gif", "image/webp", "image/bmp")) or a["mime"] == "application/pdf" or a["name"].lower().endswith(".pdf"))
+                       and a["size"] < 8000000][:16]
                 thumbs = _HB()
                 thumbs.addStretch(1)
                 if th_:
                     cv.addLayout(thumbs)
-                    self._thumbs(m["id"], th_, thumbs)
+                    if len(th_) <= 4:
+                        self._thumbs(m["id"], th_, thumbs)
+                    else:                                              # many pictures or drawings: fetched only when you ask (saves Gmail quota and time)
+                        pb = _QPB("Show previews (%d)" % len(th_))
+                        pb.setToolTip("Download and show a small preview of each PDF and picture")
+                        pb.clicked.connect(lambda _=False, mid=m["id"], th_=th_, lay=thumbs, b=pb: (b.setEnabled(False), b.setText("Loading previews..."), self._thumbs(mid, th_, lay, b)))
+                        tools.insertWidget(1 if len(files) >= 2 else 0, pb)
                 cv.addLayout(tools)
                 for rw in rows:
                     row = _HB()
@@ -3860,7 +3907,7 @@ class MailPage(_QW):
             self.thread_lay.addWidget(card)
         self.thread_lay.addStretch(1)
 
-    def _thumbs(self, mid, imgs, lay):
+    def _thumbs(self, mid, imgs, lay, btn=None):
         """Small previews of picture attachments, fetched in the background; click one to open it."""
         tid = self.cur
 
@@ -3879,11 +3926,13 @@ class MailPage(_QW):
                 return
             try:
                 for a, data in res:
-                    pm = mail_pixmap(data)
+                    pm = mail_pdf_pixmap(data, int(130 * _dpr())) if (a["mime"] == "application/pdf" or a["name"].lower().endswith(".pdf")) else mail_pixmap(data)
                     if pm.isNull():
                         continue
                     d = _dpr()
-                    pm2 = pm.scaledToHeight(int(110 * d), Qt.TransformationMode.SmoothTransformation)
+                    pm2 = pm.scaledToHeight(int(110 * d), Qt.TransformationMode.SmoothTransformation) if pm.height() != int(110 * d) else pm
+                    if pm2.width() > 260 * d:
+                        pm2 = pm2.scaledToWidth(int(260 * d), Qt.TransformationMode.SmoothTransformation)
                     pm2.setDevicePixelRatio(d)
                     b = _QPB()
                     b.setIcon(_QIcon(pm2))
@@ -3893,6 +3942,8 @@ class MailPage(_QW):
                     b.setCursor(Qt.CursorShape.PointingHandCursor)
                     b.clicked.connect(lambda _=False, a=a, data=data: self._open_bytes(a["name"], data))
                     lay.insertWidget(lay.count() - 1, b)
+                if btn is not None:
+                    btn.hide()
             except RuntimeError:
                 pass                                                      # the email was closed before the previews arrived
         self.run(work, done)

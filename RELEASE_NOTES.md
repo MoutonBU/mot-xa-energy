@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: 1.86.302
+Current version: 1.86.303
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Mail tab: PDF attachments now show a small first-page preview (using the PDF reader already in the program), like picture attachments; emails with many attachments get a Show previews button instead of downloading them all at once. Signature pictures in emails sent by earlier versions (drawn at two thirds of the width) are stretched to the full width so they line up with the cards above.
 - Crisper PDF reports everywhere: the light and ventilation, XA energy, rational design, coverage and FAR, register and sheet-index reports were written at a low 96 dpi, which made text and logos look rough. They are now drawn at 384 dpi (same layout, sharper text, lines, corners and logo), the invoice PDF is written at 300 dpi, and the in-program PDF preview is drawn at your screen's real resolution so it is sharp on scaled displays.
 - Mail tab: a corner pop-up for new mail, like the one for orders (who it is from, the subject and the first lines, with Open and Dismiss); it also works while the program is hidden in the tray, and it can be switched off with the setting mail_notify. Emails with a hidden dark-mode logo or phone-only signature no longer show the extra logo; logos, corners and pictures are drawn at your screen's real resolution so they are sharp; attachments get a Save all button (one folder, remembered) and picture attachments show small previews you can click to open.
 - Costing: new Builder's quantities export (PDF, CSV and a preview, on the Costing ribbon and beside the materials buttons). It lists the quantities by trade (concrete in m3, reinforcing steel, bricks, plaster, insulation, roof trusses and timber, and so on) with no prices, rates, markups or fees, and two empty columns (Your rate, Amount) for the builder to fill in with his own suppliers.

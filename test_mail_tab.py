@@ -342,3 +342,19 @@ mp._save_all("mm", _files)
 assert wait(lambda: len(os.listdir(_d)) == 2), os.listdir(_d)
 assert sorted(os.listdir(_d)) == ["a (2).pdf", "a.pdf"]
 print("ok15")
+
+# older signature rows (cells adding up to 2/3) are stretched to the full row; PDF previews come from PyMuPDF
+_r = '<table><tr><td width="66.667%"><img src="x"></td></tr></table><table><tr><td width="29.867%">a</td><td width="10.293%">b</td><td width="25.84%">c</td></tr></table><table><tr><td width="50%">a</td><td width="50%">b</td></tr></table>'
+_o2 = U.mail_fix_rows(_r)
+assert 'width="100.000%"' in _o2 and _o2.count('width="50%"') == 2, _o2
+import pymupdf as _fz
+_dc = _fz.open(); _dc.new_page(width=400, height=300).insert_text((40, 60), "Drawing"); _pdfb = _dc.tobytes()
+_pm = U.mail_pdf_pixmap(_pdfb, 130)
+assert not _pm.isNull() and _pm.height() == 130, (_pm.width(), _pm.height())
+print("ok16")
+from PySide6.QtWidgets import QHBoxLayout as _H2
+mp.open_thread("t1", "x"); assert wait(lambda: mp.stack.currentIndex() == 1)
+_lay = _H2(); _lay.addStretch(1)
+mp._thumbs("mm", [{"name": "a.pdf", "mime": "application/pdf", "size": len(_pdfb), "id": "", "data": __import__("base64").urlsafe_b64encode(_pdfb).decode()}], _lay)
+assert wait(lambda: _lay.count() >= 2), "no preview button"
+print("ok17")
