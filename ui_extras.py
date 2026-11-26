@@ -4549,6 +4549,18 @@ class MailPage(_QW):
                 w.deleteLater()
 
     def _render_thread(self):
+        self.thread_host.setUpdatesEnabled(False)                       # the page is drawn once, finished, not piece by piece
+        try:
+            self._render_thread2()
+        finally:
+            self.thread_host.setUpdatesEnabled(True)
+            QTimer.singleShot(0, self._refit_all)
+
+    def _refit_all(self):
+        for b in self.thread_host.findChildren(_AutoBrowser):
+            b._fit()
+
+    def _render_thread2(self):
         self._rw = self.sa.viewport().width()
         bg, fg, mute, line = self.colors()
         n = len(self.msgs)
@@ -4591,7 +4603,9 @@ class MailPage(_QW):
                 bar = _QPB("Show pictures from the web in this email")
                 bar.clicked.connect(self._show_pictures)
                 cv.addWidget(bar)
+            b.resize(max(300, self.sa.viewport().width() - 60), 40)          # its real width before the text goes in, so it is the right height at once
             b.setHtml(body)
+            b._fit()
             cv.addWidget(b)
             if self._tpend.get(self.cur) or (lk_ := self._tlock.get("img:" + str(self.cur))) and lk_.locked():
                 wl = _QL("Loading pictures...")

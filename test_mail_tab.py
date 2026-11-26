@@ -556,3 +556,11 @@ t0 = time.time(); _o9 = mp._fetch_thread("slowt"); _dt9 = time.time() - t0
 mp._fetch_thread2 = _old9; _lk9.release()
 assert _o9[0]["id"] == "slowt" and 2.5 < _dt9 < 5, _dt9
 print("ok29")
+
+# an email is the right height the moment it is drawn (no overlap with the buttons below it, no jump)
+mp.msgs = [(THREADS["t1"]["messages"][0], "<p>Hello</p>" + "<p>line</p>" * 30, "", [], {})]
+mp.resize(900, 600); mp._clear_thread(); mp._render_thread()
+_bs = mp.thread_host.findChildren(U._AutoBrowser)
+_b0 = _bs[-1]
+assert abs(_b0.height() - (int(_b0.document().size().height()) + 14)) <= 1 and _b0.height() > 300, _b0.height()
+print("ok30")
