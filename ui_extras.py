@@ -2402,8 +2402,8 @@ def mail_maxwidth(body, maxw=700):
     return head + body + tail
 
 
-def mail_pdf_pixmap(data, height):
-    """The first page of a PDF as a picture of the given height (PyMuPDF, which the program already contains)."""
+def mail_pdf_image(data, height, maxw=None):
+    """The first page of a PDF as a QImage (safe to make in a worker thread) of the given height, at most maxw wide (PyMuPDF, which the program already contains)."""
     try:
         try:
             import pymupdf as fitz
@@ -2412,12 +2412,20 @@ def mail_pdf_pixmap(data, height):
         doc = fitz.open(stream=data, filetype="pdf")
         pg = doc[0]
         sc = height / float(pg.rect.height or 1)
+        if maxw:
+            sc = min(sc, maxw / float(pg.rect.width or 1))
         pix = pg.get_pixmap(matrix=fitz.Matrix(sc, sc), alpha=False)
         img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format.Format_RGB888).copy()
         doc.close()
-        return QPixmap.fromImage(img)
+        return img
     except Exception:
-        return QPixmap()
+        return QImage()
+
+
+def mail_pdf_pixmap(data, height):
+    """The first page of a PDF as a picture of the given height."""
+    img = mail_pdf_image(data, height)
+    return QPixmap.fromImage(img) if not img.isNull() else QPixmap()
 
 
 def mail_dark(body):
@@ -4722,21 +4730,10 @@ class MailPage(_QW):
             used = {x.lower() for x in re.findall(r"(?i)cid:([^\"'\s>)]+)", html or "")}
             files = [a for a in atts if a["name"] and not (a["cid"] and a["cid"].lower() in used)]
             if files:
-                # attachment buttons wrap onto as many rows as the width needs (one long row made the whole email wider than the window)
                 avail = max(300, self.sa.viewport().width() - 70)
-                fmb = _QFM(self.font())
-                rows, cur, used_w = [], [], 0
-                for a in files[:60]:
-                    nm = a["name"] if len(a["name"]) <= 30 else a["name"][:27] + "..."
-                    txt = "%s  (%s)" % (nm, ("%.1f MB" % (a["size"] / 1048576.0)) if a["size"] > 1048576 else ("%d KB" % max(1, a["size"] // 1024)))
-                    w_ = fmb.horizontalAdvance(txt) + 44
-                    if cur and used_w + w_ > avail:
-                        rows.append(cur)
-                        cur, used_w = [], 0
-                    cur.append((txt, a))
-                    used_w += w_ + 6
-                if cur:
-                    rows.append(cur)
+                prev = [a for a in files if self._previewable(a)][:60]
+                pids = {id(a) for a in prev}
+                others = [a for a in files if id(a) not in pids]
                 tools = _HB()
                 if len(files) >= 2:
                     sa_ = _QPB("Save all (%d)" % len(files))
@@ -4744,31 +4741,146 @@ class MailPage(_QW):
                     sa_.clicked.connect(lambda _=False, fl=files, mid=m["id"]: self._save_all(mid, fl))
                     tools.addWidget(sa_)
                 tools.addStretch(1)
-                th_ = [a for a in files if ((a["mime"] in ("image/jpeg", "image/png", "image/gif", "image/webp", "image/bmp")) or a["mime"] == "application/pdf" or a["name"].lower().endswith(".pdf"))
-                       and a["size"] < 8000000][:16]
-                thumbs = _HB()
-                thumbs.addStretch(1)
-                if th_:
-                    cv.addLayout(thumbs)
-                    if len(th_) <= 4:
-                        self._thumbs(m["id"], th_, thumbs)
-                    else:                                              # many pictures or drawings: fetched only when you ask (saves Gmail quota and time)
-                        pb = _QPB("Show previews (%d)" % len(th_))
-                        pb.setToolTip("Download and show a small preview of each PDF and picture")
-                        pb.clicked.connect(lambda _=False, mid=m["id"], th_=th_, lay=thumbs, b=pb: (b.setEnabled(False), b.setText("Loading previews..."), self._thumbs(mid, th_, lay, b)))
-                        tools.insertWidget(1 if len(files) >= 2 else 0, pb)
                 cv.addLayout(tools)
-                for rw in rows:
-                    row = _HB()
-                    for txt, a in rw:
-                        bt = _QPB(txt)
-                        bt.setToolTip(a["name"])
-                        bt.clicked.connect(lambda _=False, a=a, mid=m["id"]: self._save_attachment(mid, a))
-                        row.addWidget(bt)
-                    row.addStretch(1)
-                    cv.addLayout(row)
+                if prev:                                               # PDFs and pictures: previews that fit the window; click one to open or save it
+                    cv.addWidget(self._thumb_grid(m["id"], prev, avail))
+                if others:                                             # other files stay buttons, wrapped onto as many rows as the width needs
+                    fmb = _QFM(self.font())
+                    rows, cur, used_w = [], [], 0
+                    for a in others[:60]:
+                        nm = a["name"] if len(a["name"]) <= 30 else a["name"][:27] + "..."
+                        txt = "%s  (%s)" % (nm, ("%.1f MB" % (a["size"] / 1048576.0)) if a["size"] > 1048576 else ("%d KB" % max(1, a["size"] // 1024)))
+                        w_ = fmb.horizontalAdvance(txt) + 44
+                        if cur and used_w + w_ > avail:
+                            rows.append(cur)
+                            cur, used_w = [], 0
+                        cur.append((txt, a))
+                        used_w += w_ + 6
+                    if cur:
+                        rows.append(cur)
+                    for rw in rows:
+                        row = _HB()
+                        for txt, a in rw:
+                            bt = _QPB(txt)
+                            bt.setToolTip(a["name"])
+                            bt.clicked.connect(lambda _=False, a=a, mid=m["id"]: self._save_attachment(mid, a))
+                            row.addWidget(bt)
+                        row.addStretch(1)
+                        cv.addLayout(row)
             self.thread_lay.addWidget(card)
         self.thread_lay.addStretch(1)
+
+    @staticmethod
+    def _previewable(a):
+        mime, nm = a.get("mime", ""), a["name"].lower()
+        return (mime in ("image/jpeg", "image/png", "image/gif", "image/webp", "image/bmp") or mime == "application/pdf" or nm.endswith(".pdf")) and a["size"] < 25000000
+
+    def _att_bytes(self, mid, a):
+        """An attachment's bytes: from memory when it was fetched before (a preview, an earlier open), otherwise from Gmail."""
+        key = (mid, a.get("id") or a["name"])
+        c = self.__dict__.setdefault("_attc", {})
+        hit = c.get(key)
+        if hit is not None and hit[0] is not None:
+            return hit[0]
+        data = mail_b64(a["data"]) if a.get("data") else self.mo.gmail_bytes(self.S, "messages/%s/attachments/%s" % (mid, a["id"]))
+        if len(c) > 80:
+            c.clear()
+        c[key] = (data, hit[1] if hit else None)
+        return data
+
+    def _thumb_grid(self, mid, prev, avail):
+        """Previews of the PDFs and pictures, wrapped to the window's width; they load at once, several at a time. Click one: Open or Save."""
+        from PySide6.QtWidgets import QGridLayout
+        tid = self.cur
+        d = _dpr()
+        CW, TH = 140, 104
+        cols = max(1, (avail + 8) // (CW + 8))
+        host = QWidget()
+        g = QGridLayout(host)
+        g.setContentsMargins(0, 0, 0, 0)
+        g.setSpacing(8)
+        btns = []
+        fm = _QFM(self.font())
+        for i, a in enumerate(prev):
+            cell = QWidget()
+            cl = _VB(cell)
+            cl.setContentsMargins(0, 0, 0, 0)
+            cl.setSpacing(2)
+            b = _QPB("...")
+            b.setFlat(True)
+            b.setFixedSize(CW, TH)
+            b.setIconSize(QSize(CW - 8, TH - 8))
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setToolTip(a["name"] + "  (click to open or save)")
+            b.clicked.connect(lambda _=False, a=a, b=b: self._thumb_menu(mid, a, b))
+            nm = _QL(fm.elidedText(a["name"], Qt.TextElideMode.ElideMiddle, CW))
+            nm.setFixedWidth(CW)
+            nm.setStyleSheet("font-size:11px;color:#8a9099;")
+            cl.addWidget(b)
+            cl.addWidget(nm)
+            g.addWidget(cell, i // cols, i % cols)
+            btns.append(b)
+        c = self.__dict__.setdefault("_attc", {})
+
+        def show(b, img):
+            pm = QPixmap.fromImage(img)
+            pm.setDevicePixelRatio(d)
+            b.setText("")
+            b.setIcon(_QIcon(pm))
+        todo = []
+        for a, b in zip(prev, btns):
+            hit = c.get((mid, a.get("id") or a["name"]))
+            if hit and hit[1] is not None:
+                show(b, hit[1])
+            else:
+                todo.append((a, b))
+        if todo:
+            q = list(reversed(todo))
+            lk = _th.Lock()
+
+            def worker():
+                while True:
+                    with lk:
+                        if not q:
+                            return
+                        a, b = q.pop()
+                    img = QImage()
+                    try:
+                        data = self._att_bytes(mid, a)
+                        isp = a.get("mime") == "application/pdf" or a["name"].lower().endswith(".pdf")
+                        img = mail_pdf_image(data, int((TH - 8) * d), int((CW - 8) * d)) if isp else mail_qimage(data)
+                        if not img.isNull() and not isp:
+                            img = img.scaled(int((CW - 8) * d), int((TH - 8) * d), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                        key = (mid, a.get("id") or a["name"])
+                        if not img.isNull() and key in c:
+                            c[key] = (c[key][0], img)
+                    except Exception:
+                        img = QImage()
+                    try:
+                        self._done.emit(lambda r, e, b=b, img=img: self._thumb_done(tid, b, img, show), None, None)
+                    except RuntimeError:
+                        return
+            for _ in range(min(6, len(q))):
+                _th.Thread(target=worker, daemon=True).start()
+        return host
+
+    def _thumb_done(self, tid, b, img, show):
+        if self.cur != tid or self.stack.currentIndex() != 1:
+            return
+        try:
+            if img.isNull():
+                b.setText("preview not available")
+            else:
+                show(b, img)
+        except RuntimeError:
+            pass                                                      # the email was closed before the preview arrived
+
+    def _thumb_menu(self, mid, a, b):
+        from PySide6.QtWidgets import QMenu
+        m = QMenu(self)
+        m.addAction("Open", lambda: self.run(lambda: self._att_bytes(mid, a), lambda res, err: self._open_bytes(a["name"], res) if not err else self.say(err, True)))
+        m.addAction("Save as...", lambda: self._save_attachment(mid, a))
+        m.exec(b.mapToGlobal(b.rect().bottomLeft()))
 
     def _thumbs(self, mid, imgs, lay, btn=None):
         """Small previews of picture attachments, fetched in the background; click one to open it."""
@@ -4836,7 +4948,7 @@ class MailPage(_QW):
 
             def one(a):
                 try:
-                    data = mail_b64(a["data"]) if a.get("data") else self.mo.gmail_bytes(self.S, "messages/%s/attachments/%s" % (mid, a["id"]))
+                    data = self._att_bytes(mid, a)
                     base, ext = os.path.splitext(re.sub(r"[\\/:*?\"<>|]", "_", a["name"]) or "attachment")
                     with lock:
                         nm, k = base + ext, 1
@@ -4876,7 +4988,7 @@ class MailPage(_QW):
         self.say("Downloading %s..." % a["name"])
 
         def work():
-            data = mail_b64(a["data"]) if a.get("data") else self.mo.gmail_bytes(self.S, "messages/%s/attachments/%s" % (mid, a["id"]))
+            data = self._att_bytes(mid, a)
             with open(dest, "wb") as f:
                 f.write(data)
             return dest

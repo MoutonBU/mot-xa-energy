@@ -598,3 +598,26 @@ assert b"typed" in _raw and b"cid:logo1" in _raw and b"image/png" in _raw and b"
 _dlg.resize(700, 600); app.processEvents(); _dlg._requote()
 mp._reply("reply")
 print("ok33")
+
+from PySide6.QtWidgets import QWidget
+# PDFs show previews at once, wrapped to the window (never running off to the right); other files stay buttons; Save all covers everything
+_atts = [{"name": "%03d Plan.pdf" % i, "mime": "application/pdf", "size": len(_pdfb), "id": "", "cid": "", "data": __import__("base64").urlsafe_b64encode(_pdfb).decode()} for i in range(22)]
+_atts.append({"name": "notes.docx", "mime": "application/msword", "size": 5000, "id": "x", "cid": "", "data": ""})
+mp.resize(900, 700); mp.show(); app.processEvents()
+mp.msgs = [(THREADS["t1"]["messages"][0], "<p>Hello</p>", "", _atts, {})]
+mp._attc = {}
+mp._clear_thread(); mp._render_thread(); app.processEvents()
+_grids = [w for w in mp.thread_host.findChildren(QWidget) if w.layout() is not None and type(w.layout()).__name__ == "QGridLayout"]
+assert _grids, "no preview grid"
+_grids.sort(key=lambda w: -len(w.findChildren(U._QPB)))
+_gb = [b for b in _grids[0].findChildren(U._QPB)]
+assert len(_gb) == 22, len(_gb)
+assert wait(lambda: all(not b.icon().isNull() for b in _gb), 10), sum(1 for b in _gb if b.icon().isNull())
+_vw = mp.sa.viewport().width()
+for b in _gb:
+    assert b.mapTo(mp.thread_host, b.rect().bottomRight()).x() <= _vw, (b.mapTo(mp.thread_host, b.rect().bottomRight()).x(), _vw)
+assert any("notes.docx" in b.text() for b in mp.thread_host.findChildren(U._QPB)) and not any(b.text().startswith("000 Plan") for b in mp.thread_host.findChildren(U._QPB))
+_t0 = time.time(); mp._clear_thread(); mp._render_thread(); app.processEvents()
+_g2 = sorted([w for w in mp.thread_host.findChildren(QWidget) if w.layout() is not None and type(w.layout()).__name__ == "QGridLayout"], key=lambda w: -len(w.findChildren(U._QPB)))[0]
+assert len(_g2.findChildren(U._QPB)) == 22 and all(not b.icon().isNull() for b in _g2.findChildren(U._QPB)) and time.time() - _t0 < 1.5
+print("ok34")
