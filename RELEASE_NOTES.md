@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: **1.86.281**
+Current version: **1.86.282**
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Costing finish levels now have their own South African price per item at budget, mid-range, high-end and luxury (tiles, windows by glazing, doors, kitchen units and worktops, ceilings, paint, roof covering, light fittings, appliances, handrails) instead of one factor for everything. Electrical point rates were raised to the market range. The prices are anchored to public 2025/26 South African price guides and are listed in TIERS in materials.py; the Rates tab shows the mid-range figure.
 - Costing finish level: the fit-out rates now start at mid-range instead of the cheapest. Levels are 1 budget (rates as listed), 2 mid-range (x1.25, the new default), 3 high-end (x1.7), 4 luxury (x2.3). Structure, services and rates you imported are not scaled.
 - Costing glazing rates: single clear, double and triple glazed windows and large glazed doors each have their own full South African rate per m2 (single R3 350, double R5 400, triple R7 800 for windows; R6 200, R8 600, R11 800 for sliding and stacking doors, plus labour), all editable and matched when you import QS rates. The old extra over single rates are gone.
 - Costing glazing: the glazing you choose now replaces single clear instead of adding an extra line. Windows and large glazed doors are priced as single clear, double or triple glazed lines (frame rate plus that grade's glass rate), and the Glazing for all windows allowance sets every window to one grade.

@@ -70,15 +70,15 @@ def test_openings_glazing_and_doors():
     rows = {r[1]: r for r in m.bom(_q(openings=ops), {}, {"spec_level": 1}, facts)}
     w2 = rows["Windows, aluminium frame, double glazed"]; s2 = rows["Large sliding, stacking and glazed doors, double glazed"]
     assert abs(w2[3] - 3.0) < 1e-6 and abs(s2[3] - 7.2) < 1e-6
-    assert abs(w2[4] - 5400.0) < 1e-6 and abs(s2[4] - 8600.0) < 1e-6   # each grade has its own full rate, no extra line
+    assert abs(w2[4] - m.TIERS['window_double'][0][0]) < 1e-6 and abs(s2[4] - m.TIERS['door_slider_double'][0][0]) < 1e-6   # each grade has its own full rate, no extra line
     assert not any("extra over" in k for k in rows) and not any("single" in k for k in rows)
     assert rows["Internal doors"][3] == 1 and rows["External doors"][3] == 1 and rows["Garage doors"][3] == 1
     rows3 = {r[1]: r for r in m.bom(_q(openings=ops), {}, {"glazing_level": 3, "spec_level": 1}, facts)}
     assert "Windows, aluminium frame, triple glazed" in rows3 and not any("double" in k for k in rows3)
     rows1 = {r[1]: r for r in m.bom(_q(openings=ops), {}, {"glazing_level": 1, "spec_level": 1}, facts)}
     assert "Windows, aluminium frame, single clear glazed" in rows1 and not any("double" in k or "triple" in k for k in rows1)
-    assert abs(rows1["Windows, aluminium frame, single clear glazed"][4] - 3350.0) < 1e-6
-    r3 = rows3["Windows, aluminium frame, triple glazed"]; assert r3[4] > w2[4] > 3350.0
+    assert abs(rows1["Windows, aluminium frame, single clear glazed"][4] - m.TIERS["window"][0][0]) < 1e-6
+    r3 = rows3["Windows, aluminium frame, triple glazed"]; assert r3[4] > w2[4] > m.TIERS["window"][0][0]
 
 def test_cabinets_replace_generic():
     facts = dict(area=90, wet_area=10, units=1, kitchens=1, bedrooms=2, baths=1, dbs=1)
@@ -93,9 +93,9 @@ def test_footing_fallback_and_spec():
     assert abs(f[3] - 100.0 * 0.6 * 0.3 * 1.05) < 0.5 and "allowance" in f[1]
     base = {r[1]: r for r in m.bom(_q(), {}, {"spec_level": 1}, facts)}
     mid = {r[1]: r for r in m.bom(_q(), {}, {}, facts)}
-    assert abs(mid["Floor tiles, laid"][4] - base["Floor tiles, laid"][4] * 1.25) < 1e-6      # the default is mid-range, not the cheapest
+    assert abs(mid["Floor tiles, laid"][4] - m.TIERS["tile"][1][0]) < 1e-6 and mid["Floor tiles, laid"][4] > base["Floor tiles, laid"][4]      # the default is mid-range, not the cheapest
     lux = {r[1]: r for r in m.bom(_q(), {}, {"spec_level": 3}, facts)}
-    assert lux["Floor tiles, laid"][4] > base["Floor tiles, laid"][4] * 1.69
+    assert abs(lux["Floor tiles, laid"][4] - m.TIERS["tile"][2][0]) < 1e-6
     assert abs(lux["Bricks laid"][4] - base["Bricks laid"][4]) < 1e-9 if "Bricks laid" in lux else True
     own = {r[1]: r for r in m.bom(_q(), {"tile": (100.0, 50.0)}, {"spec_level": 3}, facts)}
     assert own["Floor tiles, laid"][4] == 100.0
@@ -105,3 +105,11 @@ def test_unread_is_json():
     import json
     json.dumps({"unread": [["IfcDiscreteAccessory", "Water", 20, 0.41]], "openings": [["Window", "W1", 1.0, 1.0, "double", "window"]]})
 test_unread_is_json(); print("ok7")
+
+
+def test_tiers_rise_with_level():
+    for k, t in m.TIERS.items():
+        tot = [a + b for a, b in t]
+        assert len(t) == 4 and tot == sorted(tot) and tot[0] < tot[3], k
+        assert m.RATES[k][2] == float(t[1][0]) and m.RATES[k][3] == float(t[1][1]), k
+test_tiers_rise_with_level(); print("ok8")

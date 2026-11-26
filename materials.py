@@ -92,10 +92,10 @@ RATES = {
     "window_double": ("Aluminium window, double glazed (sealed unit), fitted (per m2)", "m2", 5400.0, 300.0, EST_NOTE),
     "window_triple": ("Aluminium window, triple glazed, low-e, fitted (per m2)", "m2", 7800.0, 350.0, EST_NOTE),
     "door": ("Door with frame and ironmongery, hung", "each", 1500.0, 380.0, EST_NOTE),
-    "light_point": ("Light point: wiring, conduit and box", "each", 90.0, 290.0, EST_NOTE),
+    "light_point": ("Light point: wiring, conduit and box", "each", 160.0, 440.0, EST_NOTE),
     "light_fitting": ("Light fitting, fixed", "each", 280.0, 60.0, EST_NOTE),
-    "socket": ("Socket outlet, wired", "each", 70.0, 260.0, EST_NOTE),
-    "switch": ("Switch, wired", "each", 55.0, 220.0, EST_NOTE),
+    "socket": ("Socket outlet, wired", "each", 140.0, 400.0, EST_NOTE),
+    "switch": ("Switch, wired", "each", 100.0, 350.0, EST_NOTE),
     "db": ("Distribution board with breakers", "each", 3200.0, 1100.0, EST_NOTE),
     "coc": ("Electrical test and certificate of compliance", "each", 0.0, 1600.0, EST_NOTE),
     "plumb_point": ("Plumbing per fixture: supply and waste pipes", "each", 1100.0, 1300.0, EST_NOTE),
@@ -149,7 +149,50 @@ MAT_CLASSES = [(c, re.compile(rx, re.I)) for c, rx in MAT_CLASSES]
 STEEL_KG_M3 = 7850.0
 
 
-SPEC_MULT = {1: 1.0, 2: 1.25, 3: 1.7, 4: 2.3}      # 1 is the budget rates as listed; 2, mid-range, is the starting level
+SPEC_MULT = {1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0}       # the finish level now picks a price per item from TIERS; this only covers a key that has no tier row
+
+# Prices per finish level, South Africa, Rand, ex VAT: {rate key: ((budget mat, lab), (mid-range), (high-end), (luxury))}.
+# Anchors (public price guides, 2025/26, general market, not a QS price book): tiles from kandua.com/cost-guides (ceramic R80-250, porcelain R200-500, natural stone
+# R600-1500 per m2 supply; tiler R150-300 per m2); aluminium windows from procompare.co.za (a 1500 x 1500 window R3 100-4 400; double glazed jobs about R5 000-10 000 a window);
+# folding door 1800 mm R18 000-20 000 (procompare); doors from kandua (hollow core R500-1 500, solid R2 000-4 000, hanging R500-1 500); kitchen units and worktops from
+# ooba.co.za (Essential Kitchens, Cape Town: cupboards R75 000, worktops R24 000-28 000); whole-house level ratios from sapropertytools.co.za (basic about 0.75, high-spec about 1.5 of
+# mid-range, Western Cape mid-range R14 800-17 000 per m2); IBR roof sheet R160-220 per m (apriq.co.za). Where no source gives the split, the figure is an estimate.
+# Change any of them in the Rates tab, or import your QS rates, which are never changed by the finish level.
+TIERS = {
+    "tile": ((150, 170), (350, 200), (650, 250), (1300, 320)),
+    "skirting": ((30, 30), (48, 38), (85, 45), (140, 60)),
+    "plaster": ((0, 80), (0, 90), (0, 105), (0, 125)),
+    "waterproof": ((80, 55), (95, 60), (130, 75), (170, 90)),
+    "roof_cover": ((270, 110), (320, 130), (520, 180), (950, 260)),
+    "gutter": ((100, 40), (130, 50), (220, 70), (380, 100)),
+    "downpipe": ((75, 30), (95, 38), (160, 55), (280, 80)),
+    "ceiling": ((70, 55), (95, 70), (140, 90), (220, 120)),
+    "paint": ((80, 0), (110, 0), (160, 0), (240, 0)),
+    "painting": ((0, 38), (0, 48), (0, 60), (0, 80)),
+    "window": ((2200, 250), (3000, 250), (4200, 280), (5800, 330)),
+    "window_double": ((3600, 300), (4800, 330), (6300, 380), (8500, 450)),
+    "window_triple": ((5500, 350), (7000, 380), (9000, 430), (12000, 500)),
+    "door": ((1300, 450), (2200, 500), (3800, 650), (6500, 850)),
+    "door_ext": ((4800, 700), (7800, 950), (12500, 1200), (20000, 1600)),
+    "door_slider": ((4800, 600), (6200, 700), (8200, 800), (11000, 950)),
+    "door_slider_double": ((6800, 700), (8600, 750), (11200, 850), (14500, 1000)),
+    "door_slider_triple": ((9500, 800), (11800, 850), (15000, 950), (19500, 1100)),
+    "door_garage": ((12500, 1600), (21000, 2200), (28000, 2600), (38000, 3200)),
+    "light_fitting": ((200, 60), (450, 80), (900, 100), (2200, 150)),
+    "appliance": ((6500, 500), (11000, 600), (22000, 800), (45000, 1200)),
+    "cup_base": ((1600, 700), (2800, 900), (5500, 1200), (9500, 1600)),
+    "cup_wall": ((1100, 500), (1900, 600), (3800, 800), (6500, 1100)),
+    "cup_tall": ((3400, 1000), (5500, 1300), (9000, 1700), (15000, 2200)),
+    "bic": ((1800, 650), (2800, 800), (4800, 1100), (8000, 1500)),
+    "countertop": ((800, 350), (2400, 500), (3800, 600), (6500, 800)),
+    "handrail": ((650, 250), (850, 300), (1200, 380), (1800, 480)),
+    "handrail_ss": ((1500, 400), (1900, 450), (2600, 550), (3600, 700)),
+    "accessories": ((350, 100), (600, 120), (1400, 160), (3000, 220)),
+}
+for _k, _t in TIERS.items():                    # the Rates tab shows the mid-range figure, which is what the costing starts on
+    _d = RATES[_k]
+    RATES[_k] = (_d[0].split(" (mid-range")[0] + " (mid-range; finish level 1 to 4 sets budget to luxury)", _d[1], float(_t[1][0]), float(_t[1][1]), "level prices anchored to public SA price guides 2025/26 (see TIERS in materials.py); check a quote")
+
 BASE_KEYS = re.compile(r"^(concrete|steel|steel_section|brick|brickforce|ties|cement|sand_build|sand_plaster|excavate|hardcore|dpm|site_clear|timber_member|roof_trusses|"
                        r"insulation|plumb_point|services|geyser|db|coc|light_point|socket|switch|inst:)")
 
@@ -895,9 +938,9 @@ def bom(q, rates, allow, facts, fixtures=None):
     def R(k):
         if k in rates:                                           # a rate you set or imported from a bill is never scaled
             return tuple(rates[k])
+        if k in TIERS and not BASE_KEYS.match(k):                # each fit-out item has its own budget, mid-range, high-end and luxury price
+            return tuple(float(x) for x in TIERS[k][min(max(int(round(A("spec_level"))), 1), 4) - 1])
         m_, l_ = RATES[k][2], RATES[k][3]
-        if spec != 1.0 and not BASE_KEYS.match(k):               # fit-out rates follow the finish level; structure and services do not
-            return m_ * spec, l_ * spec
         return m_, l_
     rows = []
 
