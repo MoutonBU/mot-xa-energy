@@ -292,3 +292,15 @@ assert mp.thread_host.minimumSizeHint().width() <= vw, (mp.thread_host.minimumSi
 assert mp.thread_host.width() <= vw + 2, (mp.thread_host.width(), vw)
 mo.gmail_call = _old
 print("ok11")
+
+# rounded cards, pills and capped column are rebuilt for Qt's text view
+from PySide6.QtWidgets import QTextBrowser as _TB
+_b = _TB()
+_html_in = ('<table width="100%"><tr><td align="center"><table width="680" style="width:100%;max-width:680px;"><tr>'
+            '<td bgcolor="#dddddd" style="background-color:#dddddd;border:1px solid #c9c9c9;border-radius:18px;padding:20px;">Title</td></tr>'
+            '<tr><td><span style="background-color:#c8102e;color:#fff;border-radius:10px;padding:2px 8px;font-size:12px;">-</span></td></tr></table></td></tr></table>')
+_out = U.mail_fix_images(_html_in, _b.document(), {}, False, 1500)
+assert "border-radius" not in _out and "mrc:///" in _out and "margin-left" in _out, _out
+_b.resize(900, 400); _b.setHtml(_out); _b.document().setTextWidth(900)
+assert _b.document().size().height() > 40
+print("ok12")

@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: 1.86.297
+Current version: 1.86.298
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Mail tab: received emails now look as they do in Gmail: rounded cards, bars, chips and the drawing-register table are redrawn with rounded corners, small coloured pills show properly, and an email with a capped column (680 px) sits centred instead of stretching across the whole window.
 - Mail tab: an email with many attachments (such as a drawing register) no longer makes the whole email wider than the window; the attachment buttons wrap onto rows, all attachments are listed, and the email fits the view.
 - Mail tab starts with a lower Gmail per-minute budget and remembers the lowest limit Google has ever refused, so the quota message cannot come back after a restart.
 - Mail tab: a per-minute budget keeps the program under Gmail's limit (and learns lower if Google ever refuses), lists you have seen come back instantly while the mailbox has not changed, clicking Inbox again leaves an open email, and wide emails such as the drawing register are cut down to fit the view and re-fit when the window is resized.

@@ -1952,7 +1952,220 @@ def mail_fix_images(body, doc, inline, remote_ok, maxw=700):
         t2 = _SRC_RE.sub('src="%s" width="%d" height="%d"' % (key, target, h), t2, 1)
         return t2
     dims = {}
-    return mail_fit_widths(_IMG_RE.sub(one, body), maxw)
+    return mail_round(mail_fit_widths(mail_maxwidth(_IMG_RE.sub(one, body), maxw), maxw), doc)
+
+
+_RD_OPEN = re.compile(r"""(?is)<(td|table|div|span)\b[^>]*?border-radius[^>]*>""")
+_RD_RES = {}
+
+
+def _css(style, name):
+    m = re.search(r"(?is)(?<![-\w])" + name + r"\s*:\s*([^;\"']+)", style or "")
+    return m.group(1).strip() if m else ""
+
+
+def _rd_color(v):
+    m = re.search(r"(?i)#[0-9a-f]{3,8}\b|rgba?\([^)]*\)", v or "")
+    if m:
+        c = QColor(m.group(0)) if m.group(0).startswith("#") else None
+        if c is None:
+            n = [float(x) for x in re.findall(r"[\d.]+", m.group(0))]
+            c = QColor(int(n[0]), int(n[1]), int(n[2]), int(n[3] * 255) if len(n) > 3 and n[3] <= 1 else 255)
+        return c
+    c = QColor(v.strip().split()[-1]) if v and v.strip() else QColor()
+    return c if c.isValid() else None
+
+
+def _rd_corner(doc, r, fill, line, bw, pos):
+    """One rounded corner as a picture: fill colour inside, line colour as the border, transparent outside."""
+    key = "mrc:///%s_%d_%s_%s_%d_%s" % (fill.name(QColor.NameFormat.HexArgb) if fill else "n", r, line.name() if line else "n", pos, bw, id(doc))
+    if key in _RD_RES:
+        return key
+    k = 4
+    im = QPixmap(2 * r * k, 2 * r * k)
+    im.fill(Qt.GlobalColor.transparent)
+    p = QPainter(im)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(Qt.PenStyle.NoPen)
+    if line is not None and bw:
+        p.setBrush(line)
+        p.drawEllipse(0, 0, 2 * r * k, 2 * r * k)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+        p.drawEllipse(bw * k, bw * k, (2 * r - 2 * bw) * k, (2 * r - 2 * bw) * k)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+    if fill is not None and fill.alpha() > 0:
+        p.setBrush(fill)
+        p.drawEllipse(bw * k, bw * k, (2 * r - 2 * bw) * k, (2 * r - 2 * bw) * k)
+    p.end()
+    ox = 0 if pos[1] == "l" else r * k
+    oy = 0 if pos[0] == "t" else r * k
+    q = im.copy(ox, oy, r * k, r * k)
+    doc.addResource(QTextDocument.ResourceType.ImageResource, QUrl(key), q)
+    _RD_RES[key] = 1
+    return key
+
+
+def _rd_pad(style):
+    v = _css(style, "padding")
+    nums = [int(float(x)) for x in re.findall(r"(-?[\d.]+)\s*(?:px)?", v)] if v else []
+    if len(nums) == 1:
+        nums *= 4
+    elif len(nums) == 2:
+        nums = [nums[0], nums[1], nums[0], nums[1]]
+    elif len(nums) == 3:
+        nums = [nums[0], nums[1], nums[2], nums[1]]
+    elif len(nums) != 4:
+        nums = [0, 0, 0, 0]
+    for side, i in (("top", 0), ("right", 1), ("bottom", 2), ("left", 3)):
+        m = re.search(r"(?is)padding-" + side + r"\s*:\s*(-?[\d.]+)", style or "")
+        if m:
+            nums[i] = int(float(m.group(1)))
+    return nums
+
+
+def _rd_strip(style):
+    keep = []
+    for d in (style or "").split(";"):
+        n = d.split(":", 1)[0].strip().lower()
+        if n and not (n.startswith(("border", "background", "padding", "overflow", "box-shadow"))):
+            keep.append(d.strip())
+    return ";".join(keep)
+
+
+def _rd_close(body, name, pos):
+    depth = 1
+    for m in re.finditer(r"(?is)<(/?)" + name + r"\b[^>]*>", body[pos:]):
+        depth += -1 if m.group(1) else 1
+        if depth == 0:
+            return pos + m.start(), pos + m.end()
+    return None
+
+
+def _rd_attr(tag, name):
+    m = re.search(r"""(?is)\s%s\s*=\s*(?:"([^"]*)"|'([^']*)')""" % name, tag)
+    return (m.group(1) if m.group(1) is not None else m.group(2)) if m else ""
+
+
+def mail_round(body, doc):
+    """Qt's text view cannot draw rounded corners. Every box with border-radius is rebuilt from small rounded-corner pictures
+    (and small coloured pills become one picture), so cards, bars and chips look as they do in Gmail."""
+    for _ in range(400):
+        ms = list(_RD_OPEN.finditer(body))
+        if not ms:
+            break
+        m = ms[-1]
+        tag, name = m.group(0), m.group(1).lower()
+        style = _rd_attr(tag, "style")
+        rad = _css(style, "border-radius")
+        nums = [float(x) for x in re.findall(r"[\d.]+", rad)] if rad else []
+        r = int(round(max(nums))) if nums else 0
+        end = _rd_close(body, name, m.end())
+        plain = re.sub(r"(?is)border-radius\s*:[^;\"']*;?", "", tag)
+        if end is None or r < 2:
+            body = body[:m.start()] + plain + body[m.end():]
+            continue
+        inner = body[m.end():end[0]]
+        bgv = _css(style, "background-color") or _css(style, "background")
+        fill = _rd_color(bgv) or _rd_color(_rd_attr(tag, "bgcolor"))
+        bd = _css(style, "border")
+        bw = 0
+        line = None
+        mb = re.search(r"([\d.]+)\s*px", bd) if bd else None
+        if bd and mb and "none" not in bd.lower():
+            bw = max(1, int(float(mb.group(1))))
+            line = _rd_color(bd)
+        pt, pr, pb, pl = _rd_pad(style)
+        if name == "span":
+            if re.search(r"<", inner) or fill is None or len(inner) > 40 or not inner.strip():
+                body = body[:m.start()] + plain + body[m.end():]
+                continue
+            fs = _css(style, "font-size")
+            px = int(float(re.search(r"[\d.]+", fs).group(0))) if re.search(r"[\d.]+", fs) else 13
+            fw = _css(style, "font-weight").lower()
+            f = _QFont(_css(style, "font-family").split(",")[0].strip(" \"'") or "Segoe UI")
+            f.setPixelSize(px)
+            f.setBold(fw in ("bold", "600", "700", "800", "900"))
+            txt = _html.unescape(re.sub(r"(?is)&nbsp;", " ", inner))
+            fm = _QFM(f)
+            tw = fm.horizontalAdvance(txt)
+            h = max(fm.height(), px) + pt + pb
+            w = max(tw + pl + pr, h if r >= h // 2 else 0)
+            k = 3
+            im = QPixmap(w * k, h * k)
+            im.fill(Qt.GlobalColor.transparent)
+            pp = QPainter(im)
+            pp.setRenderHint(QPainter.RenderHint.Antialiasing)
+            pp.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+            pp.setPen(Qt.PenStyle.NoPen)
+            pp.setBrush(fill)
+            pp.drawRoundedRect(0, 0, w * k, h * k, min(r, h / 2.0) * k, min(r, h / 2.0) * k)
+            f2 = _QFont(f)
+            f2.setPixelSize(px * k)
+            pp.setFont(f2)
+            pp.setPen(_rd_color(_css(style, "color")) or QColor("#ffffff"))
+            pp.drawText(0, 0, w * k, h * k, int(Qt.AlignmentFlag.AlignCenter), txt)
+            pp.end()
+            key = "mrc:///pill%d%s" % (len(_RD_RES), id(doc))
+            _RD_RES[key] = 1
+            doc.addResource(QTextDocument.ResourceType.ImageResource, QUrl(key), im)
+            body = body[:m.start()] + '<img src="%s" width="%d" height="%d">' % (key, w, h) + body[end[1]:]
+            continue
+        r = min(r, 40)
+        c = lambda pos: '<img src="%s" width="%d" height="%d" style="vertical-align:top;">' % (_rd_corner(doc, r, fill, line, bw, pos), r, r)
+        bgattr = (' bgcolor="%s"' % fill.name()) if fill is not None and fill.alpha() > 0 else ""
+        bl = ("border-%s:%dpx solid %s;" % ("%s", bw, line.name())) if line is not None and bw else ""
+        side = lambda s: ('style="%s"' % (bl % s)) if bl else ""
+        sp = 'valign="top" style="font-size:1px;line-height:1px;"'
+        cpad = "padding:%dpx %dpx %dpx %dpx;" % (max(0, pt - r), max(0, pr - r), max(0, pb - r), max(0, pl - r))
+        if name == "td":
+            st2 = _rd_strip(style)
+            tag2 = re.sub(r"""(?is)\sstyle\s*=\s*(?:"[^"]*"|'[^']*')""", (' style="%s"' % st2) if st2 else "", plain, 1)
+            tag2 = re.sub(r"""(?is)\sbgcolor\s*=\s*(?:"[^"]*"|'[^']*')""", "", tag2)
+            inner_w = "100%"
+            core = inner
+            head, tail = tag2, "</td>"
+        elif name == "table":
+            tag_t = re.sub(r"""(?is)\sstyle\s*=\s*(?:"[^"]*"|'[^']*')""", (' style="%s"' % _rd_strip(style)) if _rd_strip(style) else "", plain, 1)
+            tag_t = re.sub(r"""(?is)\sbgcolor\s*=\s*(?:"[^"]*"|'[^']*')""", "", tag_t)
+            tag_t = re.sub(r"""(?is)\swidth\s*=\s*(?:"[^"]*"|'[^']*')""", ' width="100%"', tag_t)
+            core = tag_t + inner + "</table>"
+            wv = _rd_attr(tag, "width") or _css(style, "width") or "100%"
+            wv = wv if re.fullmatch(r"\d+%?", wv.strip()) else ("100%" if "%" in wv else re.sub(r"[^\d]", "", wv) or "100%")
+            head, tail, inner_w = "", "", wv
+            cpad = ""
+        else:
+            core = inner
+            head, tail, inner_w = "", "", ("%dpx" % int(float(_css(style, "width")[:-2]))) if _css(style, "width").endswith("px") else "100%"
+        al = _rd_attr(tag, "align")
+        wrap = ('<table width="%s" cellspacing="0" cellpadding="0" border="0"%s>'
+                '<tr><td width="%d" height="%d" %s>%s</td><td%s %s height="%d" %s></td><td width="%d" %s>%s</td></tr>'
+                '<tr><td width="%d"%s %s></td><td%s%s>%s</td><td width="%d"%s %s></td></tr>'
+                '<tr><td width="%d" height="%d" %s>%s</td><td%s %s height="%d" %s></td><td width="%d" %s>%s</td></tr></table>') % (
+            inner_w, (' align="%s"' % al) if al and name == "table" else "",
+            r, r, sp, c("tl"), bgattr, side("top"), r, sp, r, sp, c("tr"),
+            r, bgattr, side("left"), bgattr, (' style="%s"' % cpad) if cpad else "", core, r, bgattr, side("right"),
+            r, r, sp, c("bl"), bgattr, side("bottom"), r, sp, r, sp, c("br"))
+        out = (head + wrap + tail) if name == "td" else wrap
+        body = body[:m.start()] + out + body[end[1]:]
+    return body
+
+
+def mail_maxwidth(body, maxw=700):
+    """Qt ignores max-width. An email that caps its column (max-width:680px) is shown in a centred column of that width."""
+    cols = [int(n) for n in re.findall(r"(?is)<(?:table|td|div)\b[^>]*?(?<![-\w])max-width\s*:\s*(\d+)\s*px", body)]
+    cols = [n for n in cols if n >= 300]
+    body = re.sub(r"(?is)(?<![-\w])max-width\s*:\s*[\d.]+\s*(?:px|%)\s*;?", "", body)
+    if not cols or max(cols) >= maxw:
+        return body
+    n = max(cols)
+    side = max(0, (maxw + 90 - n - 24) // 2)
+    box = '<div style="margin-left:%dpx;margin-right:%dpx;">' % (side, side)
+    m = re.search(r"(?is)<body\b[^>]*>", body)
+    if m:
+        e = body.lower().rfind("</body>")
+        e = len(body) if e < 0 else e
+        return body[:m.end()] + box + body[m.end():e] + "</div>" + body[e:]
+    return box + body + "</div>"
 
 
 def mail_trusted_image(url):
