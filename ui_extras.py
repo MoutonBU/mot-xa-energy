@@ -1803,6 +1803,51 @@ ROLE_LABS = Qt.ItemDataRole.UserRole + 10          # the colours of the user lab
 MAIL_PALETTE = [("Red", "#fb4c2f"), ("Orange", "#ffad47"), ("Yellow", "#fad165"), ("Green", "#16a766"), ("Mint", "#43d692"), ("Blue", "#4a86e8"),
                 ("Purple", "#a479e2"), ("Pink", "#f691b3"), ("Grey", "#999999")]
 MAIL_NOCOL = "#8a93a3"
+MAIL_GRID = [["#f6c5be", "#efa093", "#e66550", "#fb4c2f", "#cc3a21", "#ac2b16"],        # Gmail's own label palette: light to dark in each colour
+             ["#ffe6c7", "#ffd6a2", "#ffbc6b", "#ffad47", "#eaa041", "#cf8933"],
+             ["#fef1d1", "#fce8b3", "#fcda83", "#fad165", "#f2c960", "#d5ae49"],
+             ["#b9e4d0", "#89d3b2", "#44b984", "#16a766", "#149e60", "#0b804b"],
+             ["#c6f3de", "#a0eac9", "#68dfa9", "#43d692", "#3dc789", "#2a9c68"],
+             ["#c9daf8", "#a4c2f4", "#6d9eeb", "#4a86e8", "#3c78d8", "#285bac"],
+             ["#e4d7f5", "#d0bcf1", "#b694e8", "#a479e2", "#8e63ce", "#653e9b"],
+             ["#fcdee8", "#fbc8d9", "#f7a7c0", "#f691b3", "#e07798", "#b65775"],
+             ["#efefef", "#cccccc", "#999999", "#666666", "#434343", "#000000"]]
+
+
+def mail_text_on(hx):
+    c = QColor(hx)
+    return "#000000" if (0.299 * c.red() + 0.587 * c.green() + 0.114 * c.blue()) > 150 else "#ffffff"
+
+
+def mail_pick_color(parent, current=""):
+    """A grid of Gmail's label colours (54 of them); returns the chosen colour, "" for none, or None when cancelled."""
+    from PySide6.QtWidgets import QDialog, QGridLayout, QPushButton, QVBoxLayout, QLabel
+    d = QDialog(parent)
+    d.setWindowTitle("Label colour")
+    v = QVBoxLayout(d)
+    v.addWidget(QLabel("Choose a colour for the label"))
+    g = QGridLayout()
+    g.setSpacing(6)
+    out = {"v": None}
+
+    def pick(hx):
+        out["v"] = hx
+        d.accept()
+    for r, row in enumerate(MAIL_GRID):
+        for c, hx in enumerate(row):
+            b = QPushButton()
+            b.setFixedSize(34, 26)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            ring = "3px solid #ffffff" if hx.lower() == (current or "").lower() else "1px solid rgba(0,0,0,70)"
+            b.setStyleSheet("QPushButton{background:%s;border:%s;border-radius:6px;} QPushButton:hover{border:2px solid #4aa3df;}" % (hx, ring))
+            b.clicked.connect(lambda _=False, hx=hx: pick(hx))
+            g.addWidget(b, r, c)
+    v.addLayout(g)
+    none = QPushButton("No colour")
+    none.clicked.connect(lambda: pick(""))
+    v.addWidget(none)
+    d.exec()
+    return out["v"]
 
 
 def mail_swatch(col, n=14):
@@ -2762,6 +2807,56 @@ class MailCompose(_QD):
         self.page.after_send()
 
 
+class MailPulse(_QW):
+    """Shown while a conversation opens: the mail icon of the home screen, still, with rings that pulse out from it."""
+
+    def __init__(self, col="#4aa3df", parent=None):
+        super().__init__(parent)
+        self._col = QColor(col)
+        self._t = 0.0
+        self.setFixedSize(180, 180)
+        self._anim = QVariantAnimation(self)
+        self._anim.setStartValue(0.0)
+        self._anim.setEndValue(1.0)
+        self._anim.setDuration(1500)
+        self._anim.setLoopCount(-1)
+        self._anim.valueChanged.connect(self._tick)
+        self._anim.start()
+
+    def _tick(self, v):
+        self._t = float(v)
+        self.update()
+
+    def hideEvent(self, e):
+        self._anim.stop()
+        super().hideEvent(e)
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        c = self.rect().center()
+        for k in range(3):                                       # three rings, one third of a cycle apart
+            t = (self._t + k / 3.0) % 1.0
+            r = 28 + 62 * t
+            col = QColor(self._col)
+            col.setAlphaF(0.55 * (1.0 - t) ** 1.6)
+            p.setPen(QPen(col, 2.5))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawEllipse(QPointF(c.x(), c.y()), r, r)
+        w, h = 46.0, 32.0                                         # the envelope
+        x, y = c.x() - w / 2, c.y() - h / 2
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(self._col)
+        p.drawRoundedRect(QRectF(x, y, w, h), 6, 6)
+        pen = QPen(QColor("#ffffff"), 2.6)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        p.drawLine(QPointF(x + 6, y + 8), QPointF(c.x(), y + h * 0.58))
+        p.drawLine(QPointF(c.x(), y + h * 0.58), QPointF(x + w - 6, y + 8))
+        p.end()
+
+
 class MailToast(_QW):
     """The corner pop-up for new mail (like the orders one): who it is from, the subject and the first lines, with Open and Dismiss."""
     G = 14
@@ -2991,6 +3086,7 @@ class MailPage(_QW):
         self.list.customContextMenuRequested.connect(self._row_menu)
         self._topen = {}
         self._tlock = {}
+        self._tpend = {}
         self._lcache = {}
         self._tbusy = set()
         lpv.addWidget(self.list, 1)
@@ -3434,10 +3530,16 @@ class MailPage(_QW):
         cc = None
         if not name:
             v.addWidget(_QL("Colour"))
-            cc = _QCombo()
-            cc.addItem("(none)", "")
-            for nm_, hx in MAIL_PALETTE:
-                cc.addItem(mail_swatch(hx), nm_, hx)
+            cc = _QPB("No colour  (press to choose)")
+            cc._hx = ""
+
+            def choose(_=False, cc=cc):
+                hx = mail_pick_color(d, cc._hx)
+                if hx is not None:
+                    cc._hx = hx
+                    cc.setIcon(mail_swatch(hx) if hx else _QIcon())
+                    cc.setText("Colour chosen" if hx else "No colour  (press to choose)")
+            cc.clicked.connect(choose)
             v.addWidget(cc)
         row = _HB()
         row.addStretch(1)
@@ -3451,7 +3553,7 @@ class MailPage(_QW):
         v.addLayout(row)
         if d.exec() != _QD.DialogCode.Accepted or not le.text().strip():
             return None
-        self._dlg_col = cc.currentData() if cc else ""
+        self._dlg_col = cc._hx if cc else ""
         return le.text().strip().replace("/", "-"), (cb.currentData() if cb else "")
 
     def new_label(self, parent=""):
@@ -3464,7 +3566,7 @@ class MailPage(_QW):
         def work():
             body = {"name": full, "labelListVisibility": "labelShow", "messageListVisibility": "show"}
             if col:
-                body["color"] = {"backgroundColor": col, "textColor": "#ffffff"}
+                body["color"] = {"backgroundColor": col, "textColor": mail_text_on(col)}
             return self.mo.gmail_call(self.S, "POST", "labels", body=body)
 
         def done(res, err):
@@ -3485,13 +3587,12 @@ class MailPage(_QW):
         a1 = m.addAction("New label inside it")
         a2 = m.addAction("Rename")
         a3 = m.addAction("Delete label")
-        cm = m.addMenu("Colour")
-        cacts = {cm.addAction(mail_swatch(hx), nm_): hx for nm_, hx in MAIL_PALETTE}
+        a4 = m.addAction(mail_swatch(self.lcol.get(lid, MAIL_NOCOL)), "Colour...")
         act = m.exec(self.side.viewport().mapToGlobal(pos))
-        if act in cacts:
-            hx = cacts[act]
-            if not self._need_modify():
-                self.run(lambda: self.mo.gmail_call(self.S, "PUT", "labels/" + lid, body={"id": lid, "name": full, "color": {"backgroundColor": hx, "textColor": "#ffffff"}}),
+        if act is a4:
+            hx = mail_pick_color(self, self.lcol.get(lid, ""))
+            if hx and not self._need_modify():
+                self.run(lambda: self.mo.gmail_call(self.S, "PUT", "labels/" + lid, body={"id": lid, "name": full, "color": {"backgroundColor": hx, "textColor": mail_text_on(hx)}}),
                          lambda res, err: (self.say(err, True) if err else (self.say("Colour changed in Gmail"), self.load_labels(quiet=True))))
             return
         if act is a1:
@@ -3953,36 +4054,49 @@ class MailPage(_QW):
                     todo.append((inline, "url:" + u, lambda u=u: _web_picture(u)))
             res.append((m, html, plain, atts, inline))
 
-        def get(t):
-            for k in (0, 1):
-                try:
-                    v = t[2]()
-                    if v:
-                        t[0][t[1]] = v
-                    break
-                except Exception as e:
-                    if k:
-                        t[0]["err:" + t[1]] = str(e)[:80]
-        q = list(todo[:60])
-        lk = _th.Lock()
-
-        def worker():
-            while True:
-                with lk:
-                    if not q:
-                        return
-                    t = q.pop()
-                get(t)
-        ws = [_th.Thread(target=worker) for _ in range(min(10, len(q)))]
-        for w in ws:
-            w.start()
-        for w in ws:
-            w.join()
         out = (th, res)
         self._topen[tid] = (_time.time(), out)
         if len(self._topen) > 30:
             self._topen.pop(next(iter(self._topen)))
+        if todo:
+            self._tpend[tid] = todo                                  # the pictures come after the text: the email opens at once
         return out
+
+    def _thread_images(self, tid):
+        """Phase two of opening: the inline pictures and web pictures, fetched in parallel. True when something was added."""
+        lk0 = self._tlock.setdefault("img:" + tid, _th.Lock())
+        busy = lk0.locked()                                          # another worker (the read-ahead) is already on it: wait for it, then show
+        with lk0:
+            todo = self._tpend.pop(tid, None)
+            if not todo:
+                return busy
+
+            def get(t):
+                for k in (0, 1):
+                    try:
+                        v = t[2]()
+                        if v:
+                            t[0][t[1]] = v
+                        break
+                    except Exception as e:
+                        if k:
+                            t[0]["err:" + t[1]] = str(e)[:80]
+            q = list(todo[:60])
+            lk = _th.Lock()
+
+            def worker():
+                while True:
+                    with lk:
+                        if not q:
+                            return
+                        t = q.pop()
+                    get(t)
+            ws = [_th.Thread(target=worker) for _ in range(min(10, len(q)))]
+            for w in ws:
+                w.start()
+            for w in ws:
+                w.join()
+            return True
 
     def _show_pictures(self):
         self.S["mail_images"] = True
@@ -3996,7 +4110,7 @@ class MailPage(_QW):
 
     def _prefetch(self):
         # the first few conversations are loaded in the background so the first clicks open at once
-        ids = [r["id"] for r in self.rows[:8] if r["id"] not in self._topen and r["id"] not in self._tbusy]
+        ids = [r["id"] for r in self.rows[:12] if r["id"] not in self._topen and r["id"] not in self._tbusy]
         if not ids or not self.ready():
             return
         self._tbusy.update(ids)
@@ -4004,7 +4118,10 @@ class MailPage(_QW):
         def work():
             for t in ids:
                 try:
+                    if self.mo.gmail_load() > 0.6 or self.mo.gmail_blocked():
+                        break                                         # never spend the quota the user needs
                     self._fetch_thread(t)
+                    self._thread_images(t)
                 except Exception:
                     pass
             return True
@@ -4023,8 +4140,28 @@ class MailPage(_QW):
 
             def done(res, err):
                 self._tbusy.discard(tid)
-            self.run(lambda: self._fetch_thread(tid), done)
+            self.run(lambda: (self._fetch_thread(tid), self._thread_images(tid)), done)
         QTimer.singleShot(150, go)
+
+    def _later_images(self, tid):
+        """The text is already on screen; fetch the pictures and show them as they arrive (the view keeps its place)."""
+        lk = self._tlock.get("img:" + tid)
+        if tid not in self._tpend and not (lk and lk.locked()):
+            return                                                   # nothing left to fetch
+
+        def done(res, err):
+            if err or not res or tid != self.cur or self.stack.currentIndex() != 1:
+                return
+            hit = self._topen.get(tid)
+            if not hit:
+                return
+            sb = self.sa.verticalScrollBar()
+            pos = sb.value()
+            self.thread_view, self.msgs = hit[1]
+            self._clear_thread()
+            self._render_thread()
+            QTimer.singleShot(0, lambda: sb.setValue(pos))
+        self.run(lambda: self._thread_images(tid), done)
 
     def open_thread(self, tid, subject=""):
         self.cur = tid
@@ -4035,9 +4172,11 @@ class MailPage(_QW):
         if hit and _time.time() - hit[0] < 900:                       # already in memory: shown at once, no waiting and no flicker
             self.thread_view, self.msgs = hit[1]
             self._render_thread()
+            self._later_images(tid)
             return
-        busy = _QL("Opening...")
-        self.thread_lay.addWidget(busy)
+        self.thread_lay.addStretch(1)
+        self.thread_lay.addWidget(MailPulse(self.MAIL_BLUE), 0, Qt.AlignmentFlag.AlignHCenter)
+        self.thread_lay.addStretch(1)
 
         def work():
             return self._fetch_thread(tid)
@@ -4053,12 +4192,14 @@ class MailPage(_QW):
             self.thread_view = th
             self.msgs = msgs
             self._render_thread()
+            self._later_images(tid)
         self.run(work, done)
 
     def _clear_thread(self):
         while self.thread_lay.count():
             w = self.thread_lay.takeAt(0).widget()
             if w:
+                w.hide()
                 w.deleteLater()
 
     def _render_thread(self):

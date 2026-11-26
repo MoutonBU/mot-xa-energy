@@ -147,7 +147,7 @@ th = {"id": "tz", "messages": [{"id": "m1", "payload": {"mimeType": "multipart/r
 fetched = []
 _old = mo.gmail_call
 mo.gmail_call = lambda S, method, path, params=None, body=None, timeout=60: th if path == "threads/tz" else {"data": _b.urlsafe_b64encode(b"PNGDATA").decode()} if "attachments" in path else _old(S, method, path, params, body, timeout)
-got = mp._fetch_thread("tz")[1][0][4]
+_r = mp._fetch_thread("tz"); mp._thread_images("tz"); got = _r[1][0][4]
 assert sorted(got) == ["image001.png@01dc", "image002.png@01dc"] and got["image001.png@01dc"] == b"PNGDATA", got
 mo.gmail_call = _old
 print("ok3")
@@ -198,7 +198,7 @@ U._web_picture = lambda u: (fetched.append(u), png)[1]
 S["mail_images"] = False
 mo.gmail_call = lambda S_, method, path, params=None, body=None, timeout=60: th2 if path == "threads/tw" else _old(S_, method, path, params, body, timeout)
 mp._topen.clear()
-got = mp._fetch_thread("tw")[1][0][4]
+_r = mp._fetch_thread("tw"); mp._thread_images("tw"); got = _r[1][0][4]
 assert fetched == [url] and "url:" + url in got, (fetched, list(got))
 mo.gmail_call = _old
 print("ok7")
@@ -391,3 +391,24 @@ assert wait(lambda: mp.list.item(0).data(U.ROLE_LABS) == ["#16a766"]), mp.list.i
 assert mp.sel_all.text() == "Select all"
 mp.list.item(0).setData(U.ROLE_LABS, ["#16a766","#4a86e8"]); mp.resize(1200,700); mp.list.grab().save("/tmp/lst.png")
 print("ok20")
+
+# the text opens before the pictures arrive; a pulsing mail icon shows while it loads; 54 label colours
+import time as _tm
+_old2 = mo.gmail_call
+def _slow(S, method, path, params=None, body=None, timeout=60):
+    if path == "threads/tz":
+        return th
+    if "attachments" in path:
+        _tm.sleep(1.2)
+        return {"data": _b.urlsafe_b64encode(b"PNGDATA").decode()}
+    return _old2(S, method, path, params, body, timeout)
+mo.gmail_call = _slow
+mp._topen.clear(); mp._tpend.clear()
+t0 = _tm.time(); mp.open_thread("tz", "x")
+assert wait(lambda: mp.msgs and mp.thread_lay.count() > 0 and any(isinstance(mp.thread_lay.itemAt(i).widget(), U._QF) for i in range(mp.thread_lay.count()))), "text"
+assert _tm.time() - t0 < 1.0, _tm.time() - t0
+assert wait(lambda: len(mp.msgs[0][4]) == 2, 8), mp.msgs[0][4].keys()
+mo.gmail_call = _old2
+assert sum(len(r) for r in U.MAIL_GRID) == 54 and U.mail_text_on("#fad165") == "#000000" and U.mail_text_on("#285bac") == "#ffffff"
+_pl = U.MailPulse(); _pl.show(); app.processEvents(); _pl.grab().save("/tmp/pulse.png"); _pl.close()
+print("ok21")
