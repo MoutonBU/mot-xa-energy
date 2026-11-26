@@ -4053,8 +4053,9 @@ class MailPage(_QW):
 
         def work():
             import time as _tp
+            self.mo.background(True)                                 # it never queues in front of what you click on
             _tp.sleep(delay / 1000.0)
-            jobs = [("INBOX", "", i) for i in range(len(MAIL_CATEGORIES))] + [(l, "", 0) for l, _n in MAIL_SYSTEM if l not in ("INBOX",)]
+            jobs = [("SENT", "", 0), ("DRAFT", "", 0), ("STARRED", "", 0)] + [("INBOX", "", i) for i in range(1, len(MAIL_CATEGORIES))] + [("INBOX", "", 0), ("ALL", "", 0)]
             for lab, q, c in jobs:
                 key = (lab, q, c, "")
                 if key in self._lcache:
@@ -4066,7 +4067,8 @@ class MailPage(_QW):
                     rows = [r for r in (mail_thread_row(t, self.me) for t in ths if t) if r]
                     self._lcache[key] = (rows, nxt, self._hid)
                 except Exception:
-                    continue
+                    break                                           # busy: carry on another time
+            self.mo.background(False)
             return True
         self.run(work, lambda res, err: (setattr(self, "_pw_busy", False), self._disk_soon()))
 
@@ -4336,7 +4338,9 @@ class MailPage(_QW):
         hit = self._topen.get(tid)
         if hit and _time.time() - hit[0] < 900:
             return hit[1]
-        with self._tlock.setdefault(tid, _th.Lock()):                      # a click on a conversation that is being fetched waits for it instead of fetching again
+        lk = self._tlock.setdefault(tid, _th.Lock())
+        got = lk.acquire(timeout=3)                                        # a click on a conversation that is being fetched waits for it, but never for long
+        try:
             hit = self._topen.get(tid)
             if hit and _time.time() - hit[0] < 900:
                 return hit[1]
@@ -4347,6 +4351,9 @@ class MailPage(_QW):
             except Exception:
                 pass
             return out
+        finally:
+            if got:
+                lk.release()
 
     def _fetch_thread2(self, tid):
         th = self.mo.gmail_call(self.S, "GET", "threads/" + tid, {"format": "full"})
@@ -4440,6 +4447,7 @@ class MailPage(_QW):
         self._tbusy.update(ids)
 
         def work():
+            self.mo.background(True)
             for t in ids:
                 try:
                     if self.mo.gmail_load() > 0.6 or self.mo.gmail_blocked():
@@ -4447,7 +4455,8 @@ class MailPage(_QW):
                     self._fetch_thread(t)
                     self._thread_images(t)
                 except Exception:
-                    pass
+                    break
+            self.mo.background(False)
             return True
         self.run(work, lambda res, err: self._tbusy.difference_update(ids))
 
@@ -4464,8 +4473,20 @@ class MailPage(_QW):
 
             def done(res, err):
                 self._tbusy.discard(tid)
-            self.run(lambda: (self._fetch_thread(tid), self._thread_images(tid)), done)
+            self.run(lambda: (self.mo.background(True), self._fetch_thread(tid), self._thread_images(tid), self.mo.background(False)), done)
         QTimer.singleShot(150, go)
+
+    def _slow_open(self, tid, subject):
+        """Opening takes more than ten seconds: say so and offer a retry, instead of spinning for ever."""
+        if self.cur != tid or self.stack.currentIndex() != 1 or getattr(self, "msgs", None) and self.thread_lay.count() > 3:
+            return
+        if not any(isinstance(self.thread_lay.itemAt(i).widget(), MailPulse) for i in range(self.thread_lay.count())):
+            return
+        lb = _QL("Gmail is slow or busy right now.")
+        rb = _QPB("Try again")
+        rb.clicked.connect(lambda: (self._topen.pop(tid, None), self.open_thread(tid, subject)))
+        self.thread_lay.insertWidget(self.thread_lay.count() - 1, lb, 0, Qt.AlignmentFlag.AlignHCenter)
+        self.thread_lay.insertWidget(self.thread_lay.count() - 1, rb, 0, Qt.AlignmentFlag.AlignHCenter)
 
     def _later_images(self, tid):
         """The text is already on screen; fetch the pictures and show them as they arrive (the view keeps its place)."""
@@ -4501,6 +4522,7 @@ class MailPage(_QW):
         self.thread_lay.addStretch(1)
         self.thread_lay.addWidget(MailPulse(self.MAIL_BLUE), 0, Qt.AlignmentFlag.AlignHCenter)
         self.thread_lay.addStretch(1)
+        QTimer.singleShot(10000, lambda: self._slow_open(tid, subject))
 
         def work():
             return self._fetch_thread(tid)

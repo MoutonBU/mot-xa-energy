@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: 1.86.317
+Current version: 1.86.318
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- Mail tab: an email could hang on the loading icon for minutes because the background reading (other folders, look-ahead) used up Gmail's per-minute allowance and your click had to queue behind it. Background reading now only uses 40 percent of the allowance and gives way at once, an open never waits more than 3 seconds for a look-ahead that is busy with the same email, and after 10 seconds the view says Gmail is slow and offers Try again. The background reading is also lighter (it skips Spam and Trash), and the program no longer learns its allowance down below a sensible minimum.
 - Email signature banner: fixed the logo, which was cut through by the slices that make the phone, email and website clickable (MCP and ARCHITECTURE looked chopped). The photo and logo side is now one single picture and only the right side is cut into links. Used by the drawing register emails and by Mail.
 - Mail tab: mark read or unread, archive, delete, star and label now change the screen at once (also in the kept folder lists), and Gmail is told in the background, up to eight conversations at the same time instead of one after the other. If Gmail refuses, you are told and the list is reloaded.
 - Mail tab: mail you send to yourself now shows in the Inbox. The Primary tab only listed mail that Gmail had put in Primary, and mail from yourself gets no tab label; Primary now shows everything in the inbox that is not in Promotions, Social or Updates.

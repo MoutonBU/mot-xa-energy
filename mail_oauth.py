@@ -267,15 +267,26 @@ def gmail_blocked():
     return max(0.0, _BLOCK[0] - _time.time())
 
 
+_TL = threading.local()               # background work (read-ahead) marks its thread: it may only use part of the allowance and never waits
+
+
+def background(on=True):
+    _TL.bg = bool(on)
+
+
 def _spend(units, max_wait=25.0):
-    """Take units from the minute's allowance, waiting a little when it is used up, so the limit is not hit."""
+    """Take units from the minute's allowance, waiting a little when it is used up, so the limit is not hit.
+    Background work may only use 40 percent of it and gives up at once, so what you click on is never queued behind it."""
     t0 = _time.time()
+    bg = getattr(_TL, "bg", False)
     while True:
         now = _time.time()
         with _ULOCK:
             while _UNITS and now - _UNITS[0][0] > 60:
                 _UNITS.popleft()
             used = sum(u for _t, u in _UNITS)
+            if bg and (now < _BLOCK[0] or used + units > _BUDGET[0] * 0.4):
+                raise RuntimeError("busy")
             if now >= _BLOCK[0] and used + units <= _BUDGET[0]:
                 _UNITS.append((now, units))
                 return
@@ -287,7 +298,7 @@ def _spend(units, max_wait=25.0):
 def _learned(S):
     try:
         b = float(S.get("gmail_budget") or 0)
-        if b >= 150:
+        if b >= 1000:                                   # a lower number was learned from an old burst; the program no longer needs to stay that low
             _BUDGET[0] = min(_BUDGET[0], b)
     except Exception:
         pass
@@ -297,7 +308,7 @@ def _quota_hit(S=None):
     now = _time.time()
     with _ULOCK:
         used = sum(u for t, u in _UNITS if now - t <= 60)
-        _BUDGET[0] = max(150.0, min(_BUDGET[0], used * 0.6))     # learn: stay well under what just failed
+        _BUDGET[0] = max(1000.0, min(_BUDGET[0], used * 0.6))     # learn: stay well under what just failed
         _BLOCK[0] = now + 30
         _UNITS.clear()
     if S is not None:

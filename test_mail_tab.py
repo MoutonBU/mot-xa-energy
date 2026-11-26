@@ -247,9 +247,9 @@ except RuntimeError as e:
     assert "catching up" in str(e)
 mo._UNITS.clear(); mo._UNITS.append((_t.time(), 1000)); mo._BUDGET[0] = 8000.0; _Sb = {}
 mo._quota_hit(_Sb)
-assert mo.gmail_blocked() > 20 and mo._BUDGET[0] == 600.0, (mo.gmail_blocked(), mo._BUDGET[0])
-assert _Sb["gmail_budget"] == 600.0
-mo._BUDGET[0] = 8000.0; mo._learned(_Sb); assert mo._BUDGET[0] == 600.0
+assert mo.gmail_blocked() > 20 and mo._BUDGET[0] == 1000.0, (mo.gmail_blocked(), mo._BUDGET[0])
+assert _Sb["gmail_budget"] == 1000.0
+mo._BUDGET[0] = 8000.0; mo._learned(_Sb); assert mo._BUDGET[0] == 1000.0
 mo._BLOCK[0] = 0.0; mo._BUDGET[0] = 8000.0; mo._UNITS.clear()
 assert mo.gmail_cost("GET", "threads/abc?format=full") == 10 and mo.gmail_cost("GET", "profile") == 1
 
@@ -448,7 +448,7 @@ print("ok23")
 # every folder is read ahead: switching shows its mail at once, with no waiting for Gmail
 mp._lcache.clear(); mp._pw_busy = False
 mp._prewarm(0)
-assert wait(lambda: all((l, "", 0, "") in mp._lcache for l in ("STARRED", "SENT", "DRAFT", "TRASH", "ALL")), 10), list(mp._lcache)
+assert wait(lambda: all((l, "", 0, "") in mp._lcache for l in ("STARRED", "SENT", "DRAFT", "ALL")), 10), list(mp._lcache)
 mp.label = "SENT"; mp.query = ""; mp.rows = []; mp._fill_list()
 mp.load_list(reset=True)
 assert mp.list.count() == len(mp._lcache[("SENT", "", 0, "")][0]) and mp.list.count() > 0, mp.list.count()
@@ -533,3 +533,26 @@ assert 'data-t="620"' in _h2 and _h2.count("<img") == len(_jp2) and "tel:" in _h
 _px = U.mail_sig_px(_h2, 500)
 assert 'data-pw' in _px and 'width="%d"' % round(500 * _spec["left"][1] / float(_spec["left"][2])) in _px
 print("ok28")
+
+# background reading never queues in front of a click: it may use 40 percent of the allowance and gives up at once; a click waits for nothing
+import threading as _thr9
+mo._UNITS.clear(); mo._BLOCK[0] = 0.0
+mo._UNITS.append((time.time(), int(mo._BUDGET[0] * 0.45)))
+_res9 = {}
+def _bgtry():
+    mo.background(True)
+    try:
+        mo._spend(10); _res9["bg"] = "ran"
+    except RuntimeError as e:
+        _res9["bg"] = str(e)
+_t9 = _thr9.Thread(target=_bgtry); _t9.start(); _t9.join(2)
+assert _res9.get("bg") == "busy", _res9
+t0 = time.time(); mo._spend(10); assert time.time() - t0 < 0.5      # a click is served at once
+mo._UNITS.clear()
+# an open does not wait for a read-ahead that holds the conversation for long
+_lk9 = _thr9.Lock(); mp._tlock["slowt"] = _lk9; _lk9.acquire()
+_old9 = mp._fetch_thread2; mp._fetch_thread2 = lambda tid: ({"id": tid}, [])
+t0 = time.time(); _o9 = mp._fetch_thread("slowt"); _dt9 = time.time() - t0
+mp._fetch_thread2 = _old9; _lk9.release()
+assert _o9[0]["id"] == "slowt" and 2.5 < _dt9 < 5, _dt9
+print("ok29")
