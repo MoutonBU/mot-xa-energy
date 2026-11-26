@@ -140,8 +140,18 @@ def sign_out(S, provider):
     S[PROVIDERS[provider]["refresh"]] = ""
 
 
+_TOKS = {}
+
+
 def access_token(S, provider):
     P = PROVIDERS[provider]
+    import time as _t
+    key = (provider, S.get(P["refresh"], ""))
+    hit = _TOKS.get(key)
+    if hit and hit[0] > _t.time():
+        if provider == "gmail":
+            S["gmail_modify"], S["gmail_read"] = hit[2], hit[3]
+        return hit[1]
     form = {"client_id": _g(S, P["id"]), "refresh_token": S.get(P["refresh"], ""), "grant_type": "refresh_token"}
     if P["secret"] and _g(S, P["secret"]):
         form["client_secret"] = _g(S, P["secret"])
@@ -156,6 +166,7 @@ def access_token(S, provider):
         if tok.get("error") == "invalid_grant":
             raise RuntimeError("Google ended the Gmail sign-in (it does this after 7 days while the Google project is in Testing: set its publishing status to In production once, then sign in one last time)")
         raise RuntimeError("could not reach Gmail just now (%s); it tries again by itself" % (tok.get("error_description") or tok.get("error") or st))
+    _TOKS[key] = (_t.time() + max(60, int(tok.get("expires_in", 3600) or 3600) - 120), tok["access_token"], S.get("gmail_modify"), S.get("gmail_read"))
     return tok["access_token"]
 
 
@@ -220,42 +231,73 @@ def gmail_get(S, path, params=None, timeout=60):
 GMAIL_MODIFY = "https://www.googleapis.com/auth/gmail.modify"
 
 
+_POOL = []
+_PLOCK = threading.Lock()
+
+
+def _gmail_http(method, path, hdr, data, timeout):
+    """One request over a kept-open HTTPS connection (no new handshake for every call); returns (status, bytes)."""
+    _hc = urllib.request.http.client            # already loaded by urllib
+    with _PLOCK:
+        conn = _POOL.pop() if _POOL else None
+    for attempt in (0, 1):
+        if conn is None:
+            conn = _hc.HTTPSConnection("gmail.googleapis.com", timeout=timeout)
+        try:
+            conn.request(method, path, body=data, headers=hdr)
+            r = conn.getresponse()
+            raw = r.read()
+            st = r.status
+            with _PLOCK:
+                if len(_POOL) < 8:
+                    _POOL.append(conn)
+                else:
+                    conn.close()
+            return st, raw
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            conn = None
+            if attempt:
+                raise
+
+
 def gmail_call(S, method, path, params=None, body=None, timeout=60):
     """Any call to https://gmail.googleapis.com/gmail/v1/users/me/<path> (GET, POST ...); returns the decoded JSON. Used by the Mail tab."""
     tok = access_token(S, "gmail")
-    url = "https://gmail.googleapis.com/gmail/v1/users/me/" + path + (("?" + urllib.parse.urlencode(params, doseq=True)) if params else "")
+    url = "/gmail/v1/users/me/" + path + (("?" + urllib.parse.urlencode(params, doseq=True)) if params else "")
     data = json.dumps(body).encode() if body is not None else None
-    hdr = {"Authorization": "Bearer " + tok}
+    hdr = {"Authorization": "Bearer " + tok, "Accept-Encoding": "identity"}
     if data is not None:
         hdr["Content-Type"] = "application/json"
-    req = urllib.request.Request(url, data=data, headers=hdr, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read().decode("utf-8", "replace") or "{}")
-    except urllib.error.HTTPError as e:
-        body_ = ""
+        code, raw = _gmail_http(method, url, hdr, data, timeout)
+    except Exception as e:
+        raise RuntimeError("could not reach Gmail (%s)" % e)
+    if code < 400:
+        return json.loads(raw.decode("utf-8", "replace") or "{}")
+    body_ = raw.decode("utf-8", "replace").lower()
+    if code == 401:
+        for k in [k for k in _TOKS if k[0] == "gmail"]:
+            _TOKS.pop(k, None)
+    if code in (401, 403) and ("insufficient" in body_ or "scope" in body_):
+        if method != "GET":
+            S["gmail_modify"] = False
+        else:
+            S["gmail_read"] = False
+        raise RuntimeError("Google did not allow this: press Allow Gmail again in the Mail tab (%s)" % code)
+    if code == 403 and ("not been used" in body_ or "disabled" in body_ or "accessnotconfigured" in body_):
+        raise RuntimeError("The Gmail API is switched off in your Google Cloud project. Open console.cloud.google.com, APIs & Services, Library, search Gmail API and press Enable (403)")
+    if code in (401, 403, 429):
+        why = ""
         try:
-            body_ = e.read().decode("utf-8", "replace").lower()
+            why = json.loads(body_).get("error", {}).get("message", "")[:160]
         except Exception:
-            pass
-        if e.code in (401, 403) and ("insufficient" in body_ or "scope" in body_):
-            if method != "GET":
-                S["gmail_modify"] = False
-            else:
-                S["gmail_read"] = False
-            raise RuntimeError("Google did not allow this: press Allow Gmail again in the Mail tab (%s)" % e.code)
-        if e.code == 403 and ("not been used" in body_ or "disabled" in body_ or "accessnotconfigured" in body_):
-            raise RuntimeError("The Gmail API is switched off in your Google Cloud project. Open console.cloud.google.com, APIs & Services, Library, search Gmail API and press Enable (403)")
-        if e.code in (401, 403, 429):
-            why = ""
-            try:
-                why = json.loads(body_).get("error", {}).get("message", "")[:160]
-            except Exception:
-                why = body_[:160]
-            raise RuntimeError("Gmail refused (%s): %s" % (e.code, why or "no reason given"))
-        raise RuntimeError("Gmail answered %s" % e.code)
-    except urllib.error.URLError as e:
-        raise RuntimeError("could not reach Gmail (%s)" % getattr(e, "reason", e))
+            why = body_[:160]
+        raise RuntimeError("Gmail refused (%s): %s" % (code, why or "no reason given"))
+    raise RuntimeError("Gmail answered %s" % code)
 
 
 def gmail_bytes(S, path, timeout=120):
