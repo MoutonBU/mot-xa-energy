@@ -204,3 +204,24 @@ def test_account_signature_and_reply_trim():
 
 if __name__ == "__main__":
     test_account_signature_and_reply_trim()
+
+
+def test_nested_labels():
+    import ui_extras as u
+    for pre, dl, strict in (("", "/", False), ("INBOX.", ".", True)):
+        st2, ip2, sp2, _s2 = fm.start("secret")
+        st2.delim, st2.prefix, st2.strict = dl, pre, strict
+        if pre:
+            st2.f = {"INBOX": [], pre + "Sent": [], pre + "Trash": []}
+            st2.next = {k: 1 for k in st2.f}
+        S2 = {"imap_host": "127.0.0.1", "imap_port": ip2, "imap_security": "None", "imap_user": "m", "imap_pass": "secret", "mail_address": "m@t.l"}
+        mi.call(S2, "POST", "labels", None, {"name": "Cosmo/Areas/North", "color": {"backgroundColor": "#ff0000", "textColor": "#ffffff"}})
+        mi.call(S2, "POST", "labels", None, {"name": "Other"})
+        labs = mi.call(S2, "GET", "labels")["labels"]
+        names = [f for _n, _i, _id, f in u.mail_label_tree(labs)]
+        assert "Cosmo" in names and "Cosmo/Areas" in names and "Cosmo/Areas/North" in names and "Other" in names, names
+        assert [l for l in labs if l["name"] == "Cosmo/Areas/North"][0]["color"]["backgroundColor"] == "#ff0000"
+    print("nested labels ok")
+
+
+test_nested_labels()

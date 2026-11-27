@@ -2849,9 +2849,19 @@ def mail_thread_row(th, me=""):
 def mail_label_tree(labels):
     """User labels in the order Gmail shows them: [(display name, indent, id)]; 'Clty Dev/Zandspruit' sits under 'Clty Dev'."""
     sysids = {k for k, _ in MAIL_SYSTEM} | {"IMPORTANT", "CHAT", "UNREAD", "CATEGORY_PERSONAL", "CATEGORY_SOCIAL", "CATEGORY_PROMOTIONS", "CATEGORY_UPDATES", "CATEGORY_FORUMS"}
+    users = sorted([x for x in labels if x.get("type") == "user" or (x.get("id") not in sysids and not str(x.get("id", "")).startswith("CATEGORY_") and x.get("type") != "system")],
+                   key=lambda x: str(x.get("name", "")).lower())
+    names = {str(x.get("name", "")) for x in users}
+    allx = list(users)
+    for lb in users:                                            # a group that only exists because something sits inside it still shows (and can hold new labels)
+        parts = str(lb.get("name", "")).split("/")
+        for i in range(1, len(parts)):
+            anc = "/".join(parts[:i])
+            if anc not in names:
+                names.add(anc)
+                allx.append({"id": anc, "name": anc, "type": "user"})
     out = []
-    for lb in sorted([x for x in labels if x.get("type") == "user" or (x.get("id") not in sysids and not str(x.get("id", "")).startswith("CATEGORY_") and x.get("type") != "system")],
-                     key=lambda x: str(x.get("name", "")).lower()):
+    for lb in sorted(allx, key=lambda x: [q.lower() for q in str(x.get("name", "")).split("/")]):
         nm = str(lb.get("name", ""))
         out.append((nm.split("/")[-1], nm.count("/"), lb.get("id", ""), nm))
     return out
@@ -5336,7 +5346,11 @@ class MailPage(_QW):
             if err:
                 self.say(err, True)
                 return
-            self.say("Label created in Gmail: " + full)
+            self.say("Label created: " + full)
+            try:
+                self.get_M().save_settings()
+            except Exception:
+                pass
             self.load_labels(quiet=True)
         self.run(work, done)
 
@@ -5356,7 +5370,7 @@ class MailPage(_QW):
             hx = mail_pick_color(self, self.lcol.get(lid, ""))
             if hx and not self._need_modify():
                 self.run(lambda: self.mo.gmail_call(self.S, "PUT", "labels/" + lid, body={"id": lid, "name": full, "color": {"backgroundColor": hx, "textColor": mail_text_on(hx)}}),
-                         lambda res, err: (self.say(err, True) if err else (self.say("Colour changed in Gmail"), self.load_labels(quiet=True))))
+                         lambda res, err: (self.say(err, True) if err else (self.say("Colour changed"), self.load_labels(quiet=True))))
             return
         if act is a1:
             self.new_label(full)
@@ -5365,11 +5379,11 @@ class MailPage(_QW):
             if r and not self._need_modify():
                 newfull = "/".join(full.split("/")[:-1] + [r[0]])
                 self.run(lambda: self.mo.gmail_call(self.S, "PUT", "labels/" + lid, body={"id": lid, "name": newfull}),
-                         lambda res, err: (self.say(err, True) if err else (self.say("Renamed in Gmail"), self.load_labels(quiet=True))))
+                         lambda res, err: (self.say(err, True) if err else (self.say("Renamed"), self.load_labels(quiet=True))))
         elif act is a3:
-            if _QMB.question(self, "Delete label", "Delete the label '%s' in Gmail? The emails stay, they just lose this label." % full) == _QMB.StandardButton.Yes and not self._need_modify():
+            if _QMB.question(self, "Delete label", "Delete the label '%s'? The emails stay, they just lose this label." % full) == _QMB.StandardButton.Yes and not self._need_modify():
                 self.run(lambda: self.mo.gmail_call(self.S, "DELETE", "labels/" + lid),
-                         lambda res, err: (self.say(err, True) if err else (self.say("Label deleted in Gmail"), self.load_labels(quiet=True))))
+                         lambda res, err: (self.say(err, True) if err else (self.say("Label deleted"), self.load_labels(quiet=True))))
 
     def _label_cols(self, ids):
         user = {l for _n, _i, l, _f in mail_label_tree(self.labels)}

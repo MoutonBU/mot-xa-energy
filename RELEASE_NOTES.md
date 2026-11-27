@@ -1,10 +1,11 @@
 # MCP Practice Suite - Release notes
 
-Current version: 1.86.375
+Current version: 1.86.376
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
+- **Mail: labels, groups and sub-groups on custom (non-Gmail) email accounts.** Creating labels now works on custom accounts, including a group with sub-groups and sub-groups inside those (for example Cosmo, then Areas inside it, then North inside that). The whole chain is made in one go, which fixes mail servers that refused a folder whose group did not exist yet or that only allow folders under INBOX. A group that only exists because something sits inside it still shows in the list and can take new labels. Label colours are remembered for these accounts, and rename, delete and "New label inside it" work the same as for Gmail.
 - **Email pictures have a red rounded border.** Every picture in the designed email (marked-up PDF page, screenshot, photo) now has rounded corners and a red border in the MCP red, so the receiver sees at once that there is an attached picture. Several pictures each get their own border. The preview shows the same.
 - **Email pictures sit under the drawing list.** In the designed email the marked-up picture now goes directly below the drawing list ("The full list") and above the status of the revision, under a "SEE ATTACHED" heading. Your message for the reader comes first, then the picture below it.
 - **Markup tool: move, resize and ghost previews.** New "Move / resize" tool: click any pen stroke, marker, box, circle, arrow or text to pick it up and drag it. While you drag, a faint ghost stays where it was and a see-through copy with a dashed box shows exactly where it will land. Drag a corner handle to make it bigger or smaller (text scales evenly), double-click text to change the words, Delete key or "Delete selected" removes it. Cropping now shows a live ghost: everything outside the crop area is dimmed while you drag, and the crop area can be moved or resized by its corners afterwards. Undo now also undoes moves, resizes and deletes.

@@ -27,6 +27,7 @@ class Store:
         self.sent_smtp = []
         self.logins = []
         self.lock = threading.RLock()
+        self.delim, self.prefix, self.strict = "/", "", False        # prefix "INBOX." and strict: like Courier / Cyrus servers
 
     def add(self, folder, raw, flags=()):
         with self.lock:
@@ -73,7 +74,7 @@ class ImapH(socketserver.StreamRequestHandler):
                     out = ""
                     for n in st.f:
                         fl = {"Sent": "\\Sent", "Trash": "\\Trash", "Junk": "\\Junk", "Archive": "\\Archive"}.get(n, "")
-                        out += '* LIST (%s) "/" "%s"\r\n' % (fl, n)
+                        out += '* LIST (%s) "%s" "%s"\r\n' % (fl, st.delim, n)
                     self.send(out + "%s OK done\r\n" % tag)
                 elif cmd in ("SELECT", "EXAMINE"):
                     n = rest.strip().strip('"')
@@ -95,8 +96,16 @@ class ImapH(socketserver.StreamRequestHandler):
                 elif cmd == "EXPUNGE":
                     st.f[self.sel] = [x for x in st.f[self.sel] if "\\Deleted" not in x["flags"]]
                     self.send("%s OK done\r\n" % tag)
+                elif cmd == "NAMESPACE":
+                    self.send('* NAMESPACE (("%s" "%s")) NIL NIL\r\n%s OK done\r\n' % (st.prefix, st.delim, tag))
                 elif cmd == "CREATE":
                     n = rest.strip().strip('"')
+                    if st.prefix and not n.startswith(st.prefix):
+                        self.send("%s NO [CANNOT] Invalid mailbox name: must start with %s\r\n" % (tag, st.prefix))
+                        continue
+                    if st.strict and st.delim in n.rstrip(st.delim) and n.rsplit(st.delim, 1)[0] not in st.f and n.rsplit(st.delim, 1)[0] != st.prefix.rstrip(st.delim):
+                        self.send("%s NO [NONEXISTENT] parent missing\r\n" % tag)
+                        continue
                     st.f.setdefault(n, [])
                     st.next.setdefault(n, 1)
                     self.send("%s OK done\r\n" % tag)

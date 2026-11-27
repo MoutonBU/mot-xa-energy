@@ -615,6 +615,53 @@ def bytes_(S, path, timeout=120):
     return _run(S, go)
 
 
+_NS = {}
+
+
+def _namespace(S, c, names):
+    """(prefix, delimiter) for new folders: servers like Courier and Cyrus only allow them below 'INBOX.', Gmail-style servers at the top."""
+    k = _key(S)
+    if k in _NS:
+        return _NS[k]
+    pre, d = "", "/"
+    try:
+        typ, data = c.namespace()
+        t = " ".join(_s(x) for x in data or [] if x)
+        m = re.match(r'\s*\(\("([^"]*)"\s+(?:"([^"]*)"|NIL)', t)
+        if m:
+            pre, d = m.group(1), (m.group(2) or "/")
+    except Exception:
+        m = None
+    if not pre:
+        dl = next((dd for n, dd in names if n != "INBOX"), "/")
+        d = d if d != "/" or dl == "/" else dl
+        if names and dl and all(n == "INBOX" or n.startswith("INBOX" + dl) for n, _ in names):
+            pre, d = "INBOX" + dl, dl
+    _NS[k] = (pre, d)
+    return pre, d
+
+
+def _display(S, c, n, d, names):
+    pre, dl = _namespace(S, c, names)
+    shown = n[len(pre):] if pre and n.startswith(pre) else n
+    return shown.replace(d, "/") if d and d != "/" else shown
+
+
+def _cols(S):
+    try:
+        d = S.get("imap_label_colors")
+        if d is None:
+            d = {}
+            S["imap_label_colors"] = d
+        return d
+    except Exception:
+        return {}
+
+
+def _ckey(S, lid):
+    return "%s|%s" % (str(S.get("mail_address", "")).lower(), lid)
+
+
 def _labels_list(S, c):
     roles, names = folders(S, c, force=True)
     sysnames = {v for k, v in roles.items()}
@@ -622,9 +669,13 @@ def _labels_list(S, c):
             {"id": "SENT", "name": "SENT", "type": "system"}, {"id": "DRAFT", "name": "DRAFT", "type": "system"},
             {"id": "SPAM", "name": "SPAM", "type": "system"}, {"id": "TRASH", "name": "TRASH", "type": "system"}]
     for n, d in names:
-        if n in sysnames:
+        if n in sysnames or n.upper() == "INBOX":
             continue
-        labs.append({"id": n, "name": n.replace(d, "/") if d and d != "/" else n, "type": "user"})
+        lb = {"id": n, "name": _display(S, c, n, d, names), "type": "user"}
+        hx = _cols(S).get(_ckey(S, n))
+        if hx:
+            lb["color"] = {"backgroundColor": hx[0], "textColor": hx[1]}
+        labs.append(lb)
     return {"labels": labs}
 
 
@@ -640,13 +691,20 @@ def _label_op(S, c, method, lid, body):
         g = lambda k: int((re.search(k + r" (\d+)", t) or [0, 0])[1])
         return {"id": lid, "threadsUnread": g("UNSEEN"), "threadsTotal": g("MESSAGES"), "messagesUnread": g("UNSEEN"), "messagesTotal": g("MESSAGES")}
     if method == "PUT":
+        col = body.get("color")
+        if col:
+            _cols(S)[_ckey(S, lid)] = (col.get("backgroundColor", ""), col.get("textColor", "#000000"))
         new = (body.get("name") or "").strip()
         if new and new != lid:
             d = next((d for n, d in names if n == lid), "/")
-            new = new.replace("/", d)
+            pre, _dl = _namespace(S, c, names)
+            new = pre + new.replace("/", d)
             typ, r = c.rename('"%s"' % _utf7_enc(lid), '"%s"' % _utf7_enc(new))
             if typ != "OK":
                 raise RuntimeError("the mail server did not allow renaming the folder")
+            cc = _cols(S)
+            if _ckey(S, lid) in cc:
+                cc[_ckey(S, new)] = cc.pop(_ckey(S, lid))
             folders(S, c, force=True)
         return {"id": new or lid, "name": new or lid}
     if method == "DELETE":
@@ -659,20 +717,37 @@ def _label_op(S, c, method, lid, body):
 
 
 def _label_create(S, c, body):
+    """A new folder; 'Cosmo/Areas/North' makes the whole chain (the groups above it are created first, because many servers refuse a folder whose parent is missing)."""
     roles, names = folders(S, c)
-    d = next((d for n, d in names if n != "INBOX"), "/")
-    name = (body.get("name") or "").strip().replace("/", d)
-    if not name:
+    pre, d = _namespace(S, c, names)
+    d = next((dd for n, dd in names if dd and n != "INBOX"), d) or "/"
+    shown = (body.get("name") or "").strip().strip("/")
+    if not shown:
         raise RuntimeError("the label needs a name")
-    typ, r = c.create('"%s"' % _utf7_enc(name))
-    if typ != "OK":
-        raise RuntimeError("the mail server did not allow creating the folder")
-    try:
-        c.subscribe('"%s"' % _utf7_enc(name))
-    except Exception:
-        pass
+    parts = [x.strip() for x in shown.split("/") if x.strip()]
+    have = {n for n, _ in names}
+    cur, last = pre.rstrip(d) if pre.endswith(d) else pre.rstrip("."), ""
+    full = ""
+    for i, part in enumerate(parts):
+        full = (cur + d + part) if cur else part
+        if pre and not cur:
+            full = pre + part
+        if full not in have:
+            typ, r = c.create('"%s"' % _utf7_enc(full))
+            if typ != "OK":
+                why = _s(r[0]) if r and r[0] else ""
+                raise RuntimeError("the mail server did not allow creating the folder %s (%s)" % ("/".join(parts[:i + 1]), why or "refused"))
+            try:
+                c.subscribe('"%s"' % _utf7_enc(full))
+            except Exception:
+                pass
+            have.add(full)
+        cur = full
+    col = body.get("color")
+    if col:
+        _cols(S)[_ckey(S, full)] = (col.get("backgroundColor", ""), col.get("textColor", "#000000"))
     folders(S, c, force=True)
-    return {"id": name, "name": body.get("name"), "type": "user"}
+    return {"id": full, "name": "/".join(parts), "type": "user"}
 
 
 def _list(S, c, params):
@@ -685,6 +760,8 @@ def _list(S, c, params):
     if any(x.startswith("CATEGORY_") and x != "CATEGORY_PERSONAL" for x in labs):
         return {"threads": [], "resultSizeEstimate": 0}
     folder = _label_to_folder(S, lab, roles)
+    if folder != roles.get("INBOX") and folder not in [n for n, _ in folders(S, c)[1]]:
+        return {"threads": [], "resultSizeEstimate": 0}                      # a group that only exists because labels sit inside it
     crit = _criteria(q, lab)
     if "UNREAD" in labs:
         crit = ["UNSEEN"] + crit
