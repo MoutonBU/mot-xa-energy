@@ -69,3 +69,12 @@ assert os.path.getsize(d + "/a.csv") > 50
 pg4 = sc.SdpPage(W()); pg4.set_state(pg3.state()); assert len(pg4.schemes) == 2
 os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
 print("ok extras")
+# new plan, and fill on finishing the polygon
+pg5 = sc.SdpPage(W()); pg5.q_w.setValue(60), pg5.q_d.setValue(40); pg5.make_rect()
+pg5.add_building({"name": "H1", "x": 20, "y": 14, "w": 20, "d": 12})
+pg5.trace_done("trace_parking", "", [(2, 2), (58, 2), (58, 38), (2, 38)])
+assert len(pg5.zones) == 1 and len(pg5.bays) > 20 and not any(pg5._bad)
+pg5.new_plan(ask=False)
+assert not pg5.buildings() and not pg5.bays and not pg5.zones and not pg5.schemes
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+print("ok newplan")

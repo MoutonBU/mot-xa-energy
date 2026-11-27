@@ -338,6 +338,10 @@ class SdpPage(SitePage):
         bx, bv = self.box("Generate a layout", "Like a site solver: the tool places the blocks in rows inside the building lines and fills the rest with parking, then shows what fits. "
                           "You can then drag, turn or change anything by hand.")
         br = FlowLayout(None, 8, 6)
+        b = QPushButton("New plan")
+        b.setToolTip("Clear the stand, buildings, parking and schedule and start a fresh SDP.")
+        b.clicked.connect(lambda _=False: self.new_plan())
+        br.addWidget(b)
         b = QPushButton("Generate a layout...")
         b.clicked.connect(lambda _=False: self.generate())
         br.addWidget(b)
@@ -383,6 +387,9 @@ class SdpPage(SitePage):
             w.setToolTip(tip)
             w.valueChanged.connect(self._rules_changed)
             fl.addWidget(self._pair(lab, w))
+        self.auto_fill = QCheckBox("Fill an area with bays as soon as I finish drawing it")
+        self.auto_fill.setChecked(True)
+        fl.addWidget(self.auto_fill)
         self.live = QCheckBox("Re-park by itself when I move or add a building")
         self.live.setChecked(True)
         fl.addWidget(self.live)
@@ -706,7 +713,11 @@ class SdpPage(SitePage):
         if mode != "trace_parking":
             return super().trace_done(mode, role, pts)
         self._new_zone(sl.si.clean(pts))
-        self.set_hint("Area drawn. Press 'Fill the selected area'.")
+        if self.auto_fill.isChecked():
+            self._fill([len(self.zones) - 1])
+            self.set_hint("Area drawn and parked. Draw another area, or drag the corners/buildings and it follows.")
+        else:
+            self.set_hint("Area drawn. Press 'Fill the selected area'.")
 
     def _new_zone(self, pts, name=None):
         n = len(self.zones) + 1
@@ -852,6 +863,21 @@ class SdpPage(SitePage):
         del self.bays[self.sel_bay]
         self.sel_bay = -1
         self.refresh_parking(user=True)
+
+    def new_plan(self, ask=True):
+        """start a fresh SDP: the stand, buildings, parking areas, bays, schedule and schemes are cleared"""
+        if ask and (self.verts() or self.buildings() or self.bays):
+            if QMessageBox.question(self, self.TITLE, "Start a new plan? The stand, buildings, parking and schedule on this page are cleared (saved schemes too).") != QMessageBox.StandardButton.Yes:
+                return
+        proj = self.f["project"].text() if "project" in self.f else ""
+        self.schemes = []
+        self.set_state({})
+        self.schemes = []
+        self._show_schemes()
+        if proj:
+            self.f["project"].setText(proj)
+        self.steps.go(0)
+        self.set_hint("New plan. Set the stand first: type its sides or trace it, then place the buildings and draw the parking areas.")
 
     # ------------------------------------------------------------- accessible / EV, schemes, export
     def assign_special(self):
