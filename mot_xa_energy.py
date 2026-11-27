@@ -9899,6 +9899,14 @@ class MainWindow(QMainWindow):
         except Exception as e_:
             print("tool not started: projects", e_)
             self.board_page = None
+        self.sdp_page = None
+        try:
+            import sdp_creator
+            self.sdp_page = sdp_creator.SdpPage(self)
+            self.main_tabs.addTab(self.sdp_page, "SDP Creator")
+        except Exception as e_:
+            print("tool not started: sdp_creator", e_)
+            self.sdp_page = None
         self._build_home()
 
         self.assign_table = QTableWidget(0, 8)
@@ -11946,7 +11954,7 @@ class MainWindow(QMainWindow):
             self.costing_page.set_state({})
         if getattr(self, "register_page", None):
             self.register_page.set_state({})
-        for pg_ in (getattr(self, "area_page", None), getattr(self, "site_page", None), getattr(self, "guidelines_page", None)):
+        for pg_ in (getattr(self, "area_page", None), getattr(self, "site_page", None), getattr(self, "guidelines_page", None), getattr(self, "sdp_page", None)):
             if pg_ is not None:
                 pg_.load_state({})
         self._rd_to_widgets()
@@ -11983,6 +11991,7 @@ class MainWindow(QMainWindow):
             "areas": (self.area_page.state() if getattr(self, "area_page", None) else None),
             "site": (self.site_page.state() if getattr(self, "site_page", None) else None),
             "guidelines": (self.guidelines_page.state() if getattr(self, "guidelines_page", None) else None),
+            "sdp": (self.sdp_page.state() if getattr(self, "sdp_page", None) else None),
             "ifc": getattr(self, "ifc_data", None),
             "unit_mode": UNIT_MODE[0],
             "panes": self.sched_panes,
@@ -13121,7 +13130,7 @@ class MainWindow(QMainWindow):
             self.costing_page.set_state(data.get("costing"))
         if getattr(self, "register_page", None):
             self.register_page.set_state(data.get("register"))
-        for pg_, key_ in ((getattr(self, "area_page", None), "areas"), (getattr(self, "site_page", None), "site"), (getattr(self, "guidelines_page", None), "guidelines")):
+        for pg_, key_ in ((getattr(self, "area_page", None), "areas"), (getattr(self, "site_page", None), "site"), (getattr(self, "guidelines_page", None), "guidelines"), (getattr(self, "sdp_page", None), "sdp")):
             if pg_ is not None:
                 pg_.load_state(data.get(key_))
         self.sched_panes = {k: [tuple(p) for p in v] for k, v in (data.get("panes") or {}).items()}
@@ -14821,7 +14830,7 @@ class MainWindow(QMainWindow):
 
     def _build_launcher(self):
         TILE_COL = {"Drawing register": "#36b3a6", "Orders": "#e2a93f", "Invoicing": "#55b57a", "Detail tool": "#5b9be6", "Costing": "#a587e0", "SANS": "#ff4056",
-                    "Site and areas": "#c08e5c", "Guidelines review": "#93a0b4", "Light & Ventilation": "#e8b84a", "Energy (XA)": "#f0795a", "Coverage & FAR": "#d9628f", "Mail": "#4aa3df", "Projects": "#9bc53d"}      # muted, one hue per tool
+                    "Site and areas": "#c08e5c", "SDP Creator": "#c08e5c", "Guidelines review": "#93a0b4", "Light & Ventilation": "#e8b84a", "Energy (XA)": "#f0795a", "Coverage & FAR": "#d9628f", "Mail": "#4aa3df", "Projects": "#9bc53d"}      # muted, one hue per tool
         """The start screen: four big squares and nothing else. The left bar and the ribbon only show once you are inside one."""
         def tile(title, sub, ico, target):
             b = QPushButton()
@@ -14972,7 +14981,8 @@ class MainWindow(QMainWindow):
         g = QGridLayout()
         g.setSpacing(24)
         for i, (title, sub, ico, tgt) in enumerate((
-                ("Building lines", "Draw the stand and set the building lines<br><br>See what encroaches, coverage and floor area ratio, write a departure motivation, and keep the area schedule: every room by block, level and unit.", "land", "Building lines"),)):
+                ("Building lines", "Draw the stand and set the building lines<br><br>See what encroaches, coverage and floor area ratio, write a departure motivation, and keep the area schedule: every room by block, level and unit.", "land", "Building lines"),
+                ("SDP Creator", "Site Development Plan for council<br><br>List the blocks by phase with units, footprint, floor area and parking, check coverage, floor area ratio, density and parking, and save the sheet as a PDF.", "plan", "SDP Creator"))):
             t_ = tile(title, sub, ico, tgt)
             t_.setMinimumHeight(300)
             t_.setMaximumHeight(380)

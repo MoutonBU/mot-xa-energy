@@ -9,8 +9,8 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton, QSizePo
 # main tab index -> (rail label, icon name); order of the main tabs in the window
 SUBJECTS = [(0, "Project", "home"), (6, "Drawing register", "clipboard"), (10, "Orders", "tag"), (1, "Light && ventilation", "lightvent"), (2, "Energy (XA)", "bolt"), (13, "Rational design", "shield"),
             (3, "Coverage && FAR", "building"), (4, "Detail notes", "ruler"), (5, "Costing", "calc"),
-            (8, "Building lines", "compass"), (12, "House placing", "land"), (9, "Guidelines review", "check_circle")]
-CTX = {13: "sans", 11: "invoicing", 10: "orders", 1: "sans", 2: "sans", 3: "sans", 4: "detail", 5: "costing", 6: "register", 7: "site", 8: "site", 9: "rules", 12: "site"}      # which tool a main tab belongs to
+            (8, "Building lines", "compass"), (12, "House placing", "land"), (15, "SDP Creator", "plan"), (9, "Guidelines review", "check_circle")]
+CTX = {13: "sans", 11: "invoicing", 10: "orders", 1: "sans", 2: "sans", 3: "sans", 4: "detail", 5: "costing", 6: "register", 7: "site", 8: "site", 9: "rules", 12: "site", 15: "site"}      # which tool a main tab belongs to
 TOOL_COL = {"sans": "#d8132b", "invoicing": "#55b57a", "orders": "#e2a93f", "detail": "#5b9be6", "costing": "#a587e0", "register": "#36b3a6", "site": "#c08e5c", "rules": "#93a0b4",
             "lv": "#e8b84a", "xa": "#f0795a", "cov": "#d9628f", "mail": "#4aa3df", "board": "#9bc53d"}      # each tool has its own colour: the same as its card on the home screen
 TAB_KEY = {"Light && Ventilation": "lv", "Light & Ventilation": "lv", "Energy (XA)": "xa", "Coverage && FAR": "cov", "Coverage & FAR": "cov", "Mail": "mail", "Projects": "board"}
@@ -226,7 +226,7 @@ class Rail(QFrame):
         col = "#1c1f24" if self.light_fn() else "#eceef0"
         for label, idx, ico in (("Drawing register", 6, "clipboard"), ("Orders", 10, "tag"), ("Detail tool", 4, "ruler"), ("Costing", 5, "calc"), (None, None, None),
                                 ("Light && Ventilation", 1, "lightvent"), ("Energy (XA)", 2, "bolt"), ("Coverage && FAR", 3, "building"), (None, None, None),
-                                ("Building lines", 8, "land"), ("House placing", 12, "land"), ("Guidelines review", 9, "clipboard"), (None, None, None),
+                                ("Building lines", 8, "land"), ("House placing", 12, "land"), ("SDP Creator", 15, "plan"), ("Guidelines review", 9, "clipboard"), (None, None, None),
                                 ("Mail", "Mail", "mail"), ("Projects", "Projects", "board"), (None, None, None),
                                 ("Home (the four squares)", -1, "home")):
             if label is None:
@@ -570,6 +570,12 @@ class Ribbon(QFrame):
                        T("Select all", "check_circle", tool("guidelines_page", "select_all_rules"))]),
             ("Review", [T("Measure", "results", step("guidelines_page", 1), hot=True), T("Show on plan", "eye", tool("guidelines_page", "show_on_plan"))]),
             ("Reports", [T("Preview", "eye", tool("guidelines_page", "preview")), T("PDF", "pdf", tool("guidelines_page", "export"))])])
+        self.pages[15] = self._page([
+            ("Blocks", [T("Add", "add", tool("sdp_page", "add_block"), hot=True), T("Several", "add", tool("sdp_page", "add_run")),
+                        T("From Building lines", "land", tool("sdp_page", "read_from_site")), T("Floor areas", "layers", tool("sdp_page", "read_floor_areas")),
+                        T("Remove selected", "trash", tool("sdp_page", "remove_blocks"))]),
+            ("Check", [T("The site", "pin", step("sdp_page", 0)), T("The sheet", "results", step("sdp_page", 2))]),
+            ("Reports", [T("Preview", "eye", tool("sdp_page", "preview")), T("PDF", "pdf", tool("sdp_page", "export"))])])
         self.pages[12] = self._page([
             ("Stand", [T("Rectangle", "land", tool("services_page", "make_rect")), T("From Building lines", "land", tool("services_page", "from_site_page"), hot=True),
                        T("Suggest", "pin", tool("services_page", "suggest"))]),
@@ -611,7 +617,7 @@ class Ribbon(QFrame):
         sp_ = getattr(self.win, "site_page", None)
         if idx == 8 and sp_ is not None and getattr(getattr(sp_, "steps", None), "i", 0) == 3:
             idx = 7                                   # the area schedule step of Building lines has the area schedule's ribbon
-        self.stack.setCurrentIndex(idx if idx in self.pages else 0)
+        self.stack.setCurrentIndex(sorted(self.pages).index(idx) if idx in self.pages else 0)      # the page's position, not its tab number
         self.apply_acc(self.stack.currentWidget())
         self.setVisible(True)
 

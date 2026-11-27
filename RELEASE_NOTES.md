@@ -1,10 +1,11 @@
 # MCP Practice Suite - Release notes
 
-Current version: 1.86.381
+Current version: 1.86.382
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
+- **New tool: SDP Creator (Site and areas).** Makes the Site Development Plan for council in three simple steps: the site (name, erf, zoning, limits), the blocks (add H1 to H26 in one go, with phase, type, units, footprint, floor area and parking bays; footprints can be read from Building lines and floor areas from the Area schedule), and the sheet (coverage, floor area ratio, density and parking checked in green or red, then one PDF with the plan, title block, schedule of blocks by phase and notes). It is saved with the project.
 - **Automatic sorting: the label list follows the account you pick.** Choosing a different email account under "More choices" now shows that account's own labels (Gmail or custom) to pick from, instead of always showing the labels of the account you are looking at. Choosing "all my accounts" goes back to the current account's labels.
 - **Mail: automatic sorting made simple.** There is now an **Auto-sort** button right in the Mail bar (and in the right-click menu: "Always sort emails like this into a label..."). The window has three plain steps: 1) who the emails are from (pick a sender or a whole company from your inbox, or type one), 2) which label they go into (click one in the list, or type a new name), 3) mark as read if you like. A line under it says in plain words what will happen and how many emails in your inbox fit right now. Rules are shown as sentences ("Emails from @cosmo.co.za go into Cosmo/Areas"), and saving a rule sorts your inbox straight away. Subject, "sent to" and one-account-only are under "More choices".
 - **Mail: auto-label rules (a filter for each sender, company or area).** New emails go into a label by themselves. Mail Settings (cog) > "Auto-label rules..." lets you add rules: the email is from (an address, a whole domain like @cosmo.co.za, or a name), is sent to, or the subject has (for example an erf number); pick the label (or type a new one, with / for sub-labels like Cosmo/Areas), choose whether it is also marked read, and whether the rule is for all accounts or just one. You can also right-click any email and choose "Auto-label emails like this...". Works for Gmail and custom accounts; "Run them on the inbox now" applies the rules to what is already there. The first rule that fits is used.
