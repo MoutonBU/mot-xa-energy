@@ -316,8 +316,14 @@ def build(subject, body, logo_src="cid:mcplogo", attached="", logo_dark_src="", 
         pics_html += _heading("h", "SEE ATTACHED")
         for src_, cap_ in pics:
             pics_html += ('<tr><td style="padding:14px 0 6px 0;font-family:%s;font-size:14px;line-height:1.5;color:%s;">%s</td></tr>' % (FONT, STRONG, _e(cap_).replace("\r", "").replace("\n", "<br>"))) if cap_ else ""
-            pics_html += ('<tr><td style="padding:6px 0 10px 0;"><img src="%s" width="%d" alt="%s" style="display:block;width:100%%;height:auto;border:1px solid #C9C9C9;border-radius:10px;"></td></tr>'
-                          % (src_, 600 if _pv["on"] else 680, _e((cap_ or "Picture").split("\n")[0][:80])))
+            _alt = _e((cap_ or "Picture").split("\n")[0][:80])
+            if _pv["on"]:
+                _img = '<img src="%s" width="%d" alt="%s">' % (src_, 590, _alt)
+                pics_html += '<tr><td style="padding:6px 0 14px 0;">%s</td></tr>' % _wrap('<div style="padding:4px;">%s</div>' % _img, RED, 14)
+            else:
+                pics_html += ('<tr><td style="padding:6px 0 14px 0;"><table width="100%%" cellpadding="0" cellspacing="0" border="0" bgcolor="%s" style="background-color:%s;border-radius:14px;border-collapse:separate;">'
+                              '<tr><td style="padding:4px;"><img src="%s" width="672" alt="%s" style="display:block;width:100%%;height:auto;border:0;border-radius:10px;"></td></tr></table></td></tr>'
+                              % (RED, RED, src_, _alt))
     _kinds = [r[0] for r in rest if not isinstance(r, str)]
     _at = "S" if "S" in _kinds else "G"                  # the pictures sit right under the drawing list, before the status of the revision (or the regards)
     for r in rest:
