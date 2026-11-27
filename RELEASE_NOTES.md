@@ -1,10 +1,11 @@
 # MCP Practice Suite - Release notes
 
-Current version: 1.86.377
+Current version: 1.86.378
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
+- **Mail: labels on custom accounts now work like Gmail labels, whatever the mail server.** Putting an email in a label no longer depends on the mail server copying it into a folder (some hosts quietly refused, so the label stayed empty). The program now tags the email itself: it stays in the inbox, shows the label's colour, and appears when you open the label (labels are kept in the program's settings on this computer). "Move to" a label still really moves it into that folder, and taking a label off removes the tag.
 - **Mail: putting an email in a label now works on custom (non-Gmail) accounts.** Assigning a label copies the email into that label's folder, so it shows when you open the label, and it stays in the inbox like a Gmail label. "Move to" a label (inbox removed) moves it there. The email shows its labels (and the label menu ticks them), and taking a label off removes the copy from that label. Works for groups and sub-groups too. Errors from the mail server are now shown instead of being ignored.
 - **Mail: labels, groups and sub-groups on custom (non-Gmail) email accounts.** Creating labels now works on custom accounts, including a group with sub-groups and sub-groups inside those (for example Cosmo, then Areas inside it, then North inside that). The whole chain is made in one go, which fixes mail servers that refused a folder whose group did not exist yet or that only allow folders under INBOX. A group that only exists because something sits inside it still shows in the list and can take new labels. Label colours are remembered for these accounts, and rename, delete and "New label inside it" work the same as for Gmail.
 - **Email pictures have a red rounded border.** Every picture in the designed email (marked-up PDF page, screenshot, photo) now has rounded corners and a red border in the MCP red, so the receiver sees at once that there is an attached picture. Several pictures each get their own border. The preview shows the same.

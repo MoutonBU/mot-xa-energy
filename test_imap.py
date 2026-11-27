@@ -64,7 +64,7 @@ assert "\\Seen" in x["flags"] and "\\Flagged" in x["flags"], x["flags"]
 G("POST", "threads/%s/trash" % ids[0], body={})
 assert len(st.f["Trash"]) == 1 and len(st.f["INBOX"]) == 2, (len(st.f["Trash"]), len(st.f["INBOX"]))
 G("POST", "threads/%s/modify" % ids[1], body={"addLabelIds": ["Clients"]})
-assert len(st.f["Clients"]) == 1
+assert len(st.f["Clients"]) == 0 and len(G("GET", "threads", {"labelIds": ["Clients"]})["threads"]) == 1     # a tag, not a copy
 G("POST", "threads/%s/modify" % ids[1], body={"removeLabelIds": ["INBOX"]})
 assert len(st.f["Archive"]) == 1 and len(st.f["INBOX"]) == 1
 tl = G("GET", "threads", {"labelIds": ["TRASH"]})
@@ -153,7 +153,7 @@ mp.load_labels(quiet=True)
 assert wait(lambda: any(l.get("id") == "Cosmo/Areas" for l in mp.labels)), mp.labels
 n_inbox = len(mp.rows)
 mp.modify([r0["id"]], add=["Cosmo/Areas"])
-assert wait(lambda: len(st.f.get("Cosmo/Areas", [])) == 1, 8), list(st.f)
+assert wait(lambda: len(mo.gmail_call(mp.S, "GET", "threads", {"labelIds": ["Cosmo/Areas"]})["threads"]) == 1, 8), list(st.f)
 assert len(st.f["INBOX"]) >= 2 and any("Brand new" in x["raw"].decode("utf-8", "replace") for x in st.f["INBOX"]), "the email left the inbox"
 assert len(mp.rows) == n_inbox and any(r["id"] == r0["id"] for r in mp.rows)
 mp.label = "Cosmo/Areas"

@@ -5921,6 +5921,11 @@ class MailPage(_QW):
                 return
             self.load_labels(quiet=True)                           # the counts next to the folders
             self._disk_soon()
+            if self.S.get("imap_host"):
+                try:
+                    self.get_M().save_settings()                   # the labels of a custom account are kept by the program
+                except Exception:
+                    pass
         self.run(work, done)
 
     def mark_all_read(self):

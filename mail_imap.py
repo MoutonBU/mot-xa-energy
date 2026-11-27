@@ -791,6 +791,29 @@ def _list(S, c, params):
             allu.append((f, u))
     allu.sort(key=lambda x: x[1], reverse=True) if len(folds) == 1 else None
     page = allu[start:start + PAGE]
+    tagged = []
+    if lab not in ("INBOX", "SENT", "DRAFT", "TRASH", "SPAM", "ALL", "STARRED") and "UNREAD" not in labs:
+        me = str(S.get("mail_address", "")).lower() + "|"
+        seen = set(allu)
+        byt = {}
+        for k, ls in _lmap(S).items():
+            if k.startswith(me) and lab in ls:
+                try:
+                    _a, f_, u_ = k.rsplit("|", 2)
+                    if (f_, int(u_)) not in seen:
+                        byt.setdefault(f_, []).append(int(u_))
+                except Exception:
+                    pass
+        for f_, us_ in byt.items():
+            try:
+                _select(c, f_, True)
+                ok_ = set(_search(c, crit))
+                tagged += [(f_, u_) for u_ in us_ if u_ in ok_]
+            except Exception:
+                pass
+        if tagged and start == 0:
+            page = page + tagged
+        allu = allu + tagged
     out = []
     byf = {}
     for f, u in page:
@@ -800,10 +823,17 @@ def _list(S, c, params):
         _select(c, f, True)
         for u, th in _fetch_meta(S, c, f, us, roles).items():
             got[(f, u)] = th
+    dates = {}
     for f, u in page:
         th = got.get((f, u))
         if th:
             out.append({"id": th["id"], "snippet": th["snippet"], "historyId": th["historyId"]})
+            try:
+                dates[th["id"]] = int(th["messages"][0].get("internalDate") or 0)
+            except Exception:
+                dates[th["id"]] = 0
+    if tagged:
+        out.sort(key=lambda x: dates.get(x["id"], 0), reverse=True)
     nxt = str(start + PAGE) if start + PAGE < len(allu) else ""
     res = {"threads": out, "resultSizeEstimate": len(allu)}
     if nxt:
@@ -900,11 +930,10 @@ def _modify(S, c, tids, add, remove, trash):
             first_move = "INBOX" in remove and f == roles["INBOX"]
             for j, x in enumerate(user_add):
                 if j == 0 and first_move:
-                    dest = x
+                    dest = x                                                 # "move to": the email really goes into that folder
                     _ensure(c, x)
                 else:
-                    _copy(c, uset, x)
-                    for u in us:
+                    for u in us:                                             # a label: the email stays where it is and is tagged (shown when the label is opened)
                         k = _xkey(S, f, u)
                         cur = list(lm.get(k, []))
                         if x not in cur:
@@ -919,7 +948,10 @@ def _modify(S, c, tids, add, remove, trash):
                 if not dest:
                     dest = roles["INBOX"]                                    # taken out of the label it is being viewed in: it goes back to the inbox
             else:
-                _drop_copies(c, x, [mids.get(u) for u in us])
+                try:
+                    _drop_copies(c, x, [mids.get(u) for u in us])            # a copy an older version made in that folder
+                except Exception:
+                    pass
                 for u in us:
                     k = _xkey(S, f, u)
                     if x in lm.get(k, []):
