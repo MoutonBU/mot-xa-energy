@@ -1606,40 +1606,61 @@ class KeyHints(QObject):
 
 
 class _Splash(QWidget):
-    """Start-up card. The logo itself is animated: it rises like a skyline, column by column (white first, then the red), settles with a
-    soft bounce, then a light keeps sweeping across it while a thin red line moves underneath."""
+    """Start-up card. The logo is built from its own pieces: each one spins in from a different side and snaps into place with a small
+    squash, then a light sweeps across the finished logo while a thin red line moves underneath."""
 
     def __init__(self, logo):
         super().__init__(None, Qt.WindowType.SplashScreen | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setFixedSize(440, 260)
         self.logo = None
-        self.strips = []
+        self.pieces = []                      # (pixmap, x, y) for every separate shape of the logo, left to right
         if logo is not None and not logo.isNull():
             self.logo = logo.scaledToHeight(104, Qt.TransformationMode.SmoothTransformation)
             img = self.logo.toImage().convertToFormat(QImage.Format.Format_ARGB32)
             w, h = img.width(), img.height()
-            sw = 4
-            for x0 in range(0, w, sw):
-                red = 0
-                tot = 0
-                for yy in range(0, h, 3):
-                    for xx in range(x0, min(w, x0 + sw), 2):
-                        c = img.pixelColor(xx, yy)
-                        if c.alpha() > 100:
-                            tot += 1
-                            if c.red() > 150 and c.green() < 110:
-                                red += 1
-                self.strips.append((x0, min(sw, w - x0), red > tot * 0.5 and tot > 0))
+            lab = [[0] * w for _ in range(h)]
+            n = 0
+            for y0 in range(h):
+                for x0 in range(w):
+                    if lab[y0][x0] or img.pixelColor(x0, y0).alpha() <= 40:
+                        continue
+                    n += 1
+                    st = [(x0, y0)]
+                    lab[y0][x0] = n
+                    while st:
+                        x, y = st.pop()
+                        for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                            if 0 <= nx < w and 0 <= ny < h and not lab[ny][nx] and img.pixelColor(nx, ny).alpha() > 40:
+                                lab[ny][nx] = n
+                                st.append((nx, ny))
+            for k in range(1, n + 1):
+                pts = [(x, y) for y in range(h) for x in range(w) if lab[y][x] == k]
+                if len(pts) < 30:
+                    continue
+                x1, x2 = min(p[0] for p in pts), max(p[0] for p in pts)
+                y1, y2 = min(p[1] for p in pts), max(p[1] for p in pts)
+                pi = QImage(x2 - x1 + 1, y2 - y1 + 1, QImage.Format.Format_ARGB32)
+                pi.fill(0)
+                for x, y in pts:
+                    pi.setPixelColor(x - x1, y - y1, img.pixelColor(x, y))
+                self.pieces.append((QPixmap.fromImage(pi), x1, y1))
+            self.pieces.sort(key=lambda p: p[1])
         self.t = QElapsedTimer()
         self.t.start()
         self.tm = QTimer(self)
         self.tm.timeout.connect(self.update)
         self.tm.start(16)
 
+    @staticmethod
+    def _back(t):
+        c = 1.9
+        return 1 + (c + 1) * (t - 1) ** 3 + c * (t - 1) ** 2
+
     def paintEvent(self, e):
         import math
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         W, H = self.width(), self.height()
         ms = self.t.elapsed()
         p.fillRect(0, 0, W, H, QColor("#16171a"))
@@ -1647,44 +1668,49 @@ class _Splash(QWidget):
         p.drawRect(0, 0, W - 1, H - 1)
         cx, cy = W / 2, H / 2 - 18
         pulse = 0.5 + 0.5 * math.sin(ms / 380.0)
-        grow = min(1.0, ms / 900.0)
         g = QRadialGradient(cx, cy, 125)
-        g.setColorAt(0, QColor(255, 64, 86, int((30 + 38 * pulse) * grow)))
+        g.setColorAt(0, QColor(255, 64, 86, int(30 + 38 * pulse)))
         g.setColorAt(1, QColor(255, 64, 86, 0))
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(g)
         p.drawEllipse(QPointF(cx, cy), 125, 125)
-        if self.logo is not None:
+        if self.logo is not None and self.pieces:
             lw, lh = self.logo.width(), self.logo.height()
-            ox, oy = cx - lw / 2.0, cy - lh / 2.0 + 2.5 * math.sin(ms / 700.0) * min(1.0, ms / 1400.0)          # gentle float once built
-            for x0, sw, red in self.strips:
-                u = x0 / float(max(1, lw))
-                d = 60 + u * 520 + (260 if red else 0)                       # left to right; the red columns follow the white
-                k = max(0.0, min(1.0, (ms - d) / 420.0))
+            ox, oy = cx - lw / 2.0, cy - lh / 2.0
+            dirs = ((-1, 0), (0, 1), (1, 0), (0, -1))
+            for i, (pm, px, py) in enumerate(self.pieces):
+                st = 120 + i * 230
+                k = max(0.0, min(1.0, (ms - st) / 700.0))
                 if k <= 0:
                     continue
-                ease = 1 - (1 - k) ** 3
-                bump = 1.0 + 0.07 * math.sin(k * math.pi) * (1 - k) * 3     # a little overshoot at the top as it lands
-                hh = lh * ease * min(1.0, bump)
-                p.setOpacity(min(1.0, k * 2))
-                p.drawPixmap(QRectF(ox + x0, oy + lh - hh, sw, hh), self.logo, QRectF(x0, lh - hh, sw, hh))
-            p.setOpacity(1.0)
-            if ms > 1300:                                                   # a light sweeps over the finished logo
-                ph = ((ms - 1300) % 2200) / 2200.0
-                x = ox - 40 + ph * (lw + 120)
+                e_ = self._back(k)
+                dx, dy = dirs[i % 4][0] * W * 0.7 * (1 - e_), dirs[i % 4][1] * H * 0.7 * (1 - e_)
+                rot = (1 - (1 - (1 - k) ** 3)) * (1 if i % 2 else -1) * 2.2 * 57.2958
+                land = max(0.0, min(1.0, (ms - st - 640) / 260.0))
+                sq = 1 + 0.06 * math.sin(land * math.pi) * (1 - land)
+                p.save()
+                p.setOpacity(min(1.0, k * 3))
+                p.translate(ox + px + pm.width() / 2.0 + dx, oy + py + pm.height() / 2.0 + dy)
+                p.rotate(rot)
+                p.scale(1 / sq, sq)
+                p.drawPixmap(QPointF(-pm.width() / 2.0, -pm.height() / 2.0), pm)
+                p.restore()
+            if ms > 1900:                                                   # a light sweeps over the finished logo
+                ph = ((ms - 1900) % 2200) / 2200.0
+                x = ox - 30 + ph * (lw + 90)
                 sweep = QImage(lw, lh, QImage.Format.Format_ARGB32_Premultiplied)
                 sweep.fill(0)
                 q = QPainter(sweep)
                 q.drawPixmap(0, 0, self.logo)
                 q.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceAtop)
-                lg = QLinearGradient(x - ox - 26, 0, x - ox + 26, lh * 0.35)
+                lg = QLinearGradient(x - ox - 24, 0, x - ox + 24, lh * 0.35)
                 lg.setColorAt(0, QColor(255, 255, 255, 0))
                 lg.setColorAt(0.5, QColor(255, 255, 255, 200))
                 lg.setColorAt(1, QColor(255, 255, 255, 0))
                 q.fillRect(0, 0, lw, lh, lg)
                 q.end()
                 p.drawImage(QPointF(ox, oy), sweep)
-        else:
+        elif self.logo is None:
             p.setPen(QColor("#eceef0"))
             f = QFont(self.font())
             f.setPointSize(16)
