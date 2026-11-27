@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: 1.86.341
+Current version: 1.86.342
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Projects: a live shared board.** A new Projects card on the start screen: a To do / In progress / Done board (drag a card to move it) with owner, client, due date, priority, notes and a link. Everyone you add under Team signs in with their own email, and what one person adds or moves shows on the others' screens within about two seconds, with a pop-up. Search, Only mine, overdue dates in red, and a red number on the card for changes you have not seen.
 - **Mail: Mark all as read.** A new button at the top of the Mail tab marks every unread email in the inbox as read, in Gmail too (not only the ones on screen), so the red number on the home screen goes away.
 - **Mail card on the start screen shows unread mail.** A red number in the corner of the Mail card counts the unread emails in all your accounts and updates by itself.
 - **Mail: paste a picture into a new message.** Copy a screenshot you marked up (Win+Shift+S) and press Ctrl+V in the message box, or the new Paste picture button, or drop a picture file onto it. The picture sits in the text where you put it and arrives inside the email for the client to see, not as an attachment.

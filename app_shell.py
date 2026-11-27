@@ -12,8 +12,8 @@ SUBJECTS = [(0, "Project", "home"), (6, "Drawing register", "clipboard"), (10, "
             (8, "Building lines", "compass"), (12, "House placing", "land"), (9, "Guidelines review", "check_circle")]
 CTX = {13: "sans", 11: "invoicing", 10: "orders", 1: "sans", 2: "sans", 3: "sans", 4: "detail", 5: "costing", 6: "register", 7: "site", 8: "site", 9: "rules", 12: "site"}      # which tool a main tab belongs to
 TOOL_COL = {"sans": "#d8132b", "invoicing": "#55b57a", "orders": "#e2a93f", "detail": "#5b9be6", "costing": "#a587e0", "register": "#36b3a6", "site": "#c08e5c", "rules": "#93a0b4",
-            "lv": "#e8b84a", "xa": "#f0795a", "cov": "#d9628f", "mail": "#4aa3df"}      # each tool has its own colour: the same as its card on the home screen
-TAB_KEY = {"Light && Ventilation": "lv", "Light & Ventilation": "lv", "Energy (XA)": "xa", "Coverage && FAR": "cov", "Coverage & FAR": "cov", "Mail": "mail"}
+            "lv": "#e8b84a", "xa": "#f0795a", "cov": "#d9628f", "mail": "#4aa3df", "board": "#9bc53d"}      # each tool has its own colour: the same as its card on the home screen
+TAB_KEY = {"Light && Ventilation": "lv", "Light & Ventilation": "lv", "Energy (XA)": "xa", "Coverage && FAR": "cov", "Coverage & FAR": "cov", "Mail": "mail", "Projects": "board"}
 PSUB_ICONS = {"Drawings": "clipboard", "Orders": "tag", "Client changes": "edit", "Sent and revisions": "export",
               "Fixtures and sanitary ware": "drop", "Building materials": "layers", "Whole building and budget": "calc"}
 LV_SUBS = [(0, "Windows", "window"), (1, "Doors", "door"), (2, "Rooms", "room"), (3, "Results", "results"), (4, "Plan", "plan")]
@@ -227,11 +227,12 @@ class Rail(QFrame):
         for label, idx, ico in (("Drawing register", 6, "clipboard"), ("Orders", 10, "tag"), ("Invoicing", 11, "calc"), ("Detail tool", 4, "ruler"), ("Costing", 5, "calc"), (None, None, None),
                                 ("Light && Ventilation", 1, "lightvent"), ("Energy (XA)", 2, "bolt"), ("Coverage && FAR", 3, "building"), (None, None, None),
                                 ("Building lines", 8, "land"), ("House placing", 12, "land"), ("Guidelines review", 9, "clipboard"), (None, None, None),
+                                ("Mail", "Mail", "mail"), ("Projects", "Projects", "board"), (None, None, None),
                                 ("Home (the four squares)", -1, "home")):
             if label is None:
                 m.addSeparator()
                 continue
-            a = m.addAction(label.replace("&&", "&"), lambda i=idx: w.main_tabs.setCurrentIndex(w.launcher_idx[0] if i < 0 else i))
+            a = m.addAction(label.replace("&&", "&"), lambda i=idx: w.main_tabs.setCurrentIndex(w.launcher_idx[0] if i == -1 else (w._tab_index(i) if isinstance(i, str) else i)))
             if self.make_icon:
                 k_ = TAB_KEY.get(label, CTX.get(idx))
                 a.setIcon(self.make_icon(ico, TOOL_COL.get(k_) or col, 20))              # each tool's card colour in the list
@@ -672,7 +673,8 @@ def install_shell(win, make_icon, light_fn):
         cur = mt.currentIndex()
         lp = cur in (getattr(win, "launcher_idx", None) or ())
         ribbon.show_for(cur)
-        full = mt.currentWidget() is getattr(win, "mail_page", None) and getattr(win, "mail_page", None) is not None     # Mail uses the whole window
+        cw_ = mt.currentWidget()
+        full = cw_ is not None and (cw_ is getattr(win, "mail_page", None) or cw_ is getattr(win, "board_page", None))     # Mail and Projects use the whole window
         ribbon.setVisible(not lp and not full)
         ss = getattr(win, "step_strip", None)
         if ss is not None:

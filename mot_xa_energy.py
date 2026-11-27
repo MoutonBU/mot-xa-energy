@@ -4386,6 +4386,7 @@ ICON_SVG = {
     "leaf": '<path d="M5 19c0-8 4-13.5 14-14.5 0 9-5 14.5-12.5 14.5"/><path d="M5 19c2.5-4 5-6.5 9-8.5"/>',
     "land": '<path d="M4 8.5 11 4l9 4.5-1.5 9L11 20.5 4.5 17z"/><path d="M8 11.5h6M8 15h4" stroke-dasharray="1.6 1.6"/>',
     "mail": '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3.5 7 8.5 6 8.5-6"/>',
+    "board": '<rect x="3.5" y="4" width="5" height="16" rx="1.3"/><rect x="10" y="4" width="5" height="10" rx="1.3"/><rect x="16.5" y="4" width="4" height="13" rx="1.3"/>',
     "star": '<path d="m12 3.5 2.6 5.4 5.9.8-4.3 4.1 1 5.9L12 16.9l-5.2 2.8 1-5.9-4.3-4.1 5.9-.8z"/>',
 }
 
@@ -9830,6 +9831,14 @@ class MainWindow(QMainWindow):
         except Exception as e_:
             print("tool not started: mail", e_)
             self.mail_page = None
+        self.board_page = None
+        try:
+            import ui_extras as bp_mod
+            self.board_page = bp_mod.BoardPage(self, SETTINGS, light, lambda: sys.modules[type(self).__module__])
+            self.main_tabs.addTab(self.board_page, "Projects")
+        except Exception as e_:
+            print("tool not started: projects", e_)
+            self.board_page = None
         self._build_home()
 
         self.assign_table = QTableWidget(0, 8)
@@ -10313,7 +10322,7 @@ class MainWindow(QMainWindow):
 
     def _update_steps(self):
         try:
-            self.step_strip.setVisible(self.main_tabs.currentIndex() not in (getattr(self, "launcher_idx", None) or ()) and self.main_tabs.currentWidget() is not getattr(self, "mail_page", None))
+            self.step_strip.setVisible(self.main_tabs.currentIndex() not in (getattr(self, "launcher_idx", None) or ()) and self.main_tabs.currentWidget() not in (getattr(self, "mail_page", None), getattr(self, "board_page", None)))
             self.step_strip.update_states(self._step_states())
         except Exception:
             pass
@@ -13389,6 +13398,9 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         try:
+            bp_ = getattr(self, "board_page", None)
+            if bp_ is not None:
+                bp_.restyle()
             mp_ = getattr(self, "mail_page", None)       # Mail writes its own colours: it is restyled for the new look at once
             if mp_ is not None:
                 mp_.restyle()
@@ -14732,7 +14744,7 @@ class MainWindow(QMainWindow):
 
     def _build_launcher(self):
         TILE_COL = {"Drawing register": "#36b3a6", "Orders": "#e2a93f", "Invoicing": "#55b57a", "Detail tool": "#5b9be6", "Costing": "#a587e0", "SANS": "#ff4056",
-                    "Site and areas": "#c08e5c", "Guidelines review": "#93a0b4", "Light & Ventilation": "#e8b84a", "Energy (XA)": "#f0795a", "Coverage & FAR": "#d9628f", "Mail": "#4aa3df"}      # muted, one hue per tool
+                    "Site and areas": "#c08e5c", "Guidelines review": "#93a0b4", "Light & Ventilation": "#e8b84a", "Energy (XA)": "#f0795a", "Coverage & FAR": "#d9628f", "Mail": "#4aa3df", "Projects": "#9bc53d"}      # muted, one hue per tool
         """The start screen: four big squares and nothing else. The left bar and the ribbon only show once you are inside one."""
         def tile(title, sub, ico, target):
             b = QPushButton()
@@ -14763,7 +14775,7 @@ class MainWindow(QMainWindow):
             def opened(_=False, t=target):
                 self.main_tabs.setCurrentIndex(self._tab_index(t))              # straight in, no title card
             b.clicked.connect(opened)
-            if title == "Mail":                 # a red number on the card: how many unread emails are waiting
+            if title in ("Mail", "Projects"):                 # a red number on the card: unread emails / changes by others you have not seen yet
                 bd = QLabel("", b)
                 bd.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 bd.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -14771,8 +14783,12 @@ class MainWindow(QMainWindow):
                 bd.hide()
                 def _badge():
                     try:
-                        mp = getattr(self, "mail_page", None)
-                        n = mp.unread_total() if mp is not None else 0
+                        if title == "Mail":
+                            mp = getattr(self, "mail_page", None)
+                            n = mp.unread_total() if mp is not None else 0
+                        else:
+                            bp = getattr(self, "board_page", None)
+                            n = int(getattr(bp, "unseen", 0) or 0) if bp is not None else 0
                         if not n or not b.isVisible():
                             bd.hide()
                             return
@@ -14837,9 +14853,10 @@ class MainWindow(QMainWindow):
                 ("Costing", "Fixtures, materials and the budget for a job.", "calc", "Costing"),
                 ("SANS", "Light and ventilation, energy and coverage checks for the building regulations.", "sun", "SANS"),
                 ("Site and areas", "Building lines on the stand, the sewer, water and electrical lines to the house, and the area schedule with unit mix and floor area ratio.", "land", "Building lines"),
-                ("Guidelines review", "Check the plans against the estate's architectural guidelines and the council's or state's checklist.", "shield", "Guidelines review"))):
+                ("Guidelines review", "Check the plans against the estate's architectural guidelines and the council's or state's checklist.", "shield", "Guidelines review"),
+                ("Projects", "Projects and tasks shared live with your team: To do, In progress, Done. What one person adds shows on everybody's screen.", "board", "Projects"))):
             g.addWidget(tile(title, sub, ico, tgt), i // 3, i % 3)
-        for k in (0, 1, 2):
+        for k in (0, 1, 2, 3):
             g.setRowStretch(k, 1)
         for k in (0, 1, 2):
             g.setColumnStretch(k, 1)

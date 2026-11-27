@@ -5988,3 +5988,801 @@ class MailPage(_QW):
         self._topen.pop(self.cur, None)
         if self.label == "SENT" or self.label == "INBOX":
             self.load_list(reset=False, quiet=True)
+
+
+# ================================================================================================ Projects: a live board shared with a team
+"""Projects: a live board shared with the people you invite (To do / In progress / Done), kept in your own Supabase database.
+Everyone signs in with their own email; what one person adds or moves shows on the others' screens within a couple of seconds."""
+import time as _btime
+import urllib.error as _uerr
+import urllib.parse as _uparse
+import urllib.request as _ureq
+from PySide6.QtCore import QDate
+from PySide6.QtGui import QFont, QFontMetrics
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDateEdit, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+                               QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QStackedWidget, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
+
+BROLE = Qt.ItemDataRole.UserRole
+DEFAULT_URL = "https://dhofaemjobdlnztcztnd.supabase.co"
+DEFAULT_KEY = "sb_publishable_nZN3jKsRsXOGoMVnrE1kbA_D-q0XYgU"          # the public key: what a person can see is decided by the database rules and their own sign-in
+BOARD_ACCENT = "#9bc53d"
+B_STATUSES = (("todo", "To do", "#8a9099"), ("doing", "In progress", "#e2a93f"), ("done", "Done", "#55b57a"))
+B_PRIOS = (("low", "Low", "#6b9bd1"), ("normal", "Normal", "#8a9099"), ("high", "High", "#e2a93f"), ("urgent", "Urgent", "#ff3b4d"))
+B_PRIO_COL = {k: c for k, _n, c in B_PRIOS}
+B_ST_NAME = {k: n for k, n, _c in B_STATUSES}
+
+class BoardError(Exception):
+    pass
+
+
+# ------------------------------------------------------------------------------------------------ the connection
+class BoardAPI:
+    """Talks to Supabase (sign-in and the two tables) with plain web requests. Safe to call from any thread."""
+
+    def __init__(self, G, save=None):
+        self.G, self._save = G, save or (lambda: None)
+        self._lock = _th.Lock()
+
+    @property
+    def url(self):
+        return str(self.G.get("board_url") or DEFAULT_URL).rstrip("/")
+
+    @property
+    def key(self):
+        return str(self.G.get("board_key") or DEFAULT_KEY)
+
+    def _http(self, method, path, body=None, params=None, bearer=None, extra=None, timeout=15):
+        u = self.url + path + (("?" + _uparse.urlencode(params)) if params else "")
+        hdr = {"apikey": self.key, "Accept": "application/json", "Accept-Encoding": "identity"}
+        if bearer:
+            hdr["Authorization"] = "Bearer " + bearer
+        if body is not None:
+            hdr["Content-Type"] = "application/json"
+        hdr.update(extra or {})
+        req = _ureq.Request(u, data=_json.dumps(body).encode() if body is not None else None, headers=hdr, method=method)
+        try:
+            with _ureq.urlopen(req, timeout=timeout) as r:
+                raw = r.read()
+                code = r.status
+        except _uerr.HTTPError as e:
+            raw, code = e.read(), e.code
+        except Exception as e:
+            raise BoardError("No connection to the board (%s)" % (getattr(e, "reason", None) or e))
+        try:
+            data = _json.loads(raw.decode("utf-8")) if raw else None
+        except ValueError:
+            data = None
+        if code >= 400:
+            msg = ""
+            if isinstance(data, dict):
+                msg = data.get("msg") or data.get("message") or data.get("error_description") or data.get("error") or ""
+            err = BoardError(str(msg) or ("The board answered with an error (%d)" % code))
+            err.code = code
+            raise err
+        return data
+
+    # ---- sign-in
+    def session(self):
+        return self.G.get("board_session") or {}
+
+    def me(self):
+        return str(self.session().get("email") or "").lower()
+
+    def signed_in(self):
+        return bool(self.session().get("refresh"))
+
+    def _store(self, tok):
+        em = str(((tok.get("user") or {}).get("email")) or self.session().get("email") or "").lower()
+        self.G["board_session"] = {"access": tok.get("access_token"), "refresh": tok.get("refresh_token"),
+                                   "exp": _btime.time() + int(tok.get("expires_in") or 3600), "email": em}
+        self._save()
+
+    def sign_in(self, email, password):
+        tok = self._http("POST", "/auth/v1/token", {"email": email.strip().lower(), "password": password}, {"grant_type": "password"})
+        self._store(tok)
+
+    def sign_up(self, email, password):
+        """True when the person can sign in at once, False when an email has to be confirmed first."""
+        res = self._http("POST", "/auth/v1/signup", {"email": email.strip().lower(), "password": password}) or {}
+        if res.get("access_token"):
+            self._store(res)
+            return True
+        return False
+
+    def sign_out(self):
+        self.G.pop("board_session", None)
+        self._save()
+
+    def _bearer(self, force=False):
+        with self._lock:
+            s = self.session()
+            if not s.get("refresh"):
+                raise BoardError("Sign in to the board first.")
+            if force or _btime.time() > float(s.get("exp") or 0) - 60:
+                try:
+                    tok = self._http("POST", "/auth/v1/token", {"refresh_token": s["refresh"]}, {"grant_type": "refresh_token"})
+                except BoardError as e:
+                    if getattr(e, "code", 0) in (400, 401, 403):
+                        self.sign_out()
+                        raise BoardError("Your sign-in ran out. Please sign in again.")
+                    raise
+                self._store(tok)
+                s = self.session()
+            return s["access"]
+
+    def _rest(self, method, table, body=None, params=None, extra=None):
+        for attempt in (0, 1):
+            try:
+                return self._http(method, "/rest/v1/" + table, body, params, self._bearer(force=bool(attempt)), extra)
+            except BoardError as e:
+                if attempt == 0 and getattr(e, "code", 0) == 401:
+                    continue
+                raise
+
+    # ---- the board
+    def fetch(self, since=None):
+        prm = {"select": "*", "order": "updated_at.asc"}
+        if since:
+            prm["updated_at"] = "gte." + since
+        return self._rest("GET", "board_projects", params=prm) or []
+
+    def add(self, fields):
+        r = self._rest("POST", "board_projects", dict(fields), extra={"Prefer": "return=representation"})
+        return (r or [None])[0]
+
+    def change(self, pid, fields):
+        r = self._rest("PATCH", "board_projects", dict(fields), {"id": "eq." + pid}, {"Prefer": "return=representation"})
+        return (r or [None])[0]
+
+    def members(self):
+        return self._rest("GET", "board_members", params={"select": "*", "order": "added_at.asc"}) or []
+
+    def add_member(self, email, name, role):
+        self._rest("POST", "board_members", {"email": email.strip().lower(), "name": name.strip(), "role": role})
+
+    def remove_member(self, email):
+        self._rest("DELETE", "board_members", params={"email": "eq." + email})
+
+
+# ------------------------------------------------------------------------------------------------ the cards
+class _BoardCardDelegate(QStyledItemDelegate):
+    H = 84
+
+    def __init__(self, page):
+        super().__init__(page)
+        self.page = page
+
+    def sizeHint(self, opt, idx):
+        return QSize(opt.rect.width(), self.H)
+
+    def paint(self, p, opt, idx):
+        r = idx.data(BROLE) or {}
+        bg, fg, mute, line = self.page.colors()
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        card = QRectF(opt.rect).adjusted(2, 3, -2, -3)
+        sel = bool(opt.state & QStyle.StateFlag.State_Selected)
+        p.setPen(QPen(QColor(BOARD_ACCENT) if sel else QColor(line), 1.4))
+        p.setBrush(QColor(self.page.card_bg()))
+        p.drawRoundedRect(card, 9, 9)
+        pc = QColor(B_PRIO_COL.get(r.get("priority"), "#8a9099"))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(pc)
+        p.drawRoundedRect(QRectF(card.left() + 1, card.top() + 9, 4, card.height() - 18), 2, 2)
+        x0 = card.left() + 16
+        w = card.width() - 28
+        f = QFont(p.font())
+        f.setBold(True)
+        f.setPixelSize(14)
+        p.setFont(f)
+        p.setPen(QColor(fg))
+        t = QFontMetrics(f).elidedText(str(r.get("title") or ""), Qt.TextElideMode.ElideRight, int(w))
+        p.drawText(QPointF(x0, card.top() + 24), t)
+        f.setBold(False)
+        f.setPixelSize(12)
+        p.setFont(f)
+        p.setPen(QColor(mute))
+        bits = [b for b in (r.get("client"), ("→ " + self.page.who(r.get("owner"))) if r.get("owner") else "") if b]
+        p.drawText(QPointF(x0, card.top() + 43), QFontMetrics(f).elidedText("  ·  ".join(bits), Qt.TextElideMode.ElideRight, int(w)))
+        due = str(r.get("due") or "")
+        late = bool(due) and due < _btime.strftime("%Y-%m-%d") and r.get("status") != "done"
+        if due:
+            p.setPen(QColor("#ff5a6a") if late else QColor(mute))
+            p.drawText(QPointF(x0, card.top() + 62), ("Overdue · " if late else "Due ") + due)
+        if r.get("priority") in ("high", "urgent"):
+            f.setBold(True)
+            p.setFont(f)
+            p.setPen(pc)
+            txt = dict((k, n) for k, n, _c in B_PRIOS)[r["priority"]]
+            p.drawText(QRectF(card.right() - 90, card.top() + 50, 80, 16), Qt.AlignmentFlag.AlignRight, txt)
+        p.restore()
+
+
+class _BoardCol(QListWidget):
+    dropped = _Signal(str, str)                      # project id, new status
+
+    def __init__(self, status):
+        super().__init__()
+        self.status = status
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
+        self.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setSpacing(0)
+
+    def dropEvent(self, e):
+        src = e.source()
+        it = src.currentItem() if isinstance(src, QListWidget) else None
+        if it is not None:
+            r = it.data(BROLE) or {}
+            if r.get("id") and r.get("status") != self.status:
+                self.dropped.emit(r["id"], self.status)
+        e.setDropAction(Qt.DropAction.IgnoreAction)        # the board redraws itself from the data; nothing is moved by the list
+        e.ignore()
+
+
+# ------------------------------------------------------------------------------------------------ the dialogs
+class ProjectDialog(QDialog):
+    def __init__(self, page, row=None, status="todo"):
+        super().__init__(page)
+        self.page, self.row = page, row or {}
+        self.deleted = False
+        self.setWindowTitle("Project" if row else "New project")
+        self.resize(520, 560)
+        v = QVBoxLayout(self)
+        self.title = QLineEdit(self.row.get("title", ""))
+        self.title.setPlaceholderText("What needs to be done")
+        self.status = QComboBox()
+        for k, n, _c in B_STATUSES:
+            self.status.addItem(n, k)
+        self.status.setCurrentIndex([k for k, _n, _c in B_STATUSES].index(self.row.get("status") or status))
+        self.prio = QComboBox()
+        for k, n, _c in B_PRIOS:
+            self.prio.addItem(n, k)
+        self.prio.setCurrentIndex([k for k, _n, _c in B_PRIOS].index(self.row.get("priority") or "normal"))
+        self.owner = QComboBox()
+        self.owner.addItem("Nobody yet", "")
+        for em, nm in page.people():
+            self.owner.addItem("%s  (%s)" % (nm, em) if nm else em, em)
+        i = self.owner.findData(str(self.row.get("owner") or "").lower())
+        self.owner.setCurrentIndex(max(0, i))
+        self.client = QLineEdit(self.row.get("client", "") or "")
+        self.client.setPlaceholderText("Client or house (optional)")
+        self.has_due = QCheckBox("Due date")
+        self.due = QDateEdit()
+        self.due.setCalendarPopup(True)
+        self.due.setDisplayFormat("yyyy-MM-dd")
+        d = QDate.fromString(str(self.row.get("due") or ""), "yyyy-MM-dd")
+        self.has_due.setChecked(d.isValid())
+        self.due.setDate(d if d.isValid() else QDate.currentDate())
+        self.due.setEnabled(d.isValid())
+        self.has_due.toggled.connect(self.due.setEnabled)
+        self.link = QLineEdit(self.row.get("link", "") or "")
+        self.link.setPlaceholderText("Link to a folder, file or email (optional)")
+        self.notes = QPlainTextEdit(self.row.get("notes", "") or "")
+        self.notes.setPlaceholderText("Notes")
+        for lab, w in (("Title", self.title), ("Status", self.status), ("Priority", self.prio), ("Who does it", self.owner), ("Client / house", self.client)):
+            v.addWidget(QLabel(lab))
+            v.addWidget(w)
+        hb = QHBoxLayout()
+        hb.addWidget(self.has_due)
+        hb.addWidget(self.due, 1)
+        v.addLayout(hb)
+        v.addWidget(QLabel("Link"))
+        v.addWidget(self.link)
+        v.addWidget(QLabel("Notes"))
+        v.addWidget(self.notes, 1)
+        if self.row.get("id"):
+            who = self.page.who(self.row.get("updated_by"))
+            v.addWidget(QLabel("<span style='color:#8a9099'>Last changed by %s</span>" % (who or "someone")))
+        bar = QHBoxLayout()
+        ok = QPushButton("Save")
+        ok.setStyleSheet("QPushButton{background:%s;color:#12161a;font-weight:800;padding:8px 26px;border-radius:6px;}" % BOARD_ACCENT)
+        ok.clicked.connect(self._ok)
+        cx = QPushButton("Cancel")
+        cx.clicked.connect(self.reject)
+        bar.addWidget(ok)
+        bar.addWidget(cx)
+        bar.addStretch(1)
+        if self.row.get("id"):
+            dl = QPushButton("Delete")
+            dl.clicked.connect(self._del)
+            bar.addWidget(dl)
+        v.addLayout(bar)
+
+    def _ok(self):
+        if not self.title.text().strip():
+            self.title.setFocus()
+            return
+        self.accept()
+
+    def _del(self):
+        if QMessageBox.question(self, "Projects", "Delete this project for everybody?") == QMessageBox.StandardButton.Yes:
+            self.deleted = True
+            self.accept()
+
+    def fields(self):
+        return {"title": self.title.text().strip(), "status": self.status.currentData(), "priority": self.prio.currentData(),
+                "owner": self.owner.currentData() or None, "client": self.client.text().strip() or None,
+                "due": self.due.date().toString("yyyy-MM-dd") if self.has_due.isChecked() else None,
+                "link": self.link.text().strip() or None, "notes": self.notes.toPlainText().strip() or None}
+
+
+class TeamDialog(QDialog):
+    def __init__(self, page):
+        super().__init__(page)
+        self.page = page
+        self.setWindowTitle("Who is on the board")
+        self.resize(480, 420)
+        v = QVBoxLayout(self)
+        self.lst = QListWidget()
+        v.addWidget(self.lst, 1)
+        self.msg = QLabel("")
+        self.msg.setWordWrap(True)
+        v.addWidget(self.msg)
+        self.em = QLineEdit()
+        self.em.setPlaceholderText("Their email address (the one they sign up with)")
+        self.nm = QLineEdit()
+        self.nm.setPlaceholderText("Their name")
+        self.rl = QComboBox()
+        self.rl.addItem("Member (adds and moves projects)", "member")
+        self.rl.addItem("Admin (can also add and remove people)", "admin")
+        for w in (self.em, self.nm, self.rl):
+            v.addWidget(w)
+        bar = QHBoxLayout()
+        a = QPushButton("Add to the board")
+        a.clicked.connect(self._add)
+        r = QPushButton("Remove selected")
+        r.clicked.connect(self._rm)
+        c = QPushButton("Close")
+        c.clicked.connect(self.accept)
+        for w in (a, r):
+            bar.addWidget(w)
+        bar.addStretch(1)
+        bar.addWidget(c)
+        v.addLayout(bar)
+        self._rows = []
+        self.reload()
+
+    def reload(self):
+        def done(res, err):
+            if err:
+                self.msg.setText(err)
+                return
+            self._rows = res
+            self.lst.clear()
+            for m in res:
+                it = QListWidgetItem("%s   %s   [%s]" % (m.get("name") or "", m["email"], m.get("role")))
+                it.setData(BROLE, m["email"])
+                self.lst.addItem(it)
+        self.page.run(self.page.api.members, done)
+
+    def _add(self):
+        em, nm, rl = self.em.text().strip(), self.nm.text().strip(), self.rl.currentData()
+        if "@" not in em:
+            self.msg.setText("Type their email address.")
+            return
+
+        def done(res, err):
+            self.msg.setText(err or "Added. Tell them to open Projects, press Create account with this email, and confirm the email Supabase sends them.")
+            if not err:
+                self.em.clear()
+                self.nm.clear()
+                self.page.load_people()
+                self.reload()
+        self.page.run(lambda: self.page.api.add_member(em, nm, rl), done)
+
+    def _rm(self):
+        it = self.lst.currentItem()
+        if it is None:
+            return
+        em = it.data(BROLE)
+        if em == self.page.api.me():
+            self.msg.setText("You cannot remove yourself.")
+            return
+
+        def done(res, err):
+            self.msg.setText(err or "Removed.")
+            self.page.load_people()
+            self.reload()
+        self.page.run(lambda: self.page.api.remove_member(em), done)
+
+
+# ------------------------------------------------------------------------------------------------ the page
+class BoardPage(QWidget):
+    _done = _Signal(object, object, object)
+
+    def __init__(self, host, G, is_light, get_M):
+        super().__init__()
+        self.host, self.G, self.is_light, self.get_M = host, G, is_light, get_M
+        self.setObjectName("boardpage")
+        self.api = BoardAPI(G, lambda: self._save())
+        self.rows = {}                  # id -> row
+        self.team = []                  # [{email, name, role}]
+        self.since = None
+        self.loaded = False
+        self.busy = False
+        self.unseen = 0
+        self.last_ok = 0.0
+        self.is_admin = False
+        self._tick_n = 0
+        self._done.connect(lambda cb, res, err: cb(res, err))
+        self._build()
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._tick)
+        self.timer.start(2000)
+        self.restyle()
+        QTimer.singleShot(800, self._start)
+
+    # ---- helpers
+    def _save(self):
+        try:
+            self.get_M().save_settings()
+        except Exception:
+            pass
+
+    def run(self, fn, cb):
+        def work():
+            try:
+                res, err = fn(), None
+            except BoardError as e:
+                res, err = None, str(e)
+            except Exception as e:
+                res, err = None, "Something went wrong (%s)" % e
+            try:
+                self._done.emit(cb, res, err)
+            except RuntimeError:
+                pass
+        _th.Thread(target=work, daemon=True).start()
+
+    def colors(self):
+        return ("#ffffff", "#1c1f23", "#6b727b", "#d9dde2") if self.is_light() else ("#1f2125", "#eceef0", "#8a9099", "#30353b")
+
+    def card_bg(self):
+        return "#f6f7f9" if self.is_light() else "#272a30"
+
+    def people(self):
+        return [(m["email"], m.get("name") or "") for m in self.team]
+
+    def who(self, email):
+        email = str(email or "").lower()
+        for m in self.team:
+            if m["email"].lower() == email:
+                return m.get("name") or email.split("@")[0]
+        return email.split("@")[0] if email else ""
+
+    # ---- layout
+    def _build(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        top = QHBoxLayout()
+        home = QPushButton("‹  Home")
+        home.clicked.connect(lambda: self.host.main_tabs.setCurrentIndex(self.host.launcher_idx[0]))
+        sw = QPushButton("Switch tool  ▾")
+        sw.clicked.connect(lambda _=False, b=sw: getattr(self.host, "shell_rail")._switch_menu(b) if getattr(self.host, "shell_rail", None) is not None else None)
+        top.addWidget(home)
+        top.addWidget(sw)
+        self.title = QLabel("<span style='font-size:20px;font-weight:800;'>Projects</span>")
+        top.addWidget(self.title)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search projects")
+        self.search.setClearButtonEnabled(True)
+        self.search.textChanged.connect(lambda _t: self.render())
+        top.addWidget(self.search, 1)
+        self.mine = QCheckBox("Only mine")
+        self.mine.toggled.connect(lambda _b: self.render())
+        top.addWidget(self.mine)
+        self.live = QLabel("")
+        top.addWidget(self.live)
+        self.new_btn = QPushButton("+  New project")
+        self.new_btn.setStyleSheet("QPushButton{background:%s;color:#12161a;font-weight:800;padding:7px 18px;border-radius:6px;}" % BOARD_ACCENT)
+        self.new_btn.clicked.connect(lambda: self.edit(None))
+        top.addWidget(self.new_btn)
+        self.team_btn = QPushButton("Team")
+        self.team_btn.clicked.connect(lambda: TeamDialog(self).exec())
+        top.addWidget(self.team_btn)
+        self.who_btn = QPushButton("")
+        self.who_btn.setToolTip("Sign out of the board")
+        self.who_btn.clicked.connect(self._sign_out)
+        top.addWidget(self.who_btn)
+        root.addLayout(top)
+        self.stack = QStackedWidget()
+        root.addWidget(self.stack, 1)
+        # sign-in
+        lg = QWidget()
+        lv = QVBoxLayout(lg)
+        lv.addStretch(1)
+        self.lmsg = QLabel("")
+        self.lmsg.setWordWrap(True)
+        self.lmsg.setTextFormat(Qt.TextFormat.RichText)
+        self.lmsg.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lmsg.setMaximumWidth(520)
+        lv.addWidget(self.lmsg, 0, Qt.AlignmentFlag.AlignHCenter)
+        self.em = QLineEdit()
+        self.em.setPlaceholderText("Your email address")
+        self.pw = QLineEdit()
+        self.pw.setPlaceholderText("Password")
+        self.pw.setEchoMode(QLineEdit.EchoMode.Password)
+        self.pw.returnPressed.connect(self._signin)
+        for w in (self.em, self.pw):
+            w.setMaximumWidth(360)
+            w.setMinimumHeight(34)
+            lv.addWidget(w, 0, Qt.AlignmentFlag.AlignHCenter)
+        bb = QHBoxLayout()
+        bb.addStretch(1)
+        s1 = QPushButton("Sign in")
+        s1.setStyleSheet("QPushButton{background:%s;color:#12161a;font-weight:800;padding:9px 28px;border-radius:6px;}" % BOARD_ACCENT)
+        s1.clicked.connect(self._signin)
+        s2 = QPushButton("Create account")
+        s2.clicked.connect(self._signup)
+        bb.addWidget(s1)
+        bb.addWidget(s2)
+        bb.addStretch(1)
+        lv.addLayout(bb)
+        lv.addStretch(2)
+        self.stack.addWidget(lg)
+        # board
+        bd = QWidget()
+        bh = QHBoxLayout(bd)
+        bh.setContentsMargins(0, 6, 0, 0)
+        bh.setSpacing(14)
+        self.cols, self.heads = {}, {}
+        self.delegate = _BoardCardDelegate(self)
+        for k, n, c in B_STATUSES:
+            box = QFrame()
+            box.setObjectName("bcol")
+            cv = QVBoxLayout(box)
+            cv.setContentsMargins(10, 10, 10, 10)
+            h = QLabel("")
+            h.setTextFormat(Qt.TextFormat.RichText)
+            col = _BoardCol(k)
+            col.setItemDelegate(self.delegate)
+            col.itemDoubleClicked.connect(lambda it: self.edit(it.data(BROLE)))
+            col.dropped.connect(self.move)
+            ad = QPushButton("+  Add")
+            ad.setFlat(True)
+            ad.setStyleSheet("QPushButton{color:#8a9099;border:none;padding:7px;font-weight:700;} QPushButton:hover{color:%s;}" % BOARD_ACCENT)
+            ad.setCursor(Qt.CursorShape.PointingHandCursor)
+            ad.clicked.connect(lambda _=False, kk=k: self.edit(None, kk))
+            cv.addWidget(h)
+            cv.addWidget(col, 1)
+            cv.addWidget(ad)
+            bh.addWidget(box, 1)
+            self.cols[k], self.heads[k] = col, h
+        self.stack.addWidget(bd)
+        self.status = QLabel("")
+        root.addWidget(self.status)
+
+    def restyle(self):
+        bg, fg, mute, line = self.colors()
+        self.setStyleSheet(
+            "#boardpage{background:%(bg)s;} #boardpage QLabel{color:%(fg)s;background:transparent;} #boardpage QCheckBox{color:%(fg)s;} "
+            "#boardpage QFrame#bcol{background:%(col)s;border:1px solid %(line)s;border-radius:12px;} "
+            "#boardpage QListWidget{background:transparent;border:none;outline:none;} "
+            "#boardpage QLineEdit{background:%(inp)s;color:%(fg)s;border:1px solid %(line)s;border-radius:6px;padding:6px 9px;}"
+            % {"bg": bg, "fg": fg, "line": line, "col": "#f0f2f5" if self.is_light() else "#1a1c20", "inp": "#ffffff" if self.is_light() else "#16181b"})
+        self.render()
+
+    # ---- sign-in flow
+    def _start(self):
+        if self.api.signed_in():
+            self.load_people(first=True)
+        else:
+            self._login_screen("Sign in to share projects live with your team.<br><span style='color:#8a9099'>New here? Press <b>Create account</b> with the email address that was added to the board for you.</span>")
+
+    def _login_screen(self, msg):
+        self.stack.setCurrentIndex(0)
+        self.lmsg.setText("<div style='font-size:15px'>%s</div>" % msg)
+        for w in (self.new_btn, self.team_btn, self.who_btn, self.search, self.mine):
+            w.setVisible(False)
+        self.live.setText("")
+        if self.api.me() and not self.em.text():
+            self.em.setText(self.api.me())
+
+    def _signin(self):
+        em, pw = self.em.text().strip(), self.pw.text()
+        if "@" not in em or not pw:
+            self.lmsg.setText("<div style='color:#ff5a6a'>Type your email address and password.</div>")
+            return
+
+        def done(res, err):
+            if err:
+                self.lmsg.setText("<div style='color:#ff5a6a;font-size:14px'>%s</div>" % err)
+                return
+            self.pw.clear()
+            self.load_people(first=True)
+        self.run(lambda: self.api.sign_in(em, pw), done)
+
+    def _signup(self):
+        em, pw = self.em.text().strip(), self.pw.text()
+        if "@" not in em or len(pw) < 6:
+            self.lmsg.setText("<div style='color:#ff5a6a'>Type your email address and choose a password of at least 6 characters, then press Create account.</div>")
+            return
+
+        def done(res, err):
+            if err:
+                self.lmsg.setText("<div style='color:#ff5a6a;font-size:14px'>%s</div>" % err)
+            elif res:
+                self.pw.clear()
+                self.load_people(first=True)
+            else:
+                self.lmsg.setText("<div style='font-size:14px'>Almost there: open the email that was just sent to <b>%s</b>, confirm it, then come back and press <b>Sign in</b>.</div>" % em)
+        self.run(lambda: self.api.sign_up(em, pw), done)
+
+    def _sign_out(self):
+        self.api.sign_out()
+        self.rows.clear()
+        self.team = []
+        self.since = None
+        self.loaded = False
+        self._login_screen("You are signed out.")
+
+    # ---- loading
+    def load_people(self, first=False):
+        def done(res, err):
+            if err:
+                if not self.api.signed_in():
+                    self._login_screen("<span style='color:#ff5a6a'>%s</span>" % err)
+                else:
+                    self.status.setText(err)
+                return
+            self.team = res or []
+            me = self.api.me()
+            mine = [m for m in self.team if m["email"].lower() == me]
+            self.is_admin = bool(mine and mine[0].get("role") == "admin")
+            if not mine:
+                self._login_screen("You are signed in as <b>%s</b>, but this email is not on the board yet.<br>Ask the board's admin to add it under <b>Team</b>, then press Sign in again." % me)
+                self.api.sign_out()
+                return
+            self.stack.setCurrentIndex(1)
+            for w in (self.new_btn, self.who_btn, self.search, self.mine):
+                w.setVisible(True)
+            self.team_btn.setVisible(self.is_admin)
+            self.who_btn.setText("%s  ·  Sign out" % (self.who(me) or me))
+            if first or not self.loaded:
+                self.since = None
+                self.poll()
+            else:
+                self.render()
+        self.run(self.api.members, done)
+
+    def poll(self):
+        if self.busy or not self.api.signed_in() or self.stack.currentIndex() != 1:
+            return
+        self.busy = True
+        since = self.since
+
+        def done(res, err):
+            self.busy = False
+            if err:
+                self.live.setText("<span style='color:#ff5a6a'>● Offline</span>")
+                if not self.api.signed_in():
+                    self._login_screen("<span style='color:#ff5a6a'>%s</span>" % err)
+                return
+            self.last_ok = _btime.time()
+            self.live.setText("<span style='color:%s'>● Live</span>" % BOARD_ACCENT)
+            self.merge(res or [])
+        self.run(lambda: self.api.fetch(since), done)
+
+    def _tick(self):
+        self._tick_n += 1
+        if self.isVisible() or self._tick_n % 3 == 0:                # every 2 s while you look at it, every 6 s in the background
+            self.poll()
+
+    def merge(self, rows):
+        me = self.api.me()
+        first = not self.loaded
+        changed = False
+        notes = []
+        for r in rows:
+            old = self.rows.get(r["id"])
+            if old is not None and old.get("updated_at") == r.get("updated_at") and old.get("deleted") == r.get("deleted"):
+                continue
+            changed = True
+            self.rows[r["id"]] = r
+            by = str(r.get("updated_by") or "").lower()
+            if not first and by and by != me:
+                nm = self.who(by) or "Someone"
+                if r.get("deleted"):
+                    notes.append("%s removed “%s”" % (nm, r.get("title")))
+                elif old is None:
+                    notes.append("%s added “%s”" % (nm, r.get("title")))
+                elif old.get("status") != r.get("status"):
+                    notes.append("%s moved “%s” to %s" % (nm, r.get("title"), B_ST_NAME.get(r.get("status"), "")))
+                else:
+                    notes.append("%s changed “%s”" % (nm, r.get("title")))
+        if rows:
+            self.since = max(str(r.get("updated_at") or "") for r in rows)
+        self.loaded = True
+        if changed:
+            self.render()
+        if notes:
+            if not (self.isVisible() and self.host.isActiveWindow()):
+                self.unseen += len(notes)
+            try:
+                self.host.toast(notes[0] if len(notes) == 1 else "%s, and %d more on the board" % (notes[0], len(notes) - 1), "Open",
+                                lambda: self.host.main_tabs.setCurrentWidget(self), 8000)
+            except Exception:
+                pass
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self.unseen = 0
+        QTimer.singleShot(0, self.poll)
+
+    # ---- drawing the board
+    def render(self):
+        q = self.search.text().strip().lower()
+        me = self.api.me()
+        only = self.mine.isChecked()
+        for k, n, c in B_STATUSES:
+            col = self.cols[k]
+            keep = col.verticalScrollBar().value()
+            col.blockSignals(True)
+            col.clear()
+            rs = [r for r in self.rows.values() if not r.get("deleted") and r.get("status") == k]
+            if q:
+                rs = [r for r in rs if q in " ".join(str(r.get(x) or "") for x in ("title", "client", "notes", "owner")).lower()]
+            if only:
+                rs = [r for r in rs if str(r.get("owner") or "").lower() == me]
+            rank = {"urgent": 0, "high": 1, "normal": 2, "low": 3}
+            rs.sort(key=lambda r: (rank.get(r.get("priority"), 2), str(r.get("due") or "9999"), str(r.get("created_at") or "")))
+            for r in rs:
+                it = QListWidgetItem()
+                it.setData(BROLE, r)
+                it.setSizeHint(QSize(100, self.delegate.H))
+                col.addItem(it)
+            col.blockSignals(False)
+            col.verticalScrollBar().setValue(keep)
+            self.heads[k].setText("<span style='font-size:15px;font-weight:800;color:%s'>●</span> <span style='font-size:15px;font-weight:800'>%s</span>"
+                                  " <span style='color:#8a9099'>%d</span>" % (c, n, len(rs)))
+
+    # ---- changing things (the screen follows at once, the database after)
+    def edit(self, row, status="todo"):
+        dlg = ProjectDialog(self, row, status)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        f = dlg.fields()
+        if row and row.get("id"):
+            if dlg.deleted:
+                self._apply(row["id"], {"deleted": True})
+            else:
+                self._apply(row["id"], f)
+        else:
+            self._create(f)
+
+    def _apply(self, pid, fields):
+        r = self.rows.get(pid)
+        if r is None:
+            return
+        self.rows[pid] = dict(r, **fields)
+        self.render()
+
+        def done(res, err):
+            if err:
+                self.status.setText("The board did not accept the change (%s)" % err)
+                self.since = None
+            elif res:
+                self.rows[pid] = res
+                self.since = max(self.since or "", str(res.get("updated_at") or ""))
+                self.render()
+        self.run(lambda: self.api.change(pid, fields), done)
+
+    def _create(self, fields):
+        fields = dict(fields, pos=_btime.time())
+
+        def done(res, err):
+            if err:
+                self.status.setText("The board did not accept the project (%s)" % err)
+            elif res:
+                self.rows[res["id"]] = res
+                self.since = max(self.since or "", str(res.get("updated_at") or ""))
+                self.render()
+        self.run(lambda: self.api.add(fields), done)
+
+    def move(self, pid, status):
+        self._apply(pid, {"status": status})
