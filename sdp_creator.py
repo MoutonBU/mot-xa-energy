@@ -336,7 +336,9 @@ class SdpPage(SitePage):
         ok, bad = "#2e9e5b", "#e0243a"
         cell = lambda lab, val, good=None: "<span style='color:#8a8f98'>%s</span> <b%s>%s</b>" % (lab, "" if good is None else " style='color:%s'" % (ok if good else bad), val)
         chk = {c[0]: c[3] for c in a["checks"]}
-        parts = [cell("Units", t["units"]), cell("Bays", "%d / %d needed" % (a["bays"], a["bays_needed"]), chk["Parking bays"])]
+        tm = sum(w[0].value() for w in self.mix.values()) or 1.0
+        beds = t["units"] * sum(w[0].value() * int(k) for k, w in self.mix.items()) / tm
+        parts = [cell("Units", t["units"]), cell("Beds", "%d" % round(beds)), cell("Bays", "%d / %d needed" % (a["bays"], a["bays_needed"]), chk["Parking bays"])]
         if t["units"]:
             parts.append(cell("per unit", "%.2f" % (a["bays"] / float(t["units"]))))
         if a["bays"]:
@@ -383,7 +385,19 @@ class SdpPage(SitePage):
         fl.addWidget(self._pair("EV bays", self.ev_pct))
         bv.addLayout(fl)
         br = FlowLayout(None, 8, 6)
-        for txt, fn in (("Set them aside", self.assign_special), ("Save as a scheme", self.save_scheme), ("Export to CAD (DXF)", self.export_dxf), ("Export numbers (CSV)", self.export_csv)):
+        mixl = FlowLayout(None, 10, 6)
+        self.mix = {}
+        for k, (lab, share, ratio) in {"1": ("1 bed", 30, 1.0), "2": ("2 bed", 50, 1.5), "3": ("3 bed", 20, 2.0)}.items():
+            sh, ra = sl.spin(0, 100, share, 1, " %"), sl.spin(0, 5, ratio, 2, "")
+            sh.setToolTip("Share of the units that are %s." % lab)
+            ra.setToolTip("Bays for each %s unit." % lab)
+            self.mix[k] = (sh, ra)
+            mixl.addWidget(self._pair(lab + " share", sh))
+            mixl.addWidget(self._pair("bays each", ra))
+        bv.addLayout(mixl)
+        self.mix_lbl = QLabel("")
+        bv.addWidget(self.mix_lbl)
+        for txt, fn in (("Use this unit mix", self.use_mix), ("More like this", self.more_like_this), ("Set them aside", self.assign_special), ("Save as a scheme", self.save_scheme), ("Export to CAD (DXF)", self.export_dxf), ("Export numbers (CSV)", self.export_csv)):
             b = QPushButton(txt)
             b.clicked.connect(lambda _=False, f=fn: f())
             br.addWidget(b)
@@ -392,6 +406,10 @@ class SdpPage(SitePage):
         row = QHBoxLayout()
         self.scheme_cb = QComboBox()
         row.addWidget(self.scheme_cb, 1)
+        self.goal_cb = QComboBox()
+        self.goal_cb.addItems(["Best: most units", "Best: most spare bays", "Best: least coverage", "Best: fewest m2 per bay"])
+        self.goal_cb.currentIndexChanged.connect(lambda _i: self._show_schemes())
+        row.addWidget(self.goal_cb)
         for txt, fn in (("Open scheme", self.load_scheme), ("Delete scheme", self.delete_scheme)):
             b = QPushButton(txt)
             b.clicked.connect(lambda _=False, f=fn: f())
@@ -942,6 +960,33 @@ class SdpPage(SitePage):
         self.sel_bay = -1
         self.refresh_parking(user=True)
 
+    def use_mix(self):
+        """the unit mix (1, 2, 3 bed) gives the bays a unit needs on average and the beds; the bays per unit on the Schedule step is set from it"""
+        tot = sum(w[0].value() for w in self.mix.values()) or 1.0
+        per = sum(w[0].value() * w[1].value() for w in self.mix.values()) / tot
+        beds = sum(w[0].value() * int(k) for k, w in self.mix.items()) / tot
+        self.f["bays_per_unit"].setValue(round(per, 3))
+        u = self.sdp()["total"]["units"]
+        self.mix_lbl.setText("Average %.2f bays and %.2f beds a unit. %d units = %d beds, %d bays needed." % (per, beds, u, round(u * beds), self.sdp()["bays_needed"]))
+        self.refresh_parking(user=True)
+
+    def more_like_this(self):
+        """directed variation: small changes to the last generated layout (size, spacing), each saved as a scheme"""
+        o = getattr(self, "_last_opts", None)
+        if not o:
+            QMessageBox.information(self, self.TITLE, "Generate a layout first, then ask for more like it.")
+            return
+        base = dict(o, count=0, parking=True)
+        vs = [dict(w=o["w"] * 0.9, d=o["d"] * 1.1), dict(w=o["w"] * 1.1, d=o["d"] * 0.9), dict(front=max(10.0, o["front"] - 2.5)), dict(front=o["front"] + 3.0),
+              dict(side=max(3.0, o["side"] - 2.0)), dict(side=o["side"] + 3.0)]
+        for i, v_ in enumerate(vs):
+            self.generate(dict(base, **v_))
+            QApplication.processEvents()
+            self.save_scheme()
+            self.schemes[-1]["name"] = "Variation %d" % (i + 1)
+        self._show_schemes()
+        self.set_hint("%d variations saved as schemes. Pick the goal next to the list to see the best one." % len(vs))
+
     def find_options(self, filt=None):
         """the site solver's 'filtered options': every block type in both directions is solved; those that meet the limits are saved as schemes"""
         if filt is None:
@@ -1060,12 +1105,16 @@ class SdpPage(SitePage):
         if not self.schemes:
             self.scheme_lbl.setText("")
             return
+        g = self.goal_cb.currentIndex()
+        key = [lambda n: n["units"], lambda n: n["bays"] - n["need"], lambda n: -n["cov"], lambda n: -n["per_bay"] if n["per_bay"] else -1e9][g]
+        ok_ = [i for i, x in enumerate(self.schemes) if x["num"]["bays"] >= x["num"]["need"]] or list(range(len(self.schemes)))
+        star = max(ok_, key=lambda i: key(self.schemes[i]["num"]))
         h = "<table cellpadding='3'><tr><th align=left>Scheme</th><th>Blocks</th><th>Units</th><th>Bays</th><th>Needed</th><th>Per unit</th><th>m2 / bay</th><th>Cover %</th><th>FAR</th></tr>"
-        for sc_ in self.schemes:
+        for si, sc_ in enumerate(self.schemes):
             n = sc_["num"]
             col = "#2e9e5b" if n["bays"] >= n["need"] else "#e0243a"
             h += "<tr><td>%s</td><td align=right>%d</td><td align=right>%d</td><td align=right style='color:%s'><b>%d</b></td><td align=right>%d</td><td align=right>%.2f</td><td align=right>%d</td><td align=right>%.1f</td><td align=right>%.2f</td></tr>" % (
-                sc_["name"], n["blocks"], n["units"], col, n["bays"], n["need"], n["per_unit"], n["per_bay"], n["cov"], n["far"])
+                ("&#9733; " if si == star else "") + sc_["name"], n["blocks"], n["units"], col, n["bays"], n["need"], n["per_unit"], n["per_bay"], n["cov"], n["far"])
         self.scheme_lbl.setText(h + "</table>")
 
     def load_scheme(self):
@@ -1154,6 +1203,7 @@ class SdpPage(SitePage):
                 return
             opts = {"type": d.typ.currentText(), "prefix": d.prefix.text().strip(), "phase": d.phase.text().strip(), "w": d.w.value(), "d": d.d.value(),
                     "side": d.side.value(), "front": d.front.value(), "count": d.count.value() if d.mode.currentIndex() == 1 else 0, "parking": d.parking.isChecked()}
+        self._last_opts = dict(opts)
         typ, pre, phase = opts["type"], opts.get("prefix") or "H", opts.get("phase") or "Phase 1"
         m = kb.module_preset(typ)
         r = self.rules_now()
@@ -1729,7 +1779,7 @@ class SdpPage(SitePage):
     def state(self):
         d = super().state()
         d.update({"sdp": self.site(), "blocks": self.blocks(), "zones": [dict(z) for z in self.zones], "bays": [dict(b) for b in self.bays],
-                  "prules": self.rules_now(), "gen": self._gen_names(), "schemes": self.schemes, "excl": self.excl})
+                  "prules": self.rules_now(), "gen": self._gen_names(), "schemes": self.schemes, "excl": self.excl, "mix": {k: [w[0].value(), w[1].value()] for k, w in self.mix.items()}})
         return d
 
     def set_state(self, d):
@@ -1759,6 +1809,9 @@ class SdpPage(SitePage):
             self.sel_bay = self.sel_zone = -1
             self.gen_names = [str(n) for n in (d.get("gen") or [])]
             self.excl = [[list(q) for q in e] for e in (d.get("excl") or [])]
+            for k, vv in (d.get("mix") or {}).items():
+                if k in self.mix and len(vv) == 2:
+                    self.mix[k][0].setValue(vv[0]), self.mix[k][1].setValue(vv[1])
             if "schemes" in d:
                 self.schemes = [x for x in (d.get("schemes") or []) if isinstance(x, dict) and x.get("state")]
             self._show_schemes()
