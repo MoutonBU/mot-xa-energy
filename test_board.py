@@ -250,6 +250,23 @@ if os.environ.get("GRP_SHOT"):
     pa.grab().save(os.environ["GRP_SHOT"])
 print("ok9")
 
+# select several to-dos and make a group from them, then move one to another group
+from PySide6.QtWidgets import QInputDialog
+pa._create({"title": "Loose A", "parent_id": e4["id"], "status": "todo", "priority": "normal"})
+pa._create({"title": "Loose B", "parent_id": e4["id"], "status": "todo", "priority": "normal"})
+assert wait(lambda: len([r for r in B.board_kids(pa.rows, e4["id"]) if not r.get("is_group")]) == 2, 4)
+la, lb = [r["id"] for r in B.board_kids(pa.rows, e4["id"]) if not r.get("is_group")]
+QInputDialog.getText = staticmethod(lambda *a, **k: ("Roof", True))
+pa.make_group_from([la, lb])
+assert wait(lambda: any(r["title"] == "Roof" and r.get("is_group") for r in pa.rows.values()) and pa.rows[la].get("parent_id") == pa.rows[lb].get("parent_id") != e4["id"], 4)
+rg = [r for r in pa.rows.values() if r["title"] == "Roof" and r.get("is_group")][0]
+assert pa.rows[la]["parent_id"] == rg["id"] and rg["is_group"] and rg["parent_id"] == e4["id"]
+root, gs = pa.groups_for([la])
+assert root == e4["id"] and rg["id"] in [g["id"] for g in gs]
+pa.move_to([la], g1["id"])
+assert wait(lambda: DB["projects"] and any(r["id"] == la and r["parent_id"] == g1["id"] for r in DB["projects"]), 4)
+print("ok10")
+
 # a picture of it
 if os.environ.get("BOARD_SHOT"):
     pa.mine.setChecked(False)

@@ -6567,6 +6567,10 @@ class _BoardCardDelegate(QStyledItemDelegate):
                     p.setPen(QColor(mute))
                     p.drawText(QRectF(card.right() - 14 - cw, yy, cw, TODO_H), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, cnt)
                     continue
+                if k["id"] in self.page.sel_ids:
+                    p.setPen(Qt.PenStyle.NoPen)
+                    p.setBrush(QColor(155, 197, 61, 46))
+                    p.drawRoundedRect(QRectF(x - 4, yy + 1, card.right() - x - 6, TODO_H - 2), 6, 6)
                 haskids = bool(board_kids(self.page.rows, k["id"]))
                 if haskids:
                     self._chev(p, x + 5, yy + TODO_H / 2.0, k["id"] in self.page.open_ids, mute, 4)
@@ -6687,8 +6691,17 @@ class _BoardCol(QListWidget):
                     pg.group_prompt_add(h[1])
                 elif h[0] == "grow":
                     pg.toggle_open(h[1])
+                elif h[0] == "row":
+                    if e.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier):
+                        pg.sel_ids.symmetric_difference_update({h[1]})
+                    else:
+                        pg.sel_ids = {h[1]}
+                    self.viewport().update()
                 e.accept()
                 return
+            if self.page.sel_ids:
+                self.page.sel_ids = set()
+                self.viewport().update()
             ix = self.indexAt(e.position().toPoint())
             self._pc = ((ix.data(BROLE) or {}).get("id"), e.position().toPoint()) if ix.isValid() else None
         super().mousePressEvent(e)
@@ -6717,7 +6730,14 @@ class _BoardCol(QListWidget):
     def contextMenuEvent(self, e):
         h = self._hit(e.pos())
         if h and h[0] in ("row", "check", "open", "grow"):
-            self.page.todo_menu(h[1], e.globalPos(), self)
+            pg = self.page
+            if h[0] == "row" and h[1] not in pg.sel_ids:
+                pg.sel_ids = {h[1]}
+                self.viewport().update()
+            if h[0] == "row" and len(pg.sel_ids) > 1:
+                pg.todo_multi_menu(list(pg.sel_ids), e.globalPos(), self)
+            else:
+                pg.todo_menu(h[1], e.globalPos(), self)
             e.accept()
             return
         ix = self.indexAt(e.pos())
@@ -7132,6 +7152,7 @@ class BoardPage(QWidget):
 
     def __init__(self, host, G, is_light, get_M):
         self.open_ids = set()
+        self.sel_ids = set()
         self.tree_hook = None
         super().__init__()
         self.host, self.G, self.is_light, self.get_M = host, G, is_light, get_M
@@ -7572,6 +7593,84 @@ class BoardPage(QWidget):
             self.open_ids.add(parent_id)
             self._create({"title": t.strip(), "status": "todo", "priority": "normal", "parent_id": parent_id})
 
+    def root_of(self, pid):
+        seen = 0
+        r = self.rows.get(pid)
+        while r is not None and r.get("parent_id") and seen < 20:
+            r = self.rows.get(r.get("parent_id"))
+            seen += 1
+        return r["id"] if r else None
+
+    def _below(self, pid, out=None):
+        out = set() if out is None else out
+        for k in board_kids(self.rows, pid):
+            out.add(k["id"])
+            self._below(k["id"], out)
+        return out
+
+    def groups_for(self, ids):
+        """groups of the same project the given to-dos could move into (not into themselves or what is under them)"""
+        root = self.root_of(ids[0])
+        bad = set(ids)
+        for i in ids:
+            bad |= self._below(i)
+        gs = [r for r in self.rows.values() if not r.get("deleted") and r.get("is_group") and self.root_of(r["id"]) == root and r["id"] not in bad]
+        gs.sort(key=lambda r: str(r.get("created_at") or ""))
+        return root, gs
+
+    def move_to(self, ids, parent_id):
+        for i in ids:
+            if i != parent_id:
+                self._apply(i, {"parent_id": parent_id})
+        self.open_ids.add(parent_id)
+        self.sel_ids = set()
+        self.render()
+
+    def make_group_from(self, ids, parent=None):
+        from PySide6.QtWidgets import QInputDialog
+        t, ok = QInputDialog.getText(parent or self, "New group", "Name of the group:")
+        if not ok or not t.strip():
+            return
+        pars = {(self.rows.get(i) or {}).get("parent_id") for i in ids}
+        par = pars.pop() if len(pars) == 1 else self.root_of(ids[0])
+        fields = {"title": t.strip(), "status": "todo", "priority": "normal", "parent_id": par, "is_group": True, "pos": _btime.time()}
+
+        def done(res, err):
+            if err or not res:
+                self.status.setText("The board did not accept the group (%s)" % err)
+                return
+            self.rows[res["id"]] = res
+            self.since = max(self.since or "", str(res.get("updated_at") or ""))
+            self.move_to(ids, res["id"])
+        self.run(lambda: self.api.add(fields), done)
+
+    def _move_menu(self, m, ids):
+        root, gs = self.groups_for(ids)
+        mm = m.addMenu("Move to group")
+        for g in gs:
+            mm.addAction(str(g.get("title") or "")).triggered.connect(lambda _=False, gid=g["id"]: self.move_to(ids, gid))
+        if gs:
+            mm.addSeparator()
+        mm.addAction("Top level of the project").triggered.connect(lambda _=False: self.move_to(ids, root))
+        mm.addAction("New group...").triggered.connect(lambda _=False: self.make_group_from(ids))
+
+    def todo_multi_menu(self, ids, gpos, parent=None):
+        m = QMenu(parent or self)
+        n = len(ids)
+        m.addAction("Make a group from these %d to-dos..." % n).triggered.connect(lambda _=False: self.make_group_from(ids, parent))
+        self._move_menu(m, ids)
+        m.addSeparator()
+        m.addAction("Mark all as done").triggered.connect(lambda _=False: [self._apply(i, {"status": "done"}) for i in ids])
+        m.addAction("Mark all as to do").triggered.connect(lambda _=False: [self._apply(i, {"status": "todo"}) for i in ids])
+        pm = m.addMenu("Priority")
+        for k, nm, _c in reversed(B_PRIOS):
+            pm.addAction(nm).triggered.connect(lambda _=False, k=k: [self._apply(i, {"priority": k}) for i in ids])
+        m.addSeparator()
+        m.addAction("Delete these %d to-dos" % n).triggered.connect(
+            lambda _=False: (QMessageBox.question(parent or self, "Projects", "Delete these %d to-dos (and what is under them) for everybody?" % n) == QMessageBox.StandardButton.Yes)
+            and [self._apply(i, {"deleted": True}) for i in ids])
+        m.exec(gpos)
+
     def group_prompt_add(self, parent_id):
         from PySide6.QtWidgets import QInputDialog
         t, ok = QInputDialog.getText(self, "New group", "Name of the group (for example: Ground floor electrical):")
@@ -7630,6 +7729,8 @@ class BoardPage(QWidget):
         m.addSeparator()
         if not project:
             m.addAction("Add a sub-to-do under this").triggered.connect(lambda _=False: self.todo_prompt_add(pid))
+            self._move_menu(m, [pid])
+            m.addAction("Make a group from this to-do...").triggered.connect(lambda _=False: self.make_group_from([pid], parent))
         m.addAction("Rename").triggered.connect(lambda _=False: self.todo_rename(pid))
         m.addSeparator()
         m.addAction("Delete the project (with all its to-dos)" if project else "Delete (with everything under it)").triggered.connect(lambda _=False: self.todo_delete(pid, parent))
