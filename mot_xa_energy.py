@@ -14848,7 +14848,7 @@ class MainWindow(QMainWindow):
         self.launch_page, v = page("", scroll=True)
         g = QGridLayout()
         g.setSpacing(24)
-        for i, (title, sub, ico, tgt) in enumerate((
+        _defs = ((
                 ("Mail", "Your Gmail inbox, live: read, reply and send with your signature, without leaving the program.", "mail", "Mail"),
                 ("Drawing register", "Issue drawings by email, with the sheet index and what is still to come.", "clipboard", "Drawing register"),
                 ("Orders", "The client's orders and changes, house by house. Watches your Gmail for new orders and flags the urgent ones.", "tag", "Orders"),
@@ -14857,8 +14857,10 @@ class MainWindow(QMainWindow):
                 ("Costing", "Fixtures, materials and the budget for a job.", "calc", "Costing"),
                 ("SANS", "Light and ventilation, energy and coverage checks for the building regulations.", "sun", "SANS"),
                 ("Site and areas", "Building lines on the stand, the sewer, water and electrical lines to the house, and the area schedule with unit mix and floor area ratio.", "land", "Building lines"),
-                ("Guidelines review", "Check the plans against the estate's architectural guidelines and the council's or state's checklist.", "shield", "Guidelines review"))):
-            g.addWidget(tile(title, sub, ico, tgt), i // 3, i % 3)
+                ("Guidelines review", "Check the plans against the estate's architectural guidelines and the council's or state's checklist.", "shield", "Guidelines review"),
+        ))
+        import ui_extras as ux_h
+        ux_h.HomeGrid(g, [(d[0], tile(*d)) for d in _defs], SETTINGS, save_settings)       # the person can drag the cards into their own order
         for k in (0, 1, 2, 3):
             g.setRowStretch(k, 1)
         for k in (0, 1, 2):

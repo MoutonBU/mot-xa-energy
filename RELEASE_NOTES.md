@@ -1,10 +1,13 @@
 # MCP Practice Suite - Release notes
 
-Current version: 1.86.346
+Current version: 1.86.347
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
+- **Projects: one click opens a project's to-dos**, and right-click a project to add a to-do, open its details, set priority, status, owner or due date, or delete it.
+- **Home screen: arrange your own layout.** Drag any card onto another to put it where you want; the order is remembered. Right-click a card to reset.
+- **Splash:** the logo itself is now animated: it rises column by column like a skyline (white, then red), settles, and a light sweeps across it.
 ### New features
 - **New name: MCP Practice Suite.** The program, installer, shortcuts and window title are now called MCP Practice Suite; the logo and header keep MCP Architecture & Interiors. Your data and settings are untouched.
 - **Home screen:** Invoicing is hidden for now (the code stays) and Projects takes its place.

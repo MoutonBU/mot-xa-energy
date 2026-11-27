@@ -1606,15 +1606,32 @@ class KeyHints(QObject):
 
 
 class _Splash(QWidget):
-    """Instant start-up card: the logo pops in, a red light sweeps across it, a thin line keeps moving while the program loads."""
+    """Start-up card. The logo itself is animated: it rises like a skyline, column by column (white first, then the red), settles with a
+    soft bounce, then a light keeps sweeping across it while a thin red line moves underneath."""
 
     def __init__(self, logo):
         super().__init__(None, Qt.WindowType.SplashScreen | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setFixedSize(440, 260)
-        self.logo = logo if (logo is not None and not logo.isNull()) else None
+        self.logo = None
+        self.strips = []
+        if logo is not None and not logo.isNull():
+            self.logo = logo.scaledToHeight(104, Qt.TransformationMode.SmoothTransformation)
+            img = self.logo.toImage().convertToFormat(QImage.Format.Format_ARGB32)
+            w, h = img.width(), img.height()
+            sw = 4
+            for x0 in range(0, w, sw):
+                red = 0
+                tot = 0
+                for yy in range(0, h, 3):
+                    for xx in range(x0, min(w, x0 + sw), 2):
+                        c = img.pixelColor(xx, yy)
+                        if c.alpha() > 100:
+                            tot += 1
+                            if c.red() > 150 and c.green() < 110:
+                                red += 1
+                self.strips.append((x0, min(sw, w - x0), red > tot * 0.5 and tot > 0))
         self.t = QElapsedTimer()
         self.t.start()
-        self.fade = None
         self.tm = QTimer(self)
         self.tm.timeout.connect(self.update)
         self.tm.start(16)
@@ -1623,47 +1640,50 @@ class _Splash(QWidget):
         import math
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         W, H = self.width(), self.height()
         ms = self.t.elapsed()
         p.fillRect(0, 0, W, H, QColor("#16171a"))
         p.setPen(QPen(QColor("#2a2c31"), 1))
         p.drawRect(0, 0, W - 1, H - 1)
         cx, cy = W / 2, H / 2 - 18
-        k = min(1.0, ms / 650.0)
-        ease = 1 - (1 - k) ** 3
-        over = 1.0 + 0.10 * math.sin(min(1.0, ms / 650.0) * math.pi) * (1 - k)          # small overshoot
         pulse = 0.5 + 0.5 * math.sin(ms / 380.0)
-        g = QRadialGradient(cx, cy, 120)
-        g.setColorAt(0, QColor(255, 64, 86, int((40 + 35 * pulse) * ease)))
+        grow = min(1.0, ms / 900.0)
+        g = QRadialGradient(cx, cy, 125)
+        g.setColorAt(0, QColor(255, 64, 86, int((30 + 38 * pulse) * grow)))
         g.setColorAt(1, QColor(255, 64, 86, 0))
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(g)
-        p.drawEllipse(QPointF(cx, cy), 120, 120)
+        p.drawEllipse(QPointF(cx, cy), 125, 125)
         if self.logo is not None:
-            lh = 104
-            sc = self.logo.scaledToHeight(lh, Qt.TransformationMode.SmoothTransformation)
-            dw, dh = sc.width(), sc.height()
-            img = QImage(dw, dh, QImage.Format.Format_ARGB32_Premultiplied)
-            img.fill(0)
-            q = QPainter(img)
-            q.drawPixmap(0, 0, sc)
-            q.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceAtop)
-            ph = ((ms - 500) % 1800) / 1800.0                                          # red-white light sweep
-            if ms > 500:
-                x = -dw * 0.4 + ph * dw * 1.8
-                lg = QLinearGradient(x - 26, 0, x + 26, dh * 0.3)
+            lw, lh = self.logo.width(), self.logo.height()
+            ox, oy = cx - lw / 2.0, cy - lh / 2.0 + 2.5 * math.sin(ms / 700.0) * min(1.0, ms / 1400.0)          # gentle float once built
+            for x0, sw, red in self.strips:
+                u = x0 / float(max(1, lw))
+                d = 60 + u * 520 + (260 if red else 0)                       # left to right; the red columns follow the white
+                k = max(0.0, min(1.0, (ms - d) / 420.0))
+                if k <= 0:
+                    continue
+                ease = 1 - (1 - k) ** 3
+                bump = 1.0 + 0.07 * math.sin(k * math.pi) * (1 - k) * 3     # a little overshoot at the top as it lands
+                hh = lh * ease * min(1.0, bump)
+                p.setOpacity(min(1.0, k * 2))
+                p.drawPixmap(QRectF(ox + x0, oy + lh - hh, sw, hh), self.logo, QRectF(x0, lh - hh, sw, hh))
+            p.setOpacity(1.0)
+            if ms > 1300:                                                   # a light sweeps over the finished logo
+                ph = ((ms - 1300) % 2200) / 2200.0
+                x = ox - 40 + ph * (lw + 120)
+                sweep = QImage(lw, lh, QImage.Format.Format_ARGB32_Premultiplied)
+                sweep.fill(0)
+                q = QPainter(sweep)
+                q.drawPixmap(0, 0, self.logo)
+                q.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceAtop)
+                lg = QLinearGradient(x - ox - 26, 0, x - ox + 26, lh * 0.35)
                 lg.setColorAt(0, QColor(255, 255, 255, 0))
-                lg.setColorAt(0.5, QColor(255, 255, 255, 190))
+                lg.setColorAt(0.5, QColor(255, 255, 255, 200))
                 lg.setColorAt(1, QColor(255, 255, 255, 0))
-                q.fillRect(0, 0, dw, dh, lg)
-            q.end()
-            p.save()
-            p.setOpacity(min(1.0, ease * 1.3))
-            p.translate(cx, cy)
-            p.scale(over * (0.82 + 0.18 * ease), over * (0.82 + 0.18 * ease))
-            p.drawImage(QPointF(-dw / 2, -dh / 2), img)
-            p.restore()
+                q.fillRect(0, 0, lw, lh, lg)
+                q.end()
+                p.drawImage(QPointF(ox, oy), sweep)
         else:
             p.setPen(QColor("#eceef0"))
             f = QFont(self.font())
@@ -1671,7 +1691,6 @@ class _Splash(QWidget):
             f.setBold(True)
             p.setFont(f)
             p.drawText(QRectF(0, cy - 20, W, 40), Qt.AlignmentFlag.AlignCenter, "MCP Architecture & Interiors")
-        # thin loading line: a red piece that slides along the bottom
         ly = H - 38
         p.setPen(QPen(QColor("#2a2c31"), 2))
         p.drawLine(70, ly, W - 70, ly)
@@ -1687,6 +1706,93 @@ class _Splash(QWidget):
             p.setPen(QPen(QBrush(lg), 2))
             p.drawLine(QPointF(a0, ly), QPointF(a1, ly))
         p.end()
+
+
+class HomeGrid(QObject):
+    """The start-screen cards: drag one onto another to put it where you want it. The order is remembered."""
+    MIME = "application/x-mcp-tile"
+
+    def __init__(self, grid, items, S, save):
+        super().__init__(grid)
+        self.g, self.S, self.save, self.items = grid, S, save, list(items)
+        self.default = [t for t, _b in self.items]
+        pos = {t: i for i, t in enumerate(S.get("home_order") or [])}
+        self.items.sort(key=lambda it: pos.get(it[0], 999))
+        for t, b in self.items:
+            b.setAcceptDrops(True)
+            b.installEventFilter(self)
+            b._press = None
+            b.setToolTip(b.toolTip() + "\n(Drag this card to move it. Right-click to reset the layout.)")
+        self.relayout()
+
+    def relayout(self):
+        for t, b in self.items:
+            self.g.removeWidget(b)
+        for i, (t, b) in enumerate(self.items):
+            self.g.addWidget(b, i // 3, i % 3)
+
+    def _title(self, b):
+        return next((t for t, x in self.items if x is b), None)
+
+    def eventFilter(self, o, e):
+        from PySide6.QtCore import QMimeData
+        from PySide6.QtGui import QDrag
+        t = e.type()
+        try:
+            if t == QEvent.Type.MouseButtonPress and e.button() == Qt.MouseButton.LeftButton:
+                o._press = e.position().toPoint()
+            elif t == QEvent.Type.MouseMove and (e.buttons() & Qt.MouseButton.LeftButton) and getattr(o, "_press", None) is not None:
+                if (e.position().toPoint() - o._press).manhattanLength() >= 14:
+                    o._press = None
+                    dr = QDrag(o)
+                    md = QMimeData()
+                    md.setData(self.MIME, (self._title(o) or "").encode("utf-8"))
+                    dr.setMimeData(md)
+                    pm = o.grab().scaledToWidth(max(60, o.width() // 2), Qt.TransformationMode.SmoothTransformation)
+                    dr.setPixmap(pm)
+                    dr.setHotSpot(QPoint(pm.width() // 2, pm.height() // 2))
+                    dr.exec(Qt.DropAction.MoveAction)
+                    o.setDown(False)
+                    return True
+            elif t == QEvent.Type.MouseButtonRelease:
+                o._press = None
+            elif t in (QEvent.Type.DragEnter, QEvent.Type.DragMove):
+                if e.mimeData().hasFormat(self.MIME):
+                    e.acceptProposedAction()
+                    return True
+            elif t == QEvent.Type.Drop and e.mimeData().hasFormat(self.MIME):
+                moved = bytes(e.mimeData().data(self.MIME)).decode("utf-8")
+                target = self._title(o)
+                it = next((x for x in self.items if x[0] == moved), None)
+                if it is not None and target and moved != target:
+                    self.items.remove(it)
+                    names = [x[0] for x in self.items]
+                    self.items.insert(names.index(target), it)
+                    self.relayout()
+                    self.S["home_order"] = [x[0] for x in self.items]
+                    try:
+                        self.save()
+                    except Exception:
+                        pass
+                e.acceptProposedAction()
+                return True
+            elif t == QEvent.Type.ContextMenu:
+                m = QMenu(o)
+                m.addAction("Reset the card layout").triggered.connect(self.reset)
+                m.exec(e.globalPos())
+                return True
+        except Exception:
+            pass
+        return False
+
+    def reset(self):
+        self.S.pop("home_order", None)
+        try:
+            self.save()
+        except Exception:
+            pass
+        self.items.sort(key=lambda it: self.default.index(it[0]) if it[0] in self.default else 99)
+        self.relayout()
 
 
 def splash_show(app, logo_pixmap=None):
@@ -6466,7 +6572,18 @@ class _BoardCol(QListWidget):
                     pg.todo_prompt_add(h[1])
                 e.accept()
                 return
+            ix = self.indexAt(e.position().toPoint())
+            self._pc = ((ix.data(BROLE) or {}).get("id"), e.position().toPoint()) if ix.isValid() else None
         super().mousePressEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        pc, self._pc = getattr(self, "_pc", None), None
+        super().mouseReleaseEvent(e)
+        if pc and pc[0] and e.button() == Qt.MouseButton.LeftButton:
+            p = e.position().toPoint()
+            ix = self.indexAt(p)
+            if ix.isValid() and (ix.data(BROLE) or {}).get("id") == pc[0] and (p - pc[1]).manhattanLength() < 8:
+                self.page.toggle_open(pc[0])              # one click on a project opens or closes its to-dos
 
     def mouseDoubleClickEvent(self, e):
         h = self._hit(e.position().toPoint())
@@ -6475,12 +6592,20 @@ class _BoardCol(QListWidget):
                 self.page.todo_rename(h[1])
             e.accept()
             return
+        ix = self.indexAt(e.position().toPoint())
+        if ix.isValid():
+            self.page.toggle_open((ix.data(BROLE) or {}).get("id"))      # undo the single-click toggle: a double-click opens the details
         super().mouseDoubleClickEvent(e)
 
     def contextMenuEvent(self, e):
         h = self._hit(e.pos())
         if h and h[0] in ("row", "check", "open"):
             self.page.todo_menu(h[1], e.globalPos(), self)
+            e.accept()
+            return
+        ix = self.indexAt(e.pos())
+        if ix.isValid() and not h:
+            self.page.todo_menu((ix.data(BROLE) or {}).get("id"), e.globalPos(), self, project=True)
             e.accept()
             return
         super().contextMenuEvent(e)
@@ -7274,8 +7399,13 @@ class BoardPage(QWidget):
             walk(pid)
             self._apply(pid, {"deleted": True})
 
-    def todo_menu(self, pid, gpos, parent=None):
+    def todo_menu(self, pid, gpos, parent=None, project=False):
         m = QMenu(parent or self)
+        if project:
+            m.addAction("Add a to-do to this project").triggered.connect(lambda _=False: self.todo_prompt_add(pid))
+            m.addAction("Open the project details").triggered.connect(lambda _=False: self.edit(self.rows.get(pid)))
+            m.addAction("Show / hide its to-dos").triggered.connect(lambda _=False: self.toggle_open(pid))
+            m.addSeparator()
         pm = m.addMenu("Priority")
         for k, n, _c in reversed(B_PRIOS):
             pm.addAction(n).triggered.connect(lambda _=False, k=k: self._apply(pid, {"priority": k}))
@@ -7292,10 +7422,11 @@ class BoardPage(QWidget):
         dm.addAction("Pick a date…").triggered.connect(lambda _=False: self._pick_due(pid))
         dm.addAction("No date").triggered.connect(lambda _=False: self._apply(pid, {"due": None}))
         m.addSeparator()
-        m.addAction("Add a sub-to-do under this").triggered.connect(lambda _=False: self.todo_prompt_add(pid))
+        if not project:
+            m.addAction("Add a sub-to-do under this").triggered.connect(lambda _=False: self.todo_prompt_add(pid))
         m.addAction("Rename").triggered.connect(lambda _=False: self.todo_rename(pid))
         m.addSeparator()
-        m.addAction("Delete (with everything under it)").triggered.connect(lambda _=False: self.todo_delete(pid, parent))
+        m.addAction("Delete the project (with all its to-dos)" if project else "Delete (with everything under it)").triggered.connect(lambda _=False: self.todo_delete(pid, parent))
         m.exec(gpos)
 
     def _pick_due(self, pid):

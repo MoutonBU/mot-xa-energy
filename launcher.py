@@ -100,15 +100,32 @@ def _early_splash():
         pm = QPixmap()
         pm.loadFromData(base64.b64decode(_LOGO))
         class _Splash(QWidget):
-            """Instant start-up card: the logo pops in, a red light sweeps across it, a thin line keeps moving while the program loads."""
+            """Start-up card. The logo itself is animated: it rises like a skyline, column by column (white first, then the red), settles with a
+            soft bounce, then a light keeps sweeping across it while a thin red line moves underneath."""
 
             def __init__(self, logo):
                 super().__init__(None, Qt.WindowType.SplashScreen | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
                 self.setFixedSize(440, 260)
-                self.logo = logo if (logo is not None and not logo.isNull()) else None
+                self.logo = None
+                self.strips = []
+                if logo is not None and not logo.isNull():
+                    self.logo = logo.scaledToHeight(104, Qt.TransformationMode.SmoothTransformation)
+                    img = self.logo.toImage().convertToFormat(QImage.Format.Format_ARGB32)
+                    w, h = img.width(), img.height()
+                    sw = 4
+                    for x0 in range(0, w, sw):
+                        red = 0
+                        tot = 0
+                        for yy in range(0, h, 3):
+                            for xx in range(x0, min(w, x0 + sw), 2):
+                                c = img.pixelColor(xx, yy)
+                                if c.alpha() > 100:
+                                    tot += 1
+                                    if c.red() > 150 and c.green() < 110:
+                                        red += 1
+                        self.strips.append((x0, min(sw, w - x0), red > tot * 0.5 and tot > 0))
                 self.t = QElapsedTimer()
                 self.t.start()
-                self.fade = None
                 self.tm = QTimer(self)
                 self.tm.timeout.connect(self.update)
                 self.tm.start(16)
@@ -117,47 +134,50 @@ def _early_splash():
                 import math
                 p = QPainter(self)
                 p.setRenderHint(QPainter.RenderHint.Antialiasing)
-                p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
                 W, H = self.width(), self.height()
                 ms = self.t.elapsed()
                 p.fillRect(0, 0, W, H, QColor("#16171a"))
                 p.setPen(QPen(QColor("#2a2c31"), 1))
                 p.drawRect(0, 0, W - 1, H - 1)
                 cx, cy = W / 2, H / 2 - 18
-                k = min(1.0, ms / 650.0)
-                ease = 1 - (1 - k) ** 3
-                over = 1.0 + 0.10 * math.sin(min(1.0, ms / 650.0) * math.pi) * (1 - k)          # small overshoot
                 pulse = 0.5 + 0.5 * math.sin(ms / 380.0)
-                g = QRadialGradient(cx, cy, 120)
-                g.setColorAt(0, QColor(255, 64, 86, int((40 + 35 * pulse) * ease)))
+                grow = min(1.0, ms / 900.0)
+                g = QRadialGradient(cx, cy, 125)
+                g.setColorAt(0, QColor(255, 64, 86, int((30 + 38 * pulse) * grow)))
                 g.setColorAt(1, QColor(255, 64, 86, 0))
                 p.setPen(Qt.PenStyle.NoPen)
                 p.setBrush(g)
-                p.drawEllipse(QPointF(cx, cy), 120, 120)
+                p.drawEllipse(QPointF(cx, cy), 125, 125)
                 if self.logo is not None:
-                    lh = 104
-                    sc = self.logo.scaledToHeight(lh, Qt.TransformationMode.SmoothTransformation)
-                    dw, dh = sc.width(), sc.height()
-                    img = QImage(dw, dh, QImage.Format.Format_ARGB32_Premultiplied)
-                    img.fill(0)
-                    q = QPainter(img)
-                    q.drawPixmap(0, 0, sc)
-                    q.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceAtop)
-                    ph = ((ms - 500) % 1800) / 1800.0                                          # red-white light sweep
-                    if ms > 500:
-                        x = -dw * 0.4 + ph * dw * 1.8
-                        lg = QLinearGradient(x - 26, 0, x + 26, dh * 0.3)
+                    lw, lh = self.logo.width(), self.logo.height()
+                    ox, oy = cx - lw / 2.0, cy - lh / 2.0 + 2.5 * math.sin(ms / 700.0) * min(1.0, ms / 1400.0)          # gentle float once built
+                    for x0, sw, red in self.strips:
+                        u = x0 / float(max(1, lw))
+                        d = 60 + u * 520 + (260 if red else 0)                       # left to right; the red columns follow the white
+                        k = max(0.0, min(1.0, (ms - d) / 420.0))
+                        if k <= 0:
+                            continue
+                        ease = 1 - (1 - k) ** 3
+                        bump = 1.0 + 0.07 * math.sin(k * math.pi) * (1 - k) * 3     # a little overshoot at the top as it lands
+                        hh = lh * ease * min(1.0, bump)
+                        p.setOpacity(min(1.0, k * 2))
+                        p.drawPixmap(QRectF(ox + x0, oy + lh - hh, sw, hh), self.logo, QRectF(x0, lh - hh, sw, hh))
+                    p.setOpacity(1.0)
+                    if ms > 1300:                                                   # a light sweeps over the finished logo
+                        ph = ((ms - 1300) % 2200) / 2200.0
+                        x = ox - 40 + ph * (lw + 120)
+                        sweep = QImage(lw, lh, QImage.Format.Format_ARGB32_Premultiplied)
+                        sweep.fill(0)
+                        q = QPainter(sweep)
+                        q.drawPixmap(0, 0, self.logo)
+                        q.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceAtop)
+                        lg = QLinearGradient(x - ox - 26, 0, x - ox + 26, lh * 0.35)
                         lg.setColorAt(0, QColor(255, 255, 255, 0))
-                        lg.setColorAt(0.5, QColor(255, 255, 255, 190))
+                        lg.setColorAt(0.5, QColor(255, 255, 255, 200))
                         lg.setColorAt(1, QColor(255, 255, 255, 0))
-                        q.fillRect(0, 0, dw, dh, lg)
-                    q.end()
-                    p.save()
-                    p.setOpacity(min(1.0, ease * 1.3))
-                    p.translate(cx, cy)
-                    p.scale(over * (0.82 + 0.18 * ease), over * (0.82 + 0.18 * ease))
-                    p.drawImage(QPointF(-dw / 2, -dh / 2), img)
-                    p.restore()
+                        q.fillRect(0, 0, lw, lh, lg)
+                        q.end()
+                        p.drawImage(QPointF(ox, oy), sweep)
                 else:
                     p.setPen(QColor("#eceef0"))
                     f = QFont(self.font())
@@ -165,7 +185,6 @@ def _early_splash():
                     f.setBold(True)
                     p.setFont(f)
                     p.drawText(QRectF(0, cy - 20, W, 40), Qt.AlignmentFlag.AlignCenter, "MCP Architecture & Interiors")
-                # thin loading line: a red piece that slides along the bottom
                 ly = H - 38
                 p.setPen(QPen(QColor("#2a2c31"), 2))
                 p.drawLine(70, ly, W - 70, ly)
@@ -181,7 +200,6 @@ def _early_splash():
                     p.setPen(QPen(QBrush(lg), 2))
                     p.drawLine(QPointF(a0, ly), QPointF(a1, ly))
                 p.end()
-
         w = _Splash(pm)
         scr = app.primaryScreen().availableGeometry()
         w.move(scr.center().x() - w.width() // 2, scr.center().y() - w.height() // 2)
