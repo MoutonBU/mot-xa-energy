@@ -208,6 +208,23 @@ if os.environ.get("DLG_SHOT"):
 dlg._unhook(); dlg.reject()
 print("ok7")
 
+# the to-dos open on the card itself
+from PySide6.QtCore import QPoint
+col = pa.cols["todo"]
+pa.open_ids.clear(); pa.render()
+ix = [i for i in range(col.count()) if col.item(i).data(B.BROLE)["id"] == pj["id"]][0]
+rect = col.visualItemRect(col.item(ix))
+card, y0 = pa.delegate.geometry(rect)
+col.mousePressEvent(__import__("PySide6.QtGui", fromlist=["QMouseEvent"]).QMouseEvent(B.QEvent.Type.MouseButtonPress, B.QPointF(card.right() - 20, card.top() + 20), B.Qt.MouseButton.LeftButton, B.Qt.MouseButton.LeftButton, B.Qt.KeyboardModifier.NoModifier))
+assert pj["id"] in pa.open_ids and col.visualItemRect(col.item(ix)).height() > pa.delegate.H
+h = col._hit(B.QPointF(card.left() + 80, y0 + 5).toPoint() if False else QPoint(int(card.left() + 17), int(col.visualItemRect(col.item(ix)).top() + 3 + pa.delegate.H - 6 + 4 + 5)))
+assert h and h[0] == "open", h                                            # the first to-do has sub-to-dos
+pa.todo_toggle(h[1]); assert wait(lambda: pa.rows[h[1]]["status"] == "done", 4)
+pa._apply(h[1], {"priority": "urgent"}); assert pa.rows[h[1]]["priority"] == "urgent"
+print("ok8")
+if os.environ.get("CARD_SHOT"):
+    pa.open_ids.add(h[1]); pa.render(); pa.resize(1300, 700); app.processEvents(); pa.grab().save(os.environ["CARD_SHOT"])
+
 # a picture of it
 if os.environ.get("BOARD_SHOT"):
     pa.mine.setChecked(False)

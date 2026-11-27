@@ -6221,6 +6221,20 @@ def board_progress(rows, pid):
     return d, t
 
 
+TODO_H = 27
+
+
+def board_flat(rows, pid, opened, depth=0):
+    """the to-dos shown under an opened card or to-do, indented by depth"""
+    out = []
+    if pid not in opened:
+        return out
+    for k in board_kids(rows, pid):
+        out.append((k, depth))
+        out += board_flat(rows, k["id"], opened, depth + 1)
+    return out
+
+
 class _BoardCardDelegate(QStyledItemDelegate):
     H = 92
 
@@ -6228,8 +6242,18 @@ class _BoardCardDelegate(QStyledItemDelegate):
         super().__init__(page)
         self.page = page
 
+    def height_for(self, r):
+        if r.get("id") in self.page.open_ids:
+            return self.H + 6 + TODO_H * (len(board_flat(self.page.rows, r["id"], self.page.open_ids)) + 1)
+        return self.H
+
     def sizeHint(self, opt, idx):
-        return QSize(opt.rect.width(), self.H)
+        return QSize(opt.rect.width(), self.height_for(idx.data(BROLE) or {}))
+
+    def geometry(self, rect):
+        """card rectangle, where its to-do rows start"""
+        card = QRectF(rect).adjusted(2, 3, -2, -3)
+        return card, card.top() + self.H - 6 + 4
 
     def paint(self, p, opt, idx):
         r = idx.data(BROLE) or {}
@@ -6267,7 +6291,7 @@ class _BoardCardDelegate(QStyledItemDelegate):
             p.drawText(QPointF(x0, card.top() + 60), ("Overdue · " if late else "Due ") + due)
         dn, tt = board_progress(self.page.rows, r.get("id"))
         if tt:
-            by = card.bottom() - 9
+            by = card.top() + self.H - 6 - 12
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QColor(line))
             p.drawRoundedRect(QRectF(x0, by, w - 50, 4), 2, 2)
@@ -6280,7 +6304,80 @@ class _BoardCardDelegate(QStyledItemDelegate):
             p.setFont(f)
             p.setPen(pc)
             txt = dict((k, n) for k, n, _c in B_PRIOS)[r["priority"]]
-            p.drawText(QRectF(card.right() - 90, card.top() + 50, 80, 16), Qt.AlignmentFlag.AlignRight, txt)
+            p.drawText(QRectF(card.right() - 90, card.top() + 44, 80, 16), Qt.AlignmentFlag.AlignRight, txt)
+        opened = r.get("id") in self.page.open_ids
+        self._chev(p, card.right() - 20, card.top() + 20, opened, mute)
+        if opened:
+            y0 = self.geometry(opt.rect)[1]
+            p.setPen(QPen(QColor(line), 1))
+            p.drawLine(QPointF(card.left() + 10, y0 - 3), QPointF(card.right() - 10, y0 - 3))
+            fl = board_flat(self.page.rows, r["id"], self.page.open_ids)
+            f2 = QFont(p.font())
+            f2.setPixelSize(13)
+            f2.setBold(False)
+            for i, (k, dep) in enumerate(fl):
+                yy = y0 + i * TODO_H
+                x = card.left() + 12 + dep * 18
+                done = k.get("status") == "done"
+                haskids = bool(board_kids(self.page.rows, k["id"]))
+                if haskids:
+                    self._chev(p, x + 5, yy + TODO_H / 2.0, k["id"] in self.page.open_ids, mute, 4)
+                bx = QRectF(x + 14, yy + TODO_H / 2.0 - 7, 14, 14)
+                p.setPen(QPen(QColor("#55b57a" if done else mute), 1.5))
+                p.setBrush(QColor("#55b57a") if done else Qt.BrushStyle.NoBrush)
+                p.drawRoundedRect(bx, 3, 3)
+                if done:
+                    p.setPen(QPen(QColor("#12161a"), 1.8))
+                    p.drawLine(QPointF(bx.left() + 3, bx.center().y()), QPointF(bx.center().x() - 1, bx.bottom() - 4))
+                    p.drawLine(QPointF(bx.center().x() - 1, bx.bottom() - 4), QPointF(bx.right() - 3, bx.top() + 4))
+                pcol = QColor(B_PRIO_COL.get(k.get("priority"), "#8a9099"))
+                tx = bx.right() + 8
+                right = card.right() - 12
+                tag = ""
+                if k.get("priority") in ("urgent", "high", "low"):
+                    tag = dict((a, b) for a, b, _c in B_PRIOS)[k["priority"]]
+                tw = 0
+                if tag:
+                    p.setPen(Qt.PenStyle.NoPen)
+                    ff = QFont(f2)
+                    ff.setBold(True)
+                    ff.setPixelSize(11)
+                    p.setFont(ff)
+                    tw = QFontMetrics(ff).horizontalAdvance(tag) + 14
+                    p.setBrush(QColor(pcol.red(), pcol.green(), pcol.blue(), 46))
+                    p.drawRoundedRect(QRectF(right - tw, yy + 5, tw, TODO_H - 10), 8, 8)
+                    p.setPen(pcol)
+                    p.drawText(QRectF(right - tw, yy + 5, tw, TODO_H - 10), Qt.AlignmentFlag.AlignCenter, tag)
+                    right -= tw + 6
+                dd = str(k.get("due") or "")
+                if dd:
+                    late = dd < _btime.strftime("%Y-%m-%d") and not done
+                    p.setFont(f2)
+                    p.setPen(QColor("#ff5a6a") if late else QColor(mute))
+                    dw = QFontMetrics(f2).horizontalAdvance(dd) + 6
+                    p.drawText(QRectF(right - dw, yy, dw, TODO_H), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, dd)
+                    right -= dw + 6
+                ft = QFont(f2)
+                ft.setStrikeOut(done)
+                p.setFont(ft)
+                p.setPen(QColor(mute) if done else QColor(fg))
+                p.drawText(QRectF(tx, yy, max(10, right - tx), TODO_H), Qt.AlignmentFlag.AlignVCenter,
+                           QFontMetrics(ft).elidedText(str(k.get("title") or ""), Qt.TextElideMode.ElideRight, int(max(10, right - tx))))
+            ya = y0 + len(fl) * TODO_H
+            p.setFont(f2)
+            p.setPen(QColor(BOARD_ACCENT))
+            p.drawText(QRectF(card.left() + 14, ya, 200, TODO_H), Qt.AlignmentFlag.AlignVCenter, "+  Add a to-do")
+        p.restore()
+
+    @staticmethod
+    def _chev(p, cx, cy, opened, col, sz=5):
+        p.save()
+        p.setPen(QPen(QColor(col), 1.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        if opened:
+            p.drawPolyline([QPointF(cx - sz, cy - sz / 2.0), QPointF(cx, cy + sz / 2.0), QPointF(cx + sz, cy - sz / 2.0)])
+        else:
+            p.drawPolyline([QPointF(cx - sz / 2.0, cy - sz), QPointF(cx + sz / 2.0, cy), QPointF(cx - sz / 2.0, cy + sz)])
         p.restore()
 
 
@@ -6299,6 +6396,65 @@ class _BoardCol(QListWidget):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setSpacing(0)
+
+    def _hit(self, pos):
+        """what the mouse is on: ('chev', card id) / ('check', id) / ('open', id) / ('row', id) / ('add', card id) / None"""
+        idx = self.indexAt(pos)
+        if not idx.isValid() or getattr(self, "page", None) is None:
+            return None
+        r = idx.data(BROLE) or {}
+        pg = self.page
+        rect = self.visualRect(idx)
+        card, y0 = pg.delegate.geometry(rect)
+        if pos.x() > card.right() - 40 and pos.y() < card.top() + 36:
+            return ("chev", r.get("id"))
+        if r.get("id") not in pg.open_ids or pos.y() < y0:
+            return None
+        fl = board_flat(pg.rows, r["id"], pg.open_ids)
+        i = int((pos.y() - y0) // TODO_H)
+        if i == len(fl):
+            return ("add", r["id"])
+        if 0 <= i < len(fl):
+            k, dep = fl[i]
+            x = card.left() + 12 + dep * 18
+            if pos.x() < x + 13 and board_kids(pg.rows, k["id"]):
+                return ("open", k["id"])
+            if pos.x() < x + 32:
+                return ("check", k["id"])
+            return ("row", k["id"])
+        return None
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            h = self._hit(e.position().toPoint())
+            if h:
+                pg = self.page
+                if h[0] in ("chev", "open"):
+                    pg.toggle_open(h[1])
+                elif h[0] == "check":
+                    pg.todo_toggle(h[1])
+                elif h[0] == "add":
+                    pg.todo_prompt_add(h[1])
+                e.accept()
+                return
+        super().mousePressEvent(e)
+
+    def mouseDoubleClickEvent(self, e):
+        h = self._hit(e.position().toPoint())
+        if h:
+            if h[0] == "row":
+                self.page.todo_rename(h[1])
+            e.accept()
+            return
+        super().mouseDoubleClickEvent(e)
+
+    def contextMenuEvent(self, e):
+        h = self._hit(e.pos())
+        if h and h[0] in ("row", "check", "open"):
+            self.page.todo_menu(h[1], e.globalPos(), self)
+            e.accept()
+            return
+        super().contextMenuEvent(e)
 
     def dropEvent(self, e):
         src = e.source()
@@ -6528,44 +6684,8 @@ class ProjectDialog(QDialog):
 
     def _tmenu(self, pos):
         item = self.tree.itemAt(pos)
-        if item is None:
-            return
-        pid = self._tid(item)
-        m = QMenu(self)
-        for k, n, _c in B_STATUSES:
-            m.addAction("Mark as " + n).triggered.connect(lambda _=False, k=k: self.page._apply(pid, {"status": k}))
-        m.addSeparator()
-        wm = m.addMenu("Who does it")
-        wm.addAction("Nobody").triggered.connect(lambda _=False: self.page._apply(pid, {"owner": None}))
-        for em, nm in self.page.people():
-            wm.addAction(nm or em).triggered.connect(lambda _=False, em=em: self.page._apply(pid, {"owner": em}))
-        dm = m.addMenu("Due date")
-        for lab, days in (("Today", 0), ("Tomorrow", 1), ("In a week", 7)):
-            dm.addAction(lab).triggered.connect(lambda _=False, d=days: self.page._apply(pid, {"due": QDate.currentDate().addDays(d).toString("yyyy-MM-dd")}))
-        dm.addAction("Pick a date…").triggered.connect(lambda _=False: self._pick_due(pid))
-        dm.addAction("No date").triggered.connect(lambda _=False: self.page._apply(pid, {"due": None}))
-        m.addSeparator()
-        m.addAction("Add a sub-to-do under this").triggered.connect(lambda _=False: (self.tree.setCurrentItem(item), self.addbox.setFocus()))
-        m.addAction("Rename").triggered.connect(lambda _=False: self.tree.editItem(item, 0))
-        m.addSeparator()
-        m.addAction("Delete (with everything under it)").triggered.connect(lambda _=False: self._tdel(pid))
-        m.exec(self.tree.viewport().mapToGlobal(pos))
-
-    def _pick_due(self, pid):
-        from PySide6.QtWidgets import QInputDialog
-        r = self.page.rows.get(pid) or {}
-        t, ok = QInputDialog.getText(self, "Due date", "Date (yyyy-mm-dd):", text=str(r.get("due") or QDate.currentDate().toString("yyyy-MM-dd")))
-        if ok and QDate.fromString(t.strip(), "yyyy-MM-dd").isValid():
-            self.page._apply(pid, {"due": t.strip()})
-
-    def _tdel(self, pid):
-        if QMessageBox.question(self, "Projects", "Delete this to-do and everything under it for everybody?") == QMessageBox.StandardButton.Yes:
-            def walk(i):
-                for c in board_kids(self.page.rows, i):
-                    walk(c["id"])
-                    self.page._apply(c["id"], {"deleted": True})
-            walk(pid)
-            self.page._apply(pid, {"deleted": True})
+        if item is not None:
+            self.page.todo_menu(self._tid(item), self.tree.viewport().mapToGlobal(pos), self)
 
     def _ok(self):
         if not self.title.text().strip():
@@ -6670,6 +6790,8 @@ class BoardPage(QWidget):
     _done = _Signal(object, object, object)
 
     def __init__(self, host, G, is_light, get_M):
+        self.open_ids = set()
+        self.tree_hook = None
         super().__init__()
         self.host, self.G, self.is_light, self.get_M = host, G, is_light, get_M
         self.setObjectName("boardpage")
@@ -6815,6 +6937,7 @@ class BoardPage(QWidget):
             h.setTextFormat(Qt.TextFormat.RichText)
             col = _BoardCol(k)
             col.setItemDelegate(self.delegate)
+            col.page = self
             col.itemDoubleClicked.connect(lambda it: self.edit(it.data(BROLE)))
             col.dropped.connect(self.move)
             ad = QPushButton("+  Add")
@@ -7012,7 +7135,7 @@ class BoardPage(QWidget):
             for r in rs:
                 it = QListWidgetItem()
                 it.setData(BROLE, r)
-                it.setSizeHint(QSize(100, self.delegate.H))
+                it.setSizeHint(QSize(100, self.delegate.height_for(r)))
                 col.addItem(it)
             col.blockSignals(False)
             col.verticalScrollBar().setValue(keep)
@@ -7066,6 +7189,73 @@ class BoardPage(QWidget):
                 self.since = max(self.since or "", str(res.get("updated_at") or ""))
                 self.render()
         self.run(lambda: self.api.add(fields), done)
+
+    # ---- to-dos on the cards
+    def toggle_open(self, pid):
+        if pid in self.open_ids:
+            self.open_ids.discard(pid)
+        else:
+            self.open_ids.add(pid)
+        self.render()
+
+    def todo_toggle(self, pid):
+        r = self.rows.get(pid)
+        if r:
+            self._apply(pid, {"status": "todo" if r.get("status") == "done" else "done"})
+
+    def todo_prompt_add(self, parent_id):
+        from PySide6.QtWidgets import QInputDialog
+        t, ok = QInputDialog.getText(self, "New to-do", "What needs to be done:")
+        if ok and t.strip():
+            self.open_ids.add(parent_id)
+            self._create({"title": t.strip(), "status": "todo", "priority": "normal", "parent_id": parent_id})
+
+    def todo_rename(self, pid):
+        from PySide6.QtWidgets import QInputDialog
+        r = self.rows.get(pid) or {}
+        t, ok = QInputDialog.getText(self, "Rename", "To-do:", text=str(r.get("title") or ""))
+        if ok and t.strip() and t.strip() != r.get("title"):
+            self._apply(pid, {"title": t.strip()})
+
+    def todo_delete(self, pid, parent=None):
+        if QMessageBox.question(parent or self, "Projects", "Delete this to-do and everything under it for everybody?") == QMessageBox.StandardButton.Yes:
+            def walk(i):
+                for c in board_kids(self.rows, i):
+                    walk(c["id"])
+                    self._apply(c["id"], {"deleted": True})
+            walk(pid)
+            self._apply(pid, {"deleted": True})
+
+    def todo_menu(self, pid, gpos, parent=None):
+        m = QMenu(parent or self)
+        pm = m.addMenu("Priority")
+        for k, n, _c in reversed(B_PRIOS):
+            pm.addAction(n).triggered.connect(lambda _=False, k=k: self._apply(pid, {"priority": k}))
+        for k, n, _c in B_STATUSES:
+            m.addAction("Mark as " + n).triggered.connect(lambda _=False, k=k: self._apply(pid, {"status": k}))
+        m.addSeparator()
+        wm = m.addMenu("Who does it")
+        wm.addAction("Nobody").triggered.connect(lambda _=False: self._apply(pid, {"owner": None}))
+        for em, nm in self.people():
+            wm.addAction(nm or em).triggered.connect(lambda _=False, em=em: self._apply(pid, {"owner": em}))
+        dm = m.addMenu("Due date")
+        for lab, days in (("Today", 0), ("Tomorrow", 1), ("In a week", 7)):
+            dm.addAction(lab).triggered.connect(lambda _=False, d=days: self._apply(pid, {"due": QDate.currentDate().addDays(d).toString("yyyy-MM-dd")}))
+        dm.addAction("Pick a date…").triggered.connect(lambda _=False: self._pick_due(pid))
+        dm.addAction("No date").triggered.connect(lambda _=False: self._apply(pid, {"due": None}))
+        m.addSeparator()
+        m.addAction("Add a sub-to-do under this").triggered.connect(lambda _=False: self.todo_prompt_add(pid))
+        m.addAction("Rename").triggered.connect(lambda _=False: self.todo_rename(pid))
+        m.addSeparator()
+        m.addAction("Delete (with everything under it)").triggered.connect(lambda _=False: self.todo_delete(pid, parent))
+        m.exec(gpos)
+
+    def _pick_due(self, pid):
+        from PySide6.QtWidgets import QInputDialog
+        r = self.rows.get(pid) or {}
+        t, ok = QInputDialog.getText(self, "Due date", "Date (yyyy-mm-dd):", text=str(r.get("due") or QDate.currentDate().toString("yyyy-MM-dd")))
+        if ok and QDate.fromString(t.strip(), "yyyy-MM-dd").isValid():
+            self._apply(pid, {"due": t.strip()})
 
     def move(self, pid, status):
         self._apply(pid, {"status": status})
