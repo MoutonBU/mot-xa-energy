@@ -147,6 +147,23 @@ assert wait(lambda: mp.stack.currentIndex() == 1)
 print("opened:", len(mp.msgs))
 print("tab ok")
 
+# ---- a label in the Mail tab: the email gets it, stays in the inbox, and shows when the label is opened
+mo.gmail_call(mp.S, "POST", "labels", None, {"name": "Cosmo/Areas"})
+mp.load_labels(quiet=True)
+assert wait(lambda: any(l.get("id") == "Cosmo/Areas" for l in mp.labels)), mp.labels
+n_inbox = len(mp.rows)
+mp.modify([r0["id"]], add=["Cosmo/Areas"])
+assert wait(lambda: len(st.f.get("Cosmo/Areas", [])) == 1, 8), list(st.f)
+assert len(st.f["INBOX"]) >= 2 and any("Brand new" in x["raw"].decode("utf-8", "replace") for x in st.f["INBOX"]), "the email left the inbox"
+assert len(mp.rows) == n_inbox and any(r["id"] == r0["id"] for r in mp.rows)
+mp.label = "Cosmo/Areas"
+mp.load_list(reset=True)
+assert wait(lambda: any(r["subject"] == "Brand new" for r in mp.rows)), [r["subject"] for r in mp.rows]
+mp.label = "INBOX"
+mp.load_list(reset=True)
+assert wait(lambda: any(r["subject"] == "Brand new" for r in mp.rows)), "gone from the inbox view"
+print("label in tab ok")
+
 # ---- sending through the account's own SMTP, and a copy in Sent
 import register_ext as RE
 from email.message import EmailMessage
@@ -227,32 +244,38 @@ def test_nested_labels():
 test_nested_labels()
 
 
-def test_label_assign():
+def test_label_assign(pre="", dl="/", strict=False):
     import ui_extras as u
     st3, ip3, sp3, _s3 = fm.start("secret")
+    st3.delim, st3.prefix, st3.strict = dl, pre, strict
+    if pre:
+        st3.f = {"INBOX": [], pre + "Sent": [], pre + "Trash": []}
+        st3.next = {k: 1 for k in st3.f}
     st3.add("INBOX", fm.mk("A <a@y.com>", "One", "first mail"))
     st3.add("INBOX", fm.mk("B <b@y.com>", "Two", "second mail"))
     S3 = {"imap_host": "127.0.0.1", "imap_port": ip3, "imap_security": "None", "imap_user": "m", "imap_pass": "secret", "mail_address": "m@t.l"}
     C = lambda m, p, params=None, body=None: mi.call(S3, m, p, params, body)
     C("POST", "labels", None, {"name": "Cosmo/Areas"})
+    LID = next(l["id"] for l in C("GET", "labels")["labels"] if l["name"] == "Cosmo/Areas")
     lst = C("GET", "threads", {"labelIds": ["INBOX"], "maxResults": 25})["threads"]
     t1, t2 = lst[0]["id"], lst[1]["id"]
-    C("POST", "threads/" + t1 + "/modify", None, {"addLabelIds": ["Cosmo/Areas"]})
+    C("POST", "threads/" + t1 + "/modify", None, {"addLabelIds": [LID]})
     inbox = C("GET", "threads", {"labelIds": ["INBOX"], "maxResults": 25})["threads"]
     assert len(inbox) == 2                                                   # a label keeps it in the inbox, like Gmail
     inn = C("GET", "threads/" + t1)
-    assert "Cosmo/Areas" in inn["messages"][0]["labelIds"], inn["messages"][0]["labelIds"]
-    inlab = C("GET", "threads", {"labelIds": ["Cosmo/Areas"], "maxResults": 25})["threads"]
+    assert LID in inn["messages"][0]["labelIds"], inn["messages"][0]["labelIds"]
+    inlab = C("GET", "threads", {"labelIds": [LID], "maxResults": 25})["threads"]
     assert len(inlab) == 1, inlab
     # move to: label added and removed from the inbox
-    C("POST", "threads/" + t2 + "/modify", None, {"addLabelIds": ["Cosmo/Areas"], "removeLabelIds": ["INBOX"]})
-    assert len(C("GET", "threads", {"labelIds": ["Cosmo/Areas"], "maxResults": 25})["threads"]) == 2
+    C("POST", "threads/" + t2 + "/modify", None, {"addLabelIds": [LID], "removeLabelIds": ["INBOX"]})
+    assert len(C("GET", "threads", {"labelIds": [LID], "maxResults": 25})["threads"]) == 2
     assert len(C("GET", "threads", {"labelIds": ["INBOX"], "maxResults": 25})["threads"]) == 1
     # take the label off the one still in the inbox
-    C("POST", "threads/" + t1 + "/modify", None, {"removeLabelIds": ["Cosmo/Areas"]})
-    assert len(C("GET", "threads", {"labelIds": ["Cosmo/Areas"], "maxResults": 25})["threads"]) == 1
-    assert "Cosmo/Areas" not in C("GET", "threads/" + t1)["messages"][0]["labelIds"]
-    print("label assign ok")
+    C("POST", "threads/" + t1 + "/modify", None, {"removeLabelIds": [LID]})
+    assert len(C("GET", "threads", {"labelIds": [LID], "maxResults": 25})["threads"]) == 1
+    assert LID not in C("GET", "threads/" + t1)["messages"][0]["labelIds"]
+    print("label assign ok", repr(pre))
 
 
 test_label_assign()
+test_label_assign("INBOX.", ".", True)
