@@ -12,14 +12,17 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComb
                                QHeaderView, QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout,
                                QWidget)
 
+import sdp_knowledge as kb
 import sdp_parking as sp
 import site_lines as sl
 import tool_base as tb
 from flow_layout import FlowLayout
 from site_lines import PlanView, SitePage, bpoly, signed_area
 
-TYPES = ["Maxi", "Standard 3-storey", "Standard 2-storey", "Gatehouse", "Other"]
-COLS = ["Block", "Phase", "Type", "Storeys", "Units", "Footprint m2", "Floor area m2", "Counts"]
+TYPES = kb.module_names() + ["Gatehouse", "Other"]
+COLS = ["Block", "Phase", "Type", "Storeys", "Units", "Unit area m2", "Patio m2", "Common m2", "Footprint m2", "Floor area m2", "Counts"]
+BAY_TYPES = ["Open", "Covered", "Garage", "Shade cloth", "Tandem"]
+BAY_COL = {"Open": (46, 158, 91), "Covered": (74, 127, 181), "Garage": (196, 140, 50), "Shade cloth": (60, 170, 170), "Tandem": (230, 160, 90)}
 SCALES = ["1:200", "1:250", "1:500", "1:1000", "1:1250", "1:2000"]
 
 
@@ -29,11 +32,19 @@ def _num(x, d=0.0):
 
 def blank_site():
     return {"project": "", "township": "", "owner": "", "drawing": "SDP-01", "scale": "1:500", "date": time.strftime("%Y-%m-%d"),
-            "max_density": 0.0, "bays_per_unit": 1.0, "visitor_per": 5, "extra_bays": 0, "notes": ""}
+            "max_density": 0.0, "bays_per_unit": 1.5, "visitor_per": 0, "extra_bays": 0, "walkways": 0.0, "roads": 0.0, "notes": ""}
 
 
-def blank_block(name="", phase="Phase 1", typ="Standard 3-storey", storeys=3, units=0, foot=0.0, floor=0.0, cov=True):
-    return {"block": name, "phase": phase, "type": typ, "storeys": storeys, "units": units, "foot": foot, "floor": floor, "cov": cov}
+def blank_block(name="", phase="Phase 1", typ="Standard 3-storey", storeys=3, units=0, foot=0.0, floor=0.0, cov=True, unit_m2=0.0, patio=0.0, common=0.0):
+    return {"block": name, "phase": phase, "type": typ, "storeys": storeys, "units": units, "foot": foot, "floor": floor, "cov": cov, "unit_m2": unit_m2, "patio": patio, "common": common}
+
+
+def preset_block(name, typ, phase="Phase 1"):
+    """a block of a known module, with the units and areas of the reference plan; the footprint comes from the plan"""
+    m = kb.module_preset(typ)
+    if not m:
+        return blank_block(name, phase, typ)
+    return blank_block(name, phase, typ, m["storeys"], m["units"], 0.0, m["gross_m2"], True, m["unit_m2"], m["patio_m2"], m["common_m2"])
 
 
 def analyse(site, blocks, stand_area, cov_area=None, plan_bays=None, max_cov=0.0, max_far=0.0):
@@ -42,12 +53,14 @@ def analyse(site, blocks, stand_area, cov_area=None, plan_bays=None, max_cov=0.0
     area = float(stand_area or 0)
     phases = {}
     for b in blocks:
-        p = phases.setdefault(b.get("phase") or "Phase 1", {"blocks": 0, "units": 0, "foot": 0.0, "floor": 0.0})
+        p = phases.setdefault(b.get("phase") or "Phase 1", {"blocks": 0, "units": 0, "foot": 0.0, "floor": 0.0, "unit_m2": 0.0, "patio": 0.0, "common": 0.0})
         p["blocks"] += 1
         p["units"] += int(_num(b.get("units")))
         p["foot"] += _num(b.get("foot"))
         p["floor"] += _num(b.get("floor"))
-    tot = {k: sum(p[k] for p in phases.values()) for k in ("blocks", "units", "foot", "floor")}
+        for k_ in ("unit_m2", "patio", "common"):
+            p[k_] += _num(b.get(k_))
+    tot = {k: sum(p[k] for p in phases.values()) for k in ("blocks", "units", "foot", "floor", "unit_m2", "patio", "common")}
     cov_foot = cov_area if cov_area is not None else sum(_num(b.get("foot")) for b in blocks if b.get("cov", True))
     bays = int(plan_bays) if plan_bays else int(_num(site.get("extra_bays")))
     cov = 100.0 * cov_foot / area if area else 0.0
@@ -98,6 +111,8 @@ class _BlocksDialog(QDialog):
         self.units = QSpinBox()
         self.units.setRange(0, 999)
         self.units.setValue(4)
+        self.typ.currentTextChanged.connect(self._type)
+        self._type(self.typ.currentText())
         f.addRow("Name starts with", self.prefix)
         f.addRow("From number", self.first)
         f.addRow("To number", self.last)
@@ -109,10 +124,19 @@ class _BlocksDialog(QDialog):
         bb.rejected.connect(self.reject)
         f.addRow(bb)
 
+    def _type(self, t):
+        m = kb.module_preset(t)
+        if m:
+            self.units.setValue(m["units"])
+
     def blocks(self):
         lo, hi = self.first.value(), max(self.first.value(), self.last.value())
-        return [blank_block(nm, self.phase.text().strip() or "Phase 1", self.typ.currentText(), 2 if "2-storey" in self.typ.currentText() else 3, self.units.value())
-                for nm in block_names(self.prefix.text().strip() or "H", lo, hi)]
+        out = []
+        for nm in block_names(self.prefix.text().strip() or "H", lo, hi):
+            b = preset_block(nm, self.typ.currentText(), self.phase.text().strip() or "Phase 1")
+            b["units"] = self.units.value()
+            out.append(b)
+        return out
 
 
 # ---------------------------------------------------------------- the plan
@@ -252,8 +276,8 @@ class SdpPage(SitePage):
             br.addWidget(b)
         br.addStretch(1)
         bv.addLayout(br)
-        self.zt = QTableWidget(0, 3)
-        self.zt.setHorizontalHeaderLabels(["Area", "Rows run at (degrees, or auto)", "Bays"])
+        self.zt = QTableWidget(0, 4)
+        self.zt.setHorizontalHeaderLabels(["Area", "Rows run at (degrees, or auto)", "Its bays are", "Bays"])
         self.zt.verticalHeader().setVisible(False)
         self.zt.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.zt.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -272,6 +296,11 @@ class SdpPage(SitePage):
                 b.setToolTip(tip)
             b.clicked.connect(lambda _=False, f=fn: f())
             br.addWidget(b)
+        self.new_type = QComboBox()
+        self.new_type.addItems(BAY_TYPES)
+        self.new_type.setToolTip("The kind of the next bay you place, and of the selected bay when you change it.")
+        self.new_type.activated.connect(self._set_bay_type)
+        br.addWidget(self._pair("Bay is", self.new_type))
         br.addStretch(1)
         bv.addLayout(br)
         v.addWidget(bx)
@@ -283,7 +312,8 @@ class SdpPage(SitePage):
         row.addWidget(self._pair("depth", self.refuse_d))
         bv.addLayout(row)
         br = FlowLayout(None, 8, 6)
-        for text, fn, tip in (("Add a refuse area", self.add_refuse, "Puts a refuse area of this size on the plan."),
+        for text, fn, tip in (("Size it for the units", self.size_refuse, "Sets the size from the number of units, in the proportion of the Mystic Views plan."),
+                              ("Add a refuse area", self.add_refuse, "Puts a refuse area of this size on the plan."),
                               ("Suggest a place for it", self.suggest_refuse, "Finds a spot near the street, clear of the buildings, the bays and their aisles."),
                               ("Add the gatehouse", self.add_gatehouse, "A small building at the entrance. Drag it into place."),
                               ("Gatehouse from the IFC model...", self.gatehouse_from_ifc, "Reads the gatehouse's footprint from an IFC model. Name it Gatehouse."),
@@ -332,6 +362,10 @@ class SdpPage(SitePage):
         self.f["date"] = QLineEdit()
         self.f["date"].textChanged.connect(self.changed)
         fl.addRow("Date", self.f["date"])
+        for key, label in (("walkways", "Walkways to the blocks"), ("roads", "Internal roads")):
+            self.f[key] = sl.spin(0, 9999999, 0, 1, " m2")
+            self.f[key].valueChanged.connect(self.changed)
+            fl.addRow(label + " (hard surface)", self.f[key])
         bv.addLayout(fl)
         v.addWidget(bx)
         bx, bv = self.box("More limits", "A limit of 0 means there is none, and it is not checked. Coverage and floor area ratio are in the first step.")
@@ -372,7 +406,7 @@ class SdpPage(SitePage):
         self.t.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         h = self.t.horizontalHeader()
         h.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        for i, w_ in enumerate((90, 110, 160, 70, 70, 110, 120, 70)):
+        for i, w_ in enumerate((90, 100, 160, 60, 60, 90, 80, 80, 90, 100, 60)):
             self.t.setColumnWidth(i, w_)
         h.setStretchLastSection(True)
         self.t.setMinimumHeight(320)
@@ -452,11 +486,17 @@ class SdpPage(SitePage):
             for i, z in enumerate(self.zones):
                 self.zt.insertRow(i)
                 n = sum(1 for b in self.bays if b.get("zone") == z["name"])
-                for c, val in enumerate((z["name"], "auto" if z.get("angle") is None else "%g" % z["angle"], str(n))):
+                for c, val in enumerate((z["name"], "auto" if z.get("angle") is None else "%g" % z["angle"], "", str(n))):
                     it = QTableWidgetItem(val)
-                    if c == 2:
+                    if c >= 2:
                         it.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
                     self.zt.setItem(i, c, it)
+                cb = QComboBox()
+                cb.addItems(BAY_TYPES)
+                cb.setCurrentText(z.get("type", "Open"))
+                cb.setToolTip("Covered, garage, open, shade cloth or tandem (grass blocks). Tandem bays are not counted toward the parking requirement.")
+                cb.currentTextChanged.connect(lambda t_, k=i: self._zone_type(k, t_))
+                self.zt.setCellWidget(i, 2, cb)
             if 0 <= self.sel_zone < self.zt.rowCount():
                 self.zt.selectRow(self.sel_zone)
         finally:
@@ -484,6 +524,15 @@ class SdpPage(SitePage):
             self.changed()
             self._after_edit()
 
+    def bay_counts(self):
+        """bays on the plan by type: (kept the rules, broke a rule)"""
+        out = {}
+        for i, b in enumerate(self.bays):
+            k = b.get("type", "Open")
+            ok, bad = out.get(k, (0, 0))
+            out[k] = (ok + (0 if (i < len(self._bad) and self._bad[i]) else 1), bad + (1 if (i < len(self._bad) and self._bad[i]) else 0))
+        return out
+
     def _need_text(self):
         if getattr(self, "need_lbl", None) is None or getattr(self, "t", None) is None:
             return
@@ -494,15 +543,23 @@ class SdpPage(SitePage):
             return
         site = self.site()
         short = a["bays_needed"] - a["bays"]
-        txt = ("<b>%d units in %d blocks need %d bays</b> (%.2g per unit, and a visitor's bay for every %s units).<br>On the plan: <b>%d bays</b> - " %
-               (t["units"], t["blocks"], a["bays_needed"], site["bays_per_unit"], site["visitor_per"] or "-", a["bays"]))
+        vis = ", and a visitor's bay for every %d units" % site["visitor_per"] if site["visitor_per"] else ""
+        txt = ("<b>%d units in %d blocks need %d bays</b> (%.2g per unit%s).<br>On the plan: <b>%d counted bays</b> - " %
+               (t["units"], t["blocks"], a["bays_needed"], site["bays_per_unit"], vis, a["bays"]))
         txt += ("<span style='color:#2e9e5b'><b>enough</b></span>" if short <= 0 else "<span style='color:#e0243a'><b>%d short</b></span>" % short)
+        bc = self.bay_counts()
+        if bc:
+            txt += "<br>" + ", ".join("%d %s%s" % (ok + bad, k.lower(), " (not counted)" if k == "Tandem" else "") for k, (ok, bad) in sorted(bc.items()))
         if len(a["phases"]) > 1:
             txt += "<br>" + " | ".join("%s: %d units, %d bays" % (k, p["units"], p["bays_needed"]) for k, p in a["phases"].items())
+        mix = kb.parking_mix(a["bays_needed"])
+        txt += "<br><span style='color:#8a8f98'>Like Mystic Views, %d bays would be about %s. A refuse area would be about %.0f m2.</span>" % (
+            a["bays_needed"], ", ".join("%d %s" % (v_, k_.lower()) for k_, v_ in mix.items()), kb.refuse_area(t["units"]))
         self.need_lbl.setText(txt)
 
     def park_selected(self):
         if 0 <= self.sel_bay < len(self.bays):
+            self.new_type.setCurrentText(self.bays[self.sel_bay].get("type", "Open"))
             pr = self._bad[self.sel_bay] if self.sel_bay < len(self._bad) else []
             self.set_hint(("This bay: " + "; ".join(pr) + ".") if pr else "This bay keeps the rules. Drag it, press R to turn it, Delete to remove it.")
 
@@ -526,7 +583,7 @@ class SdpPage(SitePage):
         while any(z["name"] == nm for z in self.zones):
             n += 1
             nm = "Parking area %d" % n
-        self.zones.append({"name": nm, "poly": [list(p) for p in pts], "angle": None})
+        self.zones.append({"name": nm, "poly": [list(p) for p in pts], "angle": None, "type": "Open"})
         self.sel_zone = len(self.zones) - 1
         self.refresh_parking(user=True)
 
@@ -536,6 +593,15 @@ class SdpPage(SitePage):
             QMessageBox.information(self, self.TITLE, "Set the stand first (first step).")
             return
         self._new_zone(v, "Whole stand")
+
+    def _zone_type(self, i, t):
+        if self._pbusy or not (0 <= i < len(self.zones)):
+            return
+        self.zones[i]["type"] = t
+        for b in self.bays:
+            if b.get("auto") and b.get("zone") == self.zones[i]["name"]:
+                b["type"] = t
+        self.refresh_parking(user=True)
 
     def _zone_edited(self, it):
         if self._pbusy or it.row() >= len(self.zones):
@@ -575,6 +641,8 @@ class SdpPage(SitePage):
                 self.bays = [b for b in self.bays if not (b.get("auto") and b.get("zone") == z["name"])]
                 keep = list(self.bays)
                 got = sp.fill([tuple(p) for p in z["poly"]], site, r, z.get("angle"), keep, z["name"])
+                for b_ in got:
+                    b_["type"] = z.get("type", "Open")
                 self.bays += got
         finally:
             QApplication.restoreOverrideCursor()
@@ -622,10 +690,16 @@ class SdpPage(SitePage):
 
     def add_bay_at(self, w):
         b = sp.single(round(w[0] * 20) / 20, round(w[1] * 20) / 20, getattr(self.plan, "_add_angle", self._default_angle()))
+        b["type"] = self.new_type.currentText()
         self.bays.append(b)
         self.sel_bay = len(self.bays) - 1
         self.refresh_parking(user=True)
         self.park_selected()
+
+    def _set_bay_type(self, *_a):
+        if 0 <= self.sel_bay < len(self.bays):
+            self.bays[self.sel_bay]["type"], self.bays[self.sel_bay]["auto"] = self.new_type.currentText(), False
+            self.refresh_parking(user=True)
 
     def rotate_bay(self):
         if self.plan.mode == "add_bay":
@@ -660,15 +734,43 @@ class SdpPage(SitePage):
         self.bt.selectRow(self.bt.rowCount() - 1)
         self.set_hint("Refuse area added. Drag it into place, or press 'Suggest a place for it'.")
 
+    def size_refuse(self):
+        u = sum(b["units"] for b in self.blocks())
+        if not u:
+            QMessageBox.information(self, self.TITLE, "Fill in the units in the schedule first (fourth step).")
+            return
+        a = max(kb.refuse_area(u), 6.0)
+        w = round(math.sqrt(a * 2.0), 1)
+        self.refuse_w.setValue(w)
+        self.refuse_d.setValue(round(a / w, 1))
+        self.set_hint("Refuse area for %d units: about %.0f m2 (%.1f x %.1f m)." % (u, a, self.refuse_w.value(), self.refuse_d.value()))
+
     def add_gatehouse(self):
+        """the gate house system of the reference plan: a guard house (19 m2) and an ablution area (30 m2) on the plan, and the office (60 m2) over the ablution area in the schedule"""
         v = self.verts()
         if len(v) < 3:
             QMessageBox.information(self, self.TITLE, "Set the stand first (first step).")
             return
         x0, y0 = min(p[0] for p in v), min(p[1] for p in v)
-        self.add_building({"name": "Gatehouse", "x": x0 + 6.0, "y": y0 + 2.0, "w": 3.0, "d": 3.0, "cov": True})
+        have = {b["name"].lower() for b in self.buildings()}
+        parts = {n: a for n, u, a, c in kb.gatehouse_set()}
+        x = x0 + 6.0
+        for nm, area in (("Gatehouse - guard house", parts["Guard House"]), ("Gatehouse - ablution", parts["Ablution Area"])):
+            if nm.lower() in have:
+                continue
+            w = round(math.sqrt(area * 1.25), 1)
+            self.add_building({"name": nm, "x": x, "y": y0 + 2.0, "w": w, "d": round(area / w, 1), "cov": True})
+            x += w + 1.0
+        self.sync_blocks()
+        names = {b["block"].lower() for b in self.blocks()}
+        if "gatehouse - office (first floor)" not in names:
+            self._row(blank_block("Gatehouse - office (first floor)", typ="Gatehouse", storeys=1, floor=parts["Gate House Office"], cov=False))
+        for r_, b_ in enumerate(self.blocks()):                      # a gate house part counts its footprint as floor area
+            if kind_of(b_["block"]) == "gate" and b_["floor"] == 0 and b_["foot"] > 0:
+                self.t.item(r_, 9).setText("%.2f" % b_["foot"])
+        self._edited()
         self.bt.selectRow(self.bt.rowCount() - 1)
-        self.set_hint("Gatehouse added. Drag it to the entrance, or press Rotate building to turn it.")
+        self.set_hint("Gate house added: guard house and ablution area. Drag them to the entrance. The office is in the schedule.")
 
     def gatehouse_from_ifc(self):
         self.footprint_from_ifc()
@@ -786,8 +888,9 @@ class SdpPage(SitePage):
         for i, b in enumerate(self.bays):
             bad = i < len(self._bad) and bool(self._bad[i])
             sel = i == self.sel_bay and not snapshot
-            p.setPen(QPen(QColor("#b01028") if bad else QColor("#1f7a45"), 3 if sel else 1.0))
-            p.setBrush(QColor(224, 36, 58, 120) if bad else QColor(46, 158, 91, 90))
+            bc = BAY_COL.get(b.get("type", "Open"), BAY_COL["Open"])
+            p.setPen(QPen(QColor("#b01028") if bad else QColor(*bc).darker(140), 3 if sel else 1.0))
+            p.setBrush(QColor(224, 36, 58, 120) if bad else QColor(bc[0], bc[1], bc[2], 110))
             poly = sp.bay_poly(b, r)
             p.drawPolygon(QPolygonF([to(q) for q in poly]))
             if s > 9:                                              # a small tick on the open side, so you can see which way the bay faces
@@ -820,7 +923,8 @@ class SdpPage(SitePage):
         r = t.rowCount()
         was = t.blockSignals(True)
         t.insertRow(r)
-        vals = [b["block"], b["phase"], b["type"], b["storeys"], b["units"], "%.2f" % _num(b["foot"]), "%.2f" % _num(b["floor"])]
+        vals = [b["block"], b["phase"], b["type"], b["storeys"], b["units"], "%.3f" % _num(b.get("unit_m2")), "%.3f" % _num(b.get("patio")), "%.3f" % _num(b.get("common")),
+                "%.2f" % _num(b["foot"]), "%.3f" % _num(b["floor"])]
         for c, val in enumerate(vals):
             it = QTableWidgetItem(str(val))
             if c >= 3:
@@ -829,7 +933,7 @@ class SdpPage(SitePage):
         cb = QTableWidgetItem("")
         cb.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
         cb.setCheckState(Qt.CheckState.Checked if b.get("cov", True) else Qt.CheckState.Unchecked)
-        t.setItem(r, 7, cb)
+        t.setItem(r, 10, cb)
         t.blockSignals(was)
 
     def blocks(self):
@@ -838,8 +942,8 @@ class SdpPage(SitePage):
         tx = lambda r, c: t.item(r, c).text().strip() if t.item(r, c) else ""
         for r in range(t.rowCount()):
             out.append({"block": tx(r, 0), "phase": tx(r, 1) or "Phase 1", "type": tx(r, 2), "storeys": int(_num(tx(r, 3))), "units": int(_num(tx(r, 4))),
-                        "foot": _num(tx(r, 5)), "floor": _num(tx(r, 6)),
-                        "cov": bool(t.item(r, 7) and t.item(r, 7).checkState() == Qt.CheckState.Checked)})
+                        "unit_m2": _num(tx(r, 5)), "patio": _num(tx(r, 6)), "common": _num(tx(r, 7)), "foot": _num(tx(r, 8)), "floor": _num(tx(r, 9)),
+                        "cov": bool(t.item(r, 10) and t.item(r, 10).checkState() == Qt.CheckState.Checked)})
         return out
 
     def fill_blocks(self, blocks):
@@ -886,7 +990,7 @@ class SdpPage(SitePage):
                 area = abs(signed_area(bpoly(b)))
                 k = b["name"].lower()
                 if k in rows:
-                    self.t.item(rows[k], 5).setText("%.2f" % area)
+                    self.t.item(rows[k], 8).setText("%.2f" % area)
                 else:
                     self._row(blank_block(b["name"], typ="Gatehouse" if kind_of(b["name"]) == "gate" else "Standard 3-storey", storeys=1 if kind_of(b["name"]) == "gate" else 3,
                                           foot=area, cov=bool(b.get("cov", True))))
@@ -916,7 +1020,7 @@ class SdpPage(SitePage):
         for r in range(self.t.rowCount()):
             k = (self.t.item(r, 0).text() if self.t.item(r, 0) else "").strip().lower()
             if k in sums and sums[k] > 0:
-                self.t.item(r, 6).setText("%.2f" % sums[k])
+                self.t.item(r, 9).setText("%.2f" % sums[k])
                 n += 1
         self.t.blockSignals(was)
         self._edited()
@@ -926,6 +1030,15 @@ class SdpPage(SitePage):
     def _edited(self, *_a):
         if getattr(self, "_pbusy", False):
             return
+        it = _a[0] if _a and hasattr(_a[0], "column") else None
+        if it is not None and it.column() == 2:                      # a known module type fills in its units and areas
+            m = kb.module_preset(it.text().strip())
+            if m:
+                r_ = it.row()
+                was = self.t.blockSignals(True)
+                for c_, val in ((3, m["storeys"]), (4, m["units"]), (5, "%.3f" % m["unit_m2"]), (6, "%.3f" % m["patio_m2"]), (7, "%.3f" % m["common_m2"]), (9, "%.3f" % m["gross_m2"])):
+                    self.t.item(r_, c_).setText(str(val))
+                self.t.blockSignals(was)
         self._refresh_sum()
         self._need_text()
         self.changed()
@@ -954,7 +1067,7 @@ class SdpPage(SitePage):
     def sdp(self):
         res = SitePage.result(self)
         bl = self.blocks()
-        good = sum(1 for pr in self._bad if not pr) if self._bad else 0
+        good = sum(1 for i, pr in enumerate(self._bad) if not pr and self.bays[i].get("type", "Open") != "Tandem") if self._bad else 0
         return analyse(self.site(), bl, res["area"], cov_area=res["cov_area"] if res["buildings"] else None, plan_bays=good or None,
                        max_cov=self.max_cov.value(), max_far=self.max_far.value())
 
@@ -1001,24 +1114,56 @@ class SdpPage(SitePage):
         body += '<p align="center"><img src="plan" width="700"></p>'
         body += ('<p style="font-size:8pt; color:#555555;">Blue: the buildings. Red dashed line: the building lines. Green: parking bays; each bay %.1f x %.1f m with %.1f m to reverse out, '
                  '%.2f m clear of the buildings.</p>' % (self.r_w.value(), self.r_l.value(), self.r_aisle.value(), self.r_bld.value()))
-        head = ["Block", "Phase", "Type", "Storeys", "Units", "Footprint m2", "Floor area m2"]
-        rows = []
         bl = self.blocks()
-        for ph, p in an["phases"].items():
-            for b in bl:
-                if (b["phase"] or "Phase 1") == ph:
-                    rows.append([b["block"], ph, b["type"], b["storeys"], b["units"], "%.1f" % b["foot"], "%.1f" % b["floor"]])
-            rows.append(([ph + " total", "", "%d blocks, %d bays needed" % (p["blocks"], p["bays_needed"]), "", p["units"], "%.1f" % p["foot"], "%.1f" % p["floor"]], "#e9e9e9"))
         t = an["total"]
-        rows.append((["All phases", "", "%d blocks" % t["blocks"], "", t["units"], "%.1f" % t["foot"], "%.1f" % t["floor"]], "#d6d6d6"))
+        f1 = lambda v: "%s" % "{:,.3f}".format(v)
+        use = lambda ty: (kb.module_preset(ty) or {}).get("use") or ty
         extra = []
         for b in self.buildings():
-            k = kind_of(b["name"])
-            if k != "block":
+            if kind_of(b["name"]) != "block":
                 extra.append("%s (%.1f m2)" % (b["name"], abs(signed_area(bpoly(b)))))
         if extra:
             body += '<p style="font-size:9pt;">Also on the plan: %s.</p>' % e(", ".join(extra))
-        body += "<h3>Schedule of blocks</h3>" + tb.table(head, rows, aligns=["left", "left", "left", "right", "right", "right", "right"])
+        al = ["left", "left", "left", "right", "right", "right", "right", "right", "right"]
+        rows = [[b["block"], b["type"], use(b["type"]), b["storeys"], b["units"], f1(b["unit_m2"]), f1(b["patio"]), f1(b["common"]), f1(b["floor"])] for b in bl]
+        rows.append((["TOTAL (UNITS / AREAS)", "", "", "", t["units"], f1(t["unit_m2"]), f1(t["patio"]), f1(t["common"]), f1(t["floor"])], "#d6d6d6"))
+        body += "<h3>Unit schedule - building and residential unit summary</h3>" + tb.table(
+            ["Block", "Module / building type", "Use", "Storeys", "Units", "Unit area m2", "Patio m2", "Common m2", "Total gross m2"], rows, aligns=al)
+        groups = {}
+        for b in bl:
+            g = groups.setdefault(b["type"], {"n": 0, "storeys": b["storeys"], "units": 0, "unit_m2": 0.0, "patio": 0.0, "common": 0.0, "floor": 0.0})
+            g["n"] += 1
+            for k in ("units", "unit_m2", "patio", "common", "floor"):
+                g[k] += b[k]
+        rows = [[g["n"], k, use(k), g["storeys"], g["units"], f1(g["unit_m2"]), f1(g["patio"]), f1(g["common"]), f1(g["floor"])] for k, g in groups.items()]
+        rows.append((["%d" % len(bl), "DEVELOPMENT TOTAL", "", "", t["units"], f1(t["unit_m2"]), f1(t["patio"]), f1(t["common"]), f1(t["floor"])], "#d6d6d6"))
+        body += "<h3>Summary by type</h3>" + tb.table(["Count", "Module / building type", "Use", "Storeys", "Units", "Unit area m2", "Patio m2", "Common m2", "Total gross m2"], rows, aligns=al)
+        hard = s["walkways"] + s["roads"]
+        sa = an["area"] or 1.0
+        foot = SitePage.result(self)["cov_area"]
+        body += "<h3>Coverage</h3>" + tb.table(["Zone", "Measured area m2", "% of site area", "Note"], [
+            ["Building footprints", "{:,.2f}".format(foot), "%.2f %%" % (100.0 * foot / sa), "Coverage"], ["Site area", "{:,.2f}".format(an["area"]), "100.00 %", "Site"],
+            ["Total gross floor area (from schedule)", "{:,.2f}".format(t["floor"]), "%.4f" % an["far"], "Floor area ratio (FAR) - ratio, not %"]], aligns=["left", "right", "right", "left"])
+        if hard:
+            body += "<h3>Hard surfaces</h3>" + tb.table(["Surface", "Area m2", "% of site area"], [
+                ["Walkways to blocks", "{:,.1f}".format(s["walkways"]), "%.2f %%" % (100.0 * s["walkways"] / sa)], ["Internal roads", "{:,.1f}".format(s["roads"]), "%.2f %%" % (100.0 * s["roads"] / sa)],
+                (["TOTAL HARD SURFACE", "{:,.1f}".format(hard), "%.2f %%" % (100.0 * hard / sa)], "#d6d6d6")], aligns=["left", "right", "right"])
+        bc = self.bay_counts()
+        if bc:
+            rows = [[k + " parking", ok + bad, "No" if k == "Tandem" else "Yes"] for k, (ok, bad) in sorted(bc.items())]
+            rows.append((["TOTAL PARKING BAYS", sum(ok + bad for ok, bad in bc.values()), ""], "#d6d6d6"))
+            body += "<h3>Parking - bays on site</h3>" + tb.table(["Parking type", "Bays", "Counts toward the ratio"], rows, aligns=["left", "right", "left"])
+        if t["units"]:
+            nt = sum(ok + bad for k, (ok, bad) in bc.items() if k == "Tandem")
+            body += "<h3>Parking requirement (%.2g bays per unit)</h3>" % s["bays_per_unit"] + tb.table(["Item", "Value"], [
+                ["Residential units", t["units"]], ["Parking ratio (bays per unit)", "%.2g" % s["bays_per_unit"]], ["Bays required", an["bays_needed"]],
+                ["Bays provided (counted toward the ratio)", an["bays"]], ["Surplus / (shortfall)", an["bays"] - an["bays_needed"]],
+                ["Bays per unit provided", "%.2f" % (an["bays"] / float(t["units"]))], ["Extra bays not counted (tandem)", nt]], aligns=["left", "right"])
+        if len(an["phases"]) > 1:
+            rows = [[k, p["blocks"], p["units"], f1(p["unit_m2"]), f1(p["patio"]), f1(p["common"]), f1(p["floor"])] for k, p in an["phases"].items()]
+            rows.append((["TOTAL", t["blocks"], t["units"], f1(t["unit_m2"]), f1(t["patio"]), f1(t["common"]), f1(t["floor"])], "#d6d6d6"))
+            body += "<h3>Development phases</h3>" + tb.table(["Phase", "Buildings", "Residential units", "Unit area m2", "Patio m2", "Common m2", "Total gross m2"], rows,
+                                                           aligns=["left", "right", "right", "right", "right", "right", "right"])
         sb = SitePage.result(self)
         crow = []
         for b in sb["buildings"]:
