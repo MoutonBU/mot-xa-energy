@@ -835,11 +835,16 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         head.addWidget(rw)
         v.addLayout(head)
         v.addWidget(self.stale_lbl)
-        self.mail = QPlainTextEdit()      # written automatically from the drawings, orders and changes; you can still edit it
+        from register_ext import PicPasteEdit, PicStrip
+        self.mail = PicPasteEdit()      # written automatically from the drawings, orders and changes; you can still edit it
         self.mail.setMinimumHeight(150)
         self._mail_setting, self._mail_manual = False, False
         self.mail.textChanged.connect(self._mail_edited)
         v.addWidget(self.mail, 1)
+        self.mail_pics = []
+        self.mail_strip = PicStrip(self.mail_pics, lambda: [r.get("path") for g in getattr(self, "groups", []) for r in g.get("rows", []) if r.get("path")], self)
+        self.mail.picture.connect(self.mail_strip.add)
+        v.addWidget(self.mail_strip)
         self.att_lbl = QLabel("")
         self.att_lbl.setWordWrap(True)
         self.att_lbl.setStyleSheet("color: gray;")

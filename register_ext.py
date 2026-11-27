@@ -210,7 +210,12 @@ class EmailPreviewDialog(QDialog):
         to, cc, sub, body = self.values()
         if self.design_chk.isChecked():
             try:
-                self.page.show_corners(self.view, self.page.design_html(sub, body, attached=self.attached, preview=True))
+                _mp = list(getattr(self.page, "mail_pics", []))
+                from PySide6.QtCore import QUrl as _QU
+                from PySide6.QtGui import QImage as _QI, QTextDocument as _QTD
+                for _i, _pc in enumerate(_mp):
+                    self.view.document().addResource(_QTD.ResourceType.ImageResource, _QU("cid:mcppic%d" % _i), _QI.fromData(_pc["bytes"]))
+                self.page.show_corners(self.view, self.page.design_html(sub, body, attached=self.attached, preview=True, pics=pic_srcs(_mp) or None))
                 return
             except Exception:
                 pass
@@ -1491,6 +1496,118 @@ class OrderReplyDialog(QDialog):
         self.accept()
 
 
+class PicPasteEdit(QPlainTextEdit):
+    """The email text. Pasting a picture (Ctrl+V, a screenshot) does not put it in the text but in the picture strip under it."""
+    picture = Signal(object)
+
+    def canInsertFromMimeData(self, src):
+        return src.hasImage() or super().canInsertFromMimeData(src)
+
+    def insertFromMimeData(self, src):
+        if src.hasImage() and not src.hasText():
+            from PySide6.QtGui import QImage
+            img = QImage(src.imageData()) if not isinstance(src.imageData(), QImage) else src.imageData()
+            if not img.isNull():
+                self.picture.emit(img)
+                return
+        super().insertFromMimeData(src)
+
+
+class PicStrip(QWidget):
+    """Pictures that sit inside the email (a mocked-up drawing, a screenshot, a marked-up PDF page, a photo of the problem). The list is shared
+    with the register page, so what is added here is in the email whichever window it is sent from."""
+    changed = Signal()
+
+    def __init__(self, pics, files_fn=None, parent=None):
+        super().__init__(parent)
+        self.pics, self._files_fn = pics, files_fn or (lambda: [])
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.addWidget(QLabel("<b>Pictures in the email</b> (paste a screenshot with Ctrl+V; shown inside the email under the text, not as attachments):"))
+        self.pl = QListWidget()
+        self.pl.setViewMode(QListWidget.ViewMode.IconMode)
+        self.pl.setIconSize(QSize(150, 100))
+        self.pl.setFixedHeight(128)
+        self.pl.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self.pl.setMovement(QListWidget.Movement.Static)
+        self.pl.itemDoubleClicked.connect(lambda *_: self.edit())
+        v.addWidget(self.pl)
+        r = QHBoxLayout()
+        for text, fn in (("Paste a picture", self.paste), ("Mark up a PDF page...", self.from_pdf), ("Add a picture file...", self.from_file),
+                         ("Edit the selected", self.edit), ("Remove the selected", self.remove)):
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            r.addWidget(b)
+        r.addStretch(1)
+        v.addLayout(r)
+        self.refresh()
+
+    def refresh(self):
+        from PySide6.QtGui import QIcon, QPixmap
+        self.pl.clear()
+        for i, pc in enumerate(self.pics):
+            pm = QPixmap()
+            pm.loadFromData(pc["bytes"])
+            self.pl.addItem(QListWidgetItem(QIcon(pm), (pc.get("caption") or "Picture %d" % (i + 1))[:28]))
+        self.pl.setVisible(bool(self.pics))
+
+    def add(self, img, caption=""):
+        d = MarkupDialog(img, caption, self)
+        if d.exec():
+            self.pics.append(d.result())
+            self.refresh()
+            self.changed.emit()
+
+    def paste(self):
+        img = QApplication.clipboard().image()
+        if img.isNull():
+            QMessageBox.information(self, "Picture", "There is no picture on the clipboard. Copy or screenshot one first (for example Win + Shift + S), then click Paste a picture.")
+            return
+        self.add(img)
+
+    def from_pdf(self):
+        pd = PdfPageDialog(list(self._files_fn()), self)
+        if pd.exec():
+            img = pd.image()
+            if img is not None:
+                self.add(img)
+
+    def from_file(self):
+        from PySide6.QtGui import QImage
+        f, _ = QFileDialog.getOpenFileName(self, "Add a picture", "", "Pictures (*.png *.jpg *.jpeg *.bmp *.gif *.webp)")
+        if f:
+            img = QImage(f)
+            if not img.isNull():
+                self.add(img)
+
+    def edit(self):
+        from PySide6.QtGui import QImage
+        i = self.pl.currentRow()
+        if 0 <= i < len(self.pics):
+            d = MarkupDialog(QImage.fromData(self.pics[i]["bytes"]), self.pics[i].get("caption", ""), self)
+            if d.exec():
+                self.pics[i] = d.result()
+                self.refresh()
+                self.changed.emit()
+
+    def remove(self):
+        i = self.pl.currentRow()
+        if 0 <= i < len(self.pics):
+            self.pics.pop(i)
+            self.refresh()
+            self.changed.emit()
+
+
+def pic_srcs(pics):
+    return [("cid:mcppic%d" % i, pc.get("caption", "")) for i, pc in enumerate(pics)]
+
+
+def attach_pics(m, pics):
+    for i, pc in enumerate(pics):
+        m.get_payload()[1].add_related(pc["bytes"], maintype="image", subtype=pc["ext"], cid="<mcppic%d>" % i,
+                                       filename="picture%d.%s" % (i + 1, "jpg" if pc["ext"] == "jpeg" else "png"), disposition="inline")
+
+
 class SendDialog(QDialog):
     def __init__(self, page, subject, body, pdf_path, drawings, index_path=None):
         super().__init__(page)
@@ -1514,14 +1631,20 @@ class SendDialog(QDialog):
         f.addRow("Cc", self.cc)
         f.addRow("Subject", self.sub)
         v.addLayout(f)
-        self.body = QPlainTextEdit(body)
+        self.body = PicPasteEdit(body)
         v.addWidget(self.body, 3)
+        if not hasattr(page, "mail_pics"):
+            page.mail_pics = []
+        self.strip = PicStrip(page.mail_pics, lambda: list(drawings) + [pdf_path], self)
+        self.strip.changed.connect(lambda: self.design_chk.setChecked(True) if page.mail_pics else None)
+        self.body.picture.connect(self.strip.add)
+        v.addWidget(self.strip)
         dr = QHBoxLayout()
         self.design_chk = QCheckBox("Send as a designed email (MCP look)")
         self.design_chk.setChecked(page.designed_on())
         dr.addWidget(self.design_chk)
         seeb = QPushButton("See how it looks")
-        seeb.clicked.connect(lambda: page.show_design(self.sub.text(), self.body.toPlainText()))
+        seeb.clicked.connect(lambda: page.show_design(self.sub.text(), self.body.toPlainText(), pics=page.mail_pics))
         dr.addWidget(seeb)
         dr.addStretch(1)
         v.addLayout(dr)
@@ -6288,7 +6411,7 @@ class MailMixin:
         except Exception:
             return True
 
-    def show_design(self, subject, body, attached=""):
+    def show_design(self, subject, body, attached="", pics=None):
         """A window showing the designed email."""
         from PySide6.QtCore import QUrl
         from PySide6.QtGui import QImage, QTextDocument
@@ -6300,7 +6423,9 @@ class MailMixin:
         tb = QTextBrowser()
         img = QImage.fromData(self.design_png())
         tb.document().addResource(QTextDocument.ResourceType.ImageResource, QUrl("cid:mcplogo"), img)
-        self.show_corners(tb, self.design_html(subject, body, attached=attached, preview=True))
+        for i, pc in enumerate(pics or []):
+            tb.document().addResource(QTextDocument.ResourceType.ImageResource, QUrl("cid:mcppic%d" % i), QImage.fromData(pc["bytes"]))
+        self.show_corners(tb, self.design_html(subject, body, attached=attached, preview=True, pics=pic_srcs(pics or []) or None))
         v.addWidget(tb, 1)
         v.addWidget(QLabel("This is a preview. The email arrives in light or dark mode to match the person's mail program."))
         b = QPushButton("Close")
@@ -6406,10 +6531,12 @@ class MailMixin:
                 m.set_content((("This issue is sent in %d emails because of the size. This is part 1.\n\n" % n) if n > 1 else "") + dlg.body.toPlainText())
             else:
                 m.set_content("Part %d of %d of the drawing issue for %s.\n\nIn this email:\n%s\n" % (i + 1, n, self.project_name(), "\n".join("  - " + os.path.basename(p) for p in files)))
-            if i == 0 and dlg.design_chk.isChecked():
+            _mp = list(getattr(self, "mail_pics", []))
+            if i == 0 and (dlg.design_chk.isChecked() or _mp):
                 try:
                     note = ("This issue is sent in %d emails because of the size. This is part 1." % n) if n > 1 else ""
-                    m.add_alternative(self.design_html(dlg.sub.text().strip(), dlg.body.toPlainText(), attached=note, both=True), subtype="html")
+                    m.add_alternative(self.design_html(dlg.sub.text().strip(), dlg.body.toPlainText(), attached=note, both=True, pics=pic_srcs(_mp)), subtype="html")
+                    attach_pics(m, _mp)
                     m.get_payload()[1].add_related(self.design_png(), maintype="image", subtype="png", cid="<mcplogo>", filename="mcp-logo.png", disposition="inline")
                     m.get_payload()[1].add_related(self.design_png(True), maintype="image", subtype="png", cid="<mcplogod>", filename="mcp-logo-dark.png", disposition="inline")
                     if self.sig_picture_on():
@@ -6432,7 +6559,7 @@ class MailMixin:
         self.info["email"], self.info["cc"] = dlg.to.text().strip(), dlg.cc.text().strip()
         self._sending = {"to": ", ".join(to + cc), "subject": dlg.sub.text().strip(), "msg": msgs[0], "body": dlg.body.toPlainText(),
                          "cc": ", ".join(cc), "to_only": ", ".join(to), "emails": n,
-                         "files": [os.path.basename(p) for fl in parts for p in fl], "designed": bool(dlg.design_chk.isChecked())}
+                         "files": [os.path.basename(p) for fl in parts for p in fl], "designed": bool(dlg.design_chk.isChecked() or getattr(self, "mail_pics", None))}
         self.count.setText("Sending %d email%s..." % (n, "s" if n > 1 else ""))
         self.setEnabled(False)
 
@@ -6485,6 +6612,11 @@ class MailMixin:
         except Exception:
             path = ""
         self.count.setText("Sent to %s" % s["to"])
+        try:
+            self.mail_pics.clear()
+            self.mail_strip.refresh()
+        except Exception:
+            pass
         self.mark_issued(sent={"to": s["to"], "subject": s["subject"], "path": path, "body": s.get("body", ""), "cc": s.get("cc", ""),
                                "files": s.get("files", []), "emails": s.get("emails", 1)}, ask=False)
         QMessageBox.information(self, "Drawing register", "Sent to %s.\nThe issue is recorded in the log; a copy of the email is saved with it." % s["to"])
