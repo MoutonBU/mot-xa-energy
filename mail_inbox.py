@@ -510,7 +510,7 @@ def save_eml(folder, rec):
     return path
 
 
-def fetch_new(S, keywords, seen, folder, days=14, limit=40, stubs=False, senders=(), by_subject=True):
+def fetch_new(S, keywords, seen, folder, days=4, limit=15, stubs=False, senders=(), by_subject=True):
     """The newest inbox emails whose SUBJECT has one of the words (order words, area names, short codes) and that have not been looked at yet (your own mail left out): [{'id', 'subject', 'from', 'date', 'body', 'html', 'raw'}].
     Nothing is written to disk here; the caller decides which emails are orders. With stubs=True only the ids come back (the first look at the inbox)."""
     import mail_oauth as mo
