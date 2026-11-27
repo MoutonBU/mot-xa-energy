@@ -908,7 +908,12 @@ class MarkupCanvas(QWidget):
                 for a, b in zip(pts, pts[1:]):
                     p.drawLine(QPointF(*a), QPointF(*b))
             elif k == "rect" and len(pts) > 1:
-                p.drawRect(QRectF(QPointF(*pts[0]), QPointF(*pts[-1])).normalized())
+                _r = QRectF(QPointF(*pts[0]), QPointF(*pts[-1])).normalized()
+                _rad = float(sh.get("round", 0)) * self._unit()
+                if _rad > 0:
+                    p.drawRoundedRect(_r, _rad, _rad)
+                else:
+                    p.drawRect(_r)
             elif k == "ellipse" and len(pts) > 1:
                 p.drawEllipse(QRectF(QPointF(*pts[0]), QPointF(*pts[-1])).normalized())
             elif k == "arrow" and len(pts) > 1:
@@ -936,6 +941,15 @@ class MarkupCanvas(QWidget):
         p.scale(self.zoom, self.zoom)
         p.drawImage(0, 0, self.img)
         self._paint_shapes(p, self.shapes + ([self.cur] if self.cur else []))
+        _h = getattr(self, "hover", None)
+        if _h is not None and self.tool in ("pen", "marker") and not self.cur:          # a ring showing how wide the stroke will be
+            from PySide6.QtCore import QPointF as _PF
+            _d = self.brush_d()
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(QColor(255, 255, 255, 220), max(1.0, 1.5 / self.zoom)))
+            p.drawEllipse(_PF(*_h), _d / 2 + 1 / self.zoom, _d / 2 + 1 / self.zoom)
+            p.setPen(QPen(QColor(0, 0, 0, 220), max(1.0, 1.5 / self.zoom)))
+            p.drawEllipse(_PF(*_h), _d / 2, _d / 2)
         if self.crop is not None:
             pen = QPen(QColor("#1E90FF"), self._unit() * 1.5, Qt.PenStyle.DashLine)
             p.setPen(pen)
@@ -958,10 +972,22 @@ class MarkupCanvas(QWidget):
                 self.shapes.append({"kind": "text", "color": self.color, "w": self.thick, "pts": [pt], "text": t.strip()})
                 self.update()
             return
-        self.cur = {"kind": self.tool, "color": self.color, "w": self.thick, "pts": [pt, pt]}
+        self.cur = {"kind": self.tool, "color": self.color, "w": self.thick, "pts": [pt, pt], "round": getattr(self, "round", 0)}
+
+    def brush_d(self):
+        """The width of the pen or marker stroke in picture pixels."""
+        return self._unit() * self.thick * (5 if self.tool == "marker" else 1)
+
+    def leaveEvent(self, e):
+        self.hover = None
+        self.update()
+        super().leaveEvent(e)
 
     def mouseMoveEvent(self, e):
+        self.hover = self._pt(e)
         if self.cur is None:
+            if self.tool in ("pen", "marker"):
+                self.update()
             return
         pt = self._pt(e)
         if self.cur["kind"] in ("pen", "marker"):
@@ -1033,7 +1059,7 @@ class MarkupDialog(QDialog):
             b = QPushButton(lab)
             b.setCheckable(True)
             b.setChecked(key == "pen")
-            b.clicked.connect(lambda _c=False, k=key: setattr(self.cv, "tool", k))
+            b.clicked.connect(lambda _c=False, k=key: self._tool(k))
             self.grp.addButton(b)
             bar.addWidget(b)
         bar.addSpacing(10)
@@ -1041,14 +1067,8 @@ class MarkupDialog(QDialog):
             c = QPushButton("")
             c.setFixedSize(26, 26)
             c.setStyleSheet("background:%s;border:2px solid #888;border-radius:13px;" % col)
-            c.clicked.connect(lambda _c=False, k=col: setattr(self.cv, "color", k))
+            c.clicked.connect(lambda _c=False, k=col: self._color(k))
             bar.addWidget(c)
-        self.tk = QComboBox()
-        for lab, w in (("Thin", 1), ("Normal", 2), ("Thick", 4), ("Extra thick", 7)):
-            self.tk.addItem(lab, w)
-        self.tk.setCurrentIndex(1)
-        self.tk.currentIndexChanged.connect(lambda *_: setattr(self.cv, "thick", self.tk.currentData()))
-        bar.addWidget(self.tk)
         bar.addStretch(1)
         for lab, fn in (("Undo", self.cv.undo), ("Clear", self.cv.clear), ("\u2212", lambda: self.cv.set_zoom(self.cv.zoom / 1.25)), ("+", lambda: self.cv.set_zoom(self.cv.zoom * 1.25)),
                         ("Fit", lambda: self.cv._fit(self.sa.viewport().width() - 20))):
@@ -1056,6 +1076,38 @@ class MarkupDialog(QDialog):
             b.clicked.connect(fn)
             bar.addWidget(b)
         v.addLayout(bar)
+        from PySide6.QtWidgets import QSlider, QSpinBox as _SB
+        sr = QHBoxLayout()
+        sr.addWidget(QLabel("<b>Thickness</b>"))
+        self.tk = QComboBox()
+        for lab, w in (("Thin", 2), ("Normal", 4), ("Thick", 8), ("Extra thick", 14), ("Huge", 24)):
+            self.tk.addItem(lab, w)
+        self.tk.setCurrentIndex(1)
+        self.tk.activated.connect(lambda *_: self.sl.setValue(self.tk.currentData()))
+        sr.addWidget(self.tk)
+        self.sl = QSlider(Qt.Orientation.Horizontal)
+        self.sl.setRange(1, 40)
+        self.sl.setFixedWidth(240)
+        self.sl.setToolTip("Drag to make the pen, marker, lines and text thinner or thicker. Each tool remembers its own thickness.")
+        sr.addWidget(self.sl)
+        self.sp = _SB()
+        self.sp.setRange(1, 40)
+        self.sp.setFixedWidth(64)
+        sr.addWidget(self.sp)
+        self.sl.valueChanged.connect(self.sp.setValue)
+        self.sp.valueChanged.connect(self.sl.setValue)
+        self.sl.valueChanged.connect(self._size)
+        self.prev = QLabel()
+        self.prev.setFixedSize(150, 40)
+        sr.addWidget(self.prev)
+        self.rnd = QCheckBox("Rounded corners (Box)")
+        self.rnd.toggled.connect(lambda on: setattr(self.cv, "round", 6 if on else 0))
+        sr.addWidget(self.rnd)
+        sr.addStretch(1)
+        v.addLayout(sr)
+        self.sizes = {}
+        self.sl.setValue(4)
+        self._size(4)
         self.sa = _SA()
         self.sa.setWidget(self.cv)
         self.sa.setStyleSheet("QScrollArea{background:#333;}")
@@ -1076,6 +1128,42 @@ class MarkupDialog(QDialog):
         bb.addWidget(c)
         bb.addWidget(ok)
         v.addLayout(bb)
+
+    def _tool(self, k):
+        self.sizes[self.cv.tool] = self.sl.value()
+        self.cv.tool = k
+        self.sl.setValue(self.sizes.get(k, 4))
+        self._size(self.sl.value())
+        self.cv.setMouseTracking(True)
+        self.cv.update()
+
+    def _color(self, c):
+        self.cv.color = c
+        self._size(self.sl.value())
+
+    def _size(self, v):
+        """The thickness changed: the canvas uses it from the next stroke, the small sample shows it."""
+        from PySide6.QtGui import QPixmap, QPainter, QPen, QColor
+        self.cv.thick = max(1, int(v)) / 2.0
+        self.sizes[self.cv.tool] = int(v)
+        k = 1
+        for i in range(self.tk.count()):
+            if self.tk.itemData(i) == int(v):
+                k = i
+        pm = QPixmap(150, 40)
+        pm.fill(QColor("#e8e8e8"))
+        pt = QPainter(pm)
+        pt.setRenderHint(QPainter.RenderHint.Antialiasing)
+        col = QColor(self.cv.color)
+        mk = self.cv.tool == "marker"
+        if mk:
+            col.setAlpha(110)
+        wpx = min(34.0, int(v) * 0.9 * (2.2 if mk else 1.0) / 1.0)
+        pt.setPen(QPen(col, wpx, Qt.PenStyle.SolidLine, Qt.PenCapStyle.FlatCap if mk else Qt.PenCapStyle.RoundCap))
+        pt.drawLine(18, 20, 132, 20)
+        pt.end()
+        self.prev.setPixmap(pm)
+        self.cv.update()
 
     def showEvent(self, e):
         super().showEvent(e)

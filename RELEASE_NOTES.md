@@ -1,10 +1,11 @@
 # MCP Practice Suite - Release notes
 
-Current version: 1.86.370
+Current version: 1.86.371
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
+- **Markup tool: choose how thick the pen and marker are.** A Thickness slider (1 to 40, with a number box and a Thin / Normal / Thick / Extra thick / Huge list) now sets the width of the pen, marker, box, circle, arrow lines and text. Each tool remembers its own thickness, a sample line shows the colour and width, and a ring on the picture shows how wide the pen or marker stroke will be before you draw. Boxes can have rounded corners.
 - **Drawing register: pictures inside the email.** Under the email text on "Check and send" (and in the Send window) there is now a picture strip: paste a screenshot or a mocked-up drawing with Ctrl+V (or Paste a picture), mark up a page of one of the drawings, or add a picture file. Each picture opens in the markup tool (pen, marker, box, circle, arrow, text, crop) with a caption, then sits inside the designed email under the text (not as an attachment). Preview and "See how it looks" show the pictures, and they are cleared once the email is sent.
 - **Mail: a signature for each email account, long reply chains fixed, custom-account login screen fixed.** Each email account can now have its own signature (name, position, phone, email, photo): switch to the account and use the cog menu, "Email signature for this account..." ("Use the main signature for this account" goes back). New mail and replies use the signature of the account you are sending from. Replies now quote only the message being answered, without the old signature pictures and the whole history underneath, so long back-and-forth chains no longer break or repeat the banner. The "Add an email account" screen with "Other ways to connect" is laid out properly, and gives clearer messages for a wrong port or server.
 - **Light mode check of the whole program.** Every tool, sub-tab and pop-up was opened in light mode and checked. Fixed: the South Africa map in Location now has a light look with matching zoom buttons, table headings and amber/red/green notes that were too pale are now dark enough to read, the sideways bars under the toolbar and the left menu now match the theme (soft rounded bars instead of grey lines with arrows), and the Add email account window text no longer gets cut off.
