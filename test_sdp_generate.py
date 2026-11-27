@@ -78,3 +78,16 @@ pg5.new_plan(ask=False)
 assert not pg5.buildings() and not pg5.bays and not pg5.zones and not pg5.schemes
 os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
 print("ok newplan")
+# keep-clear area and find options
+pg6 = sc.SdpPage(W()); pg6.q_w.setValue(160), pg6.q_d.setValue(100); pg6.make_rect()
+pg6.start_excl(); pg6.trace_done("trace_parking", "", [(0, 0), (60, 0), (60, 100), (0, 100)])
+assert len(pg6.excl) == 1 and not pg6.zones
+pg6.generate({"type": "Maxi", "prefix": "H", "phase": "Phase 1", "w": 30, "d": 14, "side": 6, "front": 17.5, "count": 0, "parking": True})
+for b in pg6.buildings():
+    assert b["x"] >= 59.9, b
+assert not any(pg6._bad)
+pg6.find_options({"units": 10, "cov": 0})
+assert len(pg6.schemes) >= 2, len(pg6.schemes)
+st = pg6.state(); pg7 = sc.SdpPage(W()); pg7.set_state(st); assert len(pg7.excl) == 1
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+print("ok options", [s_["name"] for s_ in pg6.schemes])

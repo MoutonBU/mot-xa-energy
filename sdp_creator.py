@@ -7,7 +7,7 @@ import math
 import time
 
 from PySide6.QtCore import QPointF, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QPen, QPolygonF
+from PySide6.QtGui import QBrush, QColor, QFont, QPen, QPolygonF
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout,
                                QHeaderView, QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout,
                                QWidget)
@@ -283,7 +283,8 @@ class SdpPage(SitePage):
                   "What complies and what does not, then save the Site Development Plan as a PDF for council."]
 
     def __init__(self, win):
-        self.zones, self.bays, self._bad, self.schemes = [], [], [], []
+        self.zones, self.bays, self._bad, self.schemes, self.excl = [], [], [], [], []
+        self._tracing_excl = False
         self.sel_bay = -1
         self.sel_zone = -1
         self._pbusy = False
@@ -341,6 +342,17 @@ class SdpPage(SitePage):
         b = QPushButton("New plan")
         b.setToolTip("Clear the stand, buildings, parking and schedule and start a fresh SDP.")
         b.clicked.connect(lambda _=False: self.new_plan())
+        br.addWidget(b)
+        b = QPushButton("Keep an area clear")
+        b.setToolTip("Draw a no-build, no-parking area: flood zone, servitude, steep slope, trees.")
+        b.clicked.connect(lambda _=False: self.start_excl())
+        br.addWidget(b)
+        b = QPushButton("Remove keep-clear areas")
+        b.clicked.connect(lambda _=False: self.clear_excl())
+        br.addWidget(b)
+        b = QPushButton("Find options...")
+        b.setToolTip("Tries each block type in both directions and keeps the ones that meet your limits as schemes.")
+        b.clicked.connect(lambda _=False: self.find_options())
         br.addWidget(b)
         b = QPushButton("Generate a layout...")
         b.clicked.connect(lambda _=False: self.generate())
@@ -588,7 +600,7 @@ class SdpPage(SitePage):
         env = None
         if self.r_lines.isChecked() and len(v) >= 3:
             env = sl.envelope(v, [e["sb"] for e in self.edges()])
-        return sp.Site(v, [bpoly(b) for b in self.buildings()], env)
+        return sp.Site(v, [bpoly(b) for b in self.buildings()] + [[tuple(q) for q in e] for e in self.excl], env)
 
     def _rules_changed(self, *_a):
         if not self._pbusy:
@@ -709,9 +721,27 @@ class SdpPage(SitePage):
         self.plan.begin("trace_parking")
         self.set_hint("Click each corner of the parking area, round the buildings. Hold Shift to keep a line straight. Double-click or press Enter to finish.")
 
+    def start_excl(self):
+        if len(self.verts()) < 3:
+            QMessageBox.information(self, self.TITLE, "Set the stand first (first step).")
+            return
+        self._tracing_excl = True
+        self.plan.begin("trace_parking")
+        self.set_hint("Click each corner of the area to keep clear (flood zone, servitude, slope, trees). Double-click or press Enter to finish. No building or bay goes in it.")
+
+    def clear_excl(self):
+        self.excl = []
+        self.refresh_parking(user=True)
+
     def trace_done(self, mode, role, pts):
         if mode != "trace_parking":
             return super().trace_done(mode, role, pts)
+        if self._tracing_excl:
+            self._tracing_excl = False
+            self.excl.append([list(q) for q in sl.si.clean(pts)])
+            self.refresh_parking(user=True)
+            self.set_hint("Keep-clear area added. Press Generate or Fill again to park round it.")
+            return
         self._new_zone(sl.si.clean(pts))
         if self.auto_fill.isChecked():
             self._fill([len(self.zones) - 1])
@@ -864,6 +894,57 @@ class SdpPage(SitePage):
         self.sel_bay = -1
         self.refresh_parking(user=True)
 
+    def find_options(self, filt=None):
+        """the site solver's 'filtered options': every block type in both directions is solved; those that meet the limits are saved as schemes"""
+        if filt is None:
+            d = QDialog(self)
+            d.setWindowTitle("Find options")
+            f = QFormLayout(d)
+            lab = QLabel("Each block type is tried, in both directions, with as many blocks as the parking allows. The options that meet your limits are saved as schemes to compare. 0 means no limit.")
+            lab.setWordWrap(True)
+            lab.setMinimumWidth(400)
+            f.addRow(lab)
+            mu, mc = QSpinBox(), sl.spin(0, 100, 0, 1, " %")
+            mu.setRange(0, 5000)
+            f.addRow("At least this many units", mu)
+            f.addRow("Coverage not more than", mc)
+            bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+            bb.accepted.connect(d.accept)
+            bb.rejected.connect(d.reject)
+            f.addRow(bb)
+            if not d.exec():
+                return
+            filt = {"units": mu.value(), "cov": mc.value()}
+        if len(self.verts()) < 3:
+            QMessageBox.information(self, self.TITLE, "Set the stand first (first step).")
+            return
+        base = {"prefix": "H", "phase": "Phase 1", "side": 6.0, "front": 17.5, "count": 0, "parking": True}
+        kept, best, tried = 0, None, 0
+        env0 = sl.envelope(self.verts(), [e["sb"] for e in self.edges()]) or self.verts()
+        turned = sp._longest_dir(env0) + 90.0
+        for typ in kb.module_names()[:3]:
+            m = kb.module_preset(typ)
+            area = m["gross_m2"] / float(m["storeys"])
+            w = round(math.sqrt(area * 2.2), 1)
+            for th in (None, turned):
+                o = dict(base, type=typ, w=w, d=round(area / w, 1), theta=th)
+                self.generate(o)
+                QApplication.processEvents()
+                tried += 1
+                a = self.sdp()
+                ok = a["total"]["units"] >= filt.get("units", 0) and a["bays"] >= a["bays_needed"] and (not filt.get("cov") or a["cov"] <= filt["cov"])
+                if ok:
+                    self.save_scheme()
+                    self.schemes[-1]["name"] = "%s%s" % (typ, "" if th is None else " (turned)")
+                    kept += 1
+                    if best is None or a["total"]["units"] > best[0]:
+                        best = (a["total"]["units"], len(self.schemes) - 1)
+        self._show_schemes()
+        if best is not None:
+            self.scheme_cb.setCurrentIndex(best[1])
+            self.load_scheme()
+        self.set_hint("%d of %d options meet your limits and are saved as schemes (the one with the most units is open)." % (kept, tried))
+
     def new_plan(self, ask=True):
         """start a fresh SDP: the stand, buildings, parking areas, bays, schedule and schemes are cleared"""
         if ask and (self.verts() or self.buildings() or self.bays):
@@ -871,6 +952,7 @@ class SdpPage(SitePage):
                 return
         proj = self.f["project"].text() if "project" in self.f else ""
         self.schemes = []
+        self.excl = []
         self.set_state({})
         self.schemes = []
         self._show_schemes()
@@ -1007,7 +1089,7 @@ class SdpPage(SitePage):
         """parking for n blocks placed in the first n slots: counted bays against the bays the units need"""
         v = self.verts()
         env = sl.envelope(v, [e["sb"] for e in self.edges()]) if self.r_lines.isChecked() else None
-        site = sp.Site(v, own + [list(R) for R in slots[:n]], env)
+        site = sp.Site(v, own + [[tuple(q) for q in e] for e in self.excl] + [list(R) for R in slots[:n]], env)
         bays = sp.fill(v, site, r, None, [], "gen")
         sd = self.site()
         need = sp.required(n * upb, _num(sd.get("bays_per_unit"), 1.5), int(_num(sd.get("visitor_per"))))
@@ -1033,9 +1115,9 @@ class SdpPage(SitePage):
         for i in sorted(rows, reverse=True):
             self.bt.removeRow(i)
         self._pbusy = False
-        own = [bpoly(b) for b in self.buildings()]
+        own = [bpoly(b) for b in self.buildings()] + [[tuple(q) for q in e] for e in self.excl]
         env = sl.envelope(v, [e["sb"] for e in self.edges()]) or v
-        slots = sp.block_slots(env, own, opts["w"], opts["d"], opts["side"], opts["front"])
+        slots = sp.block_slots(env, own, opts["w"], opts["d"], opts["side"], opts["front"], opts.get("theta"))
         if not slots:
             QMessageBox.information(self, self.TITLE, "No block of %.1f x %.1f m fits inside the building lines. Make the block smaller or the gaps less." % (opts["w"], opts["d"]))
             return
@@ -1196,6 +1278,7 @@ class SdpPage(SitePage):
         super().shift_world(dx, dy)
         for z in getattr(self, "zones", []):
             z["poly"] = [[x + dx, y + dy] for x, y in z["poly"]]
+        self.excl = [[[x + dx, y + dy] for x, y in e] for e in getattr(self, "excl", [])]
         for b in getattr(self, "bays", []):
             b["x"] += dx
             b["y"] += dy
@@ -1206,6 +1289,7 @@ class SdpPage(SitePage):
             z["poly"] = [list(q) for q in self._rot_pts([tuple(p) for p in z["poly"]], a, cx, cy)]
             if z.get("angle") is not None:
                 z["angle"] = (z["angle"] + math.degrees(a)) % 180
+        self.excl = [[list(q) for q in self._rot_pts([tuple(p) for p in e], a, cx, cy)] for e in getattr(self, "excl", [])]
         for b in getattr(self, "bays", []):
             (b["x"], b["y"]), = self._rot_pts([(b["x"], b["y"])], a, cx, cy)
             b["a"] = (b["a"] + math.degrees(a)) % 360
@@ -1242,6 +1326,10 @@ class SdpPage(SitePage):
                 p.setPen(QColor("#ffffff") if k == "refuse" else QColor("#111111"))
                 c = pl.boundingRect().center()
                 p.drawText(_QR(c.x() - 70, c.y() - 9, 140, 18), int(Qt.AlignmentFlag.AlignCenter), b["name"])
+        for e in self.excl:
+            p.setPen(QPen(QColor(110, 110, 110), 1.4))
+            p.setBrush(QBrush(QColor(120, 120, 120, 110), Qt.BrushStyle.BDiagPattern))
+            p.drawPolygon(QPolygonF([to(q) for q in e]))
         for i, z in enumerate(self.zones):
             p.setPen(QPen(QColor("#7a3fc4"), 3 if (i == self.sel_zone and not snapshot) else 1.4, Qt.PenStyle.DashLine))
             p.setBrush(QColor(122, 63, 196, 28))
@@ -1586,7 +1674,7 @@ class SdpPage(SitePage):
     def state(self):
         d = super().state()
         d.update({"sdp": self.site(), "blocks": self.blocks(), "zones": [dict(z) for z in self.zones], "bays": [dict(b) for b in self.bays],
-                  "prules": self.rules_now(), "gen": self._gen_names(), "schemes": self.schemes})
+                  "prules": self.rules_now(), "gen": self._gen_names(), "schemes": self.schemes, "excl": self.excl})
         return d
 
     def set_state(self, d):
@@ -1615,6 +1703,7 @@ class SdpPage(SitePage):
             self.bays = [dict(b) for b in (d.get("bays") or []) if isinstance(b, dict) and "x" in b]
             self.sel_bay = self.sel_zone = -1
             self.gen_names = [str(n) for n in (d.get("gen") or [])]
+            self.excl = [[list(q) for q in e] for e in (d.get("excl") or [])]
             if "schemes" in d:
                 self.schemes = [x for x in (d.get("schemes") or []) if isinstance(x, dict) and x.get("state")]
             self._show_schemes()
