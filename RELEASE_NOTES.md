@@ -1,10 +1,11 @@
 # MCP Practice Suite - Release notes
 
-Current version: 1.86.358
+Current version: 1.86.359
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
+- **Fixed the freeze when creating a company or area in Orders.** Every change used to rebuild every order row with about 7 widgets each, which took many seconds with a few hundred orders. Rows now get their drop-downs only when they scroll into view, and adding a company or area, or a logo or photo, no longer rebuilds the order list at all. The Drawing register list had the same problem and is fixed too (1000 drawings: 6 s down to 0.2 s).
 - **Fixed "The update server refused the request" for other users.** GitHub limits update checks per internet address; the program now falls back to the public release pages, so the check and the download keep working.
 - **Fixed light mode.** The Dark/Light and zoom buttons were black, the title could turn white, and switching to light while the program was open made the logo grow, the zoom icon vanish and the Projects/Mail buttons lose their styling.
 - **Projects: pop-up notifications, even when the program is closed.** When someone adds a project or to-do, gives you one, finishes one or marks one urgent, a pop-up appears in the corner of the screen with its own animated clipboard (red and shaking for urgent). The program now also stays in the tray while you are signed in to Projects, so you get the pop-up with the window closed. Open Projects takes you straight there.

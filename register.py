@@ -1790,6 +1790,40 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
         n = sum(1 for g in self.groups for r in g["rows"] if r.get("on"))
         self.count.setText("%d drawings in this issue, %d in all" % (n, sum(len(g["rows"]) for g in self.groups)))
 
+    def _tab_widgets(self, i):
+        """The status and 'by' drop-downs of one drawing row, made only for the rows on screen (a long drawing list made the program freeze)."""
+        rows = getattr(self, "_tab_rows", None) or []
+        k_ = KEYS.index("status")
+        if not (0 <= i < len(rows)) or i >= self.tab.rowCount() or self.tab.cellWidget(i, k_) is not None:
+            return
+        r = rows[i]
+        cb = QComboBox()
+        cb.addItems(STATUSES)
+        cb.setEditable(True)
+        cb.setCurrentText(r.get("status", "For information"))
+        cb.currentTextChanged.connect(lambda t, row=r: row.__setitem__("status", t))
+        self.tab.setCellWidget(i, k_, cb)
+        cb2 = QComboBox()
+        cb2.addItems(BYS)
+        cb2.setEditable(True)
+        cb2.setCurrentText(r.get("by", ""))
+        cb2.currentTextChanged.connect(lambda t, row=r: row.__setitem__("by", t))
+        self.tab.setCellWidget(i, KEYS.index("by"), cb2)
+        self.tab.resizeRowToContents(i)
+
+    def _tab_lazy(self, first=None):
+        n = self.tab.rowCount()
+        if n == 0:
+            return
+        if first is None:
+            r0, r1 = self.tab.rowAt(0), self.tab.rowAt(max(0, self.tab.viewport().height() - 1))
+            first = max(0, (r0 if r0 >= 0 else 0) - 6)
+            last = (r1 if r1 >= 0 else n - 1) + 12
+        else:
+            last = first + 24
+        for i in range(first, min(n, last + 1)):
+            self._tab_widgets(i)
+
     def refresh(self):
         self._busy = True
         try:
@@ -1823,19 +1857,13 @@ class RegisterPage(LogMixin, MailMixin, QWidget):
                     if kind in ("new", "revised"):
                         it.setBackground(QColor(120, 90, 20, 110) if kind == "revised" else QColor(30, 110, 60, 110))
                     self.tab.setItem(i, c, it)
-                cb = QComboBox()
-                cb.addItems(STATUSES)
-                cb.setEditable(True)
-                cb.setCurrentText(r.get("status", "For information"))
-                cb.currentTextChanged.connect(lambda t, row=r: row.__setitem__("status", t))
-                self.tab.setCellWidget(i, KEYS.index("status"), cb)
-                cb2 = QComboBox()
-                cb2.addItems(BYS)
-                cb2.setEditable(True)
-                cb2.setCurrentText(r.get("by", ""))
-                cb2.currentTextChanged.connect(lambda t, row=r: row.__setitem__("by", t))
-                self.tab.setCellWidget(i, KEYS.index("by"), cb2)
-            self.tab.resizeRowsToContents()
+            self._tab_rows = rows
+            self.tab.verticalHeader().setDefaultSectionSize(40)
+            if not getattr(self.tab, "_lazy_hooked", False):
+                self.tab._lazy_hooked = True
+                self.tab.verticalScrollBar().valueChanged.connect(lambda _v=0: self._tab_lazy())
+            self._tab_lazy(0)
+            QTimer.singleShot(0, self._tab_lazy)
             self._counts()
             self._blocks_panel()
             self.refresh_log()

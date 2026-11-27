@@ -3603,7 +3603,7 @@ class LogMixin:
             QMessageBox.information(self, "Orders", "There is already a company called %s." % r[0])
             return
         self.companies.append({"name": r[0], "emails": r[1], "keys": r[2], "rules": r[3], "default_area": r[4]})
-        self.refresh_log()
+        self.refresh_log(tables=False)
         if QMessageBox.question(self, "Orders", "Add the logo of %s now?" % r[0]) == QMessageBox.StandardButton.Yes:
             self.set_company_logo(r[0])
 
@@ -3628,7 +3628,7 @@ class LogMixin:
             return
         c["logo"], c["photo"] = out, ""
         c["accent"] = _accent_of(out)                 # the tile takes the colour of the logo; change it with Set tile colour
-        self.refresh_log()
+        self.refresh_log(tables=False)
 
     def adopt_no_company(self):
         """Turns the No company square into a real company: its areas and orders move into it."""
@@ -4071,7 +4071,7 @@ class LogMixin:
             QMessageBox.warning(self, "Orders", "The picture could not be saved.")
             return
         a["photo"] = out
-        self.refresh_log()
+        self.refresh_log(tables=False)
 
     def _area_dialog(self, name="", keys="", codes="", company=""):
         d = QDialog(self)
@@ -4122,7 +4122,7 @@ class LogMixin:
             QMessageBox.information(self, "Orders", "There is already an area called %s." % r[0])
             return
         self.areas.append({"name": r[0], "keys": r[1], "codes": r[2], "company": r[3]})
-        self.refresh_log()
+        self.refresh_log(tables=False)
         if QMessageBox.question(self, "Orders", "Choose a photo for the %s square now?" % r[0]) == QMessageBox.StandardButton.Yes:
             self.set_area_photo(r[0])
 
@@ -5951,7 +5951,44 @@ class LogMixin:
         self._lrows[kind][it.row()][LOGK[it.column()]] = it.text().strip()
         self.update_mail()
 
-    def refresh_log(self):
+    def _row_widgets(self, kind, t, i):
+        """The drop-downs and tick boxes of one order row. Made only for the rows on screen (hundreds of orders at once froze the program)."""
+        ents = self._lrows.get(kind) or []
+        if not (0 <= i < len(ents)) or i >= t.rowCount() or t.cellWidget(i, LOGK.index("kinds")) is not None:
+            return
+        e = ents[i]
+        from register import BYS
+        for k, vals in (("group", [g["name"] for g in self.groups]), ("priority", PRIO), ("type", TYPES), ("by", None), ("status", LSTAT)):
+            cb = QComboBox()
+            cb.setEditable(True)
+            cb.addItems(vals if vals is not None else BYS)
+            cb.setCurrentText(str(e.get(k, "")))
+            cb.currentTextChanged.connect(lambda tx, ent=e, kk=k: ent.__setitem__(kk, tx))
+            if k == "priority":
+                cb.currentTextChanged.connect(lambda _tx: QTimer.singleShot(0, self.refresh_log))
+            t.setCellWidget(i, LOGK.index(k), cb)
+        t.setCellWidget(i, LOGK.index("kinds"), self._kinds_box(e))
+        t.setCellWidget(i, LOGK.index("extras"), _ExtrasCell(self, e, t))
+        t.resizeRowToContents(i)
+
+    def _lazy_fill(self, kind, first=None):
+        t = self.ltabs.get(kind)
+        if t is None:
+            return
+        n = t.rowCount()
+        if n == 0:
+            return
+        if first is None:
+            r0, r1 = t.rowAt(0), t.rowAt(max(0, t.viewport().height() - 1))
+            first = max(0, r0) if r0 >= 0 else 0
+            last = (r1 if r1 >= 0 else n - 1) + 12
+            first = max(0, first - 6)
+        else:
+            last = first + 24
+        for i in range(first, min(n, last + 1)):
+            self._row_widgets(kind, t, i)
+
+    def refresh_log(self, tables=True):
         self._busy = True
         if not hasattr(self, "_extras_closed"):
             self._extras_closed = set()
@@ -5966,6 +6003,9 @@ class LogMixin:
                     e_["of_order"] = True       # changes that came in by email belong to their order
             for kind, t in getattr(self, "ltabs", {}).items():
                 keep_row = t.currentRow()
+                if not tables:
+                    self._rebuild_tiles(kind)
+                    continue
                 gsel = self._lgroup.get(kind)
                 ents = [e for e in self.log if self._in_scope(e, kind) and (gsel is None or e.get("group") == gsel)]
                 ents.sort(key=lambda e: 0 if self._is_urgent(e) else 1)          # urgent ones on top
@@ -5986,19 +6026,12 @@ class LogMixin:
                         elif e.get("status") == "Draft":
                             it.setBackground(QColor(120, 90, 20, 90))
                         t.setItem(i, c, it)
-                    for k, vals in (("group", [g["name"] for g in self.groups]), ("priority", PRIO), ("type", TYPES), ("by", None), ("status", LSTAT)):
-                        cb = QComboBox()
-                        cb.setEditable(True)
-                        from register import BYS
-                        cb.addItems(vals if vals is not None else BYS)
-                        cb.setCurrentText(str(e.get(k, "")))
-                        cb.currentTextChanged.connect(lambda tx, ent=e, kk=k: ent.__setitem__(kk, tx))
-                        if k == "priority":
-                            cb.currentTextChanged.connect(lambda _tx: QTimer.singleShot(0, self.refresh_log))
-                        t.setCellWidget(i, LOGK.index(k), cb)
-                    t.setCellWidget(i, LOGK.index("kinds"), self._kinds_box(e))
-                    t.setCellWidget(i, LOGK.index("extras"), _ExtrasCell(self, e, t))
-                t.resizeRowsToContents()
+                t.verticalHeader().setDefaultSectionSize(54)
+                if not getattr(t, "_lazy_hooked", False):
+                    t._lazy_hooked = True
+                    t.verticalScrollBar().valueChanged.connect(lambda _v=0, k_=kind: self._lazy_fill(k_))
+                self._lazy_fill(kind, 0)
+                QTimer.singleShot(0, lambda k_=kind: self._lazy_fill(k_))
                 if 0 <= keep_row < len(ents):
                     t.selectRow(keep_row)
                 self._rebuild_tiles(kind)
