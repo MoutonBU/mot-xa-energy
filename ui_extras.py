@@ -5,8 +5,8 @@ import re
 import math
 import sys
 
-from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPoint, QPointF, QRectF, QSize, QTimer, Qt, QUrl, QVariantAnimation
-from PySide6.QtGui import QImage, QPixmap, QTransform, QBrush, QColor, QDesktopServices, QIcon, QCursor, QPalette, QPainter, QPen, QRadialGradient, QPainterPath
+from PySide6.QtCore import QElapsedTimer, QEasingCurve, QEvent, QObject, QPoint, QPointF, QRectF, QSize, QTimer, Qt, QUrl, QVariantAnimation
+from PySide6.QtGui import QImage, QPixmap, QTransform, QBrush, QColor, QDesktopServices, QIcon, QCursor, QPalette, QPainter, QPen, QRadialGradient, QPainterPath, QLinearGradient, QFont
 from PySide6.QtWidgets import (QAbstractButton, QApplication, QGraphicsDropShadowEffect, QGraphicsOpacityEffect, QTabWidget, QToolTip, QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QTextBrowser, QVBoxLayout, QWidget)
 
 GREEN, AMBER, GREY, RED = "#2e9e5b", "#d9a21b", "#8a8f98", "#C8102E"
@@ -1605,43 +1605,98 @@ class KeyHints(QObject):
         return False
 
 
-def splash_show(app, logo_pixmap=None):
-    """the logo fades in with a thin red line while the program builds its window"""
-    w = QWidget(None, Qt.WindowType.SplashScreen | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
-    w.setFixedSize(420, 240)
-    w.setStyleSheet("QWidget{background:#16171a;}")
-    lay = QVBoxLayout(w)
-    lay.setContentsMargins(24, 24, 24, 30)
-    lb = QLabel()
-    lb.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    if logo_pixmap is not None and not logo_pixmap.isNull():
-        lb.setPixmap(logo_pixmap.scaledToHeight(110, Qt.TransformationMode.SmoothTransformation))
-    else:
-        lb.setText("<b style='color:#eceef0;font-size:22px'>MCP Architecture &amp; Interiors</b>")
-    lay.addWidget(lb)
-    bar = QFrame(w)
-    bar.setFixedHeight(3)
-    bar.setStyleSheet("background:#ff4056;")
-    scr = app.primaryScreen().availableGeometry()
-    w.move(scr.center().x() - 210, scr.center().y() - 120)
-    w.setWindowOpacity(0.0)
-    w.show()
-    bar.setGeometry(0, 237, 10, 3)
-    bar.show()
-    an = QVariantAnimation(w)
-    an.setStartValue(0.0)
-    an.setEndValue(1.0)
-    an.setDuration(900)
-    an.setEasingCurve(QEasingCurve.Type.OutCubic)
+class _Splash(QWidget):
+    """Instant start-up card: the logo pops in, a red light sweeps across it, a thin line keeps moving while the program loads."""
 
-    def step(v):
-        w.setWindowOpacity(min(1.0, float(v) * 2.0))
-        bar.setGeometry(0, 237, int(420 * float(v)), 3)
-    an.valueChanged.connect(step)
-    w._an = an
-    an.start()
-    for _ in range(6):
-        app.processEvents()
+    def __init__(self, logo):
+        super().__init__(None, Qt.WindowType.SplashScreen | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+        self.setFixedSize(440, 260)
+        self.logo = logo if (logo is not None and not logo.isNull()) else None
+        self.t = QElapsedTimer()
+        self.t.start()
+        self.fade = None
+        self.tm = QTimer(self)
+        self.tm.timeout.connect(self.update)
+        self.tm.start(16)
+
+    def paintEvent(self, e):
+        import math
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        W, H = self.width(), self.height()
+        ms = self.t.elapsed()
+        p.fillRect(0, 0, W, H, QColor("#16171a"))
+        p.setPen(QPen(QColor("#2a2c31"), 1))
+        p.drawRect(0, 0, W - 1, H - 1)
+        cx, cy = W / 2, H / 2 - 18
+        k = min(1.0, ms / 650.0)
+        ease = 1 - (1 - k) ** 3
+        over = 1.0 + 0.10 * math.sin(min(1.0, ms / 650.0) * math.pi) * (1 - k)          # small overshoot
+        pulse = 0.5 + 0.5 * math.sin(ms / 380.0)
+        g = QRadialGradient(cx, cy, 120)
+        g.setColorAt(0, QColor(255, 64, 86, int((40 + 35 * pulse) * ease)))
+        g.setColorAt(1, QColor(255, 64, 86, 0))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(g)
+        p.drawEllipse(QPointF(cx, cy), 120, 120)
+        if self.logo is not None:
+            lh = 104
+            sc = self.logo.scaledToHeight(lh, Qt.TransformationMode.SmoothTransformation)
+            dw, dh = sc.width(), sc.height()
+            img = QImage(dw, dh, QImage.Format.Format_ARGB32_Premultiplied)
+            img.fill(0)
+            q = QPainter(img)
+            q.drawPixmap(0, 0, sc)
+            q.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceAtop)
+            ph = ((ms - 500) % 1800) / 1800.0                                          # red-white light sweep
+            if ms > 500:
+                x = -dw * 0.4 + ph * dw * 1.8
+                lg = QLinearGradient(x - 26, 0, x + 26, dh * 0.3)
+                lg.setColorAt(0, QColor(255, 255, 255, 0))
+                lg.setColorAt(0.5, QColor(255, 255, 255, 190))
+                lg.setColorAt(1, QColor(255, 255, 255, 0))
+                q.fillRect(0, 0, dw, dh, lg)
+            q.end()
+            p.save()
+            p.setOpacity(min(1.0, ease * 1.3))
+            p.translate(cx, cy)
+            p.scale(over * (0.82 + 0.18 * ease), over * (0.82 + 0.18 * ease))
+            p.drawImage(QPointF(-dw / 2, -dh / 2), img)
+            p.restore()
+        else:
+            p.setPen(QColor("#eceef0"))
+            f = QFont(self.font())
+            f.setPointSize(16)
+            f.setBold(True)
+            p.setFont(f)
+            p.drawText(QRectF(0, cy - 20, W, 40), Qt.AlignmentFlag.AlignCenter, "MCP Architecture & Interiors")
+        # thin loading line: a red piece that slides along the bottom
+        ly = H - 38
+        p.setPen(QPen(QColor("#2a2c31"), 2))
+        p.drawLine(70, ly, W - 70, ly)
+        ph = (ms % 1300) / 1300.0
+        seg = 90
+        x0 = 70 + (W - 140 + seg) * ph - seg
+        a0, a1 = max(70, x0), min(W - 70, x0 + seg)
+        if a1 > a0:
+            lg = QLinearGradient(x0, 0, x0 + seg, 0)
+            lg.setColorAt(0, QColor(255, 64, 86, 0))
+            lg.setColorAt(0.5, QColor(255, 64, 86, 255))
+            lg.setColorAt(1, QColor(255, 64, 86, 0))
+            p.setPen(QPen(QBrush(lg), 2))
+            p.drawLine(QPointF(a0, ly), QPointF(a1, ly))
+        p.end()
+
+
+def splash_show(app, logo_pixmap=None):
+    """appears at once (before anything slow runs) and keeps animating"""
+    w = _Splash(logo_pixmap)
+    scr = app.primaryScreen().availableGeometry()
+    w.move(scr.center().x() - w.width() // 2, scr.center().y() - w.height() // 2)
+    w.show()
+    w.repaint()
+    app.processEvents()
     return w
 
 
@@ -6500,7 +6555,8 @@ class BoardPage(QWidget):
         self.lmsg.setWordWrap(True)
         self.lmsg.setTextFormat(Qt.TextFormat.RichText)
         self.lmsg.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lmsg.setMaximumWidth(520)
+        self.lmsg.setFixedWidth(520)
+        self.lmsg.setMinimumHeight(70)
         lv.addWidget(self.lmsg, 0, Qt.AlignmentFlag.AlignHCenter)
         self.em = QLineEdit()
         self.em.setPlaceholderText("Your email address")
@@ -6509,8 +6565,8 @@ class BoardPage(QWidget):
         self.pw.setEchoMode(QLineEdit.EchoMode.Password)
         self.pw.returnPressed.connect(self._signin)
         for w in (self.em, self.pw):
-            w.setMaximumWidth(360)
-            w.setMinimumHeight(34)
+            w.setFixedWidth(380)
+            w.setMinimumHeight(36)
             lv.addWidget(w, 0, Qt.AlignmentFlag.AlignHCenter)
         bb = QHBoxLayout()
         bb.addStretch(1)
@@ -6610,7 +6666,7 @@ class BoardPage(QWidget):
                 self.pw.clear()
                 self.load_people(first=True)
             else:
-                self.lmsg.setText("<div style='font-size:14px'>Almost there: open the email that was just sent to <b>%s</b>, confirm it, then come back and press <b>Sign in</b>.</div>" % em)
+                self.lmsg.setText("<div style='font-size:14px'>Account created. Open the email just sent to <b>%s</b> and click the confirm link. The page it opens may say \"localhost refused to connect\": that is fine, your account is confirmed. Come back here and press <b>Sign in</b> (your password is still filled in).</div>" % em)
         self.run(lambda: self.api.sign_up(em, pw), done)
 
     def _sign_out(self):

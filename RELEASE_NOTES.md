@@ -1,10 +1,11 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: 1.86.342
+Current version: 1.86.343
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
+- **Faster start, animated logo, plain icons.** The splash screen now appears instantly, with an animated logo (pop-in, light sweep, moving red line) that keeps moving while the program signs in. Start-screen cards use plain still icons. Projects sign-in screen no longer cramps its text, and the account-created message explains the confirm-email step.
 ### New features
 - **Projects: a live shared board.** A new Projects card on the start screen: a To do / In progress / Done board (drag a card to move it) with owner, client, due date, priority, notes and a link. Everyone you add under Team signs in with their own email, and what one person adds or moves shows on the others' screens within about two seconds, with a pop-up. Search, Only mine, overdue dates in red, and a red number on the card for changes you have not seen.
 - **Mail: Mark all as read.** A new button at the top of the Mail tab marks every unread email in the inbox as read, in Gmail too (not only the ones on screen), so the red number on the home screen goes away.

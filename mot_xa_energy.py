@@ -14759,10 +14759,11 @@ class MainWindow(QMainWindow):
             import ui_extras as ux_m
             ux_m.install_icon_motion()
             tcol = TILE_COL.get(title.replace("&&", "&"), "#ff4056")
-            icl = ux_m.AnimIcon(icon_pixmap(ico, tcol, 72, 4), tcol, 104)        # lifts, wobbles and glows when pointed at, squeezes and rings when pressed
-            b._anim_icon = icl
-            icl.enable_spin(len(getattr(self, '_tile_n', [])) * 0.9)
-            self.__dict__.setdefault('_tile_n', []).append(1)
+            icl = QLabel()                                              # a plain, still vector icon (no spinning or hover motion)
+            icl.setPixmap(icon_pixmap(ico, tcol, 72, 4))
+            icl.setFixedSize(104, 104)
+            icl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            icl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
             b.setStyleSheet("QPushButton{border:1px solid transparent;border-radius:14px;} QPushButton:hover{border:1px solid %s;}" % tcol)
             b.setProperty("glow", tcol)
             bl = QVBoxLayout(b)
@@ -23189,6 +23190,26 @@ def _off_touch():
         _acc_save(d)
 
 
+def _pump(app, fn, *a):
+    """run a slow network call in a thread while the splash keeps animating"""
+    th = __import__("threading")
+    box = {}
+
+    def run():
+        try:
+            box["v"] = fn(*a)
+        except BaseException as ex:
+            box["e"] = ex
+    t = th.Thread(target=run, daemon=True)
+    t.start()
+    while t.is_alive():
+        app.processEvents()
+        t.join(0.01)
+    if "e" in box:
+        raise box["e"]
+    return box.get("v")
+
+
 def sign_in_gate(app):
     """The person who chose 'Keep me signed in' goes straight in. Only a licence that is really switched off (or a
     refresh that is really refused with no recent successful sign-in on this PC) sends them back to the sign-in screen."""
@@ -23198,7 +23219,7 @@ def sign_in_gate(app):
             o = _acc_load().get("offline")
             cached = {"name": o["name"], "email": o["email"], "status": "ok"} if (o and _off_fresh(o)) else None
             try:
-                u = sb_refresh(rt)
+                u = _pump(app, sb_refresh, rt)
             except SbError as ex:
                 _gate_log("refresh failed (offline=%s status=%s): %s" % (ex.offline, ex.status, ex))
                 # the saved session is kept whatever the reason: a refusal can be a one-off (a quick double start
@@ -23209,7 +23230,7 @@ def sign_in_gate(app):
                 SETTINGS["sb_refresh"] = u["refresh"]       # keep the new token before anything else can go wrong
                 save_settings()
                 try:
-                    st = sb_licence(u["token"])
+                    st = _pump(app, sb_licence, u["token"])
                 except SbError as ex:
                     _gate_log("licence check failed: %s" % ex)
                     st = "ok" if cached else "?"
@@ -23229,10 +23250,20 @@ def sign_in_gate(app):
         u = acc_remembered()
         if u:
             return u
+    try:
+        if getattr(app, "_splash", None) is not None:
+            app._splash.hide()
+    except Exception:
+        pass
     app.setStyle("Fusion")
     app.setStyleSheet(_final_qss())
     dlg = LoginDialog()
     if dlg.exec() == QDialog.DialogCode.Accepted:
+        try:
+            if getattr(app, "_splash", None) is not None:
+                app._splash.show()
+        except Exception:
+            pass
         return dlg.user
     return None
 
@@ -23252,6 +23283,16 @@ def main():
     except Exception:
         pass
     app = QApplication(sys.argv)
+    _spl = None
+    if not any(a in sys.argv for a in ("--restore", "--ready", "--after-update", "--tray")):
+        try:                                       # the splash is the very first thing on screen
+            from PySide6.QtGui import QPixmap as _QPM
+            _lp = _QPM()
+            _lp.loadFromData(__import__("base64").b64decode(LOGO_B64))
+            _spl = __import__("ui_extras").splash_show(app, _lp)
+            app._splash = _spl
+        except Exception:
+            _spl = None
     try:
         import button_fx
         button_fx.install(app)                        # soft glow on every button: mouse over, pressed, clicked
@@ -23261,15 +23302,6 @@ def main():
         user = sign_in_gate(app)
         if not user:
             return
-    _spl = None
-    if not any(a in sys.argv for a in ("--restore", "--ready", "--after-update", "--tray")):
-        try:
-            from PySide6.QtGui import QPixmap as _QPM
-            _lp = _QPM()
-            _lp.loadFromData(__import__("base64").b64decode(LOGO_B64))
-            _spl = __import__("ui_extras").splash_show(app, _lp)
-        except Exception:
-            _spl = None
     win = MainWindow()
     apply_glass_theme(app, win)
     app._icon_filter = _IconFilter(app)
