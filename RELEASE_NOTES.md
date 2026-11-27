@@ -1,10 +1,11 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: 1.86.343
+Current version: 1.86.344
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
+- **Projects: to-dos inside projects.** Open a project to get a to-do list beside its details: add to-dos, add sub-to-dos under any of them (as deep as you like), tick them off, rename, set status, who and due date from the right-click menu. Project cards on the board show a progress bar (done/total), and everything is live for the whole team.
 - **Faster start, animated logo, plain icons.** The splash screen now appears instantly, with an animated logo (pop-in, light sweep, moving red line) that keeps moving while the program signs in. Start-screen cards use plain still icons. Projects sign-in screen no longer cramps its text, and the account-created message explains the confirm-email step.
 ### New features
 - **Projects: a live shared board.** A new Projects card on the start screen: a To do / In progress / Done board (drag a card to move it) with owner, client, due date, priority, notes and a link. Everyone you add under Team signs in with their own email, and what one person adds or moves shows on the others' screens within about two seconds, with a pop-up. Search, Only mine, overdue dates in red, and a red number on the card for changes you have not seen.

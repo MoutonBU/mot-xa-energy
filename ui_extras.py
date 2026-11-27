@@ -6055,7 +6055,7 @@ import urllib.request as _ureq
 from PySide6.QtCore import QDate
 from PySide6.QtGui import QFont, QFontMetrics
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDateEdit, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-                               QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QStackedWidget, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
+                               QListWidgetItem, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QStackedWidget, QStyle, QStyledItemDelegate, QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator, QVBoxLayout, QWidget)
 
 BROLE = Qt.ItemDataRole.UserRole
 DEFAULT_URL = "https://dhofaemjobdlnztcztnd.supabase.co"
@@ -6200,8 +6200,29 @@ class BoardAPI:
 
 
 # ------------------------------------------------------------------------------------------------ the cards
+def board_kids(rows, pid):
+    """live (not deleted) children of a project or to-do, in the order they were added"""
+    ks = [r for r in rows.values() if r.get("parent_id") == pid and not r.get("deleted")]
+    ks.sort(key=lambda r: (float(r.get("pos") or 0), str(r.get("created_at") or "")))
+    return ks
+
+
+def board_progress(rows, pid):
+    """(done, total) over everything below this project, at every depth"""
+    d = t = 0
+    for k in board_kids(rows, pid):
+        d2, t2 = board_progress(rows, k["id"])
+        if t2 == 0:
+            t += 1
+            d += 1 if k.get("status") == "done" else 0
+        else:
+            t += t2
+            d += d2
+    return d, t
+
+
 class _BoardCardDelegate(QStyledItemDelegate):
-    H = 84
+    H = 92
 
     def __init__(self, page):
         super().__init__(page)
@@ -6243,7 +6264,17 @@ class _BoardCardDelegate(QStyledItemDelegate):
         late = bool(due) and due < _btime.strftime("%Y-%m-%d") and r.get("status") != "done"
         if due:
             p.setPen(QColor("#ff5a6a") if late else QColor(mute))
-            p.drawText(QPointF(x0, card.top() + 62), ("Overdue · " if late else "Due ") + due)
+            p.drawText(QPointF(x0, card.top() + 60), ("Overdue · " if late else "Due ") + due)
+        dn, tt = board_progress(self.page.rows, r.get("id"))
+        if tt:
+            by = card.bottom() - 9
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(line))
+            p.drawRoundedRect(QRectF(x0, by, w - 50, 4), 2, 2)
+            p.setBrush(QColor("#55b57a" if dn == tt else BOARD_ACCENT))
+            p.drawRoundedRect(QRectF(x0, by, (w - 50) * dn / float(tt), 4), 2, 2)
+            p.setPen(QColor(mute))
+            p.drawText(QRectF(x0 + w - 44, by - 7, 44, 16), Qt.AlignmentFlag.AlignRight, "%d/%d" % (dn, tt))
         if r.get("priority") in ("high", "urgent"):
             f.setBold(True)
             p.setFont(f)
@@ -6287,8 +6318,12 @@ class ProjectDialog(QDialog):
         self.page, self.row = page, row or {}
         self.deleted = False
         self.setWindowTitle("Project" if row else "New project")
-        self.resize(520, 560)
-        v = QVBoxLayout(self)
+        self.resize(1060, 640)
+        outer = QHBoxLayout(self)
+        left = QWidget()
+        v = QVBoxLayout(left)
+        v.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(left, 5)
         self.title = QLineEdit(self.row.get("title", ""))
         self.title.setPlaceholderText("What needs to be done")
         self.status = QComboBox()
@@ -6348,6 +6383,189 @@ class ProjectDialog(QDialog):
             dl.clicked.connect(self._del)
             bar.addWidget(dl)
         v.addLayout(bar)
+        outer.addWidget(self._subs_panel(), 6)
+        self.finished.connect(self._unhook)
+
+    # ---- to-dos inside the project, to any depth
+    def _subs_panel(self):
+        pn = QWidget()
+        v = QVBoxLayout(pn)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.addWidget(QLabel("<span style='font-size:16px;font-weight:800'>To-dos in this project</span>"))
+        self.pid = self.row.get("id")
+        if not self.pid:
+            lb = QLabel("Save the project first, then open it again to add to-dos and sub-to-dos under it.")
+            lb.setWordWrap(True)
+            lb.setStyleSheet("color:#8a9099;")
+            v.addWidget(lb)
+            v.addStretch(1)
+            return pn
+        self.tree = QTreeWidget()
+        self.tree.setColumnCount(4)
+        self.tree.setHeaderLabels(["To-do", "Status", "Who", "Due"])
+        self.tree.setColumnWidth(0, 330)
+        self.tree.setColumnWidth(1, 90)
+        self.tree.setColumnWidth(2, 90)
+        self.tree.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked | QAbstractItemView.EditTrigger.EditKeyPressed)
+        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._tmenu)
+        self.tree.itemChanged.connect(self._tchanged)
+        self.tree.itemSelectionChanged.connect(self._tsel)
+        v.addWidget(self.tree, 1)
+        self.under = QLabel("")
+        self.under.setStyleSheet("color:#8a9099;")
+        v.addWidget(self.under)
+        hb = QHBoxLayout()
+        self.addbox = QLineEdit()
+        self.addbox.setPlaceholderText("Add a to-do and press Enter  (select a to-do first to add under it)")
+        self.addbox.returnPressed.connect(self._tadd)
+        ab = QPushButton("Add")
+        ab.clicked.connect(self._tadd)
+        nb = QPushButton("Top level")
+        nb.setToolTip("Clear the selection so the next to-do goes at the top level")
+        nb.clicked.connect(lambda: self.tree.clearSelection())
+        hb.addWidget(self.addbox, 1)
+        hb.addWidget(ab)
+        hb.addWidget(nb)
+        v.addLayout(hb)
+        v.addWidget(QLabel("<span style='color:#8a9099'>Tick the box when it is done. Double-click to rename. Right-click for status, who, due date, sub-to-do or delete.</span>"))
+        self._building = False
+        self.page.tree_hook = self._trefresh
+        self._trefresh()
+        return pn
+
+    def _unhook(self, *_a):
+        if getattr(self.page, "tree_hook", None) == getattr(self, "_trefresh", None):
+            self.page.tree_hook = None
+
+    def _trefresh(self):
+        if not getattr(self, "pid", None) or self.tree.state() == QAbstractItemView.State.EditingState:
+            return
+        rows = self.page.rows
+        keep_sel = self._tid(self.tree.currentItem()) if self.tree.selectedItems() else None
+        opened = set()
+        it = QTreeWidgetItemIterator(self.tree)
+        while it.value():
+            if it.value().isExpanded():
+                opened.add(it.value().data(0, BROLE))
+            it += 1
+        first = not hasattr(self, "_seen")
+        self._seen = True
+        sv = self.tree.verticalScrollBar().value()
+        self._building = True
+        self.tree.clear()
+        today = _btime.strftime("%Y-%m-%d")
+        sel_item = [None]
+
+        def put(parent, r):
+            n = QTreeWidgetItem(parent) if parent is not None else QTreeWidgetItem(self.tree)
+            n.setData(0, BROLE, r["id"])
+            done = r.get("status") == "done"
+            n.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEditable)
+            n.setCheckState(0, Qt.CheckState.Checked if done else Qt.CheckState.Unchecked)
+            dn, tt = board_progress(rows, r["id"])
+            n.setText(0, str(r.get("title") or ""))
+            n.setText(1, B_ST_NAME.get(r.get("status"), "") + ("  %d/%d" % (dn, tt) if tt else ""))
+            n.setForeground(1, QColor(dict((k, c) for k, _n, c in B_STATUSES).get(r.get("status"), "#8a9099")))
+            n.setText(2, self.page.who(r.get("owner")) if r.get("owner") else "")
+            due = str(r.get("due") or "")
+            n.setText(3, due)
+            if due and due < today and not done:
+                n.setForeground(3, QColor("#ff5a6a"))
+            if done:
+                f = n.font(0)
+                f.setStrikeOut(True)
+                n.setFont(0, f)
+                n.setForeground(0, QColor("#8a9099"))
+            if r["id"] == keep_sel:
+                sel_item[0] = n
+            for c in board_kids(rows, r["id"]):
+                put(n, c)
+            if first or r["id"] in opened:
+                n.setExpanded(True)
+        for r in board_kids(rows, self.pid):
+            put(None, r)
+        if sel_item[0] is not None:
+            self.tree.setCurrentItem(sel_item[0])
+        self._building = False
+        self.tree.verticalScrollBar().setValue(sv)
+        self._tsel()
+
+    def _tid(self, item):
+        return item.data(0, BROLE) if item is not None else None
+
+    def _tsel(self):
+        sel = self.tree.selectedItems()
+        if sel:
+            r = self.page.rows.get(self._tid(sel[0]))
+            self.under.setText("Next to-do goes under: <b>%s</b>" % (r.get("title") if r else ""))
+        else:
+            self.under.setText("Next to-do goes at the top level of this project")
+
+    def _tadd(self):
+        t = self.addbox.text().strip()
+        if not t:
+            return
+        sel = self.tree.selectedItems()
+        parent = self._tid(sel[0]) if sel else self.pid
+        self.page._create({"title": t, "status": "todo", "priority": "normal", "parent_id": parent})
+        self.addbox.clear()
+
+    def _tchanged(self, item, col):
+        if self._building or col != 0:
+            return
+        pid = self._tid(item)
+        r = self.page.rows.get(pid)
+        if not r:
+            return
+        done = item.checkState(0) == Qt.CheckState.Checked
+        if done != (r.get("status") == "done"):
+            self.page._apply(pid, {"status": "done" if done else "todo"})
+            return
+        t = str(item.data(0, Qt.ItemDataRole.EditRole) or "").strip()
+        if t and t != r.get("title"):
+            self.page._apply(pid, {"title": t})
+
+    def _tmenu(self, pos):
+        item = self.tree.itemAt(pos)
+        if item is None:
+            return
+        pid = self._tid(item)
+        m = QMenu(self)
+        for k, n, _c in B_STATUSES:
+            m.addAction("Mark as " + n).triggered.connect(lambda _=False, k=k: self.page._apply(pid, {"status": k}))
+        m.addSeparator()
+        wm = m.addMenu("Who does it")
+        wm.addAction("Nobody").triggered.connect(lambda _=False: self.page._apply(pid, {"owner": None}))
+        for em, nm in self.page.people():
+            wm.addAction(nm or em).triggered.connect(lambda _=False, em=em: self.page._apply(pid, {"owner": em}))
+        dm = m.addMenu("Due date")
+        for lab, days in (("Today", 0), ("Tomorrow", 1), ("In a week", 7)):
+            dm.addAction(lab).triggered.connect(lambda _=False, d=days: self.page._apply(pid, {"due": QDate.currentDate().addDays(d).toString("yyyy-MM-dd")}))
+        dm.addAction("Pick a date…").triggered.connect(lambda _=False: self._pick_due(pid))
+        dm.addAction("No date").triggered.connect(lambda _=False: self.page._apply(pid, {"due": None}))
+        m.addSeparator()
+        m.addAction("Add a sub-to-do under this").triggered.connect(lambda _=False: (self.tree.setCurrentItem(item), self.addbox.setFocus()))
+        m.addAction("Rename").triggered.connect(lambda _=False: self.tree.editItem(item, 0))
+        m.addSeparator()
+        m.addAction("Delete (with everything under it)").triggered.connect(lambda _=False: self._tdel(pid))
+        m.exec(self.tree.viewport().mapToGlobal(pos))
+
+    def _pick_due(self, pid):
+        from PySide6.QtWidgets import QInputDialog
+        r = self.page.rows.get(pid) or {}
+        t, ok = QInputDialog.getText(self, "Due date", "Date (yyyy-mm-dd):", text=str(r.get("due") or QDate.currentDate().toString("yyyy-MM-dd")))
+        if ok and QDate.fromString(t.strip(), "yyyy-MM-dd").isValid():
+            self.page._apply(pid, {"due": t.strip()})
+
+    def _tdel(self, pid):
+        if QMessageBox.question(self, "Projects", "Delete this to-do and everything under it for everybody?") == QMessageBox.StandardButton.Yes:
+            def walk(i):
+                for c in board_kids(self.page.rows, i):
+                    walk(c["id"])
+                    self.page._apply(c["id"], {"deleted": True})
+            walk(pid)
+            self.page._apply(pid, {"deleted": True})
 
     def _ok(self):
         if not self.title.text().strip():
@@ -6780,9 +6998,13 @@ class BoardPage(QWidget):
             keep = col.verticalScrollBar().value()
             col.blockSignals(True)
             col.clear()
-            rs = [r for r in self.rows.values() if not r.get("deleted") and r.get("status") == k]
+            rs = [r for r in self.rows.values() if not r.get("deleted") and not r.get("parent_id") and r.get("status") == k]
             if q:
-                rs = [r for r in rs if q in " ".join(str(r.get(x) or "") for x in ("title", "client", "notes", "owner")).lower()]
+                def _hit(r):
+                    if q in " ".join(str(r.get(x) or "") for x in ("title", "client", "notes", "owner")).lower():
+                        return True
+                    return any(_hit(c) for c in board_kids(self.rows, r["id"]))
+                rs = [r for r in rs if _hit(r)]
             if only:
                 rs = [r for r in rs if str(r.get("owner") or "").lower() == me]
             rank = {"urgent": 0, "high": 1, "normal": 2, "low": 3}
@@ -6796,6 +7018,11 @@ class BoardPage(QWidget):
             col.verticalScrollBar().setValue(keep)
             self.heads[k].setText("<span style='font-size:15px;font-weight:800;color:%s'>●</span> <span style='font-size:15px;font-weight:800'>%s</span>"
                                   " <span style='color:#8a9099'>%d</span>" % (c, n, len(rs)))
+        try:
+            if getattr(self, "tree_hook", None):
+                self.tree_hook()
+        except Exception:
+            pass
 
     # ---- changing things (the screen follows at once, the database after)
     def edit(self, row, status="todo"):

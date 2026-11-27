@@ -186,6 +186,28 @@ assert wait(lambda: len(done) == 2, 4) and not any(m["email"] == "d@x.com" for m
 pb._sign_out(); assert pb.stack.currentIndex() == 0 and not GB.get("board_session")
 print("ok6")
 
+# to-dos inside a project, nested
+pa.mine.setChecked(False); pa.search.setText("")
+pa._create({"title": "Ground floor electrical", "priority": "normal"})
+assert wait(lambda: any(r["title"] == "Ground floor electrical" for r in pa.rows.values()), 4)
+pj = [r for r in pa.rows.values() if r["title"] == "Ground floor electrical"][0]
+dlg = B.ProjectDialog(pa, pj)
+dlg.addbox.setText("Plug layout"); dlg._tadd()
+assert wait(lambda: dlg.tree.topLevelItemCount() == 1, 4)
+top = dlg.tree.topLevelItem(0)
+dlg.tree.setCurrentItem(top)
+dlg.addbox.setText("Kitchen plugs"); dlg._tadd()
+assert wait(lambda: dlg.tree.topLevelItem(0).childCount() == 1, 4)
+kid = dlg.tree.topLevelItem(0).child(0)
+kid.setCheckState(0, B.Qt.CheckState.Checked)
+assert wait(lambda: B.board_progress(pa.rows, pj["id"]) == (1, 1), 4), B.board_progress(pa.rows, pj["id"])
+assert wait(lambda: any(r["title"] == "Kitchen plugs" and r["status"] == "done" for r in DB["projects"]), 6)   # it reached the shared database
+assert pa.cols["todo"].count() == 3                                  # the to-dos are not cards on the board
+if os.environ.get("DLG_SHOT"):
+    dlg.show(); app.processEvents(); dlg.grab().save(os.environ["DLG_SHOT"])
+dlg._unhook(); dlg.reject()
+print("ok7")
+
 # a picture of it
 if os.environ.get("BOARD_SHOT"):
     pa.mine.setChecked(False)
