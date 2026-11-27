@@ -301,6 +301,43 @@ pa.move_pos(a2["id"], -1)
 assert wait(lambda: B.board_kids(pa.rows, g_roof["id"])[0]["id"] == a2["id"], 3)
 print("ok11")
 
+# project features: linked mails, Today, morning summary, templates
+import datetime as _dt
+td = _dt.date.today()
+pa._create({"title": "Late job", "owner": "a@x.com", "priority": "normal", "due": (td - _dt.timedelta(days=2)).isoformat()})
+pa._create({"title": "Today job", "owner": "a@x.com", "priority": "normal", "due": td.isoformat()})
+pa._create({"title": "Fire job", "owner": "a@x.com", "priority": "urgent"})
+assert wait(lambda: sum(1 for r in pa.rows.values() if r.get("title") in ("Late job", "Today job", "Fire job")) == 3, 6)
+w = pa.my_work()
+assert [r["title"] for r in w["overdue"]] == ["Late job"] and [r["title"] for r in w["today"]] == ["Today job"] and [r["title"] for r in w["urgent"]] == ["Fire job"], w
+pa.update_today_btn(); assert "(2)" in pa.today_btn.text(), pa.today_btn.text()
+print("ok12")
+pa.G.pop("board_daily", None); pa.timer.stop()
+shown = []
+pa._popup = lambda notes, kinds, head=None: shown.append((notes, kinds, head))
+import time as _tm
+pa.due_check()
+if _tm.localtime().tm_hour >= 7:
+    assert shown and shown[0][2] == "Your day on the board" and "overdue" in shown[0][1], shown
+    pa.due_check(); assert len(shown) == 1                                   # only once a day
+t_ = B.ProjectToast(shown[0][0], shown[0][1], lambda: None, False, head="Your day on the board"); t_.show(); app.processEvents(); t_.close()
+print("ok13")
+proj = next(r for r in pa.rows.values() if r.get("title") == "Today job")
+assert pa.link_mail(proj["id"], {"tid": "t1", "subject": "Re: plans", "from": "Bob <b@x.com>", "acct": "me@x.com"})
+assert not pa.link_mail(proj["id"], {"tid": "t1", "subject": "again"})            # no double link
+assert wait(lambda: any(r["id"] == proj["id"] and len(B.board_mails(r)) == 1 for r in DB["projects"]), 6), "the link is saved on the shared board"
+dlg = B.ProjectDialog(pa, pa.rows[proj["id"]], "todo")
+assert dlg.mail_list.count() == 1 and dlg._mails[0]["tid"] == "t1"
+dlg._mails = []; dlg._mails_changed = True
+assert dlg.fields()["mails"] is None
+print("ok14")
+n0 = len(pa.rows)
+pa.from_template("Building line departure")
+assert wait(lambda: len(pa.rows) >= n0 + 1 + 2 + 6, 8), len(pa.rows) - n0
+root = next(r for r in pa.rows.values() if r.get("title") == "Today job")
+tp = [r for r in pa.rows.values() if not r.get("parent_id") and r.get("owner") == "a@x.com" and r.get("title") not in ("Late job", "Today job", "Fire job", "Lodge plans for Erf 14243")]
+print("ok15", len(pa.rows) - n0)
+
 # a picture of it
 if os.environ.get("BOARD_SHOT"):
     pa.mine.setChecked(False)
@@ -321,3 +358,10 @@ if os.environ.get("TOAST_SHOT"):
         t0 = time.time()
         while time.time() - t0 < (2.4 if nm == "u" else 3.0): app.processEvents()
         t.grab().save(os.environ["TOAST_SHOT"] + nm + ".png"); t.close()
+
+if os.environ.get("FEAT_SHOT"):
+    pa.mine.setChecked(False); pa.resize(1400, 760); pa.show(); app.processEvents()
+    pa.update_today_btn(); app.processEvents(); pa.grab().save(os.environ["FEAT_SHOT"] + "board.png")
+    pa.link_mail(proj["id"], {"tid": "t1", "subject": "Re: plans for Erf 4901", "from": "Bob", "acct": ""})
+    wait(lambda: False, 0.6)
+    d = B.ProjectDialog(pa, pa.rows[proj["id"]], "todo"); d.show(); app.processEvents(); d.grab().save(os.environ["FEAT_SHOT"] + "dlg.png"); d.close()

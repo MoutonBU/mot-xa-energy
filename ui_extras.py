@@ -3907,18 +3907,19 @@ class ProjectToast(_QW):
     G = 14
     HEAD = {"urgent": ("Urgent", "#ff3b4d"), "assigned": ("Given to you", "#f0a020"), "done": ("Finished", "#3fb950"),
             "new": ("New on the board", "#9bc53d"), "moved": ("Moved", "#4aa3df"), "changed": ("Changed", "#4aa3df"), "removed": ("Removed", "#aab0b8"),
-            "assigned_other": ("Handed over", "#4aa3df")}
-    ORDER = ("urgent", "assigned", "done", "new", "assigned_other", "moved", "changed", "removed")
+            "assigned_other": ("Handed over", "#4aa3df"), "overdue": ("Overdue", "#ff3b4d"), "due": ("Due soon", "#f0a020")}
+    ORDER = ("overdue", "urgent", "due", "assigned", "done", "new", "assigned_other", "moved", "changed", "removed")
 
-    def __init__(self, notes, kinds, on_open, light=False):
+    def __init__(self, notes, kinds, on_open, light=False, head=None):
         super().__init__(None, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self._open_cb = on_open
         top_kind = min(set(kinds) or {"changed"}, key=lambda k: self.ORDER.index(k) if k in self.ORDER else 99)
-        head, col = self.HEAD.get(top_kind, ("Projects", "#9bc53d"))
-        urgent = top_kind == "urgent"
+        head0, col = self.HEAD.get(top_kind, ("Projects", "#9bc53d"))
+        head = head or head0
+        urgent = top_kind in ("urgent", "overdue")
         pal = ("#ffffff", "#1d2025", "#5f6670", "#f1f3f5", col) if light else ("#1d2025", "#f2f4f6", "#aab0b8", "#2a2e35", col)
         self._pal = pal
         self.setFixedWidth(420 + 2 * self.G)
@@ -5095,6 +5096,7 @@ class MailPage(_QW):
         a_new = lm.addAction("Create new label...")
         m.addSeparator()
         a_proj = m.addAction("Create a project from this mail") if (len(ids) == 1 and getattr(self.host, "board_page", None) is not None) else None
+        a_link = m.addAction("Add to a project...") if (getattr(self.host, "board_page", None) is not None) else None
         m.addSeparator()
         a_arc = m.addAction("Archive")
         a_del = m.addAction("Delete")
@@ -5113,6 +5115,8 @@ class MailPage(_QW):
                 r_ = self._row_of(t)
                 if r_ >= 0:
                     self.toggle_star(t, on, r_)
+        elif a_link is not None and act is a_link:
+            self.link_to_project([rows.get(t) or {"id": t, "subject": it.data(ROLE_SUBJECT) or ""} for t in ids])
         elif a_proj is not None and act is a_proj:
             self.project_from_mail(rows.get(tid) or {"subject": it.data(ROLE_SUBJECT) or ""})
         elif act is a_arc:
@@ -5127,6 +5131,29 @@ class MailPage(_QW):
                 self.modify(ids, remove=[lid], cb=lambda: self.say("Removed " + full))
             else:
                 self.modify(ids, add=[lid], cb=lambda: self.say("Labelled " + full))
+
+    def link_to_project(self, rs):
+        """Attaches the mail(s) to an existing project: the project shows it (and opens it from there) and the mail stays in Gmail as it is."""
+        from PySide6.QtWidgets import QInputDialog
+        bp = getattr(self.host, "board_page", None)
+        if bp is None or not rs:
+            return
+        if not bp.api.signed_in():
+            _QMB.information(self, "Projects", "Sign in to the Projects tool first.")
+            return
+        ps = bp.project_choices()
+        if not ps:
+            _QMB.information(self, "Projects", "There are no open projects yet. Use 'Create a project from this mail' instead.")
+            return
+        names = ["%s%s" % (p.get("title") or "", ("   [" + p["client"] + "]") if p.get("client") else "") for p in ps]
+        pick, ok = QInputDialog.getItem(self, "Add to a project", "Add %d mail%s to:" % (len(rs), "" if len(rs) == 1 else "s"), names, 0, False)
+        if not ok:
+            return
+        p = ps[names.index(pick)]
+        n = 0
+        for r in rs:
+            n += 1 if bp.link_mail(p["id"], {"tid": r.get("id") or r.get("tid"), "subject": r.get("subject"), "from": r.get("from"), "acct": str(self.S.get("mail_address", ""))}) else 0
+        self.say("Added to %s" % (p.get("title") or "the project") if n else "Already linked to %s" % (p.get("title") or "that project"))
 
     def project_from_mail(self, r):
         """A new project filled in from what the mail is about: its subject, who it is from, an erf number, urgency and a date if it names one."""
@@ -5147,6 +5174,8 @@ class MailPage(_QW):
         title = subj or ("Mail from " + who if who else "New project")
         notes = "From: %s\nSubject: %s\n\n%s\n\n(Created from a mail on %s)" % (who, subj, snip, _btime.strftime("%Y-%m-%d"))
         row = {"title": title[:140], "client": client or None, "priority": pr, "due": due, "notes": notes, "status": "todo"}
+        if r.get("id"):
+            row["mails"] = _json.dumps([{"tid": r.get("id"), "subject": subj[:140], "from": who[:80], "acct": str(self.S.get("mail_address", ""))}])
         try:
             self.host.main_tabs.setCurrentWidget(bp)
         except Exception:
@@ -6349,6 +6378,36 @@ class BoardError(Exception):
 
 
 # ------------------------------------------------------------------------------------------------ the connection
+def board_mails(r):
+    """The mails linked to a project: [{tid, subject, from, acct}]."""
+    try:
+        v = _json.loads((r or {}).get("mails") or "[]")
+        return [m for m in v if isinstance(m, dict) and m.get("tid")]
+    except Exception:
+        return []
+
+
+# a template: [(group, [to-dos])]
+B_TEMPLATES = {
+    "House plans (sketch to construction)": [
+        ("Site and brief", ["Site visit and measurements", "Get the title deed and zoning certificate", "Confirm the client's brief and budget"]),
+        ("Design", ["Sketch plans", "Client approval of the sketch plans", "Working drawings"]),
+        ("Council submission", ["Compile the submission pack", "Submit to the municipality", "Follow up on the approval"]),
+        ("Construction information", ["Details and schedules", "Energy (XA) and light and ventilation calculations", "Issue the drawings to the contractor"])],
+    "Building line departure": [
+        ("Application", ["Measure the site and the building lines", "Write the motivation", "Neighbour consent forms", "Submit the application"]),
+        ("Follow-up", ["Answer the municipality's comments", "Council decision"])],
+    "Council submission": [
+        ("Documents", ["Print the drawings", "SANS 10400-XA energy report", "SANS 10400-O light and ventilation", "Application form and fees"]),
+        ("Submission", ["Submit", "Collect the receipt", "Track the circulation", "Answer the circulation comments"])],
+    "Site development plan": [
+        ("Survey and zoning", ["Contours and survey", "Zoning and development parameters", "Building lines and servitudes"]),
+        ("Layout", ["Block layout", "Coverage and floor area ratio", "Parking and access"]),
+        ("Services", ["Water and sewer", "Electrical", "Stormwater"]),
+        ("Submission", ["Compile the council pack", "Submit", "Respond to comments"])],
+}
+
+
 class BoardAPI:
     """Talks to Supabase (sign-in and the two tables) with plain web requests. Safe to call from any thread."""
 
@@ -6628,7 +6687,7 @@ class _BoardCardDelegate(QStyledItemDelegate):
         f.setPixelSize(12)
         p.setFont(f)
         p.setPen(QColor(mute))
-        bits = [b for b in (r.get("client"), r.get("location"), ("Zone " + str(r.get("zone"))) if r.get("zone") else "", ("→ " + self.page.who(r.get("owner"))) if r.get("owner") else "") if b]
+        bits = [b for b in (r.get("client"), r.get("location"), ("Zone " + str(r.get("zone"))) if r.get("zone") else "", ("→ " + self.page.who(r.get("owner"))) if r.get("owner") else "", ("\u2709 %d" % len(board_mails(r))) if r.get("mails") and board_mails(r) else "") if b]
         p.drawText(QPointF(x0, card.top() + 43), QFontMetrics(f).elidedText("  ·  ".join(bits), Qt.TextElideMode.ElideRight, int(w)))
         due = str(r.get("due") or "")
         late = bool(due) and due < _btime.strftime("%Y-%m-%d") and r.get("status") != "done"
@@ -7074,6 +7133,16 @@ class ProjectDialog(QDialog):
         cb.addWidget(self.cover_lab, 1)
         v.addLayout(cb)
         self._cover_note()
+        self._mails = board_mails(self.row)
+        self._mails_changed = (not self.row.get("id")) and bool(self._mails)
+        v.addWidget(QLabel("Linked mails  (double-click to open, right-click to remove)"))
+        self.mail_list = QListWidget()
+        self.mail_list.setMaximumHeight(78)
+        self.mail_list.itemDoubleClicked.connect(self._open_mail)
+        self.mail_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.mail_list.customContextMenuRequested.connect(self._mail_menu)
+        self._fill_mails()
+        v.addWidget(self.mail_list)
         v.addWidget(QLabel("Notes"))
         v.addWidget(self.notes, 1)
         if self.row.get("id"):
@@ -7304,8 +7373,35 @@ class ProjectDialog(QDialog):
             self.deleted = True
             self.accept()
 
+    def _fill_mails(self):
+        self.mail_list.clear()
+        for m in self._mails:
+            it = QListWidgetItem("\u2709  %s   (%s)" % (m.get("subject") or "(no subject)", m.get("from") or ""))
+            it.setData(Qt.ItemDataRole.UserRole, m)
+            self.mail_list.addItem(it)
+        if not self._mails:
+            self.mail_list.addItem("(none: right-click a mail in the Mail tool > Add to project)")
+            self.mail_list.item(0).setFlags(Qt.ItemFlag.NoItemFlags)
+
+    def _open_mail(self, it):
+        m = it.data(Qt.ItemDataRole.UserRole)
+        if m:
+            self.accept()
+            QTimer.singleShot(0, lambda: self.page.open_mail(m))
+
+    def _mail_menu(self, pos):
+        it = self.mail_list.itemAt(pos)
+        if it is None or not it.data(Qt.ItemDataRole.UserRole):
+            return
+        m = QMenu(self)
+        a = m.addAction("Remove this link")
+        if m.exec(self.mail_list.viewport().mapToGlobal(pos)) is a:
+            self._mails = [x for x in self._mails if x.get("tid") != it.data(Qt.ItemDataRole.UserRole).get("tid")]
+            self._mails_changed = True
+            self._fill_mails()
+
     def fields(self):
-        return {"title": self.title.text().strip(), "status": self.status.currentData(), "priority": self.prio.currentData(),
+        return {**({"mails": _json.dumps(self._mails) if self._mails else None} if self._mails_changed else {}),"title": self.title.text().strip(), "status": self.status.currentData(), "priority": self.prio.currentData(),
                 "owner": self.owner.currentData() or None, "client": self.client.text().strip() or None,
                 "location": self.location.text().strip() or None, "zone": self.zone.text().strip() or None,
                 "due": self.due.date().toString("yyyy-MM-dd") if self.has_due.isChecked() else None,
@@ -7487,6 +7583,14 @@ class BoardPage(QWidget):
         self.new_btn.setStyleSheet("QPushButton{background:%s;color:#12161a;font-weight:800;padding:7px 18px;border-radius:6px;}" % BOARD_ACCENT)
         self.new_btn.clicked.connect(lambda: self.edit(None))
         top.addWidget(self.new_btn)
+        self.tpl_btn = QPushButton("From template  \u25be")
+        self.tpl_btn.setToolTip("Start a project with its groups and to-dos already in place")
+        self.tpl_btn.clicked.connect(self.template_menu)
+        top.addWidget(self.tpl_btn)
+        self.today_btn = QPushButton("Today")
+        self.today_btn.setToolTip("Everything of yours that is overdue, due today or urgent")
+        self.today_btn.clicked.connect(self.today_dialog)
+        top.insertWidget(top.indexOf(self.new_btn), self.today_btn)
         self.team_btn = QPushButton("Team")
         self.team_btn.clicked.connect(lambda: TeamDialog(self).exec())
         top.addWidget(self.team_btn)
@@ -7584,7 +7688,7 @@ class BoardPage(QWidget):
     def _login_screen(self, msg):
         self.stack.setCurrentIndex(0)
         self.lmsg.setText("<div style='font-size:15px'>%s</div>" % msg)
-        for w in (self.new_btn, self.team_btn, self.who_btn, self.search, self.mine):
+        for w in (self.new_btn, self.tpl_btn, self.today_btn, self.team_btn, self.who_btn, self.search, self.mine):
             w.setVisible(False)
         self.live.setText("")
         if self.api.me() and not self.em.text():
@@ -7646,7 +7750,7 @@ class BoardPage(QWidget):
                 self.api.sign_out()
                 return
             self.stack.setCurrentIndex(1)
-            for w in (self.new_btn, self.who_btn, self.search, self.mine):
+            for w in (self.new_btn, self.tpl_btn, self.today_btn, self.who_btn, self.search, self.mine):
                 w.setVisible(True)
             self.team_btn.setVisible(self.is_admin)
             self.who_btn.setText("%s  ·  Sign out" % (self.who(me) or me))
@@ -7677,6 +7781,12 @@ class BoardPage(QWidget):
 
     def _tick(self):
         self._tick_n += 1
+        if self._tick_n % 450 == 0 or (self._tick_n % 15 == 0 and not getattr(self, "_due_first", False) and self.loaded):
+            self._due_first = True
+            try:
+                self.due_check()                     # at the first look after loading, then every 15 minutes
+            except Exception:
+                pass
         if self.isVisible() or self._tick_n % 3 == 0:                # every 2 s while you look at it, every 6 s in the background
             self.poll()
 
@@ -7720,6 +7830,7 @@ class BoardPage(QWidget):
         self.loaded = True
         if changed:
             self.render()
+        self.update_today_btn()
         if notes:
             if not (self.isVisible() and self.host.isActiveWindow()):
                 self.unseen += len(notes)
@@ -7736,7 +7847,7 @@ class BoardPage(QWidget):
                 except Exception:
                     pass
 
-    def _popup(self, notes, kinds):
+    def _popup(self, notes, kinds, head=None):
         """The corner pop-up (works with the window closed to the tray): its own animated picture, red when something is urgent."""
         old = getattr(self, "_ptoast", None)
         if old is not None:
@@ -7744,7 +7855,7 @@ class BoardPage(QWidget):
                 old.close()
             except Exception:
                 pass
-        t = ProjectToast(notes, kinds, self._popup_open, self.is_light())
+        t = ProjectToast(notes, kinds, self._popup_open, self.is_light(), head=head)
         self._ptoast = t
         ag = (self.screen() or QApplication.primaryScreen()).availableGeometry()
         t.move(ag.right() - t.width() - 14, ag.bottom() - t.height() - 14)
@@ -7849,6 +7960,185 @@ class BoardPage(QWidget):
                 self.since = max(self.since or "", str(res.get("updated_at") or ""))
                 self.render()
         self.run(lambda: self.api.add(fields), done)
+
+    # ---- linked mails
+    def link_mail(self, pid, mail):
+        r = self.rows.get(pid)
+        if r is None:
+            return False
+        cur = board_mails(r)
+        if any(x.get("tid") == mail.get("tid") for x in cur):
+            return False
+        cur.append({"tid": mail.get("tid"), "subject": str(mail.get("subject") or "")[:140], "from": str(mail.get("from") or "")[:80], "acct": mail.get("acct") or ""})
+        self._apply(pid, {"mails": _json.dumps(cur)})
+        return True
+
+    def open_mail(self, m):
+        mp = getattr(self.host, "mail_page", None)
+        if mp is not None:
+            mp._toast_open({"tid": m.get("tid"), "subject": m.get("subject"), "acct": m.get("acct") or ""})
+
+    def project_choices(self):
+        rs = [r for r in self.rows.values() if not r.get("deleted") and not r.get("parent_id") and r.get("status") != "done"]
+        rs.sort(key=lambda r: str(r.get("title") or "").lower())
+        return rs
+
+    # ---- today / my work
+    def my_work(self):
+        """What is mine and not done: overdue, due today, due tomorrow, and urgent. Each item: (row, project title)."""
+        me = self.api.me()
+        today = _btime.strftime("%Y-%m-%d")
+        tom = QDate.currentDate().addDays(1).toString("yyyy-MM-dd")
+        out = {"overdue": [], "today": [], "tomorrow": [], "urgent": []}
+        for r in self.rows.values():
+            if r.get("deleted") or r.get("is_group") or r.get("status") == "done":
+                continue
+            if str(r.get("owner") or "").lower() != me:
+                continue
+            due = str(r.get("due") or "")
+            if due and due < today:
+                out["overdue"].append(r)
+            elif due == today:
+                out["today"].append(r)
+            elif due == tom:
+                out["tomorrow"].append(r)
+            elif r.get("priority") == "urgent":
+                out["urgent"].append(r)
+        for k in out:
+            out[k].sort(key=lambda r: (str(r.get("due") or "9999"), str(r.get("title") or "")))
+        return out
+
+    def _project_name(self, r):
+        root = self.rows.get(self.root_of(r["id"])) if r.get("parent_id") else None
+        return (root or {}).get("title") or ""
+
+    def update_today_btn(self):
+        try:
+            w = self.my_work()
+            n = len(w["overdue"]) + len(w["today"])
+            self.today_btn.setText("Today  (%d)" % n if n else "Today")
+        except Exception:
+            pass
+
+    def today_dialog(self):
+        w = self.my_work()
+        d = QDialog(self)
+        d.setWindowTitle("Today: my work")
+        d.resize(560, 520)
+        v = QVBoxLayout(d)
+        lst = QListWidget()
+        v.addWidget(lst, 1)
+        n = 0
+        for key, head, col in (("overdue", "Overdue", "#ff5a6a"), ("today", "Due today", "#f0a020"), ("tomorrow", "Due tomorrow", "#4aa3df"), ("urgent", "Urgent", "#ff3b4d")):
+            if not w[key]:
+                continue
+            h = QListWidgetItem("%s  (%d)" % (head, len(w[key])))
+            f = h.font()
+            f.setBold(True)
+            h.setFont(f)
+            h.setForeground(QColor(col))
+            h.setFlags(Qt.ItemFlag.NoItemFlags)
+            lst.addItem(h)
+            for r in w[key]:
+                pn = self._project_name(r)
+                it = QListWidgetItem("    %s%s%s" % (r.get("title") or "", ("   \u2014 " + pn) if pn else "", ("   \u00b7 " + str(r.get("due"))) if r.get("due") else ""))
+                it.setData(Qt.ItemDataRole.UserRole, r["id"])
+                lst.addItem(it)
+                n += 1
+        if not n:
+            lst.addItem("Nothing overdue, due today or urgent. Well done.")
+            lst.item(0).setFlags(Qt.ItemFlag.NoItemFlags)
+
+        def open_(it):
+            pid = it.data(Qt.ItemDataRole.UserRole)
+            if pid:
+                d.accept()
+                r = self.rows.get(self.root_of(pid)) if self.root_of(pid) else self.rows.get(pid)
+                QTimer.singleShot(0, lambda: self.edit(r))
+        lst.itemDoubleClicked.connect(open_)
+        v.addWidget(QLabel("<span style='color:#8a9099'>Double-click one to open its project.</span>"))
+        b = QPushButton("Close")
+        b.clicked.connect(d.accept)
+        v.addWidget(b)
+        d.exec()
+
+    # ---- the morning summary and due-date reminders
+    def due_check(self):
+        """Once a day (from 07:00): a pop-up with what is overdue, due today, due tomorrow and urgent. Works with the window closed to the tray."""
+        if not self.loaded or not self.api.signed_in():
+            return
+        me = self.api.me()
+        today = _btime.strftime("%Y-%m-%d")
+        done = self.G.get("board_daily") or {}
+        if not isinstance(done, dict):
+            done = {}
+        if done.get(me) == today or _btime.localtime().tm_hour < 7:
+            return
+        w = self.my_work()
+        if not any(w.values()):
+            done[me] = today
+            self.G["board_daily"] = done
+            self._save()
+            return
+        notes, kinds = [], []
+        for key, lab, kind in (("overdue", "Overdue", "overdue"), ("today", "Due today", "due"), ("tomorrow", "Due tomorrow", "due"), ("urgent", "Urgent", "urgent")):
+            for r in w[key][:3]:
+                pn = self._project_name(r)
+                notes.append("%s: %s%s" % (lab, r.get("title"), (" (" + pn + ")") if pn else ""))
+                kinds.append(kind)
+            if len(w[key]) > 3:
+                notes.append("%s: and %d more" % (lab, len(w[key]) - 3))
+                kinds.append(kind)
+        try:
+            self._popup(notes, kinds, head="Your day on the board")
+        except Exception:
+            pass
+        done[me] = today
+        self.G["board_daily"] = done
+        self._save()
+
+    # ---- templates
+    def template_menu(self):
+        m = QMenu(self)
+        for name in B_TEMPLATES:
+            m.addAction(name).triggered.connect(lambda _=False, n=name: self.from_template(n))
+        m.exec(self.tpl_btn.mapToGlobal(self.tpl_btn.rect().bottomLeft()))
+
+    def from_template(self, name):
+        from PySide6.QtWidgets import QInputDialog
+        spec = B_TEMPLATES.get(name)
+        if not spec:
+            return
+        t, ok = QInputDialog.getText(self, "New project from a template", "Name of the project (for example the client or erf):")
+        if not ok or not t.strip():
+            return
+        me = self.api.me()
+
+        def build():
+            made = []
+            p = self.api.add({"title": t.strip()[:140], "status": "todo", "priority": "normal", "owner": me or None, "pos": _btime.time()})
+            made.append(p)
+            for gi, (gt, todos) in enumerate(spec):
+                g = self.api.add({"title": gt, "status": "todo", "priority": "normal", "parent_id": p["id"], "is_group": True, "pos": _btime.time() + gi})
+                made.append(g)
+                for ti, td in enumerate(todos):
+                    made.append(self.api.add({"title": td, "status": "todo", "priority": "normal", "parent_id": g["id"], "pos": _btime.time() + ti}))
+            return made
+
+        def done(res, err):
+            if err:
+                self.status.setText("The template could not be made (%s)" % err)
+                return
+            for r in res or []:
+                self.rows[r["id"]] = r
+                self.since = max(self.since or "", str(r.get("updated_at") or ""))
+            if res:
+                self.open_ids.add(res[0]["id"])
+                for r in res[1:]:
+                    if r.get("is_group"):
+                        self.open_ids.add(r["id"])
+            self.render()
+        self.run(build, done)
 
     # ---- to-dos on the cards
     def toggle_open(self, pid):
@@ -8102,6 +8392,11 @@ class BoardPage(QWidget):
             m.addAction("Add a to-do to this project").triggered.connect(lambda _=False: self.todo_prompt_add(pid))
             m.addAction("Add a group to this project").triggered.connect(lambda _=False: self.group_prompt_add(pid))
             m.addAction("Open the project details").triggered.connect(lambda _=False: self.edit(self.rows.get(pid)))
+            lm_ = board_mails(self.rows.get(pid))
+            if lm_:
+                mm_ = m.addMenu("Linked mails (%d)" % len(lm_))
+                for x_ in lm_[:15]:
+                    mm_.addAction("\u2709  " + str(x_.get("subject") or "(no subject)")[:60]).triggered.connect(lambda _=False, x_=x_: self.open_mail(x_))
             m.addAction("Show / hide its to-dos").triggered.connect(lambda _=False: self.toggle_open(pid))
             m.addAction("Open every group").triggered.connect(lambda _=False: self.set_open_all(pid, True))
             m.addAction("Close every group").triggered.connect(lambda _=False: self.set_open_all(pid, False))

@@ -1,10 +1,12 @@
 # MCP Practice Suite - Release notes
 
-Current version: 1.86.360
+Current version: 1.86.361
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
+- **Projects: Today view, daily summary and templates.** The Today button lists everything of yours that is overdue, due today, due tomorrow or urgent (double-click opens its project). Once a day, from 07:00, a pop-up gives the same summary, even with the window closed to the tray. From template starts a project with its groups and to-dos ready: House plans, Building line departure, Council submission, Site development plan.
+- **Mail and Projects linked.** In Mail, right-click a mail > Add to a project. The project card shows an envelope with the number of mails; open them from the project window or its right-click menu. Creating a project from a mail links that mail automatically.
 - **Bug reports for crashes and freezes.** The program now keeps a log (errors, crashes, and, when the window stops answering for 3 seconds, exactly where it is stuck and what was clicked last). File > "Save a bug report to send me..." makes one zip on the Desktop with the logs, version and settings (no passwords, keys or sign-ins). If the program did not close properly last time, it offers to make the report when it starts.
 - **Fixed the freeze when creating a company or area in Orders.** Every change used to rebuild every order row with about 7 widgets each, which took many seconds with a few hundred orders. Rows now get their drop-downs only when they scroll into view, and adding a company or area, or a logo or photo, no longer rebuilds the order list at all. The Drawing register list had the same problem and is fixed too (1000 drawings: 6 s down to 0.2 s).
 - **Fixed "The update server refused the request" for other users.** GitHub limits update checks per internet address; the program now falls back to the public release pages, so the check and the download keep working.
