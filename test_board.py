@@ -225,6 +225,31 @@ print("ok8")
 if os.environ.get("CARD_SHOT"):
     pa.open_ids.add(h[1]); pa.render(); pa.resize(1300, 700); app.processEvents(); pa.grab().save(os.environ["CARD_SHOT"])
 
+# groups inside a project, and a cover picture
+from PySide6.QtGui import QImage, QColor, QPainter, QLinearGradient
+pa._create({"title": "Erf 4901", "owner": "a@x.com"})
+assert wait(lambda: any(r["title"] == "Erf 4901" for r in pa.rows.values()), 4)
+e4 = [r for r in pa.rows.values() if r["title"] == "Erf 4901"][0]
+pa.open_ids.add(e4["id"])
+pa._create({"title": "Ground floor electrical", "parent_id": e4["id"], "is_group": True, "status": "todo", "priority": "normal"})
+pa._create({"title": "Plumbing", "parent_id": e4["id"], "is_group": True, "status": "todo", "priority": "normal"})
+assert wait(lambda: len(B.board_kids(pa.rows, e4["id"])) == 2, 4)
+g1 = B.board_kids(pa.rows, e4["id"])[0]
+assert g1["id"] in pa.open_ids                                           # a new group opens by itself
+pa._create({"title": "Plug layout", "parent_id": g1["id"], "status": "todo", "priority": "high"})
+pa._create({"title": "DB board", "parent_id": g1["id"], "status": "done", "priority": "normal"})
+assert wait(lambda: len(B.board_kids(pa.rows, g1["id"])) == 2, 4)
+assert B.board_progress(pa.rows, e4["id"]) == (1, 2)                     # an empty group does not count
+ln = B.board_lines(pa.rows, e4["id"], pa.open_ids)
+assert [x["t"] for x in ln] == ["group", "todo", "todo", "add", "group", "add", "add", "addgroup"], [x["t"] for x in ln]
+img = QImage(900, 300, QImage.Format.Format_RGB32); pp = QPainter(img); lg = QLinearGradient(0, 0, 900, 300); lg.setColorAt(0, QColor("#3b6fa0")); lg.setColorAt(1, QColor("#e2a93f")); pp.fillRect(0, 0, 900, 300, lg); pp.end()
+d2 = B.ProjectDialog(pa, e4); d2._from_image(img); assert d2._cover.startswith("data:image/jpeg") and "cover" in d2.fields()
+pa._apply(e4["id"], {"cover": d2._cover})
+pa.resize(1300, 700); pa.render(); app.processEvents()
+if os.environ.get("GRP_SHOT"):
+    pa.grab().save(os.environ["GRP_SHOT"])
+print("ok9")
+
 # a picture of it
 if os.environ.get("BOARD_SHOT"):
     pa.mine.setChecked(False)

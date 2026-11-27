@@ -6373,6 +6373,8 @@ def board_progress(rows, pid):
     d = t = 0
     for k in board_kids(rows, pid):
         d2, t2 = board_progress(rows, k["id"])
+        if t2 == 0 and k.get("is_group"):
+            continue
         if t2 == 0:
             t += 1
             d += 1 if k.get("status") == "done" else 0
@@ -6396,6 +6398,27 @@ def board_flat(rows, pid, opened, depth=0):
     return out
 
 
+def board_lines(rows, pid, opened):
+    """every line shown inside an opened card: groups (with their own to-dos and an add line), loose to-dos, then the add lines"""
+    out = []
+
+    def walk(par, depth):
+        for k in board_kids(rows, par):
+            if k.get("is_group"):
+                out.append({"t": "group", "r": k, "d": depth})
+                if k["id"] in opened:
+                    walk(k["id"], depth + 1)
+                    out.append({"t": "add", "p": k["id"], "d": depth + 1})
+            else:
+                out.append({"t": "todo", "r": k, "d": depth})
+                if board_kids(rows, k["id"]) and k["id"] in opened:
+                    walk(k["id"], depth + 1)
+    walk(pid, 0)
+    out.append({"t": "add", "p": pid, "d": 0})
+    out.append({"t": "addgroup", "p": pid, "d": 0})
+    return out
+
+
 class _BoardCardDelegate(QStyledItemDelegate):
     H = 92
 
@@ -6403,9 +6426,25 @@ class _BoardCardDelegate(QStyledItemDelegate):
         super().__init__(page)
         self.page = page
 
+    def cover_pm(self, r):
+        c = r.get("cover")
+        if not c:
+            return None
+        cache = self.__dict__.setdefault("_cv", {})
+        key = (r.get("id"), len(c))
+        if key not in cache:
+            import base64 as _b64
+            pm = QPixmap()
+            try:
+                pm.loadFromData(_b64.b64decode(c.split(",", 1)[-1]))
+            except Exception:
+                pass
+            cache[key] = None if pm.isNull() else pm
+        return cache[key]
+
     def height_for(self, r):
         if r.get("id") in self.page.open_ids:
-            return self.H + 6 + TODO_H * (len(board_flat(self.page.rows, r["id"], self.page.open_ids)) + 1)
+            return self.H + 6 + TODO_H * len(board_lines(self.page.rows, r["id"], self.page.open_ids))
         return self.H
 
     def sizeHint(self, opt, idx):
@@ -6426,6 +6465,30 @@ class _BoardCardDelegate(QStyledItemDelegate):
         p.setPen(QPen(QColor(BOARD_ACCENT) if sel else QColor(line), 1.4))
         p.setBrush(QColor(self.page.card_bg()))
         p.drawRoundedRect(card, 9, 9)
+        cv = self.cover_pm(r)
+        if cv is not None:
+            hh_ = self.H - 6
+            clip = QPainterPath()
+            clip.addRoundedRect(card, 9, 9)
+            p.save()
+            p.setClipPath(clip)
+            p.setClipRect(QRectF(card.left(), card.top(), card.width(), hh_), Qt.ClipOperation.IntersectClip)
+            sc = cv.scaled(int(card.width()), int(hh_), Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
+            p.drawPixmap(QPointF(card.left() + (card.width() - sc.width()) / 2.0, card.top() + (hh_ - sc.height()) / 2.0), sc)
+            bgc = QColor(self.page.card_bg())
+            lg_ = QLinearGradient(card.left(), 0, card.right(), 0)
+            lg_.setColorAt(0, QColor(bgc.red(), bgc.green(), bgc.blue(), 232))
+            lg_.setColorAt(0.55, QColor(bgc.red(), bgc.green(), bgc.blue(), 150))
+            lg_.setColorAt(1, QColor(bgc.red(), bgc.green(), bgc.blue(), 70))
+            p.fillRect(QRectF(card.left(), card.top(), card.width(), hh_), lg_)
+            lg2 = QLinearGradient(0, card.top() + hh_ - 26, 0, card.top() + hh_)
+            lg2.setColorAt(0, QColor(bgc.red(), bgc.green(), bgc.blue(), 0))
+            lg2.setColorAt(1, QColor(bgc.red(), bgc.green(), bgc.blue(), 255))
+            p.fillRect(QRectF(card.left(), card.top() + hh_ - 26, card.width(), 26), lg2)
+            p.restore()
+            p.setPen(QPen(QColor(BOARD_ACCENT) if sel else QColor(line), 1.4))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(card, 9, 9)
         pc = QColor(B_PRIO_COL.get(r.get("priority"), "#8a9099"))
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(pc)
@@ -6472,14 +6535,38 @@ class _BoardCardDelegate(QStyledItemDelegate):
             y0 = self.geometry(opt.rect)[1]
             p.setPen(QPen(QColor(line), 1))
             p.drawLine(QPointF(card.left() + 10, y0 - 3), QPointF(card.right() - 10, y0 - 3))
-            fl = board_flat(self.page.rows, r["id"], self.page.open_ids)
+            fl = board_lines(self.page.rows, r["id"], self.page.open_ids)
             f2 = QFont(p.font())
             f2.setPixelSize(13)
             f2.setBold(False)
-            for i, (k, dep) in enumerate(fl):
+            for i, ln in enumerate(fl):
                 yy = y0 + i * TODO_H
-                x = card.left() + 12 + dep * 18
+                x = card.left() + 12 + ln["d"] * 18
+                if ln["t"] in ("add", "addgroup"):
+                    p.setFont(f2)
+                    p.setPen(QColor(BOARD_ACCENT))
+                    p.drawText(QRectF(x + 2, yy, 220, TODO_H), Qt.AlignmentFlag.AlignVCenter, "+  Add a to-do" if ln["t"] == "add" else "+  Add a group")
+                    continue
+                k, dep = ln["r"], ln["d"]
                 done = k.get("status") == "done"
+                if ln["t"] == "group":
+                    dn_, tt_ = board_progress(self.page.rows, k["id"])
+                    p.setPen(Qt.PenStyle.NoPen)
+                    p.setBrush(QColor(255, 255, 255, 14) if not self.page.is_light() else QColor(0, 0, 0, 14))
+                    p.drawRoundedRect(QRectF(x - 4, yy + 2, card.right() - x - 6, TODO_H - 4), 6, 6)
+                    self._chev(p, x + 6, yy + TODO_H / 2.0, k["id"] in self.page.open_ids, mute, 4)
+                    gf = QFont(f2)
+                    gf.setBold(True)
+                    p.setFont(gf)
+                    p.setPen(QColor(fg))
+                    cnt = "%d/%d" % (dn_, tt_) if tt_ else "empty"
+                    cw = QFontMetrics(f2).horizontalAdvance(cnt) + 8
+                    p.drawText(QRectF(x + 18, yy, card.right() - x - 36 - cw, TODO_H), Qt.AlignmentFlag.AlignVCenter,
+                               QFontMetrics(gf).elidedText(str(k.get("title") or ""), Qt.TextElideMode.ElideRight, int(max(10, card.right() - x - 40 - cw))))
+                    p.setFont(f2)
+                    p.setPen(QColor(mute))
+                    p.drawText(QRectF(card.right() - 14 - cw, yy, cw, TODO_H), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, cnt)
+                    continue
                 haskids = bool(board_kids(self.page.rows, k["id"]))
                 if haskids:
                     self._chev(p, x + 5, yy + TODO_H / 2.0, k["id"] in self.page.open_ids, mute, 4)
@@ -6496,8 +6583,7 @@ class _BoardCardDelegate(QStyledItemDelegate):
                 right = card.right() - 12
                 tag = ""
                 if k.get("priority") in ("urgent", "high", "low"):
-                    tag = dict((a, b) for a, b, _c in B_PRIOS)[k["priority"]]
-                tw = 0
+                    tag = dict((a_, b_) for a_, b_, _c in B_PRIOS)[k["priority"]]
                 if tag:
                     p.setPen(Qt.PenStyle.NoPen)
                     ff = QFont(f2)
@@ -6524,10 +6610,6 @@ class _BoardCardDelegate(QStyledItemDelegate):
                 p.setPen(QColor(mute) if done else QColor(fg))
                 p.drawText(QRectF(tx, yy, max(10, right - tx), TODO_H), Qt.AlignmentFlag.AlignVCenter,
                            QFontMetrics(ft).elidedText(str(k.get("title") or ""), Qt.TextElideMode.ElideRight, int(max(10, right - tx))))
-            ya = y0 + len(fl) * TODO_H
-            p.setFont(f2)
-            p.setPen(QColor(BOARD_ACCENT))
-            p.drawText(QRectF(card.left() + 14, ya, 200, TODO_H), Qt.AlignmentFlag.AlignVCenter, "+  Add a to-do")
         p.restore()
 
     @staticmethod
@@ -6571,13 +6653,18 @@ class _BoardCol(QListWidget):
             return ("chev", r.get("id"))
         if r.get("id") not in pg.open_ids or pos.y() < y0:
             return None
-        fl = board_flat(pg.rows, r["id"], pg.open_ids)
+        fl = board_lines(pg.rows, r["id"], pg.open_ids)
         i = int((pos.y() - y0) // TODO_H)
-        if i == len(fl):
-            return ("add", r["id"])
         if 0 <= i < len(fl):
-            k, dep = fl[i]
-            x = card.left() + 12 + dep * 18
+            ln = fl[i]
+            if ln["t"] == "add":
+                return ("add", ln["p"])
+            if ln["t"] == "addgroup":
+                return ("addgroup", ln["p"])
+            k = ln["r"]
+            x = card.left() + 12 + ln["d"] * 18
+            if ln["t"] == "group":
+                return ("open", k["id"]) if pos.x() < card.right() - 60 and pos.x() < x + 160 else ("grow", k["id"])
             if pos.x() < x + 13 and board_kids(pg.rows, k["id"]):
                 return ("open", k["id"])
             if pos.x() < x + 32:
@@ -6596,6 +6683,10 @@ class _BoardCol(QListWidget):
                     pg.todo_toggle(h[1])
                 elif h[0] == "add":
                     pg.todo_prompt_add(h[1])
+                elif h[0] == "addgroup":
+                    pg.group_prompt_add(h[1])
+                elif h[0] == "grow":
+                    pg.toggle_open(h[1])
                 e.accept()
                 return
             ix = self.indexAt(e.position().toPoint())
@@ -6625,7 +6716,7 @@ class _BoardCol(QListWidget):
 
     def contextMenuEvent(self, e):
         h = self._hit(e.pos())
-        if h and h[0] in ("row", "check", "open"):
+        if h and h[0] in ("row", "check", "open", "grow"):
             self.page.todo_menu(h[1], e.globalPos(), self)
             e.accept()
             return
@@ -6700,6 +6791,23 @@ class ProjectDialog(QDialog):
         v.addLayout(hb)
         v.addWidget(QLabel("Link"))
         v.addWidget(self.link)
+        self._cover = self.row.get("cover")
+        self._cover_changed = False
+        cb = QHBoxLayout()
+        self.cover_lab = QLabel("")
+        pb_ = QPushButton("Cover picture...")
+        pb_.setToolTip("A picture of the house or site, shown behind the project's card")
+        pb_.clicked.connect(self._pick_cover)
+        pp_ = QPushButton("Paste picture")
+        pp_.clicked.connect(self._paste_cover)
+        pr_ = QPushButton("Remove")
+        pr_.clicked.connect(lambda: self._set_cover(None))
+        cb.addWidget(pb_)
+        cb.addWidget(pp_)
+        cb.addWidget(pr_)
+        cb.addWidget(self.cover_lab, 1)
+        v.addLayout(cb)
+        self._cover_note()
         v.addWidget(QLabel("Notes"))
         v.addWidget(self.notes, 1)
         if self.row.get("id"):
@@ -6721,6 +6829,35 @@ class ProjectDialog(QDialog):
         v.addLayout(bar)
         outer.addWidget(self._subs_panel(), 6)
         self.finished.connect(self._unhook)
+
+    def _cover_note(self):
+        self.cover_lab.setText("<span style='color:#8a9099'>%s</span>" % ("cover picture set" if self._cover else "no cover picture"))
+
+    def _set_cover(self, data):
+        self._cover, self._cover_changed = data, True
+        self._cover_note()
+
+    def _from_image(self, img):
+        if img is None or img.isNull():
+            return
+        from PySide6.QtCore import QBuffer, QByteArray, QIODevice
+        import base64 as _b64
+        sc = img.scaled(900, 300, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
+        sc = sc.copy(max(0, (sc.width() - 900) // 2), max(0, (sc.height() - 300) // 2), min(900, sc.width()), min(300, sc.height()))
+        ba = QByteArray()
+        bf = QBuffer(ba)
+        bf.open(QIODevice.OpenModeFlag.WriteOnly)
+        sc.save(bf, "JPEG", 72)
+        self._set_cover("data:image/jpeg;base64," + _b64.b64encode(bytes(ba)).decode("ascii"))
+
+    def _pick_cover(self):
+        from PySide6.QtWidgets import QFileDialog
+        f, _ = QFileDialog.getOpenFileName(self, "Cover picture", "", "Pictures (*.png *.jpg *.jpeg *.webp *.bmp)")
+        if f:
+            self._from_image(QImage(f))
+
+    def _paste_cover(self):
+        self._from_image(QApplication.clipboard().image())
 
     # ---- to-dos inside the project, to any depth
     def _subs_panel(self):
@@ -6760,8 +6897,12 @@ class ProjectDialog(QDialog):
         nb = QPushButton("Top level")
         nb.setToolTip("Clear the selection so the next to-do goes at the top level")
         nb.clicked.connect(lambda: self.tree.clearSelection())
+        gb = QPushButton("New group")
+        gb.setToolTip("A named group of to-dos, for example Ground floor electrical")
+        gb.clicked.connect(self._gadd)
         hb.addWidget(self.addbox, 1)
         hb.addWidget(ab)
+        hb.addWidget(gb)
         hb.addWidget(nb)
         v.addLayout(hb)
         v.addWidget(QLabel("<span style='color:#8a9099'>Tick the box when it is done. Double-click to rename. Right-click for status, who, due date, sub-to-do or delete.</span>"))
@@ -6808,6 +6949,11 @@ class ProjectDialog(QDialog):
             n.setText(3, due)
             if due and due < today and not done:
                 n.setForeground(3, QColor("#ff5a6a"))
+            if r.get("is_group"):
+                f = n.font(0)
+                f.setBold(True)
+                n.setFont(0, f)
+                n.setText(1, "Group" + ("  %d/%d" % (dn, tt) if tt else ""))
             if done:
                 f = n.font(0)
                 f.setStrikeOut(True)
@@ -6837,6 +6983,20 @@ class ProjectDialog(QDialog):
             self.under.setText("Next to-do goes under: <b>%s</b>" % (r.get("title") if r else ""))
         else:
             self.under.setText("Next to-do goes at the top level of this project")
+
+    def _gadd(self):
+        t = self.addbox.text().strip()
+        if not t:
+            self.addbox.setFocus()
+            self.addbox.setPlaceholderText("Type the group name here, then press New group")
+            return
+        sel = self.tree.selectedItems()
+        par = self.pid
+        if sel:
+            r = self.page.rows.get(self._tid(sel[0])) or {}
+            par = r.get("parent_id") if r.get("is_group") is False and r.get("parent_id") else (r.get("id") if r.get("is_group") else self.pid)
+        self.page._create({"title": t, "status": "todo", "priority": "normal", "parent_id": par or self.pid, "is_group": True})
+        self.addbox.clear()
 
     def _tadd(self):
         t = self.addbox.text().strip()
@@ -6882,7 +7042,8 @@ class ProjectDialog(QDialog):
         return {"title": self.title.text().strip(), "status": self.status.currentData(), "priority": self.prio.currentData(),
                 "owner": self.owner.currentData() or None, "client": self.client.text().strip() or None,
                 "due": self.due.date().toString("yyyy-MM-dd") if self.has_due.isChecked() else None,
-                "link": self.link.text().strip() or None, "notes": self.notes.toPlainText().strip() or None}
+                "link": self.link.text().strip() or None, "notes": self.notes.toPlainText().strip() or None,
+                **({"cover": self._cover} if self._cover_changed else {})}
 
 
 class TeamDialog(QDialog):
@@ -7385,6 +7546,8 @@ class BoardPage(QWidget):
                 self.status.setText("The board did not accept the project (%s)" % err)
             elif res:
                 self.rows[res["id"]] = res
+                if res.get("is_group"):
+                    self.open_ids.add(res["id"])               # a new group opens, ready for its first to-do
                 self.since = max(self.since or "", str(res.get("updated_at") or ""))
                 self.render()
         self.run(lambda: self.api.add(fields), done)
@@ -7409,6 +7572,13 @@ class BoardPage(QWidget):
             self.open_ids.add(parent_id)
             self._create({"title": t.strip(), "status": "todo", "priority": "normal", "parent_id": parent_id})
 
+    def group_prompt_add(self, parent_id):
+        from PySide6.QtWidgets import QInputDialog
+        t, ok = QInputDialog.getText(self, "New group", "Name of the group (for example: Ground floor electrical):")
+        if ok and t.strip():
+            self.open_ids.add(parent_id)
+            self._create({"title": t.strip(), "status": "todo", "priority": "normal", "parent_id": parent_id, "is_group": True})
+
     def todo_rename(self, pid):
         from PySide6.QtWidgets import QInputDialog
         r = self.rows.get(pid) or {}
@@ -7427,8 +7597,18 @@ class BoardPage(QWidget):
 
     def todo_menu(self, pid, gpos, parent=None, project=False):
         m = QMenu(parent or self)
+        grp = bool((self.rows.get(pid) or {}).get("is_group"))
+        if grp:
+            m.addAction("Add a to-do to this group").triggered.connect(lambda _=False: self.todo_prompt_add(pid))
+            m.addAction("Show / hide this group").triggered.connect(lambda _=False: self.toggle_open(pid))
+            m.addAction("Rename the group").triggered.connect(lambda _=False: self.todo_rename(pid))
+            m.addSeparator()
+            m.addAction("Delete the group (with its to-dos)").triggered.connect(lambda _=False: self.todo_delete(pid, parent))
+            m.exec(gpos)
+            return
         if project:
             m.addAction("Add a to-do to this project").triggered.connect(lambda _=False: self.todo_prompt_add(pid))
+            m.addAction("Add a group to this project").triggered.connect(lambda _=False: self.group_prompt_add(pid))
             m.addAction("Open the project details").triggered.connect(lambda _=False: self.edit(self.rows.get(pid)))
             m.addAction("Show / hide its to-dos").triggered.connect(lambda _=False: self.toggle_open(pid))
             m.addSeparator()

@@ -1,10 +1,11 @@
 # MCP Practice Suite - Release notes
 
-Current version: 1.86.349
+Current version: 1.86.350
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
+- **Projects: groups and cover pictures.** Inside a project card you can add named groups (for example Ground floor electrical), each with its own to-dos and its own "Add a to-do" line (right-click a project > Add a group, or use "+ Add a group" on the card). A project can have a cover picture (house or site, from a file or pasted) shown behind its card: open the project > Cover picture.
 - **Update fix:** the in-program update no longer shows "not all arguments converted" after starting the installer.
 - **Splash:** the logo now builds itself from its own pieces: each one spins in from a different side and snaps into place, then a light sweeps over it.
 - **Projects: one click opens a project's to-dos**, and right-click a project to add a to-do, open its details, set priority, status, owner or due date, or delete it.
