@@ -314,9 +314,9 @@ def build(subject, body, logo_src="cid:mcplogo", attached="", logo_dark_src="", 
     if pics:
         pics_done = False
         for src_, cap_ in pics:
-            pics_html += ('<tr><td style="padding:14px 0 4px 0;font-family:%s;font-size:14px;font-weight:700;color:%s;">%s</td></tr>' % (FONT, STRONG, _e(cap_))) if cap_ else ""
+            pics_html += ('<tr><td style="padding:14px 0 6px 0;font-family:%s;font-size:14px;line-height:1.5;color:%s;">%s</td></tr>' % (FONT, STRONG, _e(cap_).replace("\r", "").replace("\n", "<br>"))) if cap_ else ""
             pics_html += ('<tr><td style="padding:6px 0 10px 0;"><img src="%s" width="%d" alt="%s" style="display:block;width:100%%;height:auto;border:1px solid #C9C9C9;border-radius:10px;"></td></tr>'
-                          % (src_, 600 if _pv["on"] else 680, _e(cap_ or "Picture")))
+                          % (src_, 600 if _pv["on"] else 680, _e((cap_ or "Picture").split("\n")[0][:80])))
     for r in rest:
         if not pics_done and not isinstance(r, str) and r[0] == "G":
             sections += pics_html

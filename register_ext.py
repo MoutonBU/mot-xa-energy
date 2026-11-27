@@ -1112,12 +1112,11 @@ class MarkupDialog(QDialog):
         self.sa.setWidget(self.cv)
         self.sa.setStyleSheet("QScrollArea{background:#333;}")
         v.addWidget(self.sa, 1)
-        cr = QHBoxLayout()
-        cr.addWidget(QLabel("Words under the picture in the email (optional):"))
-        self.cap = QLineEdit(caption)
-        self.cap.setPlaceholderText("for example: Ground floor plan, is the passage wide enough here?")
-        cr.addWidget(self.cap, 1)
-        v.addLayout(cr)
+        v.addWidget(QLabel("<b>Message for the person reading it</b> (shown in the email above the picture, so they know what to look at):"))
+        self.cap = QPlainTextEdit(caption)
+        self.cap.setFixedHeight(84)
+        self.cap.setPlaceholderText("for example: Ground floor plan. Is the passage wide enough here? I marked the two walls in red.")
+        v.addWidget(self.cap)
         bb = QHBoxLayout()
         bb.addStretch(1)
         c = QPushButton("Cancel")
@@ -1171,7 +1170,7 @@ class MarkupDialog(QDialog):
 
     def result(self):
         data, ext = self.cv.result()
-        return {"bytes": data, "ext": ext, "caption": self.cap.text().strip()}
+        return {"bytes": data, "ext": ext, "caption": self.cap.toPlainText().strip()}
 
 
 class PdfPageDialog(QDialog):
@@ -1428,7 +1427,7 @@ class OrderReplyDialog(QDialog):
         for i, pc in enumerate(self.pics):
             pm = QPixmap()
             pm.loadFromData(pc["bytes"])
-            it = QListWidgetItem(QIcon(pm), (pc.get("caption") or "Picture %d" % (i + 1))[:28])
+            it = QListWidgetItem(QIcon(pm), ((pc.get("caption") or "Picture %d" % (i + 1)).split("\n")[0])[:28])
             self.pl.addItem(it)
         if self.pics and not self.design_chk.isChecked():
             self.design_chk.setChecked(True)                 # pictures sit inside the designed email
@@ -1636,7 +1635,7 @@ class PicStrip(QWidget):
         for i, pc in enumerate(self.pics):
             pm = QPixmap()
             pm.loadFromData(pc["bytes"])
-            self.pl.addItem(QListWidgetItem(QIcon(pm), (pc.get("caption") or "Picture %d" % (i + 1))[:28]))
+            self.pl.addItem(QListWidgetItem(QIcon(pm), ((pc.get("caption") or "Picture %d" % (i + 1)).split("\n")[0])[:28]))
         self.pl.setVisible(bool(self.pics))
 
     def add(self, img, caption=""):
