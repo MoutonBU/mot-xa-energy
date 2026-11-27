@@ -2474,6 +2474,7 @@ def schedule_from_words(words):
 # --------------------------------------------------------------------------
 import urllib.request
 import urllib.error
+import urllib.parse
 import base64
 
 SETTINGS_PATH = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"),
@@ -2548,6 +2549,33 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def _gh_releases_web(repo, timeout=15):
+    """The same list as the API gives, read from GitHub's public web pages (the release feed and the file list of each release). Returns API-shaped dicts."""
+    import xml.etree.ElementTree as ET
+    import html as _h
+    hdr = {"User-Agent": "MCP-XA-Energy"}
+    with urllib.request.urlopen(urllib.request.Request("https://github.com/%s/releases.atom" % repo, headers=hdr), timeout=timeout) as r:
+        root = ET.fromstring(r.read())
+    ns = "{http://www.w3.org/2005/Atom}"
+    out = []
+    for e in root.findall(ns + "entry")[:8]:
+        lk = e.find(ns + "link")
+        href = (lk.get("href") if lk is not None else "") or ""
+        tag = urllib.parse.unquote(href.rsplit("/releases/tag/", 1)[-1]) if "/releases/tag/" in href else ""
+        if not tag:
+            continue
+        body = re.sub(r"<[^>]+>", " ", _h.unescape((e.findtext(ns + "content") or "")))
+        with urllib.request.urlopen(urllib.request.Request("https://github.com/%s/releases/expanded_assets/%s" % (repo, urllib.parse.quote(tag)), headers=hdr), timeout=timeout) as r:
+            page = r.read().decode("utf-8", "replace")
+        assets = []
+        for m in re.finditer(r'href="(/[^"]+/releases/download/[^"]+/([^"/]+))"', page):
+            assets.append({"name": urllib.parse.unquote(m.group(2)), "id": 0, "size": 0, "web": True, "browser_download_url": "https://github.com" + m.group(1)})
+        out.append({"tag_name": tag, "draft": False, "body": body, "assets": assets})
+    if not out:
+        raise RuntimeError("no releases found")
+    return out
+
+
 def gh_latest_release(repo, token, timeout=15, base=()):
     """The newest update of a repository: {'ver', 'tag', 'name', 'asset_id', 'size', 'notes', 'kind'}. kind is 'full' (an installer) or
     'code' (a small file of program code, only for the installer version `base`). Raises RuntimeError with a plain message."""
@@ -2560,11 +2588,15 @@ def gh_latest_release(repo, token, timeout=15, base=()):
         with urllib.request.urlopen(req, timeout=timeout) as r:
             rels = json.loads(r.read().decode("utf-8"))
     except urllib.error.HTTPError as ex:
-        if ex.code in (401, 403):
-            raise RuntimeError("The update server refused the request. Try again later.")
-        if ex.code == 404:
+        if ex.code in (401, 403, 429):                # GitHub's API allows only 60 questions an hour per internet address without a key: ask the web pages instead, they have no such limit
+            try:
+                rels = _gh_releases_web(repo, timeout)
+            except Exception as ex2:
+                raise RuntimeError("The update server refused the request (%s). Try again in a few minutes." % ex2)
+        elif ex.code == 404:
             raise RuntimeError("No update has been published yet.")
-        raise RuntimeError("GitHub answered %s." % ex.code)
+        else:
+            raise RuntimeError("GitHub answered %s." % ex.code)
     except Exception as ex:
         raise RuntimeError("Could not reach GitHub: %s" % ex)
     best_full, best_code = None, None
@@ -2577,7 +2609,7 @@ def gh_latest_release(repo, token, timeout=15, base=()):
         notes = (d.get("body") or "").strip()
         for a in d.get("assets", []):
             nm = str(a.get("name", "")).lower()
-            rec = {"ver": v, "tag": d.get("tag_name", ""), "name": a["name"], "asset_id": a["id"], "size": a.get("size", 0), "notes": notes}
+            rec = {"ver": v, "tag": d.get("tag_name", ""), "name": a["name"], "asset_id": a.get("browser_download_url") if a.get("web") else a["id"], "size": a.get("size", 0), "notes": notes}
             if nm.endswith("_setup.exe") and (best_full is None or v > best_full["ver"]):
                 best_full = dict(rec, kind="full")
             elif nm.endswith(".zip") and "_code_" in nm:
@@ -2650,6 +2682,8 @@ def gh_download_asset(repo, token, asset_id, dest, progress=None, timeout=60):
     """Download a release file of a private repository. The signed link GitHub redirects to must not receive the token."""
     hdr = {"Accept": "application/octet-stream", "User-Agent": "MCP-XA-Energy", **({"Authorization": "Bearer " + token} if token else {})}
     url = GH_API + "/repos/%s/releases/assets/%s" % (repo, asset_id)
+    if isinstance(asset_id, str) and asset_id.startswith("https://"):          # found through the web pages: a plain public link, no key
+        url, hdr = asset_id, {"User-Agent": "MCP-XA-Energy"}
     op = urllib.request.build_opener(_NoRedirect)
     try:
         resp = op.open(urllib.request.Request(url, headers=hdr), timeout=timeout)
@@ -2724,6 +2758,7 @@ _LIGHT_MAP = [("#16171a", "#f1f2f4"), ("#1f2125", "#ffffff"), ("#1b1d21", "#f8f9
               ("#34383e", "#d0d4da"), ("#3a3f46", "#c3c9d0"), ("#4a5058", "#a9b0b8"), ("#565c64", "#98a0a9"),
               ("#6b7179", "#8f969e"), ("#8a9099", "#6b727b"), ("#9aa0a8", "#5c636b"), ("#eceef0", "#1c1f23"),
               ("#4a3a1c", "#fff0d2"), ("#ffd98a", "#7a4f00"), ("#c8932f", "#d9a441"), ("#ff8f9c", "#c4161c"),
+              ("#17171b", "#e9ebee"), ("#1f1f24", "#dde0e4"), ("#26262c", "#c3c9d0"),
               ("#e8e8ec", "#1c1f23"), ("#3fbf6b", "#1b7f3b"), ("#5fd38a", "#1b7f3b"), ("#ff7b8b", "#c4161c")]
 
 
@@ -13391,9 +13426,11 @@ class MainWindow(QMainWindow):
             pass
         try:
             if getattr(self, "logo_mark", None) is not None:
-                self.logo_mark.setPixmap(logo_pixmap().scaledToHeight(64, Qt.TransformationMode.SmoothTransformation))
+                self.logo_mark.setPixmap(logo_pixmap().scaledToHeight(30 if getattr(self, "shell_rail", None) is not None else 64, Qt.TransformationMode.SmoothTransformation))
             if getattr(self, "home_logo", None) is not None:
                 self.home_logo.setPixmap(logo_pixmap().scaledToHeight(110, Qt.TransformationMode.SmoothTransformation))
+            if getattr(self, "_zoom_icon", None) is not None:
+                self._zoom_icon()                        # the magnifier is drawn in the new look's colour
             if getattr(self, "mode_btn", None) is not None:
                 self.mode_btn.setText("\u263E  Dark" if light() else "\u2600  Light")
             if getattr(self, "mode_act", None) is not None:
@@ -13415,6 +13452,14 @@ class MainWindow(QMainWindow):
                 if getattr(mp_, "cur", None) and mp_.stack.currentIndex() == 1 and getattr(mp_, "msgs", None):
                     mp_._clear_thread()
                     mp_._render_thread()
+        except Exception:
+            pass
+        try:
+            if studio():                                  # the pages restyled themselves above: the program's general look goes back on the page on screen
+                pg2_ = self.main_tabs.currentWidget()
+                if pg2_ is not None:
+                    pg2_.__dict__.pop("_thk", None)
+                    self.set_accent(getattr(self, "_accent_ctx", None))
         except Exception:
             pass
         try:
@@ -22650,9 +22695,10 @@ def apply_glass_theme(app, win):
     else:
         title = QLabel("<span style='font-size:19px;font-weight:700;letter-spacing:2px'>"
                        "MCP ARCHITECTURE &amp; INTERIORS</span><br>"
-                       "<span style='font-size:12px;color:rgba(255,255,255,175);letter-spacing:1px'>"
+                       "<span style='font-size:12px;color:#9aa0a8;letter-spacing:1px'>"
                        "SANS Compliance Suite &middot; Light, Ventilation &amp; Energy</span>")
     title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    title.setStyleSheet("color:#eceef0;background:transparent;")      # written out, so it follows the light/dark look on every Windows setting (never the system's text colour)
     if _compact:
         mid.setSpacing(0)
     mid.addWidget(mark)
