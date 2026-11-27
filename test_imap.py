@@ -164,6 +164,18 @@ mp.load_list(reset=True)
 assert wait(lambda: any(r["subject"] == "Brand new" for r in mp.rows)), "gone from the inbox view"
 print("label in tab ok")
 
+# ---- auto-label rules: new mail from a sender goes into the label by itself
+SS["mail_rules"] = [{"from": "dewann", "to": "", "subject": "", "label": "Clients/Dewann", "read": True, "acct": ""}]
+SS.pop("mail_ruled", None)
+mp.label = "INBOX"
+mp.load_list(reset=True)
+assert wait(lambda: len(mo.gmail_call(mp.S, "GET", "threads", {"labelIds": ["Clients/Dewann"]})["threads"]) >= 1, 10), "rule did not label"
+lt = mo.gmail_call(mp.S, "GET", "threads", {"labelIds": ["Clients/Dewann"]})["threads"]
+assert len(lt) == 1
+assert U.mail_rule_match({"from": "dewann", "subject": "erf"}, {"_from": "dewann blaauw <d@y.com>", "subject": "Erf 670 plans"})
+assert not U.mail_rule_match({"from": "dewann", "subject": "invoice"}, {"_from": "dewann blaauw <d@y.com>", "subject": "Erf 670 plans"})
+print("rules ok")
+
 # ---- sending through the account's own SMTP, and a copy in Sent
 import register_ext as RE
 from email.message import EmailMessage

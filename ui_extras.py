@@ -2841,7 +2841,10 @@ def mail_thread_row(th, me=""):
     unread = any("UNREAD" in (m.get("labelIds") or []) for m in msgs)
     shown = ", ".join(names[:3]) + ("" if len(names) <= 3 else " ..")
     attach = any(((m.get("payload") or {}).get("parts")) and any((p.get("filename") for p in (m.get("payload") or {}).get("parts", []))) for m in msgs)
-    return {"id": th.get("id", ""), "sender": shown, "count": len(msgs), "subject": mail_header(first, "Subject") or "(no subject)",
+    _from = " ".join((mail_header(m, "From") or "") for m in msgs).lower()
+    _to = " ".join(((mail_header(m, "To") or "") + " " + (mail_header(m, "Cc") or "")) for m in msgs).lower()
+    _addr = next((_parseaddr(mail_header(m, "From"))[1].lower() for m in msgs if _parseaddr(mail_header(m, "From"))[1].lower() != me), "")
+    return {"id": th.get("id", ""), "sender": shown, "count": len(msgs), "_from": _from, "_to": _to, "addr": _addr, "subject": mail_header(first, "Subject") or "(no subject)",
             "snippet": _html.unescape(th.get("snippet") or last.get("snippet") or ""), "date": int(last.get("internalDate", 0) or 0), "unread": unread,
             "starred": "STARRED" in labels, "attach": attach, "labels": sorted(labels)}
 
@@ -2865,6 +2868,169 @@ def mail_label_tree(labels):
         nm = str(lb.get("name", ""))
         out.append((nm.split("/")[-1], nm.count("/"), lb.get("id", ""), nm))
     return out
+
+
+def mail_rule_match(rule, row):
+    """Does an auto-label rule fit this email? Every box that is filled in has to match (part of the address, name, subject)."""
+    f, t, sj = (str(rule.get(k, "") or "").strip().lower() for k in ("from", "to", "subject"))
+    if not (f or t or sj):
+        return False
+    if f and f not in str(row.get("_from", "")):
+        return False
+    if t and t not in str(row.get("_to", "")):
+        return False
+    if sj and sj not in str(row.get("subject", "")).lower():
+        return False
+    return True
+
+
+def mail_rule_text(r):
+    bits = []
+    if r.get("from"):
+        bits.append("from \"%s\"" % r["from"])
+    if r.get("to"):
+        bits.append("to \"%s\"" % r["to"])
+    if r.get("subject"):
+        bits.append("subject has \"%s\"" % r["subject"])
+    return "%s  \u2192  %s%s%s" % (" and ".join(bits) or "(empty)", r.get("label", "?"), "  (marked read)" if r.get("read") else "",
+                                 "" if not r.get("acct") else "  [%s only]" % r["acct"])
+
+
+class MailRuleEdit(_QD):
+    """One auto-label rule: who the email is from (or to, or what the subject says) and which label it goes into."""
+
+    def __init__(self, page, rule=None):
+        super().__init__(page)
+        r = dict(rule or {})
+        self.setWindowTitle("Auto-label rule")
+        self.setMinimumWidth(520)
+        v = _VB(self)
+        intro = _QL("New emails that fit go into the label by themselves. Fill in one or more boxes; an email has to fit every box you fill in. "
+                    "Use part of an address, for example <i>@cosmo.co.za</i> for everyone at Cosmo, or a name.")
+        intro.setWordWrap(True)
+        v.addWidget(intro)
+        self.f = _QLE(r.get("from", ""))
+        self.f.setPlaceholderText("is from ... (address, domain or name)")
+        self.t = _QLE(r.get("to", ""))
+        self.t.setPlaceholderText("is sent to ... (optional)")
+        self.sj = _QLE(r.get("subject", ""))
+        self.sj.setPlaceholderText("subject has ... (optional, for example Erf 4901)")
+        for lab, w in (("From", self.f), ("To", self.t), ("Subject", self.sj)):
+            v.addWidget(_QL("<b>%s</b>" % lab))
+            w.setMinimumHeight(30)
+            v.addWidget(w)
+        v.addWidget(_QL("<b>Put it in the label</b> (pick one, or type a new name; use / for a sub-label, like Cosmo/Areas)"))
+        self.lab = _QCombo()
+        self.lab.setEditable(True)
+        self.lab.setMinimumHeight(30)
+        for _n, _i, _l, full in mail_label_tree(page.labels):
+            self.lab.addItem(full)
+        self.lab.setEditText(r.get("label", ""))
+        v.addWidget(self.lab)
+        self.rd = _QCheck("Also mark it as read")
+        self.rd.setChecked(bool(r.get("read")))
+        v.addWidget(self.rd)
+        v.addWidget(_QL("<b>Account</b>"))
+        self.ac = _QCombo()
+        self.ac.addItem("All my accounts", "")
+        for a in page._accounts():
+            ad = str(a.get("address", "") or "")
+            if ad:
+                self.ac.addItem(ad, ad.lower())
+        k = self.ac.findData(str(r.get("acct", "") or "").lower())
+        self.ac.setCurrentIndex(max(0, k))
+        v.addWidget(self.ac)
+        self.msg = _QL("")
+        self.msg.setStyleSheet("color:#E0A020;")
+        v.addWidget(self.msg)
+        row = _HB()
+        row.addStretch(1)
+        no, ok = _QPB("Cancel"), _QPB("Save rule")
+        ok.setDefault(True)
+        no.clicked.connect(self.reject)
+        ok.clicked.connect(self._ok)
+        row.addWidget(no)
+        row.addWidget(ok)
+        v.addLayout(row)
+
+    def _ok(self):
+        if not (self.f.text().strip() or self.t.text().strip() or self.sj.text().strip()):
+            self.msg.setText("Fill in at least one of From, To or Subject.")
+            return
+        if not self.lab.currentText().strip():
+            self.msg.setText("Choose or type the label it goes into.")
+            return
+        self.accept()
+
+    def rule(self):
+        return {"from": self.f.text().strip(), "to": self.t.text().strip(), "subject": self.sj.text().strip(),
+                "label": re.sub(r"\s*/\s*", "/", self.lab.currentText().strip().strip("/")), "read": self.rd.isChecked(), "acct": self.ac.currentData() or ""}
+
+
+class MailRulesDialog(_QD):
+    """All the auto-label rules, with add, change and remove, and a button to run them on the emails in the inbox now."""
+
+    def __init__(self, page):
+        super().__init__(page)
+        self.page = page
+        self.setWindowTitle("Auto-label rules")
+        self.resize(720, 440)
+        v = _VB(self)
+        v.addWidget(_QL("New emails that fit a rule are put in its label as they arrive (like a Gmail filter). The first rule that fits is used."))
+        from PySide6.QtWidgets import QListWidget as _LW
+        self.lw = _LW()
+        v.addWidget(self.lw, 1)
+        row = _HB()
+        for lab, fn in (("Add a rule...", self.add), ("Change...", self.edit), ("Remove", self.remove), ("Run them on the inbox now", self.run_now)):
+            b = _QPB(lab)
+            b.clicked.connect(fn)
+            row.addWidget(b)
+        row.addStretch(1)
+        c = _QPB("Close")
+        c.clicked.connect(self.accept)
+        row.addWidget(c)
+        v.addLayout(row)
+        self.refill()
+
+    def rules(self):
+        return self.page.G.setdefault("mail_rules", [])
+
+    def refill(self):
+        self.lw.clear()
+        for r in self.rules():
+            self.lw.addItem(mail_rule_text(r))
+
+    def _save(self):
+        try:
+            self.page.get_M().save_settings()
+        except Exception:
+            pass
+        self.refill()
+
+    def add(self):
+        d = MailRuleEdit(self.page)
+        if d.exec():
+            self.rules().append(d.rule())
+            self._save()
+
+    def edit(self):
+        i = self.lw.currentRow()
+        if 0 <= i < len(self.rules()):
+            d = MailRuleEdit(self.page, self.rules()[i])
+            if d.exec():
+                self.rules()[i] = d.rule()
+                self._save()
+
+    def remove(self):
+        i = self.lw.currentRow()
+        if 0 <= i < len(self.rules()):
+            self.rules().pop(i)
+            self._save()
+
+    def run_now(self):
+        self.page._rules_reset()
+        self.page._apply_rules(list(self.page.rows), force=True)
+        self.accept()
 
 
 _SIGC = {}
@@ -4826,6 +4992,7 @@ class MailPage(_QW):
         ar.setCheckable(True)
         ar.setChecked(bool(self.G.get("mail_auto_read", True)))
         ar.toggled.connect(lambda on: (self.G.__setitem__("mail_auto_read", bool(on)), self.get_M().save_settings()))
+        m.addAction("Auto-label rules...", self._rules_dialog)
         a = m.addAction("Pop-up when new mail arrives")
         a.setCheckable(True)
         a.setChecked(bool(self.S.get("mail_notify", True)))
@@ -5420,6 +5587,7 @@ class MailPage(_QW):
         a_link = m.addAction("Add to a project...") if (getattr(self.host, "board_page", None) is not None) else None
         m.addSeparator()
         a_arc = m.addAction("Archive")
+        a_rule = m.addAction("Auto-label emails like this...")
         a_del = m.addAction("Delete")
         act = m.exec(self.list.viewport().mapToGlobal(pos))
         if act is None:
@@ -5440,6 +5608,8 @@ class MailPage(_QW):
             self.link_to_project([rows.get(t) or {"id": t, "subject": it.data(ROLE_SUBJECT) or ""} for t in ids])
         elif a_proj is not None and act is a_proj:
             self.project_from_mail(rows.get(tid) or {"subject": it.data(ROLE_SUBJECT) or ""})
+        elif act is a_rule:
+            self._rule_from_row(rows.get(tid) or next((r_ for r_ in self.rows if r_["id"] == tid), {}))
         elif act is a_arc:
             self.act("archive", ids)
         elif act is a_del:
@@ -5651,6 +5821,11 @@ class MailPage(_QW):
             same = sig(rows) == sig(self.rows) and nxt == self.next_token and self.list.count() == len(rows)
             self.next_token = nxt
             self.rows = rows
+            if label == "INBOX" and not query:
+                try:
+                    self._apply_rules(rows)
+                except Exception:
+                    pass
             self._lcache[key] = (list(rows), nxt, self._hid)
             self._disk_soon()
             if len(self._lcache) > 40:
@@ -5659,6 +5834,78 @@ class MailPage(_QW):
                 self._fill_list()
             self.say("")
         self.run(work, done)
+
+    # ----- auto-label rules -----
+    def _rules_reset(self):
+        try:
+            self.G.get("mail_ruled", {}).pop(str(self.S.get("mail_address", "")).lower(), None)
+        except Exception:
+            pass
+
+    def _apply_rules(self, rows, force=False):
+        """New emails in the inbox that fit a rule get its label (and are marked read when the rule says so)."""
+        rules = [r for r in (self.G.get("mail_rules") or []) if r.get("label")]
+        if not rules or not rows or self._need_modify_quiet():
+            return
+        me = str(self.S.get("mail_address", "")).lower()
+        rules = [r for r in rules if not r.get("acct") or r["acct"] == me]
+        if not rules:
+            return
+        done = self.G.setdefault("mail_ruled", {})
+        seen = list(done.get(me, []))
+        sset = set(seen)
+        groups = {}
+        for row in rows:
+            if row["id"] in sset:
+                continue
+            seen.append(row["id"])
+            for r in rules:
+                if mail_rule_match(r, row):
+                    groups.setdefault((r["label"], bool(r.get("read"))), []).append(row["id"])
+                    break
+        done[me] = seen[-3000:]
+        if not groups:
+            return
+        for (lab, rd), ids in groups.items():
+            self._rule_put(lab, rd, ids)
+
+    def _need_modify_quiet(self):
+        try:
+            return not (self.S.get("gmail_modify") or self.S.get("imap_host"))
+        except Exception:
+            return True
+
+    def _rule_put(self, lab, rd, ids):
+        """Find the label (make it when it does not exist yet), then put the emails in it."""
+        def work():
+            labs = self.mo.gmail_call(self.S, "GET", "labels").get("labels", [])
+            for l in labs:
+                if str(l.get("name", "")) == lab and l.get("type") != "system":
+                    return l.get("id")
+            r = self.mo.gmail_call(self.S, "POST", "labels", body={"name": lab, "labelListVisibility": "labelShow", "messageListVisibility": "show"})
+            return r.get("id") or lab
+
+        def done(lid, err):
+            if err or not lid:
+                self.say("Auto-label: %s" % (err or "the label could not be made"), True)
+                return
+            self.modify(ids, add=[lid], remove=["UNREAD"] if rd else [], cb=lambda: self.say("%d email%s put in %s" % (len(ids), "" if len(ids) == 1 else "s", lab)))
+            self.load_labels(quiet=True)
+        self.run(work, done)
+
+    def _rule_from_row(self, row):
+        d = MailRuleEdit(self, {"from": (row or {}).get("addr", ""), "label": ""})
+        if d.exec():
+            self.G.setdefault("mail_rules", []).append(d.rule())
+            try:
+                self.get_M().save_settings()
+            except Exception:
+                pass
+            self._rules_reset()
+            self._apply_rules(list(self.rows), force=True)
+
+    def _rules_dialog(self):
+        MailRulesDialog(self).exec()
 
     def _force_refresh(self):
         """The Refresh button: always asks Gmail again (no cached list, no 'nothing changed' shortcut), folders and counts too."""
