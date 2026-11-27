@@ -3835,6 +3835,16 @@ class LogMixin:
         """The day the house's first order came in."""
         if area is False:
             area = self._larea.get("Order")
+            hc = getattr(self, "_hd_cache", None)
+            if hc is None and getattr(self, "_bg_cache", None) is not None:          # while the tiles are built: one pass over the list for every house
+                hc = self._hd_cache = {}
+                for e in self.log:
+                    if self.log_kind(e) == "Order" and (area is None or self._area_of(e) == area):
+                        k = self._day_key(e.get("date"))
+                        if k and (e.get("group") not in hc or k < hc[e.get("group")]):
+                            hc[e.get("group")] = k
+            if hc is not None:
+                return hc.get(g, "")
         ds = sorted(k for k in (self._day_key(e.get("date")) for e in self.log if self.log_kind(e) == "Order" and e.get("group") == g and (area is None or self._area_of(e) == area)) if k)
         return ds[0] if ds else ""
 
@@ -4318,14 +4328,22 @@ class LogMixin:
                 return self._area_of(e) == self._larea["Order"]
         return True
 
+    def _by_group(self, kind):
+        """{house: [its lines in scope]} in one pass (the tiles used to scan the whole list once per house)."""
+        c = getattr(self, "_bg_cache", None)
+        if c is not None and kind in c:
+            return c[kind]
+        out = {}
+        for e in self.log:
+            if self._in_scope(e, kind):
+                out.setdefault(e.get("group"), []).append(e)
+        if c is not None:
+            c[kind] = out
+        return out
+
     def _done_houses(self, kind):
         """Houses whose lines are all marked Done."""
-        out = set()
-        for g in {e.get("group") for e in self.log if self._in_scope(e, kind)}:
-            ents = [e for e in self.log if self._in_scope(e, kind) and e.get("group") == g]
-            if ents and all(e.get("status") == "Done" for e in ents):
-                out.add(g)
-        return out
+        return {g for g, ents in self._by_group(kind).items() if ents and all(e.get("status") == "Done" for e in ents)}
 
     def _toggle_done(self, kind):
         g = self._lgroup.get(kind)
@@ -4352,16 +4370,27 @@ class LogMixin:
             names = []
         else:
             names = [g["name"] for g in self.groups]
-        for e in self.log:
-            g = e.get("group", "")
-            if g and g not in names and self._in_scope(e, kind):
+        have = set(names)
+        by = self._by_group(kind)
+        for g in by:
+            if g and g not in have:
                 names.append(g)
-        urg = {e.get("group") for e in self.log if self._in_scope(e, kind) and self._is_urgent(e)}
+                have.add(g)
+        urg = {g for g, ents in by.items() if any(self._is_urgent(e) for e in ents)}
         done = self._done_houses(kind)
         return ([n for n in names if n in urg and n not in done] + [n for n in names if n not in urg and n not in done]
                 + [n for n in names if n in done])          # urgent houses first, completed ones last
 
     def _rebuild_tiles(self, kind):
+        self._bg_cache = {}
+        self._hd_cache = None
+        try:
+            self._rebuild_tiles2(kind)
+        finally:
+            self._bg_cache = None
+            self._hd_cache = None
+
+    def _rebuild_tiles2(self, kind):
         host, gl, sc, tiles = self._ltiles[kind]
         for b in tiles:
             gl.removeWidget(b)
@@ -4374,7 +4403,8 @@ class LogMixin:
                % (("#c3c9d0", "#ffffff") if lt else ("#3a3f46", "#1f2125")))
         names_ = self._tile_names(kind)
         done_set = self._done_houses(kind)
-        urgent_names = [n_ for n_ in names_ if n_ not in done_set and any(self._is_urgent(e) for e in self.log if e.get("group") == n_ and self._in_scope(e, kind))]
+        by_ = self._by_group(kind)
+        urgent_names = [n_ for n_ in names_ if n_ not in done_set and any(self._is_urgent(e) for e in by_.get(n_, ()))]
         heads = {}
         if urgent_names:
             heads[urgent_names[0]] = "Priority"
@@ -4396,10 +4426,15 @@ class LogMixin:
         done_l = [n_ for n_ in names_ if n_ in done_set]
         if done_l:
             heads[done_l[0]] = "Completed"
+        chmap = None
+        daycount = {}
+        for n2 in rest_:
+            _d = self._house_day(n2)
+            daycount[_d] = daycount.get(_d, 0) + 1
         for name in names_:
             if name in dayhead:
                 k_ = dayhead[name]
-                nday = sum(1 for n2 in rest_ if self._house_day(n2) == k_)
+                nday = daycount.get(k_, 0)
                 hb = QPushButton("%s   (%d %s)   \u25be" % (self._day_label(k_), nday, "house" if nday == 1 else "houses"))
                 hb.setFlat(True)
                 hb.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -4420,14 +4455,20 @@ class LogMixin:
                 hl.setParent(host)
                 hl.show()
                 tiles.append(hl)
-            ents = [e for e in self.log if e.get("group") == name and self._in_scope(e, kind)]
+            ents = by_.get(name, [])
             new = sum(1 for e in ents if e.get("status") == "New")
             open_ = sum(1 for e in ents if not e.get("sent_date"))
             last = max([str(e.get("date", "")) for e in ents] or [""])
             lines = ["<b style='font-size:%dpx'>%s</b>" % (self._sc(14), name.replace("<", "&lt;")),
                      ("%d %s" % (len(ents), ("order" if kind == "Order" else "change") + ("" if len(ents) == 1 else "s"))) if ents else "nothing yet"]
             if kind == "Order":
-                chs = self._changes_of(name)
+                if chmap is None:
+                    chmap = {}
+                    ar_ = self._larea.get("Order")
+                    for c_ in self.log:
+                        if c_.get("type") == "Change" and c_.get("of_order") and c_.get("group") and (ar_ is None or self._area_of(c_) == ar_):
+                            chmap.setdefault(_gnorm(c_.get("group")), []).append(c_)
+                chs = chmap.get(_gnorm(name), []) if name else []
                 if chs:
                     lines[1] += ", %d change%s" % (len(chs), "" if len(chs) == 1 else "s")
                     new += sum(1 for c in chs if c.get("status") == "New")
@@ -5966,9 +6007,14 @@ class LogMixin:
         from register import BYS
         for k, vals in (("group", [g["name"] for g in self.groups]), ("priority", PRIO), ("type", TYPES), ("by", None), ("status", LSTAT)):
             cb = QComboBox()
-            cb.setEditable(True)
-            cb.addItems(vals if vals is not None else BYS)
-            cb.setCurrentText(str(e.get(k, "")))
+            items = list(vals if vals is not None else BYS)
+            cur_ = str(e.get(k, ""))
+            if k in ("group", "by"):
+                cb.setEditable(True)                              # these two take typed names; the others are fixed lists (a drop-down that is not editable is much cheaper to make)
+            elif cur_ and cur_ not in items:
+                items.append(cur_)
+            cb.addItems(items)
+            cb.setCurrentText(cur_)
             cb.currentTextChanged.connect(lambda tx, ent=e, kk=k: ent.__setitem__(kk, tx))
             if k == "priority":
                 cb.currentTextChanged.connect(lambda _tx: QTimer.singleShot(0, self.refresh_log))
@@ -5987,10 +6033,10 @@ class LogMixin:
         if first is None:
             r0, r1 = t.rowAt(0), t.rowAt(max(0, t.viewport().height() - 1))
             first = max(0, r0) if r0 >= 0 else 0
-            last = (r1 if r1 >= 0 else n - 1) + 12
-            first = max(0, first - 6)
+            last = (r1 if r1 >= 0 else n - 1) + 3
+            first = max(0, first - 2)
         else:
-            last = first + 24
+            last = first + 11
         for i in range(first, min(n, last + 1)):
             self._row_widgets(kind, t, i)
 
