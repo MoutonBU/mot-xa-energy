@@ -313,12 +313,15 @@ def build(subject, body, logo_src="cid:mcplogo", attached="", logo_dark_src="", 
     pics_html, pics_done = "", True
     if pics:
         pics_done = False
+        pics_html += _heading("h", "SEE ATTACHED")
         for src_, cap_ in pics:
             pics_html += ('<tr><td style="padding:14px 0 6px 0;font-family:%s;font-size:14px;line-height:1.5;color:%s;">%s</td></tr>' % (FONT, STRONG, _e(cap_).replace("\r", "").replace("\n", "<br>"))) if cap_ else ""
             pics_html += ('<tr><td style="padding:6px 0 10px 0;"><img src="%s" width="%d" alt="%s" style="display:block;width:100%%;height:auto;border:1px solid #C9C9C9;border-radius:10px;"></td></tr>'
                           % (src_, 600 if _pv["on"] else 680, _e((cap_ or "Picture").split("\n")[0][:80])))
+    _kinds = [r[0] for r in rest if not isinstance(r, str)]
+    _at = "S" if "S" in _kinds else "G"                  # the pictures sit right under the drawing list, before the status of the revision (or the regards)
     for r in rest:
-        if not pics_done and not isinstance(r, str) and r[0] == "G":
+        if not pics_done and not isinstance(r, str) and r[0] == _at:
             sections += pics_html
             pics_done = True
         if isinstance(r, str):
