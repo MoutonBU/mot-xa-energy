@@ -755,3 +755,23 @@ _ref = _wd(U.mail_fix_images("<body>x" + _h2 + "</body>", _QTD2(), _in2, True, 2
 _got = _wd(U.mail_fix_images("<body>x" + re.sub(r'\sdata-(?:t|pw)="[^"]*"', "", _h2) + "</body>", _QTD2(), _in2, True, 2300))
 assert _ref and len(_ref) == len(_got) and all(abs(a - b) <= 1 for a, b in zip(_ref, _got)) and max(_got) <= 342 + 278, (_ref, _got)
 print("ok39")
+
+# "Mark all as read": the numbers drop at once and Gmail gets one batchModify that removes UNREAD from every unread inbox message
+_calls40 = []
+_prev40 = mo.gmail_call
+def _spy40(S_, method, path, params=None, body=None, timeout=60):
+    _calls40.append((method, path, body))
+    if method == "GET" and path == "messages":
+        return {"messages": [{"id": "m1"}, {"id": "m2"}]}
+    if method == "POST" and path == "messages/batchModify":
+        return {}
+    return _prev40(S_, method, path, params, body, timeout)
+mo.gmail_call = _spy40
+mp._counts_keep = {"INBOX": (7, 20)}
+mp.all_read_btn.click(); app.processEvents()
+assert mp._counts_keep["INBOX"][0] == 0 and not any(r.get("unread") for r in mp.rows)
+assert wait(lambda: any(c[1] == "messages/batchModify" for c in _calls40), 4), _calls40
+_b = [c for c in _calls40 if c[1] == "messages/batchModify"][0][2]
+assert _b["ids"] == ["m1", "m2"] and _b["removeLabelIds"] == ["UNREAD"], _b
+mo.gmail_call = _prev40
+print("ok40")

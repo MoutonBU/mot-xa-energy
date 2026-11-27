@@ -3705,6 +3705,10 @@ class MailPage(_QW):
         self.account = _QL("")
         top.addWidget(self.search, 1)
         top.addWidget(self.account)
+        self.all_read_btn = _QPB("Mark all as read")
+        self.all_read_btn.setToolTip("Marks every unread email in this account's inbox as read, in Gmail too, so the number on the home screen goes away")
+        self.all_read_btn.clicked.connect(self.mark_all_read)
+        top.addWidget(self.all_read_btn)
         self.set_btn = _QPB("Settings  \u25be")
         self.set_btn.setToolTip("Your email signature and the new-mail pop-up")
         self.set_btn.clicked.connect(self._settings_menu)
@@ -5232,6 +5236,53 @@ class MailPage(_QW):
                 return
             self.load_labels(quiet=True)                           # the counts next to the folders
             self._disk_soon()
+        self.run(work, done)
+
+    def mark_all_read(self):
+        """Every unread email in the inbox of this account becomes read (all of them, not only the ones on screen)."""
+        if self._need_modify():
+            return
+        c = dict(getattr(self, "_counts_keep", {}) or {})
+        old = c.get("INBOX") or (0, 0)
+        c["INBOX"] = (0, old[1])
+        self._counts_keep = c                                       # the numbers go at once; Gmail follows
+        for r_ in self.rows:
+            r_["unread"] = False
+            r_["labels"] = [x for x in (r_.get("labels") or []) if x != "UNREAD"]
+        for key, ent in list(self._lcache.items()):
+            for r_ in ent[0]:
+                r_["unread"] = False
+                r_["labels"] = [x for x in (r_.get("labels") or []) if x != "UNREAD"]
+        self.list.viewport().update()
+        try:
+            self._rebuild_acc_bar(force=True)
+        except Exception:
+            pass
+        self.say("Marking all unread mail as read...")
+
+        def work():
+            n, tok = 0, None
+            while True:
+                prm = {"labelIds": ["INBOX", "UNREAD"], "maxResults": 500}
+                if tok:
+                    prm["pageToken"] = tok
+                res = self.mo.gmail_call(self.S, "GET", "messages", params=prm) or {}
+                ids = [m["id"] for m in (res.get("messages") or [])]
+                if ids:
+                    self.mo.gmail_call(self.S, "POST", "messages/batchModify", body={"ids": ids, "removeLabelIds": ["UNREAD"]})
+                    n += len(ids)
+                tok = res.get("nextPageToken")
+                if not tok or n > 20000:
+                    return n
+
+        def done(res, err):
+            if err:
+                self.say("Gmail did not accept it (%s)" % err, True)
+            else:
+                self.say("Marked %d email%s as read" % (res, "" if res == 1 else "s"))
+            self._lcache.clear()
+            self.load_list(reset=False, quiet=True)
+            self.load_labels(quiet=True)
         self.run(work, done)
 
     def toggle_star(self, tid, on, row):
