@@ -6511,7 +6511,7 @@ class _BoardCardDelegate(QStyledItemDelegate):
         f.setPixelSize(12)
         p.setFont(f)
         p.setPen(QColor(mute))
-        bits = [b for b in (r.get("client"), ("→ " + self.page.who(r.get("owner"))) if r.get("owner") else "") if b]
+        bits = [b for b in (r.get("client"), r.get("location"), ("Zone " + str(r.get("zone"))) if r.get("zone") else "", ("→ " + self.page.who(r.get("owner"))) if r.get("owner") else "") if b]
         p.drawText(QPointF(x0, card.top() + 43), QFontMetrics(f).elidedText("  ·  ".join(bits), Qt.TextElideMode.ElideRight, int(w)))
         due = str(r.get("due") or "")
         late = bool(due) and due < _btime.strftime("%Y-%m-%d") and r.get("status") != "done"
@@ -6914,6 +6914,10 @@ class ProjectDialog(QDialog):
         self.owner.setCurrentIndex(max(0, i))
         self.client = QLineEdit(self.row.get("client", "") or "")
         self.client.setPlaceholderText("Client or house (optional)")
+        self.location = QLineEdit(self.row.get("location", "") or "")
+        self.location.setPlaceholderText("Where is it? Town, street or erf (optional)")
+        self.zone = QLineEdit(self.row.get("zone", "") or "")
+        self.zone.setPlaceholderText("Zone, e.g. Residential 1, Heritage, Zone 3 (optional)")
         self.has_due = QCheckBox("Due date")
         self.due = QDateEdit()
         self.due.setCalendarPopup(True)
@@ -6927,7 +6931,7 @@ class ProjectDialog(QDialog):
         self.link.setPlaceholderText("Link to a folder, file or email (optional)")
         self.notes = QPlainTextEdit(self.row.get("notes", "") or "")
         self.notes.setPlaceholderText("Notes")
-        for lab, w in (("Title", self.title), ("Status", self.status), ("Priority", self.prio), ("Who does it", self.owner), ("Client / house", self.client)):
+        for lab, w in (("Title", self.title), ("Status", self.status), ("Priority", self.prio), ("Who does it", self.owner), ("Client / house", self.client), ("Location", self.location), ("Zone", self.zone)):
             v.addWidget(QLabel(lab))
             v.addWidget(w)
         hb = QHBoxLayout()
@@ -7186,6 +7190,7 @@ class ProjectDialog(QDialog):
     def fields(self):
         return {"title": self.title.text().strip(), "status": self.status.currentData(), "priority": self.prio.currentData(),
                 "owner": self.owner.currentData() or None, "client": self.client.text().strip() or None,
+                "location": self.location.text().strip() or None, "zone": self.zone.text().strip() or None,
                 "due": self.due.date().toString("yyyy-MM-dd") if self.has_due.isChecked() else None,
                 "link": self.link.text().strip() or None, "notes": self.notes.toPlainText().strip() or None,
                 **({"cover": self._cover} if self._cover_changed else {})}
@@ -7631,7 +7636,7 @@ class BoardPage(QWidget):
             rs = [r for r in self.rows.values() if not r.get("deleted") and not r.get("parent_id") and r.get("status") == k]
             if q:
                 def _hit(r):
-                    if q in " ".join(str(r.get(x) or "") for x in ("title", "client", "notes", "owner")).lower():
+                    if q in " ".join(str(r.get(x) or "") for x in ("title", "client", "location", "zone", "notes", "owner")).lower():
                         return True
                     return any(_hit(c) for c in board_kids(self.rows, r["id"]))
                 rs = [r for r in rs if _hit(r)]
@@ -7876,7 +7881,7 @@ class BoardPage(QWidget):
         src = self.rows.get(pid)
         if not src:
             return
-        f = {k: src.get(k) for k in ("title", "status", "priority", "owner", "client", "due", "link", "notes", "is_group", "cover") if src.get(k) is not None}
+        f = {k: src.get(k) for k in ("title", "status", "priority", "owner", "client", "location", "zone", "due", "link", "notes", "is_group", "cover") if src.get(k) is not None}
         f["parent_id"] = new_parent if new_parent is not None else src.get("parent_id")
         f["pos"] = _btime.time() if top else float(src.get("pos") or 0)
         if top:

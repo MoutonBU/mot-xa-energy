@@ -1,10 +1,11 @@
 # MCP Practice Suite - Release notes
 
-Current version: 1.86.355
+Current version: 1.86.356
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
+- **Projects: where it is and what zone.** Every project now has a Location (town, street or erf) and a Zone. They show on the project card and are found by the search box.
 - **Projects: ghost while dragging.** A see-through copy of the to-do you pick up follows the mouse, with a green outline on where it will land.
 - **No "Start a new project?" pop-up when the program opens** after an update or reload.
 - **Projects: drag to-dos into groups, and many more right-click options.** Click a to-do and drag it (or several, with Ctrl+click) onto a group, or onto another project, and drop. Right-click menus now include: move up/down, duplicate, edit notes, move to another project, turn a to-do into a group and back, mark everything in a group as done, sort by priority, copy as a checklist, open or close every group, duplicate a project.
