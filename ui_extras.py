@@ -2777,6 +2777,35 @@ def mail_split_quote(html):
     return html[:cut], html[cut:]
 
 
+def mail_trim_quote(html, plain, inline, forward=False):
+    """What goes under a reply. Only the message being answered (its own text, not the whole history it already carries - that is what made long
+    back-and-forth chains grow and break), without the signature pictures of the sender, and with every picture name unique so my own new
+    signature never clashes with an older one. A forward keeps the whole message but with unique picture names."""
+    inline = dict(inline or {})
+    if not forward:
+        top, _rest = mail_split_quote(html)
+        if re.sub(r"(?is)<[^>]+>|&nbsp;|\s", "", top or ""):
+            html = top
+        plain = re.split(r"(?m)^-- ?$", re.split(r"(?m)^(?:On|Op) .{0,160}(?:wrote|skryf|geskryf)\s*:?\s*$", plain or "")[0])[0]
+        plain = "\n".join(x for x in plain.splitlines() if not x.lstrip().startswith(">")).strip()
+        html = re.sub(r"(?is)<img\b[^>]*\bsrc=[\"']cid:mcpsig[^\"']*[\"'][^>]*>", "", html)
+        for _ in range(4):                                              # tables left empty once the signature pictures are gone
+            html = re.sub(r"(?is)<table\b[^>]*>(?:\s|<tr[^>]*>|</tr>|<td[^>]*>|</td>|<tbody>|</tbody>|<br\s*/?>)*</table>", "", html)
+    n = [0]
+
+    def uniq(mo):
+        n[0] += 1
+        return "cid:q%d-%s" % (n[0], mo.group(1))
+    names = {}
+    for k in list(inline):
+        if k.lower().startswith("mcpsig"):
+            names[k] = "qsig-" + k
+    for k, nk in names.items():
+        html = re.sub(r"(?i)cid:%s(?=[\"'\s>)])" % re.escape(k), "cid:" + nk, html)
+        inline[nk.lower()] = inline.pop(k)
+    return html, plain, inline
+
+
 def mail_full_date(m):
     """The time the email arrived, in my own time zone ('Thu, 26 Nov 2026  15:14'); the sender's Date header is in their zone and was cut short, so it read hours off."""
     try:
@@ -3483,12 +3512,22 @@ class MailAcct:
     def _imap(self):
         return self.a is not None and not self.a.get("main") and self.a.get("kind") == "imap"
 
+    SIG_KEYS = ("sig_name", "sig_role", "sig_phone", "sig_email", "sig_photo", "sig_company")
+
+    def _sig(self):
+        return self.a is not None and not self.a.get("main") and bool(self.a.get("sig"))
+
     def _own(self, k):
+        if k in self.SIG_KEYS:
+            return self._sig()
         return self.a is not None and not self.a.get("main") and (k in self.OWN or (k in self.IMAP_OWN and self._imap()))
+
+    def _store(self, k):
+        return self.a["sig"] if k in self.SIG_KEYS else self.a
 
     def get(self, k, d=None):
         if self._own(k):
-            v = self.a.get(self.OWN.get(k, k))
+            v = self._store(k).get(self.OWN.get(k, k))
             return d if v is None else v
         if self._imap():
             if k == "mail_provider":
@@ -3509,7 +3548,7 @@ class MailAcct:
 
     def __setitem__(self, k, v):
         if self._own(k):
-            self.a[self.OWN.get(k, k)] = v
+            self._store(k)[self.OWN.get(k, k)] = v
         else:
             self.G[k] = v
 
@@ -3524,7 +3563,7 @@ class MailAcct:
     def pop(self, k, d=None):
         v = self.get(k, d)
         if self._own(k):
-            self.a.pop(self.OWN.get(k, k), None)
+            self._store(k).pop(self.OWN.get(k, k), None)
         else:
             self.G.pop(k, None)
         return v
@@ -3538,7 +3577,7 @@ class ImapAccountDialog(_QD):
     def __init__(self, parent, existing=None):
         super().__init__(parent)
         self.setWindowTitle("Add an email account")
-        self.setMinimumWidth(480)
+        self.setMinimumWidth(560)
         self.cfg = None
         self._closed = False
         v = _VB(self)
@@ -3558,32 +3597,40 @@ class ImapAccountDialog(_QD):
         self.adv = _QCheck("Other ways to connect (type the servers by hand)")
         v.addWidget(self.adv)
         self.man = _QW()
-        g = _VB(self.man)
-        g.setContentsMargins(0, 0, 0, 0)
+        from PySide6.QtWidgets import QGridLayout as _QGL
+        g = _QGL(self.man)
+        g.setContentsMargins(0, 4, 0, 4)
+        g.setHorizontalSpacing(8)
+        g.setVerticalSpacing(6)
+        g.setColumnStretch(0, 1)
+        for c, t in enumerate(("Server", "Port", "Security")):
+            g.addWidget(_QL("<b>%s</b>" % t), 0, c)
         self.f = {}
-        for key, lab, ph in (("imap_host", "Incoming (IMAP) server", "mail.yourdomain.co.za"), ("smtp_host", "Outgoing (SMTP) server", "mail.yourdomain.co.za")):
-            row = _HB()
-            row.addWidget(_QL(lab))
+        r = 1
+        for key, lab, ph in (("imap_host", "Incoming (IMAP)", "mail.yourdomain.co.za"), ("smtp_host", "Outgoing (SMTP)", "mail.yourdomain.co.za")):
+            g.addWidget(_QL(lab), r, 0, 1, 3)
             e = _QLE()
             e.setPlaceholderText(ph)
+            e.setMinimumHeight(30)
             pt = _QLE()
-            pt.setFixedWidth(60)
+            pt.setFixedWidth(70)
+            pt.setMinimumHeight(30)
             pt.setText("993" if key == "imap_host" else "465")
             sc = _QCombo()
             sc.addItems(["SSL", "STARTTLS", "None"])
-            sc.setCurrentIndex(0 if key == "imap_host" else 0)
-            row.addWidget(e, 1)
-            row.addWidget(pt)
-            row.addWidget(sc)
-            g.addLayout(row)
+            sc.setMinimumHeight(30)
+            sc.setMinimumWidth(100)
+            g.addWidget(e, r + 1, 0)
+            g.addWidget(pt, r + 1, 1)
+            g.addWidget(sc, r + 1, 2)
             self.f[key] = (e, pt, sc)
-        urow = _HB()
-        urow.addWidget(_QL("User name (if not the address)"))
+            r += 2
+        g.addWidget(_QL("User name (only if it is not the email address)"), r, 0, 1, 3)
         self.user = _QLE()
-        urow.addWidget(self.user, 1)
-        g.addLayout(urow)
+        self.user.setMinimumHeight(30)
+        g.addWidget(self.user, r + 1, 0, 1, 3)
         self.man.setVisible(False)
-        self.adv.toggled.connect(self.man.setVisible)
+        self.adv.toggled.connect(self._toggle_man)
         v.addWidget(self.man)
         self.status = _QL("")
         self.status.setWordWrap(True)
@@ -3601,6 +3648,12 @@ class ImapAccountDialog(_QD):
         self.prog.connect(self.status.setText)
         self.fin.connect(self._finished)
         self.existing = existing
+
+    def _toggle_man(self, on):
+        self.man.setVisible(on)
+        self.layout().activate()
+        self.resize(self.width(), max(self.minimumSizeHint().height(), 120))
+        self.adjustSize()
 
     def done(self, r):
         self._closed = True
@@ -3638,12 +3691,16 @@ class ImapAccountDialog(_QD):
             try:
                 if manual:
                     h, p, sec = fl["imap_host"]
+                    h = re.sub(r"^(?:imaps?|https?)://", "", h).strip("/ ")
+                    if not re.fullmatch(r"\d{0,5}", p) or not re.fullmatch(r"\d{0,5}", fl["smtp_host"][1]):
+                        raise RuntimeError("the port must be a number, like 993 or 465")
                     u = user or addr
                     r, why = __import__("mail_imap").test_login(h, int(p or 993), sec, u, pw)
                     if r != "ok":
                         raise RuntimeError("the incoming server %s did not accept the login (%s)" % (h, why or "refused"))
                     cfg = {"imap_host": h, "imap_port": int(p or 993), "imap_security": sec, "imap_user": u}
                     sh, sp, ss = fl["smtp_host"]
+                    sh = re.sub(r"^(?:smtps?|https?)://", "", sh).strip("/ ") or re.sub(r"^imap\.", "smtp.", h)
                     if sh:
                         cfg.update({"smtp_host": sh, "smtp_port": int(sp or 465), "smtp_security": ss, "smtp_user": u})
                 else:
@@ -3664,7 +3721,7 @@ class ImapAccountDialog(_QD):
     def _finished(self, ok, msg, cfg):
         self.go.setEnabled(True)
         if not ok:
-            self.status.setText("Could not connect: " + msg)
+            self.status.setText("Could not connect: " + msg + ("" if self.adv.isChecked() else "\nTick \"Other ways to connect\" and type the servers your email provider gave you."))
             return
         self.cfg = cfg
         self.accept()
@@ -4746,7 +4803,11 @@ class MailPage(_QW):
         m.addAction("Add other email account (your own domain, Outlook, Yahoo)...", self._add_other)
         m.addAction("Make this account my default", lambda: self._make_default(self._act))
         m.addSeparator()
-        m.addAction("My email signature...", self._edit_signature)
+        _a = getattr(self, "_act", None)
+        _sec = _a is not None and not _a.get("main")
+        m.addAction("Email signature for this account..." if _sec else "My email signature...", self._edit_signature)
+        if _sec and _a.get("sig"):
+            m.addAction("Use the main signature for this account", self._reset_signature)
         w_ = m.addAction("Always show emails on white")
         w_.setCheckable(True)
         w_.setChecked(bool(self.S.get("mail_white")))
@@ -4779,14 +4840,37 @@ class MailPage(_QW):
             pass
 
     def _edit_signature(self):
-        """The same signature editor as in the drawing register: name, position, phone, email and photo."""
+        """The same signature editor as in the drawing register. For a second email account it edits that account's own signature."""
         import register_ext
         M = self.get_M()
-        if register_ext.SignatureDialog(M, self).exec():
+        a = getattr(self, "_act", None)
+        if a is not None and not a.get("main"):
+            base = dict(a.get("sig") or {})
+            for k, dv in (("sig_name", self.G.get("sig_name", "")), ("sig_role", self.G.get("sig_role", "")), ("sig_phone", self.G.get("sig_phone", "")),
+                          ("sig_photo", self.G.get("sig_photo", "")), ("sig_company", self.G.get("sig_company", ""))):
+                base.setdefault(k, dv)
+            base.setdefault("sig_email", a.get("address", ""))
+            base["mail_address"] = a.get("address", "")
+
+            def keep(st):
+                a["sig"] = {k: st.get(k, "") for k in MailAcct.SIG_KEYS}
+            tag = "_" + re.sub(r"[^a-z0-9]+", "", str(a.get("address", "")).lower())
+            ok = register_ext.SignatureDialog(M, self, store=base, on_save=keep, title="Email signature for %s" % a.get("address", ""), tag=tag).exec()
+        else:
+            ok = register_ext.SignatureDialog(M, self).exec()
+        if ok:
+            _SIGC.clear()
+
+    def _reset_signature(self):
+        a = getattr(self, "_act", None)
+        if a is not None and not a.get("main") and a.get("sig"):
+            a.pop("sig", None)
+            _SIGC.clear()
             try:
-                _SIGC.clear()
+                self.get_M().save_settings()
             except Exception:
                 pass
+            self.say("This account now uses the main signature.")
 
     def _row_cache_reset(self):
         d = self.list.itemDelegate()
@@ -6565,7 +6649,8 @@ class MailPage(_QW):
         else:
             head_html = "On %s, %s wrote:" % (_html.escape(when), _html.escape(mail_name(mail_header(m, "From"))))
             head_plain = "On %s, %s wrote:" % (when, mail_name(mail_header(m, "From")))
-        q_ = dict(html=quote, plain=plain or "", inline=inline, head_html=head_html, head_plain=head_plain)
+        quote, plain_q, inline = mail_trim_quote(quote, plain or "", inline, kind == "forward")
+        q_ = dict(html=quote, plain=plain_q, inline=inline, head_html=head_html, head_plain=head_plain)
         d = MailCompose(self, to, cc, subj2, "", in_reply_to=mail_header(m, "Message-ID") or mail_header(m, "Message-Id"),
                         references=mail_header(m, "References"), thread_id="" if kind == "forward" else (self.thread_view or {}).get("id", ""), quote=q_)
         d.exec()

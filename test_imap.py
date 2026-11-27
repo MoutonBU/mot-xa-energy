@@ -185,3 +185,22 @@ n = mp._auto_read(M.SETTINGS)
 assert n == 2 and any(c[1] == "messages/batchModify" and c[3]["ids"] == ["p1", "p2"] and c[3]["removeLabelIds"] == ["UNREAD"] for c in calls), calls
 assert "category:promotions" in calls[0][2]["q"] and "is:unread" in calls[0][2]["q"]
 print("auto-read ok")
+
+
+def test_account_signature_and_reply_trim():
+    import ui_extras as u
+    G = {"sig_name": "Main Person", "sig_role": "Director", "sig_email": "m@x.co.za", "mail_address": "m@x.co.za"}
+    a = {"address": "b@y.co.za", "kind": "imap", "sig": {"sig_name": "Second Person", "sig_role": "Architect", "sig_email": "b@y.co.za"}}
+    S = u.MailAcct(G, a)
+    assert S.get("sig_name") == "Second Person" and G["sig_name"] == "Main Person"
+    S["sig_phone"] = "082"
+    assert a["sig"]["sig_phone"] == "082" and "sig_phone" not in G
+    assert u.MailAcct(G, {"address": "c@z.co.za"}).get("sig_name") == "Main Person"
+    h = '<div>ok</div><img src="cid:mcpsig0"><div class="gmail_quote">On Mon X wrote:<blockquote>old</blockquote></div>'
+    q, pl, inl = u.mail_trim_quote(h, "ok\n> old", {"mcpsig0": b"x"}, False)
+    assert "old" not in q and "mcpsig" not in q and pl == "ok"
+    print("sig+trim ok")
+
+
+if __name__ == "__main__":
+    test_account_signature_and_reply_trim()

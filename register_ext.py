@@ -242,13 +242,14 @@ class SignatureDialog(QDialog):
     FIELDS = (("sig_name", "Your name", "Mouton Burger"), ("sig_role", "Your position", "Director"),
               ("sig_phone", "Phone", "082 000 0000"), ("sig_email", "Email", "name@company.co.za"))
 
-    def __init__(self, M, parent=None):
+    def __init__(self, M, parent=None, store=None, on_save=None, title="My email signature", tag=""):
         super().__init__(parent)
         from PySide6.QtCore import QTimer as _QT
-        self.M, self.S = M, M.SETTINGS
+        self.M, self.S = M, (store if store is not None else M.SETTINGS)
+        self._on_save, self._tag = on_save, tag
         self.photo = str(self.S.get("sig_photo", "") or "")
         self._new_photo = ""
-        self.setWindowTitle("My email signature")
+        self.setWindowTitle(title)
         self.resize(780, 640)
         v = QVBoxLayout(self)
         v.addWidget(QLabel("Fill in your own details and choose your photo. The background, logo and website are the same for everyone. "
@@ -313,7 +314,7 @@ class SignatureDialog(QDialog):
         if not p:
             return
         import sig_banner
-        dest = os.path.join(self.M._user_data_dir(), "signature_photo.png")
+        dest = os.path.join(self.M._user_data_dir(), "signature_photo%s.png" % self._tag)
         try:
             os.makedirs(os.path.dirname(dest), exist_ok=True)
         except Exception:
@@ -332,6 +333,8 @@ class SignatureDialog(QDialog):
         self.S.update(self._vals())
         self.S["sig_photo"] = self.photo
         self.S.setdefault("sig_company", "MCP Architecture & Interiors")
+        if self._on_save:
+            self._on_save(self.S)
         self.M.save_settings()
         self.accept()
 
