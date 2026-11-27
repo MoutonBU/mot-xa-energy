@@ -53,14 +53,33 @@ st = pg.state()
 pg2 = sc.SdpPage(W())
 pg2.load_state(st)
 assert len(pg2.bays) == n and len(pg2.zones) == 1 and pg2.rules_now() == pg.rules_now() and len(pg2.buildings()) == 1
+# refuse area and gatehouse
+pg.add_gatehouse(); pg.add_refuse()
+names = [b["name"] for b in pg.buildings()]
+assert "Gatehouse" in names and "Refuse area" in names
+assert sc.kind_of("Refuse area 2") == "refuse" and sc.kind_of("Gatehouse") == "gate" and sc.kind_of("H3") == "block"
+pg.clear_all_bays = lambda: None
+pg.bays = []; pg.refresh_parking()
+pg.suggest_refuse()
+i = names.index("Refuse area"); rb = pg.buildings()[i]
+R = sp.rect(0, 0, 0, 1, 1)
+from site_lines import bpoly
+assert sp.inside(bpoly(rb), pg.verts())
+for j, b in enumerate(pg.buildings()):
+    if j != i:
+        assert sp.poly_dist(bpoly(rb), bpoly(b)) >= 0.5 - 1e-6, b["name"]
+pg.fill_all()
+assert all(not pr for pr in pg._bad)
 # the schedule
 pg.sync_blocks()
-assert [b["block"] for b in pg.blocks()] == ["H1"] and abs(pg.blocks()[0]["foot"] - 240.0) < 1e-6
+assert [b["block"] for b in pg.blocks()] == ["H1", "Gatehouse"] and abs(pg.blocks()[0]["foot"] - 240.0) < 1e-6 and pg.blocks()[1]["type"] == "Gatehouse"
+pg.t.item(0, 4).setText("12")
+assert "need" in pg.need_lbl.text() and "12 units" in pg.need_lbl.text(), pg.need_lbl.text()
 pg.blocks()
 d = sc._BlocksDialog(pg); d.first.setValue(1); d.last.setValue(26)
 assert len(d.blocks()) == 26
 a = pg.sdp()
-assert a["bays"] == n and abs(a["area"] - 2400.0) < 1e-6
+assert a["bays"] == len([1 for b in pg.bays]) and abs(a["area"] - 2400.0) < 1e-6
 # rotating the plan turns the parking with it
 before = (pg.bays[0]["x"], pg.bays[0]["y"], pg.bays[0]["a"])
 pg.rotate_world(1.5707963267948966, 30.0, 20.0)

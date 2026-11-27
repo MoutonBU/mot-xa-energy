@@ -18,7 +18,7 @@ import tool_base as tb
 from flow_layout import FlowLayout
 from site_lines import PlanView, SitePage, bpoly, signed_area
 
-TYPES = ["Maxi", "Standard 3-storey", "Standard 2-storey", "Other"]
+TYPES = ["Maxi", "Standard 3-storey", "Standard 2-storey", "Gatehouse", "Other"]
 COLS = ["Block", "Phase", "Type", "Storeys", "Units", "Footprint m2", "Floor area m2", "Counts"]
 SCALES = ["1:200", "1:250", "1:500", "1:1000", "1:1250", "1:2000"]
 
@@ -59,8 +59,20 @@ def analyse(site, blocks, stand_area, cov_area=None, plan_bays=None, max_cov=0.0
               ("Floor area ratio", "%.2f" % far, ("%.2f" % max_far) if max_far else "no limit", (not max_far) or far <= max_far + 1e-6),
               ("Density", "%.1f units/ha" % dens, ("%.1f units/ha" % md) if md else "no limit", (not md) or dens <= md + 1e-6),
               ("Parking bays", "%d provided" % bays, "%d required" % need, bays >= need)]
+    for p_ in phases.values():
+        p_["bays_needed"] = sp.required(p_["units"], _num(site.get("bays_per_unit"), 1.0), max(0, int(_num(site.get("visitor_per")))))
     return {"area": area, "phases": phases, "total": tot, "cov": cov, "far": far, "density": dens, "bays": bays, "bays_needed": need, "checks": checks,
             "ok": all(c[3] for c in checks)}
+
+
+def kind_of(name):
+    """what a building on the plan is, from its name: Refuse..., Gatehouse..., or a block"""
+    n = (name or "").strip().lower()
+    if n.startswith(("refuse", "bin ", "waste", "garbage")):
+        return "refuse"
+    if n.startswith("gate"):
+        return "gate"
+    return "block"
 
 
 def block_names(prefix, first, last):
@@ -263,6 +275,32 @@ class SdpPage(SitePage):
         br.addStretch(1)
         bv.addLayout(br)
         v.addWidget(bx)
+        bx, bv = self.box("Refuse area and gatehouse", "They are buildings on the plan, so you can drag and turn them and the bays keep 0.5 m away from them. "
+                          "A building whose name starts with Refuse or Gatehouse is drawn in its own colour.")
+        row = FlowLayout(None, 10, 6)
+        self.refuse_w, self.refuse_d = sl.spin(1, 30, 6.0, 1, " m"), sl.spin(1, 30, 3.0, 1, " m")
+        row.addWidget(self._pair("Refuse area, width", self.refuse_w))
+        row.addWidget(self._pair("depth", self.refuse_d))
+        bv.addLayout(row)
+        br = FlowLayout(None, 8, 6)
+        for text, fn, tip in (("Add a refuse area", self.add_refuse, "Puts a refuse area of this size on the plan."),
+                              ("Suggest a place for it", self.suggest_refuse, "Finds a spot near the street, clear of the buildings, the bays and their aisles."),
+                              ("Add the gatehouse", self.add_gatehouse, "A small building at the entrance. Drag it into place."),
+                              ("Gatehouse from the IFC model...", self.gatehouse_from_ifc, "Reads the gatehouse's footprint from an IFC model. Name it Gatehouse."),
+                              ("Gatehouse from a drawing...", self.gatehouse_from_drawing, "Load a drawing with the gatehouse, then pick or trace it. Name it Gatehouse.")):
+            b = QPushButton(text)
+            b.setToolTip(tip)
+            b.clicked.connect(lambda _=False, f=fn: f())
+            br.addWidget(b)
+        br.addStretch(1)
+        bv.addLayout(br)
+        v.addWidget(bx)
+        bx, bv = self.box("How many bays the development needs", "From the units in the schedule: a bay for every unit (or more, see the schedule step) and a visitor's bay for every few units.")
+        self.need_lbl = QLabel("")
+        self.need_lbl.setWordWrap(True)
+        self.need_lbl.setTextFormat(Qt.TextFormat.RichText)
+        bv.addWidget(self.need_lbl)
+        v.addWidget(bx)
         bx, bv = self.box("Result")
         self.park_lbl = QLabel("")
         self.park_lbl.setWordWrap(True)
@@ -440,10 +478,28 @@ class SdpPage(SitePage):
             else:
                 txt += ". <span style='color:#2e9e5b'><b>Every bay keeps the rules.</b></span>"
             self.park_lbl.setText(txt)
+        self._need_text()
         self.plan.update()
         if user:
             self.changed()
             self._after_edit()
+
+    def _need_text(self):
+        if getattr(self, "need_lbl", None) is None or getattr(self, "t", None) is None:
+            return
+        a = self.sdp()
+        t = a["total"]
+        if not t["units"]:
+            self.need_lbl.setText("No units in the schedule yet (fourth step), so the number of bays needed cannot be worked out.")
+            return
+        site = self.site()
+        short = a["bays_needed"] - a["bays"]
+        txt = ("<b>%d units in %d blocks need %d bays</b> (%.2g per unit, and a visitor's bay for every %s units).<br>On the plan: <b>%d bays</b> - " %
+               (t["units"], t["blocks"], a["bays_needed"], site["bays_per_unit"], site["visitor_per"] or "-", a["bays"]))
+        txt += ("<span style='color:#2e9e5b'><b>enough</b></span>" if short <= 0 else "<span style='color:#e0243a'><b>%d short</b></span>" % short)
+        if len(a["phases"]) > 1:
+            txt += "<br>" + " | ".join("%s: %d units, %d bays" % (k, p["units"], p["bays_needed"]) for k, p in a["phases"].items())
+        self.need_lbl.setText(txt)
 
     def park_selected(self):
         if 0 <= self.sel_bay < len(self.bays):
@@ -592,6 +648,81 @@ class SdpPage(SitePage):
         self.sel_bay = -1
         self.refresh_parking(user=True)
 
+    # ------------------------------------------------------------- refuse area and gatehouse
+    def add_refuse(self):
+        v = self.verts()
+        if len(v) < 3:
+            QMessageBox.information(self, self.TITLE, "Set the stand first (first step).")
+            return
+        n = sum(1 for b in self.buildings() if kind_of(b["name"]) == "refuse") + 1
+        x0, y0 = min(p[0] for p in v), min(p[1] for p in v)
+        self.add_building({"name": "Refuse area" if n == 1 else "Refuse area %d" % n, "x": x0 + 2.0, "y": y0 + 2.0, "w": self.refuse_w.value(), "d": self.refuse_d.value(), "cov": False})
+        self.bt.selectRow(self.bt.rowCount() - 1)
+        self.set_hint("Refuse area added. Drag it into place, or press 'Suggest a place for it'.")
+
+    def add_gatehouse(self):
+        v = self.verts()
+        if len(v) < 3:
+            QMessageBox.information(self, self.TITLE, "Set the stand first (first step).")
+            return
+        x0, y0 = min(p[0] for p in v), min(p[1] for p in v)
+        self.add_building({"name": "Gatehouse", "x": x0 + 6.0, "y": y0 + 2.0, "w": 3.0, "d": 3.0, "cov": True})
+        self.bt.selectRow(self.bt.rowCount() - 1)
+        self.set_hint("Gatehouse added. Drag it to the entrance, or press Rotate building to turn it.")
+
+    def gatehouse_from_ifc(self):
+        self.footprint_from_ifc()
+        self.set_hint("Name the new building 'Gatehouse' in the list (second step) so the sheet knows what it is.")
+
+    def gatehouse_from_drawing(self):
+        self.steps.go(1)
+        self.load_drawing("fp")
+        self.set_hint("Load the drawing, then 'Pick a building from the drawing' or trace the gatehouse. Name it 'Gatehouse' in the list.")
+
+    def suggest_refuse(self):
+        """a place for the refuse area: inside the stand, 0.5 m clear of buildings, bays and aisles, and as near the street as it goes"""
+        v = self.verts()
+        if len(v) < 3:
+            QMessageBox.information(self, self.TITLE, "Set the stand first (first step).")
+            return
+        rows = [i for i, b in enumerate(self.buildings()) if kind_of(b["name"]) == "refuse"]
+        if not rows:
+            self.add_refuse()
+            rows = [self.bt.rowCount() - 1]
+        r_i = rows[-1]
+        r = self.rules_now()
+        w, d = self.refuse_w.value(), self.refuse_d.value()
+        others = [bpoly(b) for i, b in enumerate(self.buildings()) if i != r_i]
+        obst = others + [sp.bay_poly(b, r) for b in self.bays] + [sp.aisle_poly(b, r) for b in self.bays]
+        edges = self.edges()
+        st = [i for i, e in enumerate(edges) if e["kind"] == "Street"] or [0]
+        m = [((v[i][0] + v[(i + 1) % len(v)][0]) / 2, (v[i][1] + v[(i + 1) % len(v)][1]) / 2) for i in st]
+        x0, y0, x1, y1 = sp.bbox(v)
+        best, bd = None, 1e18
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            for ang in (0.0, 90.0):
+                x = x0
+                while x <= x1:
+                    y = y0
+                    while y <= y1:
+                        c = (x + w / 2, y + d / 2) if ang == 0 else (x + d / 2, y + w / 2)
+                        R = sp.rect(c[0], c[1], ang, w, d)
+                        dist = min(math.hypot(c[0] - q[0], c[1] - q[1]) for q in m)
+                        if dist < bd and sp.inside(R, v) and all(sp.poly_dist(R, o) >= r["bld"] - 1e-6 if o in others else not sp.overlap(R, o) for o in obst):
+                            best, bd = R, dist
+                        y += 1.0
+                    x += 1.0
+        finally:
+            QApplication.restoreOverrideCursor()
+        if best is None:
+            QMessageBox.information(self, self.TITLE, "There is no free spot of %.1f x %.1f m. Make the area smaller, or move a building or the bays." % (w, d))
+            return
+        self._set_poly(r_i, best)
+        self.plan.update()
+        self._after_edit(True)
+        self.set_hint("Refuse area placed near the street. Drag it if you want it elsewhere.")
+
     # ------------------------------------------------------------- the plan, moved and turned together
     def shift_world(self, dx, dy):
         super().shift_world(dx, dy)
@@ -625,6 +756,24 @@ class SdpPage(SitePage):
                 p.setPen(pen)
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 p.drawPolygon(QPolygonF([to(q) for q in bpoly(b)]))
+        from PySide6.QtCore import QRectF as _QR
+        for b in self.buildings():
+            k = kind_of(b["name"])
+            if k == "block":
+                continue
+            col = QColor(150, 98, 40) if k == "refuse" else QColor(235, 150, 20)
+            pl = QPolygonF([to(q) for q in bpoly(b)])
+            p.setPen(QPen(col.darker(130), 1.6))
+            p.setBrush(QColor(col.red(), col.green(), col.blue(), 190))
+            p.drawPolygon(pl)
+            if s > 3:
+                f = QFont("Arial")
+                f.setPixelSize(13 if W >= 900 else 10)
+                f.setBold(True)
+                p.setFont(f)
+                p.setPen(QColor("#ffffff") if k == "refuse" else QColor("#111111"))
+                c = pl.boundingRect().center()
+                p.drawText(_QR(c.x() - 70, c.y() - 9, 140, 18), int(Qt.AlignmentFlag.AlignCenter), b["name"])
         for i, z in enumerate(self.zones):
             p.setPen(QPen(QColor("#7a3fc4"), 3 if (i == self.sel_zone and not snapshot) else 1.4, Qt.PenStyle.DashLine))
             p.setBrush(QColor(122, 63, 196, 28))
@@ -732,12 +881,15 @@ class SdpPage(SitePage):
         added = 0
         try:
             for b in self.buildings():
+                if kind_of(b["name"]) == "refuse":
+                    continue                                   # the refuse area is not a block of units
                 area = abs(signed_area(bpoly(b)))
                 k = b["name"].lower()
                 if k in rows:
                     self.t.item(rows[k], 5).setText("%.2f" % area)
                 else:
-                    self._row(blank_block(b["name"], foot=area, cov=bool(b.get("cov", True))))
+                    self._row(blank_block(b["name"], typ="Gatehouse" if kind_of(b["name"]) == "gate" else "Standard 3-storey", storeys=1 if kind_of(b["name"]) == "gate" else 3,
+                                          foot=area, cov=bool(b.get("cov", True))))
                     added += 1
         finally:
             self.t.blockSignals(was)
@@ -775,6 +927,7 @@ class SdpPage(SitePage):
         if getattr(self, "_pbusy", False):
             return
         self._refresh_sum()
+        self._need_text()
         self.changed()
         self._after_edit()
 
@@ -855,9 +1008,16 @@ class SdpPage(SitePage):
             for b in bl:
                 if (b["phase"] or "Phase 1") == ph:
                     rows.append([b["block"], ph, b["type"], b["storeys"], b["units"], "%.1f" % b["foot"], "%.1f" % b["floor"]])
-            rows.append(([ph + " total", "", "%d blocks" % p["blocks"], "", p["units"], "%.1f" % p["foot"], "%.1f" % p["floor"]], "#e9e9e9"))
+            rows.append(([ph + " total", "", "%d blocks, %d bays needed" % (p["blocks"], p["bays_needed"]), "", p["units"], "%.1f" % p["foot"], "%.1f" % p["floor"]], "#e9e9e9"))
         t = an["total"]
         rows.append((["All phases", "", "%d blocks" % t["blocks"], "", t["units"], "%.1f" % t["foot"], "%.1f" % t["floor"]], "#d6d6d6"))
+        extra = []
+        for b in self.buildings():
+            k = kind_of(b["name"])
+            if k != "block":
+                extra.append("%s (%.1f m2)" % (b["name"], abs(signed_area(bpoly(b)))))
+        if extra:
+            body += '<p style="font-size:9pt;">Also on the plan: %s.</p>' % e(", ".join(extra))
         body += "<h3>Schedule of blocks</h3>" + tb.table(head, rows, aligns=["left", "left", "left", "right", "right", "right", "right"])
         sb = SitePage.result(self)
         crow = []

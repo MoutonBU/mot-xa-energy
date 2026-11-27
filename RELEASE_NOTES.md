@@ -1,10 +1,11 @@
 # MCP Practice Suite - Release notes
 
-Current version: 1.86.383
+Current version: 1.86.384
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
+- **SDP Creator: refuse area, gatehouse and how many bays are needed.** New buttons on the Parking step add a refuse area (any size), suggest a place for it near the street clear of the buildings and bays, add a gatehouse, or read the gatehouse's footprint from an IFC model or a drawing. They are buildings on the plan, so you can drag and turn them, and the bays keep 0.5 m away. They show in their own colours and on the sheet. A new box shows how many bays the development needs, worked from the units in the schedule (per unit plus visitors, also per phase), against the bays on the plan, and how many are short.
 - **SDP Creator now works like Building lines and House placing in one, with parking.** Load the survey (DXF, DWG, PDF) under the plan, set the stand and building lines, place each block by its footprint, then draw a parking area (a polygon) round the buildings, or use the whole stand, and press Fill. The tool lays out bays of 2.5 x 5.0 m with the 7 m aisle to reverse out, keeps every bay 0.5 m clear of the buildings (rules you can change, plus a clearance to the boundary and an option to stay out of the building lines), and chooses the layout with the most bays. Any bay that breaks a rule shows red, and you can add, drag, turn (R) or delete single bays. The schedule of blocks takes its footprints from the plan, parking provided is counted from the bays, and the PDF sheet shows the plan with the parking.
 - **New tool: SDP Creator (Site and areas).** Makes the Site Development Plan for council in three simple steps: the site (name, erf, zoning, limits), the blocks (add H1 to H26 in one go, with phase, type, units, footprint, floor area and parking bays; footprints can be read from Building lines and floor areas from the Area schedule), and the sheet (coverage, floor area ratio, density and parking checked in green or red, then one PDF with the plan, title block, schedule of blocks by phase and notes). It is saved with the project.
 - **Automatic sorting: the label list follows the account you pick.** Choosing a different email account under "More choices" now shows that account's own labels (Gmail or custom) to pick from, instead of always showing the labels of the account you are looking at. Choosing "all my accounts" goes back to the current account's labels.
