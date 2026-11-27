@@ -356,6 +356,9 @@ class SdpPage(SitePage):
             w.setToolTip(tip)
             w.valueChanged.connect(self._rules_changed)
             fl.addWidget(self._pair(lab, w))
+        self.live = QCheckBox("Re-park by itself when I move or add a building")
+        self.live.setChecked(True)
+        fl.addWidget(self.live)
         self.r_lines = QCheckBox("Keep the bays out of the building lines")
         self.r_lines.toggled.connect(self._rules_changed)
         fl.addWidget(self.r_lines)
@@ -1216,6 +1219,33 @@ class SdpPage(SitePage):
         self._edited()
         QMessageBox.information(self, self.TITLE, ("Floor area filled in for %d block%s." % (n, "" if n == 1 else "s")) if n else
                                 "No block name in the Area schedule matches a block here. Use the same names, for example H1.")
+
+    def _after_edit(self, user=False):
+        super()._after_edit(user)
+        if getattr(self, "zt", None) is None or getattr(self, "live", None) is None or getattr(self, "_filling", False):
+            return
+        sig = tuple(tuple((round(q[0], 2), round(q[1], 2)) for q in bpoly(b)) for b in self.buildings())
+        if sig == getattr(self, "_sig", None):
+            return
+        had = getattr(self, "_sig", None) is not None
+        self._sig = sig
+        if had and self.live.isChecked() and any(z.get("poly") for z in self.zones):
+            t = getattr(self, "_live_t", None)
+            if t is None:
+                t = self._live_t = QTimer(self)
+                t.setSingleShot(True)
+                t.timeout.connect(self._live_fill)
+            t.start(600)                                   # wait until the building stops moving
+
+    def _live_fill(self):
+        self._filling = True
+        try:
+            if self.zones and self.live.isChecked():
+                self._fill(list(range(len(self.zones))))
+                self.set_hint("Parking updated to the buildings.")
+        finally:
+            self._filling = False
+            self._sig = tuple(tuple((round(q[0], 2), round(q[1], 2)) for q in bpoly(b)) for b in self.buildings())
 
     def _edited(self, *_a):
         if getattr(self, "_pbusy", False):

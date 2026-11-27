@@ -41,3 +41,14 @@ pg2 = sc.SdpPage(W()); pg2.set_state(st)
 assert pg2._gen_names() == pg._gen_names()
 os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
 print("ok generate")
+# live: moving a building re-parks by itself
+pg3 = sc.SdpPage(W()); pg3.q_w.setValue(60), pg3.q_d.setValue(40); pg3.make_rect()
+pg3.add_building({"name": "H1", "x": 20, "y": 14, "w": 20, "d": 12}); pg3.zone_whole_stand(); pg3.fill_all()
+n0 = len(pg3.bays)
+pg3.add_building({"name": "H2", "x": 2, "y": 2, "w": 10, "d": 8})
+import time as _t
+for _ in range(30):
+    app.processEvents(); _t.sleep(0.1)
+assert len(pg3.bays) != n0 and not any(pg3._bad), (n0, len(pg3.bays))
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+print("ok live")
