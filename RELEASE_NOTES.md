@@ -1,10 +1,11 @@
 # MCP Practice Suite - Release notes
 
-Current version: 1.86.348
+Current version: 1.86.349
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
+- **Update fix:** the in-program update no longer shows "not all arguments converted" after starting the installer.
 - **Splash:** the logo now builds itself from its own pieces: each one spins in from a different side and snaps into place, then a light sweeps over it.
 - **Projects: one click opens a project's to-dos**, and right-click a project to add a to-do, open its details, set priority, status, owner or due date, or delete it.
 - **Home screen: arrange your own layout.** Drag any card onto another to put it where you want; the order is remembered. Right-click a card to reset.

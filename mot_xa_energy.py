@@ -13174,7 +13174,9 @@ class MainWindow(QMainWindow):
         # /SILENT shows the installer's progress window, so it is clear that the update is running
         ok_ = QProcess.startDetached(loop["path"], ["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS",
                                                     "/LOG=" + os.path.join(tempfile.gettempdir(), "mot_setup.log")])
-        self._upd_log("installer started: %s" % ok_)
+        if isinstance(ok_, tuple):                      # some PySide6 versions return (started, process id)
+            ok_ = ok_[0]
+        self._upd_log("installer started: %s" % (ok_,))
         if ok_:
             self._autosave_clear()
             self.hide()
@@ -13552,7 +13554,8 @@ class MainWindow(QMainWindow):
                 pass
             args += ["--geom", "%d,%d,%d,%d,%d" % (g.x(), g.y(), g.width(), g.height(),
                                                     1 if self.isMaximized() else 0), "--ready", flag]
-        if QProcess.startDetached(exe, args):
+        _sd = QProcess.startDetached(exe, args)
+        if (_sd[0] if isinstance(_sd, tuple) else _sd):
             self._autosave_clear()
             if not seamless:
                 QApplication.instance().quit()
