@@ -11756,6 +11756,7 @@ class MainWindow(QMainWindow):
         add(vm, "Liquid glass (old look)" + ("" if studio() else "   \u2713"), lambda: self.set_theme("glass"))
         m.addSeparator()
         add(m, "Release notes...", self.show_release_notes)
+        add(m, "Save a bug report to send me...", self.save_bug_report)
         self.update_act = add(m, "Restart the program" if FROZEN else "Update - reload the latest program", self.restart_app)
         add(m, "Update from downloaded file...", self.update_from_download)
         add(m, "Sign out (ask for the password next time)", self.sign_out)
@@ -13218,7 +13219,7 @@ class MainWindow(QMainWindow):
         if ok_:
             self._autosave_clear()
             self.hide()
-            QTimer.singleShot(600, lambda: os._exit(0))     # make sure no file of the old program stays locked
+            QTimer.singleShot(600, lambda: (diag_clean_exit(), os._exit(0)))     # make sure no file of the old program stays locked
         else:
             self.update_btn.setEnabled(True)
             self.update_btn.setText("\u27F3  Update failed - click to retry")
@@ -19740,6 +19741,24 @@ class MainWindow(QMainWindow):
             h += f'<p style="font-size:8pt; color:#777777;">{e(rd["contact"])}</p>'
         return h
 
+    def save_bug_report(self, why="Saved from the File menu"):
+        try:
+            p = make_bug_report(why, self)
+        except Exception as ex:
+            QMessageBox.warning(self, "Bug report", "The report could not be made: %s" % ex)
+            return
+        QMessageBox.information(self, "Bug report", "The report was saved as:\n%s\n\nSend this file to Mouton. It holds the program's logs, your version and what was clicked last, but no passwords, keys or sign-ins." % p)
+        try:
+            from PySide6.QtGui import QDesktopServices
+            from PySide6.QtCore import QUrl
+            QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(p)))
+        except Exception:
+            pass
+
+    def ask_crash_report(self):
+        if QMessageBox.question(self, "Bug report", "The program did not close properly last time (it crashed or froze).\n\nSave a bug report to send to Mouton? It holds no passwords or keys.") == QMessageBox.StandardButton.Yes:
+            self.save_bug_report("The program did not close properly last time")
+
     def show_release_notes(self):
         """File > Release notes: what is new, what changed and what stays the same."""
         from PySide6.QtWidgets import QTextBrowser
@@ -22226,6 +22245,26 @@ class _HeaderMarker(QObject):
     """Application-wide: gives every table heading its resize markers the first time it is shown, and centres the cell text under the headings."""
 
     def eventFilter(self, obj, ev):
+        if ev.type() == QEvent.Type.MouseButtonPress:                  # the last clicks go into bug reports
+            try:
+                w_ = obj if isinstance(obj, QWidget) else None
+                txt = ""
+                if w_ is not None:
+                    for a_ in ("text", "windowTitle"):
+                        f_ = getattr(w_, a_, None)
+                        if callable(f_):
+                            try:
+                                txt = str(f_())[:40]
+                            except Exception:
+                                txt = ""
+                            if txt:
+                                break
+                _ACTIONS.append("%s  %s '%s'  in %s" % (datetime.datetime.now().strftime("%H:%M:%S"), type(obj).__name__, txt,
+                                                        type(w_.window()).__name__ if w_ is not None else "-"))
+                if len(_ACTIONS) > 120:
+                    del _ACTIONS[:60]
+            except Exception:
+                pass
         if ev.type() == QEvent.Type.Show and obj.__dict__.get("_ss_stale"):
             obj._ss_stale = False
             if "_thk" not in obj.__dict__ and obj.__dict__.get("_raw_ss"):
@@ -23324,6 +23363,172 @@ def sign_in_gate(app):
     return None
 
 
+# ---------- diagnostics: crash, freeze and error reports ----------
+_ACTIONS = []                                                   # the last things the user clicked (kept in memory, written into a report)
+_DIAG = {"dir": None, "fh": None, "flag": None}
+
+
+def diag_dir():
+    d = _DIAG["dir"]
+    if d is None:
+        d = _DIAG["dir"] = os.path.join(_user_data_dir(), "logs")
+        try:
+            os.makedirs(d, exist_ok=True)
+        except Exception:
+            pass
+    return d
+
+
+def diag_log(text):
+    """One entry in logs/diag.log (the file is cut down when it passes 1 MB)."""
+    try:
+        p = os.path.join(diag_dir(), "diag.log")
+        if os.path.exists(p) and os.path.getsize(p) > 1_000_000:
+            with open(p, "rb") as f:
+                f.seek(-400_000, 2)
+                tail = f.read()
+            with open(p, "wb") as f:
+                f.write(tail)
+        with open(p, "a", encoding="utf-8", errors="replace") as f:
+            f.write("\n=== %s  v%s ===\n%s\n" % (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), vtext(installed_version()), text))
+    except Exception:
+        pass
+
+
+def _recent_actions():
+    return "\n".join(_ACTIONS[-40:]) or "(nothing clicked yet)"
+
+
+def _pid_alive(pid):
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            h = ctypes.windll.kernel32.OpenProcess(0x1000, False, int(pid))      # PROCESS_QUERY_LIMITED_INFORMATION
+            if not h:
+                return False
+            ctypes.windll.kernel32.CloseHandle(h)
+            return True
+        os.kill(int(pid), 0)
+        return True
+    except Exception:
+        return False
+
+
+def diag_clean_exit():
+    try:
+        if _DIAG.get("flag") and os.path.exists(_DIAG["flag"]):
+            os.remove(_DIAG["flag"])
+    except Exception:
+        pass
+
+
+def diag_install(app):
+    """Errors, Qt warnings, hard crashes (faulthandler) and 'the program closed by itself last time' all go to the logs folder. Returns True when the last run ended abnormally."""
+    crashed = False
+    try:
+        d = diag_dir()
+        for fn in os.listdir(d):                                      # a flag left by a program that is no longer running = it did not close normally
+            if fn.startswith("running_") and fn.endswith(".flag"):
+                pid = fn[8:-5]
+                if pid.isdigit() and not _pid_alive(pid):
+                    crashed = True
+                    try:
+                        os.remove(os.path.join(d, fn))
+                    except Exception:
+                        pass
+        _DIAG["flag"] = os.path.join(d, "running_%d.flag" % os.getpid())
+        with open(_DIAG["flag"], "w") as f:
+            f.write(datetime.datetime.now().isoformat())
+        app.aboutToQuit.connect(diag_clean_exit)
+    except Exception:
+        pass
+    try:
+        import faulthandler
+        cp = os.path.join(diag_dir(), "crash.log")
+        if os.path.exists(cp) and os.path.getsize(cp) > 300_000:
+            os.remove(cp)
+        _DIAG["fh"] = open(cp, "a", encoding="utf-8")
+        _DIAG["fh"].write("\n=== started %s v%s ===\n" % (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), vtext(installed_version())))
+        _DIAG["fh"].flush()
+        faulthandler.enable(file=_DIAG["fh"], all_threads=True)       # a hard crash writes where it was into crash.log
+    except Exception:
+        pass
+    import traceback
+    _old = sys.excepthook
+
+    def _hook(et, ev, tb):
+        diag_log("Uncaught error:\n" + "".join(traceback.format_exception(et, ev, tb)) + "\nLast clicks:\n" + _recent_actions())
+        try:
+            _old(et, ev, tb)
+        except Exception:
+            pass
+    sys.excepthook = _hook
+    try:
+        import threading
+        def _thook(a):
+            diag_log("Error in a background task (%s):\n%s" % (getattr(a.thread, "name", "?"), "".join(traceback.format_exception(a.exc_type, a.exc_value, a.exc_traceback))))
+        threading.excepthook = _thook
+    except Exception:
+        pass
+    try:
+        from PySide6.QtCore import qInstallMessageHandler, QtMsgType
+        def _qt(kind, ctx, msg):
+            if kind in (QtMsgType.QtCriticalMsg, QtMsgType.QtFatalMsg) or ("QThread" in msg and "destroyed" in msg):
+                diag_log("Qt %s: %s" % (kind.name, msg))
+        qInstallMessageHandler(_qt)
+    except Exception:
+        pass
+    return crashed
+
+
+def make_bug_report(why="", win=None):
+    """A zip with the logs, the version, the computer, what was clicked last and the settings (keys, passwords and sign-ins removed). Returns its path."""
+    import zipfile
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = os.path.join(os.path.expanduser("~"), "Desktop")
+    if not os.path.isdir(out_dir):
+        out_dir = os.path.expanduser("~")
+    path = os.path.join(out_dir, "MCP_bug_report_%s.zip" % stamp)
+    red = {}
+    for k, v in SETTINGS.items():
+        if re.search(r"key|token|pass|secret|refresh|cookie|session|auth|bearer", k, re.I):
+            red[k] = "<hidden>" if v else ""
+        elif isinstance(v, (str, int, float, bool)) or v is None:
+            red[k] = v
+        else:
+            red[k] = "<%s, %d items>" % (type(v).__name__, len(v)) if hasattr(v, "__len__") else "<%s>" % type(v).__name__
+    tab = ""
+    try:
+        tab = win.main_tabs.tabText(win.main_tabs.currentIndex()) if win is not None else ""
+    except Exception:
+        pass
+    info = ["MCP Practice Suite bug report", "Made: " + datetime.datetime.now().isoformat(timespec="seconds"), "Why: " + (why or "(not given)"),
+            "Version: " + vtext(installed_version()), "Program: " + ("installed" if FROZEN else "from source"), "Open tab: " + tab,
+            "System: %s %s, Python %s" % (sys.platform, str(getattr(sys, "getwindowsversion", lambda: "")()), sys.version.split()[0])]
+    try:
+        import PySide6
+        info.append("PySide6 " + PySide6.__version__)
+    except Exception:
+        pass
+    try:
+        from PySide6.QtGui import QGuiApplication
+        info.append("Screens: " + ", ".join("%dx%d @%.2f" % (s_.geometry().width(), s_.geometry().height(), s_.devicePixelRatio()) for s_ in QGuiApplication.screens()))
+    except Exception:
+        pass
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("info.txt", "\n".join(info))
+        z.writestr("last_clicks.txt", _recent_actions())
+        z.writestr("settings_without_secrets.json", json.dumps(red, indent=1, default=str))
+        for fn in ("diag.log", "crash.log"):
+            p = os.path.join(diag_dir(), fn)
+            if os.path.exists(p):
+                z.write(p, fn)
+        p = os.path.join(tempfile.gettempdir(), "mot_freeze.log")
+        if os.path.exists(p):
+            z.write(p, "mot_freeze.log")
+    return path
+
+
 def main():
     if len(sys.argv) == 3 and sys.argv[1] == "--selftest":
         # Developer check: python mot_light_vent.py --selftest picture.png
@@ -23339,6 +23544,7 @@ def main():
     except Exception:
         pass
     app = QApplication.instance() or QApplication(sys.argv)
+    _crashed_last = diag_install(app)
     _spl = getattr(app, "_splash", None)                 # the launcher may already have put the splash up
     if _spl is None and not any(a in sys.argv for a in ("--restore", "--ready", "--tray")):
         try:                                       # the splash is the very first thing on screen
@@ -23430,37 +23636,45 @@ def main():
             QTimer.singleShot(250, _reveal)
         except Exception:
             win.setWindowOpacity(1.0)
-    try:                                            # stall watchdog: if the window stops answering for 6 s, the stacks go to mot_freeze.log
+    try:                                            # stall watchdog: when the window stops answering for 3 s, where every thread is and what was clicked last go to logs/diag.log
         import threading, time as _t, faulthandler
         _hb = [_t.time()]
         _hbt = QTimer(win); _hbt.timeout.connect(lambda: _hb.__setitem__(0, _t.time())); _hbt.start(250)
         win._hb_timer = _hbt
 
         def _watch():
-            _logf = None
+            frozen_since, dumped = None, 0
             while True:
                 _t.sleep(1.0)
                 gap = _t.time() - _hb[0]
-                if gap > 6 and _logf is None:
-                    try:
-                        _logf = open(os.path.join(tempfile.gettempdir(), "mot_freeze.log"), "a", encoding="utf-8")
-                        _logf.write("\n=== window not answering for %.0f s at %s ===\n" % (gap, datetime.datetime.now().strftime("%d %H:%M:%S")))
-                        _logf.flush()
-                        faulthandler.dump_traceback(file=_logf, all_threads=True)
-                        _logf.flush()
-                    except Exception:
-                        _logf = None
-                        _t.sleep(30)
-                elif gap <= 6 and _logf is not None:
-                    try:
-                        _logf.write("=== answering again ===\n"); _logf.close()
-                    except Exception:
-                        pass
-                    _logf = None
+                if gap > 3:
+                    if frozen_since is None:
+                        frozen_since, dumped = _hb[0], 0
+                    if dumped == 0 or (dumped == 1 and gap > 10) or (dumped == 2 and gap > 30):
+                        dumped += 1
+                        try:
+                            import io
+                            p = os.path.join(diag_dir(), "freeze_tmp.txt")
+                            with open(p, "w", encoding="utf-8") as ff:
+                                faulthandler.dump_traceback(file=ff, all_threads=True)
+                            with open(p, encoding="utf-8", errors="replace") as ff:
+                                st = ff.read()
+                            diag_log("WINDOW NOT ANSWERING for %.0f s (look #%d). The first thread listed is the one that is stuck.\n%s\nLast clicks:\n%s" % (gap, dumped, st, _recent_actions()))
+                            try:
+                                os.remove(p)
+                            except Exception:
+                                pass
+                        except Exception:
+                            pass
+                elif frozen_since is not None:
+                    diag_log("Window answering again after about %.0f s." % (_t.time() - frozen_since))
+                    frozen_since = None
         threading.Thread(target=_watch, daemon=True).start()
     except Exception:
         pass
     win.start_autosave()
+    if _crashed_last and "--tray" not in av:
+        QTimer.singleShot(5000, win.ask_crash_report)
     if "--ready" not in av:
         QTimer.singleShot(2500, win.maybe_whats_new)
     _openf, _skip = None, False
