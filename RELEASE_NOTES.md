@@ -1,10 +1,11 @@
 # MCP Practice Suite - Release notes
 
-Current version: 1.86.356
+Current version: 1.86.357
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
+- **Projects: pop-up notifications, even when the program is closed.** When someone adds a project or to-do, gives you one, finishes one or marks one urgent, a pop-up appears in the corner of the screen with its own animated clipboard (red and shaking for urgent). The program now also stays in the tray while you are signed in to Projects, so you get the pop-up with the window closed. Open Projects takes you straight there.
 - **Projects: where it is and what zone.** Every project now has a Location (town, street or erf) and a Zone. They show on the project card and are found by the search box.
 - **Projects: ghost while dragging.** A see-through copy of the to-do you pick up follows the mouse, with a green outline on where it will land.
 - **No "Start a new project?" pop-up when the program opens** after an update or reload.

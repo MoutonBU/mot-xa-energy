@@ -3668,6 +3668,8 @@ class ToastIcon(_QW):
         p.drawEllipse(QPointF(32, 34), 30, 30)
         if self.kind == "mail":
             self._paint_mail(p, T, col, pg)
+        elif self.kind == "project":
+            self._paint_project(p, T, col, pg)
         else:
             self._paint_order(p, T, col, pg)
 
@@ -3727,6 +3729,58 @@ class ToastIcon(_QW):
             ph = (T - t0) % 1.4
             if T > t0 and ph < 0.7 and away < 0.2:
                 self._spark(p, sx, sy, 3 + 3 * math.sin(ph / 0.7 * math.pi), math.sin(ph / 0.7 * math.pi))
+
+    def _paint_project(self, p, T, col, pg):
+        """A clipboard that drops in, then its to-do lines are ticked one by one (urgent: red, with a shaking exclamation mark) and a badge pops with the count."""
+        k = self._bounce(pg(T, 0.0, 0.8))
+        away = self._cub(pg(T, 3.7, 4.2)) if not self.urgent else self._cub(pg(T, 2.9, 3.3))
+        ping = pg(T, 0.55, 1.3)
+        if 0 < ping < 1:
+            c = QColor(col)
+            c.setAlphaF(0.55 * (1 - ping))
+            p.setPen(QPen(c, 1.8))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawEllipse(QPointF(32, 36), 12 + 22 * ping, 12 + 22 * ping)
+        bg = QColor(self.bg)
+        p.save()
+        p.translate(32, 36 + (1 - k) * -46 - away * 46)
+        p.scale(2.1, 2.1)
+        p.translate(-12, -12)
+        p.setPen(self._line_pen(col))
+        p.setBrush(bg)
+        p.drawRoundedRect(QRectF(5, 4.5, 14, 17), 2, 2)
+        p.drawRoundedRect(QRectF(9, 2.5, 6, 3.6), 1.2, 1.2)
+        for i, (y, t0) in enumerate(((10.5, 1.2), (14.2, 1.7), (17.9, 2.2))):
+            tk = pg(T, t0, t0 + 0.4)
+            p.setPen(self._line_pen(col, 1.2))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(QRectF(7.3, y - 1.4, 2.8, 2.8), 0.7, 0.7)
+            p.drawLine(QPointF(11.8, y), QPointF(16.6, y))
+            if tk > 0:
+                p.setPen(self._line_pen(QColor("#ffffff"), 1.5))
+                p.drawLine(QPointF(7.9, y), QPointF(8.7 , y + 0.9 * min(1, tk * 2)))
+                if tk > 0.5:
+                    f2 = (tk - 0.5) * 2
+                    p.drawLine(QPointF(8.7, y + 0.9), QPointF(8.7 + 1.5 * f2, y - 1.2 * f2))
+        p.restore()
+        if self.urgent:
+            sh = 3 * math.sin(T * 26) * max(0.0, 1 - pg(T, 2.0, 2.8)) if T > 1.3 else 0
+            pop = self._back(pg(T, 1.3, 1.8)) * (1 - away)
+            if pop > 0:
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor("#ff3b4d"))
+                r = 11 * pop
+                p.drawEllipse(QPointF(51 + sh, 14), r, r)
+                if pop > 0.6:
+                    p.setPen(self._line_pen(QColor("#ffffff"), 2.2))
+                    p.drawLine(QPointF(51 + sh, 9), QPointF(51 + sh, 15))
+                    p.drawPoint(QPointF(51 + sh, 19))
+        else:
+            self._badge(p, 52, 13, self._back(pg(T, 1.3, 1.8)) * (1 - away))
+        if T > 2.7 and away < 0.2:
+            ph = (T - 2.7) % 1.3
+            if ph < 0.65:
+                self._spark(p, 12, 16, 3 + 3 * math.sin(ph / 0.65 * math.pi), math.sin(ph / 0.65 * math.pi))
 
     def _paint_order(self, p, T, col, pg):
         """The Orders card's picture (thin line tag): drops in on its hole, swings, rings and gets ticked."""
@@ -3846,6 +3900,69 @@ class MailToast(_QW):
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(col)
         p.drawRoundedRect(QRectF(card.left(), card.top() + 14, 5, card.height() - 28), 2.5, 2.5)
+
+
+class ProjectToast(_QW):
+    """The corner pop-up for the Projects board: what changed and who did it, with its own animated picture. Red and urgent-looking when a project was marked urgent."""
+    G = 14
+    HEAD = {"urgent": ("Urgent", "#ff3b4d"), "assigned": ("Given to you", "#f0a020"), "done": ("Finished", "#3fb950"),
+            "new": ("New on the board", "#9bc53d"), "moved": ("Moved", "#4aa3df"), "changed": ("Changed", "#4aa3df"), "removed": ("Removed", "#aab0b8"),
+            "assigned_other": ("Handed over", "#4aa3df")}
+    ORDER = ("urgent", "assigned", "done", "new", "assigned_other", "moved", "changed", "removed")
+
+    def __init__(self, notes, kinds, on_open, light=False):
+        super().__init__(None, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self._open_cb = on_open
+        top_kind = min(set(kinds) or {"changed"}, key=lambda k: self.ORDER.index(k) if k in self.ORDER else 99)
+        head, col = self.HEAD.get(top_kind, ("Projects", "#9bc53d"))
+        urgent = top_kind == "urgent"
+        pal = ("#ffffff", "#1d2025", "#5f6670", "#f1f3f5", col) if light else ("#1d2025", "#f2f4f6", "#aab0b8", "#2a2e35", col)
+        self._pal = pal
+        self.setFixedWidth(420 + 2 * self.G)
+        v = _VB(self)
+        g = self.G
+        v.setContentsMargins(g + 16, g + 12, g + 16, g + 12)
+        v.setSpacing(8)
+        top = _HB()
+        n = len(notes)
+        top.addWidget(ToastIcon("project", col, n, urgent=urgent, size=64, bg=pal[0]))
+        sub = "Projects" if n == 1 else "Projects  \u00b7  %d updates" % n
+        top.addWidget(_QL("<div style='font-size:18px;font-weight:800;color:%s'>%s</div><div style='font-size:12px;color:%s'>%s</div>" % (
+            col if urgent else pal[1], head, pal[2], sub)), 1)
+        v.addLayout(top)
+        for t in notes[:4]:
+            lab = _QL("<span style='font-size:13px'>%s</span>" % _html.escape(t))
+            lab.setWordWrap(True)
+            lab.setTextFormat(Qt.TextFormat.RichText)
+            lab.setStyleSheet("background:%s;color:%s;border-radius:9px;padding:8px 11px;" % (pal[3], pal[1]))
+            v.addWidget(lab)
+        if n > 4:
+            more = _QL("and %d more..." % (n - 4))
+            more.setStyleSheet("color:%s;" % pal[2])
+            v.addWidget(more)
+        bt = _HB()
+        bt.setSpacing(8)
+        for text, fn, look in (("Open Projects", self._open, "background:%s;color:#ffffff;font-weight:800;" % col), ("Dismiss", self.close, "background:%s;color:%s;" % (pal[3], pal[1]))):
+            b = _QPB(text)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setMinimumHeight(32)
+            b.setStyleSheet("QPushButton{border:none;border-radius:8px;padding:0 18px;font-size:13px;%s}QPushButton:hover{border:2px solid %s;}" % (look, pal[1]))
+            b.clicked.connect(fn)
+            bt.addWidget(b)
+        v.addLayout(bt)
+        self.adjustSize()
+        QTimer.singleShot(20000 if urgent else 14000, self.close)
+
+    def _open(self):
+        try:
+            self._open_cb()
+        finally:
+            self.close()
+
+    paintEvent = MailToast.paintEvent
 
 
 class MailPage(_QW):
@@ -7567,7 +7684,7 @@ class BoardPage(QWidget):
         me = self.api.me()
         first = not self.loaded
         changed = False
-        notes = []
+        notes, kinds = [], []
         for r in rows:
             old = self.rows.get(r["id"])
             if old is not None and old.get("updated_at") == r.get("updated_at") and old.get("deleted") == r.get("deleted"):
@@ -7582,22 +7699,22 @@ class BoardPage(QWidget):
                 oldown = str((old or {}).get("owner") or "").lower()
                 sub = " (a to-do in “%s”)" % ((self.rows.get(r.get("parent_id")) or {}).get("title") or "a project") if r.get("parent_id") else ""
                 if r.get("deleted"):
-                    notes.append("%s removed “%s”" % (nm, t))
+                    kinds.append("removed"); notes.append("%s removed “%s”" % (nm, t))
                 elif own == me and own != oldown:
-                    notes.append("%s gave you “%s”%s" % (nm, t, sub))
+                    kinds.append("assigned"); notes.append("%s gave you “%s”%s" % (nm, t, sub))
                 elif old is None:
-                    notes.append("%s added “%s”%s" % (nm, t, sub))
+                    kinds.append("new"); notes.append("%s added “%s”%s" % (nm, t, sub))
                 elif old.get("status") != r.get("status"):
                     if r.get("status") == "done":
-                        notes.append("%s finished “%s”%s" % (nm, t, sub))
+                        kinds.append("done"); notes.append("%s finished “%s”%s" % (nm, t, sub))
                     else:
-                        notes.append("%s moved “%s” to %s" % (nm, t, B_ST_NAME.get(r.get("status"), "")))
+                        kinds.append("moved"); notes.append("%s moved “%s” to %s" % (nm, t, B_ST_NAME.get(r.get("status"), "")))
                 elif own and own != oldown:
-                    notes.append("%s gave “%s” to %s" % (nm, t, self.who(own) or own))
+                    kinds.append("assigned_other"); notes.append("%s gave “%s” to %s" % (nm, t, self.who(own) or own))
                 elif old.get("priority") != r.get("priority") and r.get("priority") == "urgent":
-                    notes.append("%s marked “%s” urgent" % (nm, t))
+                    kinds.append("urgent"); notes.append("%s marked “%s” urgent" % (nm, t))
                 else:
-                    notes.append("%s changed “%s”" % (nm, t))
+                    kinds.append("changed"); notes.append("%s changed “%s”" % (nm, t))
         if rows:
             self.since = max(str(r.get("updated_at") or "") for r in rows)
         self.loaded = True
@@ -7606,17 +7723,46 @@ class BoardPage(QWidget):
         if notes:
             if not (self.isVisible() and self.host.isActiveWindow()):
                 self.unseen += len(notes)
+            away = not (self.isVisible() and self.host.isActiveWindow())
+            if away:
+                try:
+                    self._popup(notes, kinds)
+                except Exception:
+                    pass
+            if True:
+                try:
+                    self.host.toast(notes[0] if len(notes) == 1 else "%s, and %d more on the board" % (notes[0], len(notes) - 1), "Open",
+                                    lambda: self.host.main_tabs.setCurrentWidget(self), 8000)
+                except Exception:
+                    pass
+
+    def _popup(self, notes, kinds):
+        """The corner pop-up (works with the window closed to the tray): its own animated picture, red when something is urgent."""
+        old = getattr(self, "_ptoast", None)
+        if old is not None:
             try:
-                tray = getattr(self.host, "_tray", None)
-                if tray is not None and not self.host.isActiveWindow():
-                    tray.showMessage("Projects", "\n".join(notes[:4]), msecs=6000)
+                old.close()
             except Exception:
                 pass
-            try:
-                self.host.toast(notes[0] if len(notes) == 1 else "%s, and %d more on the board" % (notes[0], len(notes) - 1), "Open",
-                                lambda: self.host.main_tabs.setCurrentWidget(self), 8000)
-            except Exception:
-                pass
+        t = ProjectToast(notes, kinds, self._popup_open, self.is_light())
+        self._ptoast = t
+        ag = (self.screen() or QApplication.primaryScreen()).availableGeometry()
+        t.move(ag.right() - t.width() - 14, ag.bottom() - t.height() - 14)
+        t.show()
+        try:
+            QApplication.alert(self.host, 0)
+        except Exception:
+            pass
+
+    def _popup_open(self):
+        h = self.host
+        try:
+            h.showNormal()
+            h.raise_()
+            h.activateWindow()
+            h.main_tabs.setCurrentWidget(self)
+        except Exception:
+            pass
 
     def showEvent(self, e):
         super().showEvent(e)

@@ -308,3 +308,16 @@ if os.environ.get("BOARD_SHOT"):
     pa._create({"title": "Sewer line layout", "client": "Block A", "owner": "a@x.com", "priority": "normal", "status": "doing"})
     wait(lambda: pa.cols["doing"].count() == 1, 4)
     pa.resize(1300, 700); app.processEvents(); pa.grab().save(os.environ["BOARD_SHOT"])
+
+# the corner pop-up for the board
+class _H(QWidget): pass
+pa._popup(["Ann marked “Roof” urgent", "Ann gave you “Plug layout”"], ["urgent", "assigned"])
+assert pa._ptoast.isVisible() and pa._ptoast.width() > 300
+print("ok12")
+if os.environ.get("TOAST_SHOT"):
+    import time
+    for nm, ns, ks in (("u", ["Ann marked “Roof” urgent"], ["urgent"]), ("n", ["Ann added “Sewer line”", "Bob finished “Plug layout”"], ["new", "done"])):
+        t = B.ProjectToast(ns, ks, lambda: None, False); t.show()
+        t0 = time.time()
+        while time.time() - t0 < (2.4 if nm == "u" else 3.0): app.processEvents()
+        t.grab().save(os.environ["TOAST_SHOT"] + nm + ".png"); t.close()

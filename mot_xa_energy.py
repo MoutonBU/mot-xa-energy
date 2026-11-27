@@ -12676,7 +12676,9 @@ class MainWindow(QMainWindow):
             from PySide6.QtWidgets import QSystemTrayIcon
             from PySide6.QtGui import QGuiApplication
             mail_on = bool(SETTINGS.get("mail_notify", True) and SETTINGS.get("gmail_read") and SETTINGS.get("google_refresh"))
-            if getattr(self, "_really_quit", False) or not (SETTINGS.get("inbox_on") or mail_on) or not QSystemTrayIcon.isSystemTrayAvailable():
+            bp = getattr(self, "board_page", None)
+            board_on = bool(bp is not None and bp.api.signed_in())
+            if getattr(self, "_really_quit", False) or not (SETTINGS.get("inbox_on") or mail_on or board_on) or not QSystemTrayIcon.isSystemTrayAvailable():
                 return False
             if QGuiApplication.instance().isSavingSession():
                 return False
@@ -12690,9 +12692,10 @@ class MainWindow(QMainWindow):
             return
         QApplication.setQuitOnLastWindowClosed(False)
         tr = QSystemTrayIcon(app_icon(), self)
-        tr.setToolTip(APP_NAME + " - watching Gmail for mail and orders")
+        tr.setToolTip(APP_NAME + " - watching Gmail and Projects")
         m = QMenu()
         m.addAction("Open " + APP_NAME, self._tray_show)
+        m.addAction("Open Projects", lambda: (self._tray_show(), getattr(self, "board_page", None) is not None and self.main_tabs.setCurrentWidget(self.board_page)))
         m.addAction("Open the Orders", lambda: (self._tray_show(), self.register_page.show_orders("Order")))
         m.addSeparator()
         m.addAction("Quit", self._tray_quit)
@@ -12723,7 +12726,7 @@ class MainWindow(QMainWindow):
             try:
                 if getattr(self, "_tray", None) is not None and not getattr(self, "_tray_told", False):
                     self._tray_told = True
-                    self._tray.showMessage(APP_NAME, "Still running in the background to watch your Gmail for new mail and orders. Right-click this icon to open or quit.",
+                    self._tray.showMessage(APP_NAME, "Still running in the background to watch your Gmail and the Projects board. Right-click this icon to open or quit.",
                                            self._tray.MessageIcon.Information, 6000)
             except Exception:
                 pass
@@ -23345,7 +23348,8 @@ def main():
                 win.showMaximized()
         except Exception:
             pass
-    if "--tray" in av and SETTINGS.get("inbox_on") and getattr(win, "_tray", None) is not None:
+    _bp = getattr(win, "board_page", None)
+    if "--tray" in av and (SETTINGS.get("inbox_on") or (_bp is not None and _bp.api.signed_in())) and getattr(win, "_tray", None) is not None:
         pass                                        # started with Windows: stay in the tray and keep watching Gmail
     else:
         win.show()
