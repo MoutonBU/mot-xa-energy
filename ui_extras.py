@@ -2964,6 +2964,7 @@ class MailRuleEdit(_QD):
             if ad:
                 self.ac.addItem("Only for " + ad, ad.lower())
         self.ac.setCurrentIndex(max(0, self.ac.findData(str(r.get("acct", "") or "").lower())))
+        self._ac_ready = False
         for w in (self.sj, self.t, self.ac):
             w.setMinimumHeight(30)
             mv.addWidget(w)
@@ -2972,13 +2973,12 @@ class MailRuleEdit(_QD):
         v.addWidget(self.more)
         v.addWidget(_QL("<b>Step 2.  Which label should they go into?</b>"))
         from PySide6.QtWidgets import QListWidget as _LW, QListWidgetItem as _LI
+        self._LI = _LI
         self.lw = _LW()
         self.lw.setMaximumHeight(150)
         _rules_list_style(page, self.lw)
-        for _n, ind, _l, full in mail_label_tree(page.labels):
-            it = _LI("    " * ind + _n)
-            it.setData(Qt.ItemDataRole.UserRole, full)
-            self.lw.addItem(it)
+        self._lab_tok = 0
+        self._set_labels(page.labels)
         v.addWidget(self.lw)
         self.nl = _QLE()
         self.nl.setMinimumHeight(30)
@@ -3021,7 +3021,56 @@ class MailRuleEdit(_QD):
             w.textChanged.connect(lambda *_: self._pv())
         self.f.editTextChanged.connect(lambda *_: self._pv())
         self.rd.toggled.connect(lambda *_: self._pv())
+        self.ac.currentIndexChanged.connect(self._account_changed)
+        if self.ac.currentData():
+            self._account_changed()
         self._pv()
+
+    def _set_labels(self, labels):
+        """The label list of the account the rule is for (each account has its own labels)."""
+        keep = self._label() if hasattr(self, "nl") else ""
+        self.lw.clear()
+        for _n, ind, _l, full in mail_label_tree(labels):
+            it = self._LI("    " * ind + _n)
+            it.setData(Qt.ItemDataRole.UserRole, full)
+            self.lw.addItem(it)
+            if keep and full == keep:
+                self.lw.setCurrentItem(it)
+
+    def _account_changed(self, *_):
+        """Another account was chosen: show that account's labels."""
+        page = self.page
+        addr = self.ac.currentData() or ""
+        self._lab_tok += 1
+        tok = self._lab_tok
+        if not addr:
+            self._set_labels(page.labels)
+            self._pv()
+            return
+        try:
+            acc = page._by_addr(addr)
+        except Exception:
+            acc = None
+        if acc is None or acc is page._act:
+            self._set_labels(page.labels)
+            self._pv()
+            return
+        self.lw.clear()
+        self.lw.addItem("Loading the labels of %s ..." % addr)
+
+        def work():
+            return page.mo.gmail_call(MailAcct(page.G, acc), "GET", "labels").get("labels", [])
+
+        def done(res, err):
+            if tok != self._lab_tok:
+                return
+            if err:
+                self.lw.clear()
+                self.lw.addItem("The labels of %s could not be read (%s). You can still type a label name below." % (addr, err))
+                return
+            self._set_labels(res or [])
+            self._pv()
+        page.run(work, done)
 
     def _from(self):
         t = self.f.currentText().strip()
@@ -3029,7 +3078,7 @@ class MailRuleEdit(_QD):
 
     def _label(self):
         it = self.lw.currentItem()
-        return it.data(Qt.ItemDataRole.UserRole) if it is not None else re.sub(r"\s*/\s*", "/", self.nl.text().strip().strip("/"))
+        return (it.data(Qt.ItemDataRole.UserRole) or "") if it is not None else re.sub(r"\s*/\s*", "/", self.nl.text().strip().strip("/"))
 
     def _pv(self):
         part = {"from": self._from(), "to": self.t.text(), "subject": self.sj.text()}
