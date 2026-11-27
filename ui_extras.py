@@ -6421,6 +6421,7 @@ def board_lines(rows, pid, opened):
 
 class _BoardCardDelegate(QStyledItemDelegate):
     H = 92
+    HC = 168
 
     def __init__(self, page):
         super().__init__(page)
@@ -6444,16 +6445,20 @@ class _BoardCardDelegate(QStyledItemDelegate):
 
     def height_for(self, r):
         if r.get("id") in self.page.open_ids:
-            return self.H + 6 + TODO_H * len(board_lines(self.page.rows, r["id"], self.page.open_ids))
-        return self.H
+            return self.head_h(r) + 6 + TODO_H * len(board_lines(self.page.rows, r["id"], self.page.open_ids))
+        return self.head_h(r)
 
     def sizeHint(self, opt, idx):
         return QSize(opt.rect.width(), self.height_for(idx.data(BROLE) or {}))
 
-    def geometry(self, rect):
+    def head_h(self, r):
+        """a project with a cover picture gets a thicker card so the picture can be seen"""
+        return self.HC if (r or {}).get("cover") else self.H
+
+    def geometry(self, rect, r=None):
         """card rectangle, where its to-do rows start"""
         card = QRectF(rect).adjusted(2, 3, -2, -3)
-        return card, card.top() + self.H - 6 + 4
+        return card, card.top() + self.head_h(r) - 6 + 4
 
     def paint(self, p, opt, idx):
         r = idx.data(BROLE) or {}
@@ -6467,7 +6472,7 @@ class _BoardCardDelegate(QStyledItemDelegate):
         p.drawRoundedRect(card, 9, 9)
         cv = self.cover_pm(r)
         if cv is not None:
-            hh_ = self.H - 6
+            hh_ = self.head_h(r) - 6
             clip = QPainterPath()
             clip.addRoundedRect(card, 9, 9)
             p.save()
@@ -6477,9 +6482,9 @@ class _BoardCardDelegate(QStyledItemDelegate):
             p.drawPixmap(QPointF(card.left() + (card.width() - sc.width()) / 2.0, card.top() + (hh_ - sc.height()) / 2.0), sc)
             bgc = QColor(self.page.card_bg())
             lg_ = QLinearGradient(card.left(), 0, card.right(), 0)
-            lg_.setColorAt(0, QColor(bgc.red(), bgc.green(), bgc.blue(), 232))
-            lg_.setColorAt(0.55, QColor(bgc.red(), bgc.green(), bgc.blue(), 150))
-            lg_.setColorAt(1, QColor(bgc.red(), bgc.green(), bgc.blue(), 70))
+            lg_.setColorAt(0, QColor(bgc.red(), bgc.green(), bgc.blue(), 205))
+            lg_.setColorAt(0.5, QColor(bgc.red(), bgc.green(), bgc.blue(), 95))
+            lg_.setColorAt(1, QColor(bgc.red(), bgc.green(), bgc.blue(), 15))
             p.fillRect(QRectF(card.left(), card.top(), card.width(), hh_), lg_)
             lg2 = QLinearGradient(0, card.top() + hh_ - 26, 0, card.top() + hh_)
             lg2.setColorAt(0, QColor(bgc.red(), bgc.green(), bgc.blue(), 0))
@@ -6515,7 +6520,7 @@ class _BoardCardDelegate(QStyledItemDelegate):
             p.drawText(QPointF(x0, card.top() + 60), ("Overdue · " if late else "Due ") + due)
         dn, tt = board_progress(self.page.rows, r.get("id"))
         if tt:
-            by = card.top() + self.H - 6 - 12
+            by = card.top() + self.head_h(r) - 6 - 12
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(QColor(line))
             p.drawRoundedRect(QRectF(x0, by, w - 50, 4), 2, 2)
@@ -6532,7 +6537,7 @@ class _BoardCardDelegate(QStyledItemDelegate):
         opened = r.get("id") in self.page.open_ids
         self._chev(p, card.right() - 20, card.top() + 20, opened, mute)
         if opened:
-            y0 = self.geometry(opt.rect)[1]
+            y0 = self.geometry(opt.rect, r)[1]
             p.setPen(QPen(QColor(line), 1))
             p.drawLine(QPointF(card.left() + 10, y0 - 3), QPointF(card.right() - 10, y0 - 3))
             fl = board_lines(self.page.rows, r["id"], self.page.open_ids)
@@ -6652,7 +6657,7 @@ class _BoardCol(QListWidget):
         r = idx.data(BROLE) or {}
         pg = self.page
         rect = self.visualRect(idx)
-        card, y0 = pg.delegate.geometry(rect)
+        card, y0 = pg.delegate.geometry(rect, r)
         if pos.x() > card.right() - 40 and pos.y() < card.top() + 36:
             return ("chev", r.get("id"))
         if r.get("id") not in pg.open_ids or pos.y() < y0:

@@ -214,7 +214,7 @@ col = pa.cols["todo"]
 pa.open_ids.clear(); pa.render()
 ix = [i for i in range(col.count()) if col.item(i).data(B.BROLE)["id"] == pj["id"]][0]
 rect = col.visualItemRect(col.item(ix))
-card, y0 = pa.delegate.geometry(rect)
+card, y0 = pa.delegate.geometry(rect, pj)
 col.mousePressEvent(__import__("PySide6.QtGui", fromlist=["QMouseEvent"]).QMouseEvent(B.QEvent.Type.MouseButtonPress, B.QPointF(card.right() - 20, card.top() + 20), B.Qt.MouseButton.LeftButton, B.Qt.MouseButton.LeftButton, B.Qt.KeyboardModifier.NoModifier))
 assert pj["id"] in pa.open_ids and col.visualItemRect(col.item(ix)).height() > pa.delegate.H
 h = col._hit(B.QPointF(card.left() + 80, y0 + 5).toPoint() if False else QPoint(int(card.left() + 17), int(col.visualItemRect(col.item(ix)).top() + 3 + pa.delegate.H - 6 + 4 + 5)))
