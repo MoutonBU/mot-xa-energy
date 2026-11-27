@@ -871,7 +871,9 @@ class MarkupCanvas(QWidget):
         super().__init__(parent)
         self.img = img
         self.shapes, self.cur, self.tool, self.color, self.thick, self.zoom, self.crop = [], None, "pen", "#E01E37", 2, 1.0, None
-        self.setMouseTracking(False)
+        self.hist, self.sel, self.drag, self.hover = [], None, None, None
+        self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self._fit(900)
 
     def _fit(self, w):
@@ -927,52 +929,242 @@ class MarkupCanvas(QWidget):
                 p.drawPolygon(tri)
             elif k == "text" and sh.get("text"):
                 f = QFont("Arial")
-                f.setPixelSize(int(self._unit() * 7 * sh["w"] / 2 + 8))
+                f.setPixelSize(self._tpx(sh))
                 f.setBold(True)
                 p.setFont(f)
                 p.setPen(col)
                 p.drawText(QPointF(*pts[0]), sh["text"])
 
+    # ----- shapes: where they are, picking them up, moving and resizing them -----
+    def _tpx(self, sh):
+        return int(sh.get("fs") or (self._unit() * 7 * sh["w"] / 2 + 8))
+
+    def _bbox(self, sh):
+        from PySide6.QtCore import QRectF, QPointF
+        from PySide6.QtGui import QFont, QFontMetricsF
+        pts = sh["pts"]
+        if sh["kind"] == "text":
+            f = QFont("Arial")
+            f.setPixelSize(self._tpx(sh))
+            f.setBold(True)
+            fm = QFontMetricsF(f)
+            return QRectF(pts[0][0], pts[0][1] - fm.ascent(), max(8.0, fm.horizontalAdvance(sh.get("text", ""))), fm.ascent() + fm.descent())
+        xs, ys = [q[0] for q in pts], [q[1] for q in pts]
+        r = QRectF(QPointF(min(xs), min(ys)), QPointF(max(xs), max(ys)))
+        pad = self._unit() * sh["w"] * (5 if sh["kind"] == "marker" else 1) / 2
+        return r.adjusted(-pad, -pad, pad, pad)
+
+    def _dist_seg(self, p, a, b):
+        import math
+        ax, ay, bx, by = a[0], a[1], b[0], b[1]
+        dx, dy = bx - ax, by - ay
+        L = dx * dx + dy * dy
+        t = 0.0 if L == 0 else max(0.0, min(1.0, ((p[0] - ax) * dx + (p[1] - ay) * dy) / L))
+        return math.hypot(p[0] - (ax + t * dx), p[1] - (ay + t * dy))
+
+    def _hit(self, pt):
+        """The top-most shape under the pointer (the lines are matched near the line itself, so thin strokes can be picked up)."""
+        slack = 7 / self.zoom
+        for i in range(len(self.shapes) - 1, -1, -1):
+            sh = self.shapes[i]
+            k, pts = sh["kind"], sh["pts"]
+            wd = self._unit() * sh["w"] * (5 if k == "marker" else 1) / 2
+            if k in ("pen", "marker"):
+                if any(self._dist_seg(pt, a, b) <= wd + slack for a, b in zip(pts, pts[1:])):
+                    return i
+            elif k == "arrow":
+                if self._dist_seg(pt, pts[0], pts[-1]) <= wd + slack + 4:
+                    return i
+            elif k == "text":
+                if self._bbox(sh).adjusted(-slack, -slack, slack, slack).contains(pt[0], pt[1]):
+                    return i
+            else:
+                r = self._bbox(sh)
+                if r.adjusted(-slack, -slack, slack, slack).contains(pt[0], pt[1]):
+                    inner = r.adjusted(wd + slack, wd + slack, -wd - slack, -wd - slack)
+                    if inner.width() <= 0 or inner.height() <= 0 or not inner.contains(pt[0], pt[1]):
+                        return i                                  # the outline, not the empty inside
+        return None
+
+    def _corners(self, r):
+        return [r.topLeft(), r.topRight(), r.bottomRight(), r.bottomLeft()]
+
+    def _handle_at(self, pt, r):
+        hs = 10 / self.zoom
+        for i, c in enumerate(self._corners(r)):
+            if abs(pt[0] - c.x()) <= hs and abs(pt[1] - c.y()) <= hs:
+                return i
+        return None
+
+    def _remap(self, sh, old, new):
+        """The shape moved and stretched from the box `old` to the box `new` (text is scaled evenly)."""
+        import copy
+        n = copy.deepcopy(sh)
+        sx = new.width() / max(1e-6, old.width())
+        sy = new.height() / max(1e-6, old.height())
+        if sh["kind"] == "text":
+            f = max(0.2, sx)
+            n["fs"] = max(6, int(round(self._tpx(sh) * f)))
+            nb = self._bbox(n)
+            n["pts"] = [(new.x(), new.y() + nb.height() * 0 + (sh["pts"][0][1] - old.y()) * f)]
+            return n
+        n["pts"] = [(new.x() + (x - old.x()) * sx, new.y() + (y - old.y()) * sy) for x, y in sh["pts"]]
+        return n
+
+    def _snap(self):
+        import copy
+        self.hist.append((copy.deepcopy(self.shapes), self.crop))
+        del self.hist[:-60]
+
+    def _drag_rect(self, corner, r0, pt, uniform=False):
+        from PySide6.QtCore import QRectF, QPointF
+        fixed = self._corners(r0)[(corner + 2) % 4]
+        x, y = pt
+        if uniform:
+            f = max(0.15, abs(x - fixed.x()) / max(1e-6, r0.width()))
+            sx = 1 if corner in (1, 2) else -1
+            sy = 1 if corner in (2, 3) else -1
+            return QRectF(fixed, QPointF(fixed.x() + sx * r0.width() * f, fixed.y() + sy * r0.height() * f)).normalized()
+        r = QRectF(fixed, QPointF(x, y)).normalized()
+        if r.width() < 6:
+            r.setWidth(6)
+        if r.height() < 6:
+            r.setHeight(6)
+        return r
+
     def paintEvent(self, _e):
-        from PySide6.QtGui import QPainter, QPen, QColor
-        from PySide6.QtCore import QRectF
+        from PySide6.QtGui import QPainter, QPen, QColor, QPainterPath
+        from PySide6.QtCore import QRectF, QPointF
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.scale(self.zoom, self.zoom)
         p.drawImage(0, 0, self.img)
-        self._paint_shapes(p, self.shapes + ([self.cur] if self.cur else []))
+        dr = self.drag
+        moving = dr is not None and dr.get("kind") == "shape"
+        rest = [sh for i, sh in enumerate(self.shapes) if not (moving and i == self.sel)]
+        self._paint_shapes(p, rest + ([self.cur] if self.cur and self.cur["kind"] != "crop" else []))
+        u = max(1.0, 1.6 / self.zoom)
+        if moving:                                                      # ghost: where it was (faint) and where it will land (see-through, with its box)
+            p.setOpacity(0.22)
+            self._paint_shapes(p, [self.shapes[self.sel]])
+            p.setOpacity(0.75)
+            self._paint_shapes(p, [dr["live"]])
+            p.setOpacity(1.0)
+            self._frame(p, self._bbox(dr["live"]), u, True)
+        elif self.sel is not None and 0 <= self.sel < len(self.shapes) and self.tool == "select":
+            self._frame(p, self._bbox(self.shapes[self.sel]), u, True)
         _h = getattr(self, "hover", None)
         if _h is not None and self.tool in ("pen", "marker") and not self.cur:          # a ring showing how wide the stroke will be
-            from PySide6.QtCore import QPointF as _PF
             _d = self.brush_d()
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.setPen(QPen(QColor(255, 255, 255, 220), max(1.0, 1.5 / self.zoom)))
-            p.drawEllipse(_PF(*_h), _d / 2 + 1 / self.zoom, _d / 2 + 1 / self.zoom)
+            p.drawEllipse(QPointF(*_h), _d / 2 + 1 / self.zoom, _d / 2 + 1 / self.zoom)
             p.setPen(QPen(QColor(0, 0, 0, 220), max(1.0, 1.5 / self.zoom)))
-            p.drawEllipse(_PF(*_h), _d / 2, _d / 2)
-        if self.crop is not None:
-            pen = QPen(QColor("#1E90FF"), self._unit() * 1.5, Qt.PenStyle.DashLine)
-            p.setPen(pen)
+            p.drawEllipse(QPointF(*_h), _d / 2, _d / 2)
+        cr = self._crop_now()
+        if cr is not None:                                              # the part that stays is clear; everything else is dimmed
+            path = QPainterPath()
+            path.addRect(QRectF(0, 0, self.img.width(), self.img.height()))
+            inner = QPainterPath()
+            inner.addRect(cr)
+            p.fillPath(path.subtracted(inner), QColor(0, 0, 0, 125))
             p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawRect(self.crop)
+            p.setPen(QPen(QColor("#FFFFFF"), u * 2.2))
+            p.drawRect(cr)
+            p.setPen(QPen(QColor("#1E90FF"), u * 1.4, Qt.PenStyle.DashLine))
+            p.drawRect(cr)
+            if self.tool == "crop" and not (self.cur and self.cur["kind"] == "crop"):
+                self._frame(p, cr, u, False)
         p.end()
+
+    def _crop_now(self):
+        from PySide6.QtCore import QRectF, QPointF
+        if self.cur and self.cur["kind"] == "crop":
+            r = QRectF(QPointF(*self.cur["pts"][0]), QPointF(*self.cur["pts"][-1])).normalized()
+            return r if r.width() > 2 and r.height() > 2 else self.crop
+        if self.drag and self.drag.get("kind") == "crop":
+            return self.drag["live"]
+        return self.crop
+
+    def _frame(self, p, r, u, dashed):
+        from PySide6.QtGui import QPen, QColor
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        if dashed:
+            p.setPen(QPen(QColor("#1E90FF"), u, Qt.PenStyle.DashLine))
+            p.drawRect(r)
+        hs = 5 / self.zoom
+        p.setPen(QPen(QColor("#1E90FF"), u))
+        p.setBrush(QColor("#FFFFFF"))
+        for c in self._corners(r):
+            p.drawRect(c.x() - hs, c.y() - hs, 2 * hs, 2 * hs)
 
     def _pt(self, e):
         pos = e.position()
         return (pos.x() / self.zoom, pos.y() / self.zoom)
 
+    def keyPressEvent(self, e):
+        if e.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and self.sel is not None and 0 <= self.sel < len(self.shapes):
+            self.delete_selected()
+        elif e.key() == Qt.Key.Key_Escape:
+            self.sel = None
+            self.update()
+        else:
+            super().keyPressEvent(e)
+
+    def delete_selected(self):
+        if self.sel is not None and 0 <= self.sel < len(self.shapes):
+            self._snap()
+            self.shapes.pop(self.sel)
+            self.sel = None
+            self.update()
+
     def mousePressEvent(self, e):
         if e.button() != Qt.MouseButton.LeftButton:
             return
+        self.setFocus()
         pt = self._pt(e)
+        import copy
+        if self.tool == "select":
+            if self.sel is not None and 0 <= self.sel < len(self.shapes):
+                r0 = self._bbox(self.shapes[self.sel])
+                h = self._handle_at(pt, r0)
+                if h is not None:
+                    self.drag = {"kind": "shape", "mode": "scale", "corner": h, "r0": r0, "start": pt, "live": copy.deepcopy(self.shapes[self.sel])}
+                    return
+            i = self._hit(pt)
+            self.sel = i
+            if i is not None:
+                self.drag = {"kind": "shape", "mode": "move", "start": pt, "r0": self._bbox(self.shapes[i]), "live": copy.deepcopy(self.shapes[i])}
+            self.update()
+            return
+        if self.tool == "crop" and self.crop is not None:
+            h = self._handle_at(pt, self.crop)
+            if h is not None:
+                self.drag = {"kind": "crop", "mode": "scale", "corner": h, "r0": self.crop, "start": pt, "live": self.crop}
+                return
+            if self.crop.contains(pt[0], pt[1]):
+                self.drag = {"kind": "crop", "mode": "move", "r0": self.crop, "start": pt, "live": self.crop}
+                return
         if self.tool == "text":
             from PySide6.QtWidgets import QInputDialog
             t, ok = QInputDialog.getText(self, "Write on the picture", "Text:")
             if ok and t.strip():
+                self._snap()
                 self.shapes.append({"kind": "text", "color": self.color, "w": self.thick, "pts": [pt], "text": t.strip()})
                 self.update()
             return
         self.cur = {"kind": self.tool, "color": self.color, "w": self.thick, "pts": [pt, pt], "round": getattr(self, "round", 0)}
+
+    def mouseDoubleClickEvent(self, e):
+        if self.tool == "select":
+            i = self._hit(self._pt(e))
+            if i is not None and self.shapes[i]["kind"] == "text":
+                from PySide6.QtWidgets import QInputDialog
+                t, ok = QInputDialog.getText(self, "Change the text", "Text:", text=self.shapes[i]["text"])
+                if ok and t.strip():
+                    self._snap()
+                    self.shapes[i]["text"] = t.strip()
+                    self.update()
 
     def brush_d(self):
         """The width of the pen or marker stroke in picture pixels."""
@@ -984,12 +1176,37 @@ class MarkupCanvas(QWidget):
         super().leaveEvent(e)
 
     def mouseMoveEvent(self, e):
-        self.hover = self._pt(e)
+        from PySide6.QtCore import QRectF
+        pt = self._pt(e)
+        self.hover = pt
+        dr = self.drag
+        if dr is not None:
+            dx, dy = pt[0] - dr["start"][0], pt[1] - dr["start"][1]
+            r0 = dr["r0"]
+            if dr["mode"] == "move":
+                new = QRectF(r0).translated(dx, dy)
+            else:
+                new = self._drag_rect(dr["corner"], r0, pt, uniform=(dr["kind"] == "shape" and self.shapes[self.sel]["kind"] == "text"))
+            if dr["kind"] == "shape":
+                dr["live"] = self._remap(self.shapes[self.sel], r0, new)
+            else:
+                dr["live"] = QRectF(new).intersected(QRectF(0, 0, self.img.width(), self.img.height()))
+            self.update()
+            return
         if self.cur is None:
             if self.tool in ("pen", "marker"):
                 self.update()
+            elif self.tool == "select":
+                if self.sel is not None and 0 <= self.sel < len(self.shapes) and self._handle_at(pt, self._bbox(self.shapes[self.sel])) is not None:
+                    self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+                else:
+                    self.setCursor(Qt.CursorShape.SizeAllCursor if self._hit(pt) is not None else Qt.CursorShape.ArrowCursor)
+            elif self.tool == "crop" and self.crop is not None:
+                h = self._handle_at(pt, self.crop)
+                self.setCursor(Qt.CursorShape.SizeFDiagCursor if h is not None else (Qt.CursorShape.SizeAllCursor if self.crop.contains(pt[0], pt[1]) else Qt.CursorShape.CrossCursor))
+            else:
+                self.setCursor(Qt.CursorShape.CrossCursor)
             return
-        pt = self._pt(e)
         if self.cur["kind"] in ("pen", "marker"):
             self.cur["pts"].append(pt)
         else:
@@ -997,26 +1214,41 @@ class MarkupCanvas(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, e):
+        dr = self.drag
+        if dr is not None:
+            self.drag = None
+            self._snap()
+            if dr["kind"] == "shape":
+                self.shapes[self.sel] = dr["live"]
+            else:
+                lv = dr["live"]
+                self.crop = lv if lv.width() > 8 and lv.height() > 8 else self.crop
+            self.update()
+            return
         if self.cur is None:
             return
         from PySide6.QtCore import QRectF, QPointF
         sh, self.cur = self.cur, None
         if sh["kind"] == "crop":
-            r = QRectF(QPointF(*sh["pts"][0]), QPointF(*sh["pts"][-1])).normalized()
-            self.crop = r if r.width() > 8 and r.height() > 8 else None
+            r = QRectF(QPointF(*sh["pts"][0]), QPointF(*sh["pts"][-1])).normalized().intersected(QRectF(0, 0, self.img.width(), self.img.height()))
+            if r.width() > 8 and r.height() > 8:
+                self._snap()
+                self.crop = r
         elif len(sh["pts"]) > 1:
+            self._snap()
             self.shapes.append(sh)
         self.update()
 
     def undo(self):
-        if self.shapes:
-            self.shapes.pop()
-        elif self.crop is not None:
-            self.crop = None
+        if self.hist:
+            self.shapes, self.crop = self.hist.pop()
+            self.sel = None
         self.update()
 
     def clear(self):
-        self.shapes, self.crop = [], None
+        if self.shapes or self.crop is not None:
+            self._snap()
+        self.shapes, self.crop, self.sel = [], None, None
         self.update()
 
     def result(self, max_w=1800):
@@ -1055,7 +1287,7 @@ class MarkupDialog(QDialog):
         self.cv = MarkupCanvas(img)
         bar = QHBoxLayout()
         self.grp = QButtonGroup(self)
-        for key, lab in (("pen", "\u270e Pen"), ("marker", "Marker"), ("rect", "Box"), ("ellipse", "Circle"), ("arrow", "Arrow"), ("text", "Text"), ("crop", "Crop area")):
+        for key, lab in (("pen", "\u270e Pen"), ("marker", "Marker"), ("rect", "Box"), ("ellipse", "Circle"), ("arrow", "Arrow"), ("text", "Text"), ("crop", "Crop area"), ("select", "\u2725 Move / resize")):
             b = QPushButton(lab)
             b.setCheckable(True)
             b.setChecked(key == "pen")
@@ -1070,7 +1302,7 @@ class MarkupDialog(QDialog):
             c.clicked.connect(lambda _c=False, k=col: self._color(k))
             bar.addWidget(c)
         bar.addStretch(1)
-        for lab, fn in (("Undo", self.cv.undo), ("Clear", self.cv.clear), ("\u2212", lambda: self.cv.set_zoom(self.cv.zoom / 1.25)), ("+", lambda: self.cv.set_zoom(self.cv.zoom * 1.25)),
+        for lab, fn in (("Undo", self.cv.undo), ("Delete selected", self.cv.delete_selected), ("Clear", self.cv.clear), ("\u2212", lambda: self.cv.set_zoom(self.cv.zoom / 1.25)), ("+", lambda: self.cv.set_zoom(self.cv.zoom * 1.25)),
                         ("Fit", lambda: self.cv._fit(self.sa.viewport().width() - 20))):
             b = QPushButton(lab)
             b.clicked.connect(fn)
@@ -1131,6 +1363,8 @@ class MarkupDialog(QDialog):
     def _tool(self, k):
         self.sizes[self.cv.tool] = self.sl.value()
         self.cv.tool = k
+        if k != "select":
+            self.cv.sel = None
         self.sl.setValue(self.sizes.get(k, 4))
         self._size(self.sl.value())
         self.cv.setMouseTracking(True)

@@ -1,10 +1,11 @@
 # MCP Practice Suite - Release notes
 
-Current version: 1.86.372
+Current version: 1.86.373
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
+- **Markup tool: move, resize and ghost previews.** New "Move / resize" tool: click any pen stroke, marker, box, circle, arrow or text to pick it up and drag it. While you drag, a faint ghost stays where it was and a see-through copy with a dashed box shows exactly where it will land. Drag a corner handle to make it bigger or smaller (text scales evenly), double-click text to change the words, Delete key or "Delete selected" removes it. Cropping now shows a live ghost: everything outside the crop area is dimmed while you drag, and the crop area can be moved or resized by its corners afterwards. Undo now also undoes moves, resizes and deletes.
 - **Pictures in the email: a message above the picture.** When you paste or mark up a picture there is now a box "Message for the person reading it" (several lines). What you type shows in the email directly above the picture, then the picture below it, so the receiver knows what they are looking at and what you are asking.
 - **Markup tool: choose how thick the pen and marker are.** A Thickness slider (1 to 40, with a number box and a Thin / Normal / Thick / Extra thick / Huge list) now sets the width of the pen, marker, box, circle, arrow lines and text. Each tool remembers its own thickness, a sample line shows the colour and width, and a ring on the picture shows how wide the pen or marker stroke will be before you draw. Boxes can have rounded corners.
 - **Drawing register: pictures inside the email.** Under the email text on "Check and send" (and in the Send window) there is now a picture strip: paste a screenshot or a mocked-up drawing with Ctrl+V (or Paste a picture), mark up a page of one of the drawings, or add a picture file. Each picture opens in the markup tool (pen, marker, box, circle, arrow, text, crop) with a caption, then sits inside the designed email under the text (not as an attachment). Preview and "See how it looks" show the pictures, and they are cleared once the email is sent.
