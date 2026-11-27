@@ -154,7 +154,7 @@ print("ok2")
 # Ann adds a project: it shows on Bob's side, with a pop-up
 pa._create({"title": "Lodge plans for Erf 14243", "owner": "b@x.com", "priority": "high", "due": "2026-12-01"})
 assert wait(lambda: pb.cols["todo"].count() == 1 and pa.cols["todo"].count() == 1, 6)
-assert wait(lambda: any("Ann added" in m for m in hb.msgs), 6), hb.msgs
+assert wait(lambda: any("Ann gave you" in m for m in hb.msgs), 6), hb.msgs
 assert not any("added" in m for m in ha.msgs)                              # you are not told about your own change
 print("ok3")
 
@@ -163,7 +163,7 @@ rid = pb.cols["todo"].item(0).data(B.BROLE)["id"]
 pb.cols["done"].dropped.emit(rid, "done")
 assert pb.cols["done"].count() == 1 and pb.cols["todo"].count() == 0       # at once on his own screen
 assert wait(lambda: pa.cols["done"].count() == 1 and pa.cols["todo"].count() == 0, 6)
-assert wait(lambda: any("Bob moved" in m and "Done" in m for m in ha.msgs), 6), ha.msgs
+assert wait(lambda: any("Bob finished" in m for m in ha.msgs), 6), ha.msgs
 print("ok4")
 
 # delete is for everybody

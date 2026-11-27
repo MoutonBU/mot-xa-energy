@@ -22,7 +22,8 @@ def _script_mtime():
         return 0.0
 
 
-APP_NAME = "MCP Architecture and Interiors XA Energy"
+APP_NAME = "MCP Practice Suite"
+INVOICING_HIDDEN = True
 
 # Light percentage required by occupancy rule (SANS 10400-O, 4.2.1.1.3)
 RULES = {
@@ -9812,6 +9813,8 @@ class MainWindow(QMainWindow):
             import invoicing_tool
             self.invoicing_page = invoicing_tool.InvoicingPage(self)
             self.main_tabs.addTab(self.invoicing_page, "Invoicing")
+            if INVOICING_HIDDEN:                    # hidden for now: nothing leads here (no card, menu or "send to invoicing"); the code stays
+                self._invoicing_hidden, self.invoicing_page = self.invoicing_page, None
         except Exception as e_:
             print("tool not started: invoicing_tool", e_)
             self.invoicing_page = None
@@ -14849,13 +14852,12 @@ class MainWindow(QMainWindow):
                 ("Mail", "Your Gmail inbox, live: read, reply and send with your signature, without leaving the program.", "mail", "Mail"),
                 ("Drawing register", "Issue drawings by email, with the sheet index and what is still to come.", "clipboard", "Drawing register"),
                 ("Orders", "The client's orders and changes, house by house. Watches your Gmail for new orders and flags the urgent ones.", "tag", "Orders"),
-                ("Invoicing", "Numbered invoices with VAT as a PDF. Only the people you allow can open it.", "pdf", "Invoicing"),
+                ("Projects", "Projects and tasks shared live with your team: To do, In progress, Done. What one person adds shows on everybody's screen.", "board", "Projects"),
                 ("Detail tool", "Add notes to an Archicad detail, or describe a detail in words (typed or spoken) and have it drawn.", "ruler", "Detail tool"),
                 ("Costing", "Fixtures, materials and the budget for a job.", "calc", "Costing"),
                 ("SANS", "Light and ventilation, energy and coverage checks for the building regulations.", "sun", "SANS"),
                 ("Site and areas", "Building lines on the stand, the sewer, water and electrical lines to the house, and the area schedule with unit mix and floor area ratio.", "land", "Building lines"),
-                ("Guidelines review", "Check the plans against the estate's architectural guidelines and the council's or state's checklist.", "shield", "Guidelines review"),
-                ("Projects", "Projects and tasks shared live with your team: To do, In progress, Done. What one person adds shows on everybody's screen.", "board", "Projects"))):
+                ("Guidelines review", "Check the plans against the estate's architectural guidelines and the council's or state's checklist.", "shield", "Guidelines review"))):
             g.addWidget(tile(title, sub, ico, tgt), i // 3, i % 3)
         for k in (0, 1, 2, 3):
             g.setRowStretch(k, 1)
@@ -23282,9 +23284,9 @@ def main():
         QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     except Exception:
         pass
-    app = QApplication(sys.argv)
-    _spl = None
-    if not any(a in sys.argv for a in ("--restore", "--ready", "--after-update", "--tray")):
+    app = QApplication.instance() or QApplication(sys.argv)
+    _spl = getattr(app, "_splash", None)                 # the launcher may already have put the splash up
+    if _spl is None and not any(a in sys.argv for a in ("--restore", "--ready", "--tray")):
         try:                                       # the splash is the very first thing on screen
             from PySide6.QtGui import QPixmap as _QPM
             _lp = _QPM()

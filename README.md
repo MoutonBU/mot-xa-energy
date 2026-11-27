@@ -1,4 +1,4 @@
-# MCP Architecture and Interiors XA Energy (private)
+# MCP Practice Suite (private)
 
 Release a new version: edit mot_xa_energy.py, put the next version (1.0.1, 1.0.2, 1.1.0 ...) in the RELEASE_NUMBER file, commit and push.
     

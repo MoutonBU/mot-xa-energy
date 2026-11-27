@@ -1,14 +1,19 @@
-# MCP Architecture and Interiors XA Energy - Release notes
+# MCP Practice Suite - Release notes
 
-Current version: 1.86.345
+Current version: 1.86.346
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
+### New features
+- **New name: MCP Practice Suite.** The program, installer, shortcuts and window title are now called MCP Practice Suite; the logo and header keep MCP Architecture & Interiors. Your data and settings are untouched.
+- **Home screen:** Invoicing is hidden for now (the code stays) and Projects takes its place.
+- **Projects alerts:** a pop-up (and a Windows notice when the program is in the background) when someone gives you a project or to-do, finishes something, marks it urgent or reassigns it.
+- **Mail to project:** right-click a mail > Create a project from this mail. The title, client (sender and any Erf number), urgency and a due date are worked out from the mail and shown for you to confirm.
+- **Instant splash:** the animated logo splash is now put on screen before the program loads, and also after an update.
 - **Projects: to-dos open right on the card.** Click the arrow on a project card to open its to-dos in place, with sub-to-dos nested under them (click a to-do's arrow to open its own). Tick a to-do to finish it, double-click to rename, right-click to set priority (Urgent, High, Normal, Low), status, who, due date, add a sub-to-do or delete.
 - **Projects: to-dos inside projects.** Open a project to get a to-do list beside its details: add to-dos, add sub-to-dos under any of them (as deep as you like), tick them off, rename, set status, who and due date from the right-click menu. Project cards on the board show a progress bar (done/total), and everything is live for the whole team.
 - **Faster start, animated logo, plain icons.** The splash screen now appears instantly, with an animated logo (pop-in, light sweep, moving red line) that keeps moving while the program signs in. Start-screen cards use plain still icons. Projects sign-in screen no longer cramps its text, and the account-created message explains the confirm-email step.
-### New features
 - **Projects: a live shared board.** A new Projects card on the start screen: a To do / In progress / Done board (drag a card to move it) with owner, client, due date, priority, notes and a link. Everyone you add under Team signs in with their own email, and what one person adds or moves shows on the others' screens within about two seconds, with a pop-up. Search, Only mine, overdue dates in red, and a red number on the card for changes you have not seen.
 - **Mail: Mark all as read.** A new button at the top of the Mail tab marks every unread email in the inbox as read, in Gmail too (not only the ones on screen), so the red number on the home screen goes away.
 - **Mail card on the start screen shows unread mail.** A red number in the corner of the Mail card counts the unread emails in all your accounts and updates by itself.

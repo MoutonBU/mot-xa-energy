@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton, QSizePo
                                QVBoxLayout, QWidget)
 
 # main tab index -> (rail label, icon name); order of the main tabs in the window
-SUBJECTS = [(0, "Project", "home"), (6, "Drawing register", "clipboard"), (10, "Orders", "tag"), (11, "Invoicing", "pdf"), (1, "Light && ventilation", "lightvent"), (2, "Energy (XA)", "bolt"), (13, "Rational design", "shield"),
+SUBJECTS = [(0, "Project", "home"), (6, "Drawing register", "clipboard"), (10, "Orders", "tag"), (1, "Light && ventilation", "lightvent"), (2, "Energy (XA)", "bolt"), (13, "Rational design", "shield"),
             (3, "Coverage && FAR", "building"), (4, "Detail notes", "ruler"), (5, "Costing", "calc"),
             (8, "Building lines", "compass"), (12, "House placing", "land"), (9, "Guidelines review", "check_circle")]
 CTX = {13: "sans", 11: "invoicing", 10: "orders", 1: "sans", 2: "sans", 3: "sans", 4: "detail", 5: "costing", 6: "register", 7: "site", 8: "site", 9: "rules", 12: "site"}      # which tool a main tab belongs to
@@ -224,7 +224,7 @@ class Rail(QFrame):
         m = QMenu(self)
         w = self.win
         col = "#1c1f24" if self.light_fn() else "#eceef0"
-        for label, idx, ico in (("Drawing register", 6, "clipboard"), ("Orders", 10, "tag"), ("Invoicing", 11, "calc"), ("Detail tool", 4, "ruler"), ("Costing", 5, "calc"), (None, None, None),
+        for label, idx, ico in (("Drawing register", 6, "clipboard"), ("Orders", 10, "tag"), ("Detail tool", 4, "ruler"), ("Costing", 5, "calc"), (None, None, None),
                                 ("Light && Ventilation", 1, "lightvent"), ("Energy (XA)", 2, "bolt"), ("Coverage && FAR", 3, "building"), (None, None, None),
                                 ("Building lines", 8, "land"), ("House placing", 12, "land"), ("Guidelines review", 9, "clipboard"), (None, None, None),
                                 ("Mail", "Mail", "mail"), ("Projects", "Projects", "board"), (None, None, None),

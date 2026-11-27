@@ -1,15 +1,15 @@
 #define AppVer GetEnv("APP_VER")
 [Setup]
 AppId=MOT XA Energy
-AppName=MCP Architecture and Interiors XA Energy
+AppName=MCP Practice Suite
 AppVersion={#AppVer}
-AppVerName=MCP Architecture and Interiors XA Energy {#AppVer}
+AppVerName=MCP Practice Suite {#AppVer}
 VersionInfoVersion={#AppVer}.0
 VersionInfoProductVersion={#AppVer}.0
-UninstallDisplayName=MCP Architecture and Interiors XA Energy {#AppVer}
+UninstallDisplayName=MCP Practice Suite {#AppVer}
 AppPublisher=MCP Architecture & Interiors
-DefaultDirName={autopf}\MCP Architecture and Interiors XA Energy
-DefaultGroupName=MCP Architecture and Interiors XA Energy
+DefaultDirName={autopf}\MCP Practice Suite
+DefaultGroupName=MCP Practice Suite
 OutputBaseFilename=MCP_XA_Energy_Setup_{#AppVer}
 OutputDir=installer_out
 SetupIconFile=mcp_logo.ico
@@ -35,13 +35,16 @@ Root: HKA; Subkey: "Software\Classes\MCP.Project\DefaultIcon"; ValueType: string
 Root: HKA; Subkey: "Software\Classes\MCP.Project\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\MCP_XA_Energy.exe"" ""%1"""
 Root: HKA; Subkey: "Software\Classes\.json\OpenWithProgids"; ValueType: string; ValueName: "MCP.Project"; ValueData: ""; Flags: uninsdeletevalue
 [InstallDelete]
+Type: files; Name: "{autodesktop}\MCP Architecture and Interiors XA Energy.lnk"
+Type: filesandordirs; Name: "{userprograms}\MCP Architecture and Interiors XA Energy"
+Type: filesandordirs; Name: "{commonprograms}\MCP Architecture and Interiors XA Energy"
 Type: files; Name: "{app}\MOT_XA_Energy.exe"
 Type: files; Name: "{autodesktop}\MOT XA Energy.lnk"
 Type: filesandordirs; Name: "{userprograms}\MOT XA Energy"
 Type: filesandordirs; Name: "{commonprograms}\MOT XA Energy"
 [Icons]
-Name: "{group}\MCP Architecture and Interiors XA Energy"; Filename: "{app}\MCP_XA_Energy.exe"
-Name: "{autodesktop}\MCP Architecture and Interiors XA Energy"; Filename: "{app}\MCP_XA_Energy.exe"
+Name: "{group}\MCP Practice Suite"; Filename: "{app}\MCP_XA_Energy.exe"
+Name: "{autodesktop}\MCP Practice Suite"; Filename: "{app}\MCP_XA_Energy.exe"
 [Run]
 Filename: "{app}\MCP_XA_Energy.exe"; Parameters: "--after-update"; Flags: nowait postinstall skipifsilent runasoriginaluser
 Filename: "{app}\MCP_XA_Energy.exe"; Parameters: "--after-update"; Flags: nowait runasoriginaluser; Check: WizardSilent
@@ -118,7 +121,7 @@ procedure InitializeWizard;
 var
   V: TNewStaticText;
 begin
-  WizardForm.Caption := 'MCP Architecture and Interiors XA Energy {#AppVer} - Setup';
+  WizardForm.Caption := 'MCP Practice Suite {#AppVer} - Setup';
   V := TNewStaticText.Create(WizardForm);
   V.Parent := WizardForm;
   V.Caption := 'Version {#AppVer}';

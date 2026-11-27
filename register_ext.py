@@ -2327,6 +2327,7 @@ class LogMixin:
             ib.setStyleSheet("font-weight:700;")
             ib.setToolTip("Sends this house to the invoicing tool, where it waits to be invoiced")
             ib.clicked.connect(lambda _c=False: self.send_to_invoicing())
+            ib.setVisible(getattr(self.host, "invoicing_page", None) is not None)       # invoicing is hidden for now
             back.addWidget(ib)
         back.addWidget(dn)
         if not hasattr(self, "_done_btns"):
@@ -4809,7 +4810,7 @@ class LogMixin:
         insel = (self._larea.get("Order"), name) in getattr(self, "_sel_houses", set())
         a5 = m.addAction("Remove from the client report" if insel else "Select for the client report") if kind == "Order" else None
         a6 = m.addAction("Reply to the client..." if not (insel and len(self._sel_names()) > 1) else "Reply to the client for the %d picked houses..." % len(self._sel_names())) if kind == "Order" else None
-        a7 = m.addAction("Send to invoicing..." if not (insel and len(self._sel_names()) > 1) else "Send the %d picked houses to invoicing..." % len(self._sel_names())) if kind == "Order" else None
+        a7 = m.addAction("Send to invoicing..." if not (insel and len(self._sel_names()) > 1) else "Send the %d picked houses to invoicing..." % len(self._sel_names())) if (kind == "Order" and getattr(self.host, "invoicing_page", None) is not None) else None
         a2 = m.addAction("Delete all the %s of %s..." % ("orders" if kind == "Order" else "changes", name))
         pick = m.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
         if a7 is not None and pick is a7:

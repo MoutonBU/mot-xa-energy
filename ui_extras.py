@@ -4845,6 +4845,8 @@ class MailPage(_QW):
             lm.addSeparator()
         a_new = lm.addAction("Create new label...")
         m.addSeparator()
+        a_proj = m.addAction("Create a project from this mail") if (len(ids) == 1 and getattr(self.host, "board_page", None) is not None) else None
+        m.addSeparator()
         a_arc = m.addAction("Archive")
         a_del = m.addAction("Delete")
         act = m.exec(self.list.viewport().mapToGlobal(pos))
@@ -4862,6 +4864,8 @@ class MailPage(_QW):
                 r_ = self._row_of(t)
                 if r_ >= 0:
                     self.toggle_star(t, on, r_)
+        elif a_proj is not None and act is a_proj:
+            self.project_from_mail(rows.get(tid) or {"subject": it.data(ROLE_SUBJECT) or ""})
         elif act is a_arc:
             self.act("archive", ids)
         elif act is a_del:
@@ -4874,6 +4878,31 @@ class MailPage(_QW):
                 self.modify(ids, remove=[lid], cb=lambda: self.say("Removed " + full))
             else:
                 self.modify(ids, add=[lid], cb=lambda: self.say("Labelled " + full))
+
+    def project_from_mail(self, r):
+        """A new project filled in from what the mail is about: its subject, who it is from, an erf number, urgency and a date if it names one."""
+        bp = getattr(self.host, "board_page", None)
+        if bp is None:
+            return
+        subj = re.sub(r"^\s*((re|fw|fwd|aw)\s*:\s*)+", "", str(r.get("subject") or ""), flags=re.I).strip()
+        who = str(r.get("from") or "").strip()
+        snip = str(r.get("snippet") or "").strip()
+        blob = subj + " " + snip
+        erf = re.search(r"\b(erf|stand|lot|plot)\s*(no\.?)?\s*(\d{1,6})\b", blob, re.I)
+        client = " · ".join(x for x in (who if who != "Unknown sender" else "", ("Erf " + erf.group(3)) if erf else "") if x)
+        pr = "urgent" if re.search(r"\b(urgent|urgently|asap|immediately|emergency)\b", blob, re.I) else ("high" if re.search(r"\b(today|deadline|tomorrow|by (monday|tuesday|wednesday|thursday|friday))\b", blob, re.I) else "normal")
+        due = None
+        d = re.search(r"\b(20\d\d)[-/](\d\d)[-/](\d\d)\b", blob)
+        if d:
+            due = "%s-%s-%s" % d.groups()
+        title = subj or ("Mail from " + who if who else "New project")
+        notes = "From: %s\nSubject: %s\n\n%s\n\n(Created from a mail on %s)" % (who, subj, snip, _btime.strftime("%Y-%m-%d"))
+        row = {"title": title[:140], "client": client or None, "priority": pr, "due": due, "notes": notes, "status": "todo"}
+        try:
+            self.host.main_tabs.setCurrentWidget(bp)
+        except Exception:
+            pass
+        bp.edit(row, "todo")
 
     def _fill_label_menu(self):
         self.label_menu.clear()
@@ -7084,14 +7113,27 @@ class BoardPage(QWidget):
             by = str(r.get("updated_by") or "").lower()
             if not first and by and by != me:
                 nm = self.who(by) or "Someone"
+                t = r.get("title")
+                own = str(r.get("owner") or "").lower()
+                oldown = str((old or {}).get("owner") or "").lower()
+                sub = " (a to-do in “%s”)" % ((self.rows.get(r.get("parent_id")) or {}).get("title") or "a project") if r.get("parent_id") else ""
                 if r.get("deleted"):
-                    notes.append("%s removed “%s”" % (nm, r.get("title")))
+                    notes.append("%s removed “%s”" % (nm, t))
+                elif own == me and own != oldown:
+                    notes.append("%s gave you “%s”%s" % (nm, t, sub))
                 elif old is None:
-                    notes.append("%s added “%s”" % (nm, r.get("title")))
+                    notes.append("%s added “%s”%s" % (nm, t, sub))
                 elif old.get("status") != r.get("status"):
-                    notes.append("%s moved “%s” to %s" % (nm, r.get("title"), B_ST_NAME.get(r.get("status"), "")))
+                    if r.get("status") == "done":
+                        notes.append("%s finished “%s”%s" % (nm, t, sub))
+                    else:
+                        notes.append("%s moved “%s” to %s" % (nm, t, B_ST_NAME.get(r.get("status"), "")))
+                elif own and own != oldown:
+                    notes.append("%s gave “%s” to %s" % (nm, t, self.who(own) or own))
+                elif old.get("priority") != r.get("priority") and r.get("priority") == "urgent":
+                    notes.append("%s marked “%s” urgent" % (nm, t))
                 else:
-                    notes.append("%s changed “%s”" % (nm, r.get("title")))
+                    notes.append("%s changed “%s”" % (nm, t))
         if rows:
             self.since = max(str(r.get("updated_at") or "") for r in rows)
         self.loaded = True
@@ -7100,6 +7142,12 @@ class BoardPage(QWidget):
         if notes:
             if not (self.isVisible() and self.host.isActiveWindow()):
                 self.unseen += len(notes)
+            try:
+                tray = getattr(self.host, "_tray", None)
+                if tray is not None and not self.host.isActiveWindow():
+                    tray.showMessage("Projects", "\n".join(notes[:4]), msecs=6000)
+            except Exception:
+                pass
             try:
                 self.host.toast(notes[0] if len(notes) == 1 else "%s, and %d more on the board" % (notes[0], len(notes) - 1), "Open",
                                 lambda: self.host.main_tabs.setCurrentWidget(self), 8000)
