@@ -267,6 +267,37 @@ pa.move_to([la], g1["id"])
 assert wait(lambda: DB["projects"] and any(r["id"] == la and r["parent_id"] == g1["id"] for r in DB["projects"]), 4)
 print("ok10")
 
+# drag a to-do onto a group, duplicate, reorder, checklist
+from PySide6.QtGui import QMouseEvent
+col = pa.cols["todo"]
+pa.sel_ids = set()
+pa.open_ids.add(e4["id"]); pa.open_ids.add(g1["id"]); pa.render(); app.processEvents()
+gids = [r["id"] for r in B.board_kids(pa.rows, e4["id"]) if r.get("is_group")]
+g_roof = [r for r in pa.rows.values() if r["title"] == "Roof" and r.get("is_group")][0]
+pa.open_ids.add(g_roof["id"]); pa.render()
+lines = B.board_lines(pa.rows, e4["id"], pa.open_ids)
+ix = [i for i in range(col.count()) if col.item(i).data(B.BROLE)["id"] == e4["id"]][0]
+rect = col.visualItemRect(col.item(ix)); r4 = col.item(ix).data(B.BROLE)
+card, y0 = pa.delegate.geometry(rect, r4)
+def at(i): return QPoint(int(card.left() + 100), int(y0 + i * B.TODO_H + 5))
+src_i = [i for i, l in enumerate(lines) if l["t"] == "todo" and l["r"]["title"] == "Plug layout"][0]
+dst_i = [i for i, l in enumerate(lines) if l["t"] == "group" and l["r"]["id"] == g_roof["id"]][0]
+def ev(t, p, b=B.Qt.MouseButton.LeftButton, bs=B.Qt.MouseButton.LeftButton):
+    return QMouseEvent(t, B.QPointF(p), B.QPointF(col.viewport().mapToGlobal(p)), b, bs, B.Qt.KeyboardModifier.NoModifier)
+col.mousePressEvent(ev(B.QEvent.Type.MouseButtonPress, at(src_i)))
+col.mouseMoveEvent(ev(B.QEvent.Type.MouseMove, at(dst_i), B.Qt.MouseButton.NoButton))
+assert col._dragging and pa.drop_hint == (e4["id"], dst_i), (col._dragging, pa.drop_hint)
+col.mouseReleaseEvent(ev(B.QEvent.Type.MouseButtonRelease, at(dst_i)))
+pl = [r for r in pa.rows.values() if r["title"] == "Plug layout" and r.get("parent_id") in (g1["id"], g_roof["id"])][0]
+assert wait(lambda: pa.rows[pl["id"]]["parent_id"] == g_roof["id"], 3), pa.rows[pl["id"]]
+pa.duplicate(g_roof["id"])
+assert wait(lambda: any(r["title"] == "Roof (copy)" for r in pa.rows.values()) and sum(1 for r in pa.rows.values() if r.get("parent_id") and (pa.rows.get(r["parent_id"]) or {}).get("title") == "Roof (copy)") >= 2, 5)
+chk = pa.checklist(e4["id"]); assert "Erf 4901" in chk and "[ ] Plug layout" in chk, chk
+a1, a2 = B.board_kids(pa.rows, g_roof["id"])[:2]
+pa.move_pos(a2["id"], -1)
+assert wait(lambda: B.board_kids(pa.rows, g_roof["id"])[0]["id"] == a2["id"], 3)
+print("ok11")
+
 # a picture of it
 if os.environ.get("BOARD_SHOT"):
     pa.mine.setChecked(False)

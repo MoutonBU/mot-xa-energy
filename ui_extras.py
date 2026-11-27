@@ -6535,6 +6535,11 @@ class _BoardCardDelegate(QStyledItemDelegate):
             txt = dict((k, n) for k, n, _c in B_PRIOS)[r["priority"]]
             p.drawText(QRectF(card.right() - 90, card.top() + 44, 80, 16), Qt.AlignmentFlag.AlignRight, txt)
         opened = r.get("id") in self.page.open_ids
+        dh = self.page.drop_hint
+        if dh and dh[0] == r.get("id") and dh[1] == -1:
+            p.setPen(QPen(QColor(BOARD_ACCENT), 2))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(card, 9, 9)
         self._chev(p, card.right() - 20, card.top() + 20, opened, mute)
         if opened:
             y0 = self.geometry(opt.rect, r)[1]
@@ -6547,6 +6552,11 @@ class _BoardCardDelegate(QStyledItemDelegate):
             for i, ln in enumerate(fl):
                 yy = y0 + i * TODO_H
                 x = card.left() + 12 + ln["d"] * 18
+                dh = self.page.drop_hint
+                if dh and dh[0] == r.get("id") and dh[1] == i:
+                    p.setPen(QPen(QColor(BOARD_ACCENT), 1.6))
+                    p.setBrush(QColor(155, 197, 61, 40))
+                    p.drawRoundedRect(QRectF(x - 4, yy + 1, card.right() - x - 6, TODO_H - 2), 6, 6)
                 if ln["t"] in ("add", "addgroup"):
                     p.setFont(f2)
                     p.setPen(QColor(BOARD_ACCENT))
@@ -6699,8 +6709,10 @@ class _BoardCol(QListWidget):
                 elif h[0] == "row":
                     if e.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier):
                         pg.sel_ids.symmetric_difference_update({h[1]})
-                    else:
+                    elif h[1] not in pg.sel_ids:
                         pg.sel_ids = {h[1]}
+                    self._dr = e.position().toPoint() if pg.sel_ids else None        # pick it up: drag it onto a group
+                    self._dragging = False
                     self.viewport().update()
                 e.accept()
                 return
@@ -6711,7 +6723,62 @@ class _BoardCol(QListWidget):
             self._pc = ((ix.data(BROLE) or {}).get("id"), e.position().toPoint()) if ix.isValid() else None
         super().mousePressEvent(e)
 
+    def _drop_at(self, pos):
+        """(new parent id, (card id, line index)) for what is under the mouse, or None"""
+        idx = self.indexAt(pos)
+        if not idx.isValid():
+            return None
+        r = idx.data(BROLE) or {}
+        pg = self.page
+        card, y0 = pg.delegate.geometry(self.visualRect(idx), r)
+        if pos.y() < y0:
+            return (r["id"], (r["id"], -1))
+        fl = board_lines(pg.rows, r["id"], pg.open_ids)
+        i = int((pos.y() - y0) // TODO_H)
+        if not (0 <= i < len(fl)):
+            return (r["id"], (r["id"], -1))
+        ln = fl[i]
+        if ln["t"] == "group":
+            return (ln["r"]["id"], (r["id"], i))
+        if ln["t"] == "add":
+            return (ln["p"], (r["id"], i))
+        if ln["t"] == "addgroup":
+            return (r["id"], (r["id"], i))
+        return (ln["r"].get("parent_id") or r["id"], (r["id"], i))
+
+    def mouseMoveEvent(self, e):
+        dr = getattr(self, "_dr", None)
+        if dr is not None and (e.buttons() & Qt.MouseButton.LeftButton):
+            p = e.position().toPoint()
+            if not getattr(self, "_dragging", False) and (p - dr).manhattanLength() >= 8:
+                self._dragging = True
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            if getattr(self, "_dragging", False):
+                t = self._drop_at(p)
+                self.page.drop_hint = t[1] if t else None
+                self.viewport().update()
+                e.accept()
+                return
+        super().mouseMoveEvent(e)
+
     def mouseReleaseEvent(self, e):
+        if getattr(self, "_dragging", False):
+            self._dragging, self._dr, self._pc = False, None, None
+            self.unsetCursor()
+            self.page.drop_hint = None
+            t = self._drop_at(e.position().toPoint())
+            pg = self.page
+            ids = list(pg.sel_ids)
+            if t and ids:
+                bad = set(ids)
+                for i in ids:
+                    bad |= pg._below(i)
+                if t[0] not in bad:
+                    pg.move_to(ids, t[0])
+            self.viewport().update()
+            e.accept()
+            return
+        self._dr = None
         pc, self._pc = getattr(self, "_pc", None), None
         super().mouseReleaseEvent(e)
         if pc and pc[0] and e.button() == Qt.MouseButton.LeftButton:
@@ -7158,6 +7225,7 @@ class BoardPage(QWidget):
     def __init__(self, host, G, is_light, get_M):
         self.open_ids = set()
         self.sel_ids = set()
+        self.drop_hint = None
         self.tree_hook = None
         super().__init__()
         self.host, self.G, self.is_light, self.get_M = host, G, is_light, get_M
@@ -7676,6 +7744,111 @@ class BoardPage(QWidget):
             and [self._apply(i, {"deleted": True}) for i in ids])
         m.exec(gpos)
 
+    def _siblings(self, pid):
+        r = self.rows.get(pid) or {}
+        return board_kids(self.rows, r.get("parent_id"))
+
+    def move_pos(self, pid, delta):
+        sib = self._siblings(pid)
+        ids = [k["id"] for k in sib]
+        if pid not in ids:
+            return
+        i = ids.index(pid)
+        j = i + delta
+        if not (0 <= j < len(ids)):
+            return
+        a, b = sib[i], sib[j]
+        pa_, pb_ = float(a.get("pos") or 0), float(b.get("pos") or 0)
+        if pa_ == pb_:
+            pa_ += 0.001 * (1 if delta > 0 else -1)
+        self._apply(a["id"], {"pos": pb_})
+        self._apply(b["id"], {"pos": pa_})
+
+    def edit_notes(self, pid, parent=None):
+        from PySide6.QtWidgets import QInputDialog
+        r = self.rows.get(pid) or {}
+        t, ok = QInputDialog.getMultiLineText(parent or self, "Notes", "Notes for “%s”:" % (r.get("title") or ""), str(r.get("notes") or ""))
+        if ok:
+            self._apply(pid, {"notes": t.strip() or None})
+
+    def convert(self, pid):
+        r = self.rows.get(pid) or {}
+        self._apply(pid, {"is_group": not r.get("is_group")})
+
+    def mark_all(self, pid, status):
+        for i in self._below(pid):
+            r = self.rows.get(i) or {}
+            if not r.get("is_group"):
+                self._apply(i, {"status": status})
+
+    def sort_kids(self, pid):
+        rank = {"urgent": 0, "high": 1, "normal": 2, "low": 3}
+        ks = sorted(board_kids(self.rows, pid), key=lambda r: (r.get("status") == "done", rank.get(r.get("priority"), 2), str(r.get("due") or "9999")))
+        base = _btime.time()
+        for n, k in enumerate(ks):
+            self._apply(k["id"], {"pos": base + n * 0.001})
+
+    def set_open_all(self, pid, opened):
+        ids = {pid} | {i for i in self._below(pid) if (self.rows.get(i) or {}).get("is_group") or board_kids(self.rows, i)}
+        if opened:
+            self.open_ids |= ids
+        else:
+            self.open_ids -= ids - {pid}
+        self.render()
+
+    def checklist(self, pid):
+        out = []
+
+        def walk(par, d):
+            for k in board_kids(self.rows, par):
+                if k.get("is_group"):
+                    out.append("%s%s" % ("  " * d, str(k.get("title") or "").upper()))
+                    walk(k["id"], d + 1)
+                else:
+                    out.append("%s[%s] %s" % ("  " * d, "x" if k.get("status") == "done" else " ", k.get("title")))
+                    walk(k["id"], d + 1)
+        out.append(str((self.rows.get(pid) or {}).get("title") or ""))
+        walk(pid, 1)
+        return "\n".join(out)
+
+    def copy_checklist(self, pid):
+        QApplication.clipboard().setText(self.checklist(pid))
+        try:
+            self.host.toast("Copied the to-do list as text", "", None, 3000)
+        except Exception:
+            pass
+
+    def duplicate(self, pid, new_parent=None, top=True):
+        """a copy of this project, group or to-do with everything under it"""
+        src = self.rows.get(pid)
+        if not src:
+            return
+        f = {k: src.get(k) for k in ("title", "status", "priority", "owner", "client", "due", "link", "notes", "is_group", "cover") if src.get(k) is not None}
+        f["parent_id"] = new_parent if new_parent is not None else src.get("parent_id")
+        f["pos"] = _btime.time() if top else float(src.get("pos") or 0)
+        if top:
+            f["title"] = str(src.get("title") or "") + " (copy)"
+        kids = board_kids(self.rows, pid)
+
+        def done(res, err):
+            if err or not res:
+                self.status.setText("The board did not accept the copy (%s)" % err)
+                return
+            self.rows[res["id"]] = res
+            self.since = max(self.since or "", str(res.get("updated_at") or ""))
+            for k in kids:
+                self.duplicate(k["id"], res["id"], False)
+            self.render()
+        self.run(lambda: self.api.add(f), done)
+
+    def move_to_project_menu(self, m, ids):
+        tops = [r for r in self.rows.values() if not r.get("deleted") and not r.get("parent_id") and r["id"] != self.root_of(ids[0])]
+        if not tops:
+            return
+        mm = m.addMenu("Move to another project")
+        for r in sorted(tops, key=lambda r: str(r.get("title") or "").lower())[:30]:
+            mm.addAction(str(r.get("title") or "")).triggered.connect(lambda _=False, pid=r["id"]: self.move_to(ids, pid))
+
     def group_prompt_add(self, parent_id):
         from PySide6.QtWidgets import QInputDialog
         t, ok = QInputDialog.getText(self, "New group", "Name of the group (for example: Ground floor electrical):")
@@ -7705,8 +7878,19 @@ class BoardPage(QWidget):
         if grp:
             m.addAction("Add a to-do to this group").triggered.connect(lambda _=False: self.todo_prompt_add(pid))
             m.addAction("Show / hide this group").triggered.connect(lambda _=False: self.toggle_open(pid))
-            m.addAction("Rename the group").triggered.connect(lambda _=False: self.todo_rename(pid))
             m.addSeparator()
+            m.addAction("Mark everything in it as done").triggered.connect(lambda _=False: self.mark_all(pid, "done"))
+            m.addAction("Mark everything in it as to do").triggered.connect(lambda _=False: self.mark_all(pid, "todo"))
+            m.addAction("Sort its to-dos (priority, then due date)").triggered.connect(lambda _=False: self.sort_kids(pid))
+            m.addSeparator()
+            m.addAction("Move the group up").triggered.connect(lambda _=False: self.move_pos(pid, -1))
+            m.addAction("Move the group down").triggered.connect(lambda _=False: self.move_pos(pid, 1))
+            self.move_to_project_menu(m, [pid])
+            m.addAction("Duplicate the group").triggered.connect(lambda _=False: self.duplicate(pid))
+            m.addAction("Copy it as a checklist").triggered.connect(lambda _=False: self.copy_checklist(pid))
+            m.addAction("Turn it into a normal to-do").triggered.connect(lambda _=False: self.convert(pid))
+            m.addSeparator()
+            m.addAction("Rename the group").triggered.connect(lambda _=False: self.todo_rename(pid))
             m.addAction("Delete the group (with its to-dos)").triggered.connect(lambda _=False: self.todo_delete(pid, parent))
             m.exec(gpos)
             return
@@ -7715,6 +7899,12 @@ class BoardPage(QWidget):
             m.addAction("Add a group to this project").triggered.connect(lambda _=False: self.group_prompt_add(pid))
             m.addAction("Open the project details").triggered.connect(lambda _=False: self.edit(self.rows.get(pid)))
             m.addAction("Show / hide its to-dos").triggered.connect(lambda _=False: self.toggle_open(pid))
+            m.addAction("Open every group").triggered.connect(lambda _=False: self.set_open_all(pid, True))
+            m.addAction("Close every group").triggered.connect(lambda _=False: self.set_open_all(pid, False))
+            m.addAction("Mark everything as done").triggered.connect(lambda _=False: self.mark_all(pid, "done"))
+            m.addAction("Sort its to-dos (priority, then due date)").triggered.connect(lambda _=False: self.sort_kids(pid))
+            m.addAction("Duplicate the project").triggered.connect(lambda _=False: self.duplicate(pid))
+            m.addAction("Copy it as a checklist").triggered.connect(lambda _=False: self.copy_checklist(pid))
             m.addSeparator()
         pm = m.addMenu("Priority")
         for k, n, _c in reversed(B_PRIOS):
@@ -7735,7 +7925,14 @@ class BoardPage(QWidget):
         if not project:
             m.addAction("Add a sub-to-do under this").triggered.connect(lambda _=False: self.todo_prompt_add(pid))
             self._move_menu(m, [pid])
+            self.move_to_project_menu(m, [pid])
             m.addAction("Make a group from this to-do...").triggered.connect(lambda _=False: self.make_group_from([pid], parent))
+            m.addAction("Move up").triggered.connect(lambda _=False: self.move_pos(pid, -1))
+            m.addAction("Move down").triggered.connect(lambda _=False: self.move_pos(pid, 1))
+            m.addAction("Edit the notes...").triggered.connect(lambda _=False: self.edit_notes(pid, parent))
+            m.addAction("Duplicate").triggered.connect(lambda _=False: self.duplicate(pid))
+            m.addAction("Copy the title").triggered.connect(lambda _=False: QApplication.clipboard().setText(str((self.rows.get(pid) or {}).get("title") or "")))
+            m.addAction("Turn it into a group").triggered.connect(lambda _=False: self.convert(pid))
         m.addAction("Rename").triggered.connect(lambda _=False: self.todo_rename(pid))
         m.addSeparator()
         m.addAction("Delete the project (with all its to-dos)" if project else "Delete (with everything under it)").triggered.connect(lambda _=False: self.todo_delete(pid, parent))
