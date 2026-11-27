@@ -225,3 +225,34 @@ def test_nested_labels():
 
 
 test_nested_labels()
+
+
+def test_label_assign():
+    import ui_extras as u
+    st3, ip3, sp3, _s3 = fm.start("secret")
+    st3.add("INBOX", fm.mk("A <a@y.com>", "One", "first mail"))
+    st3.add("INBOX", fm.mk("B <b@y.com>", "Two", "second mail"))
+    S3 = {"imap_host": "127.0.0.1", "imap_port": ip3, "imap_security": "None", "imap_user": "m", "imap_pass": "secret", "mail_address": "m@t.l"}
+    C = lambda m, p, params=None, body=None: mi.call(S3, m, p, params, body)
+    C("POST", "labels", None, {"name": "Cosmo/Areas"})
+    lst = C("GET", "threads", {"labelIds": ["INBOX"], "maxResults": 25})["threads"]
+    t1, t2 = lst[0]["id"], lst[1]["id"]
+    C("POST", "threads/" + t1 + "/modify", None, {"addLabelIds": ["Cosmo/Areas"]})
+    inbox = C("GET", "threads", {"labelIds": ["INBOX"], "maxResults": 25})["threads"]
+    assert len(inbox) == 2                                                   # a label keeps it in the inbox, like Gmail
+    inn = C("GET", "threads/" + t1)
+    assert "Cosmo/Areas" in inn["messages"][0]["labelIds"], inn["messages"][0]["labelIds"]
+    inlab = C("GET", "threads", {"labelIds": ["Cosmo/Areas"], "maxResults": 25})["threads"]
+    assert len(inlab) == 1, inlab
+    # move to: label added and removed from the inbox
+    C("POST", "threads/" + t2 + "/modify", None, {"addLabelIds": ["Cosmo/Areas"], "removeLabelIds": ["INBOX"]})
+    assert len(C("GET", "threads", {"labelIds": ["Cosmo/Areas"], "maxResults": 25})["threads"]) == 2
+    assert len(C("GET", "threads", {"labelIds": ["INBOX"], "maxResults": 25})["threads"]) == 1
+    # take the label off the one still in the inbox
+    C("POST", "threads/" + t1 + "/modify", None, {"removeLabelIds": ["Cosmo/Areas"]})
+    assert len(C("GET", "threads", {"labelIds": ["Cosmo/Areas"], "maxResults": 25})["threads"]) == 1
+    assert "Cosmo/Areas" not in C("GET", "threads/" + t1)["messages"][0]["labelIds"]
+    print("label assign ok")
+
+
+test_label_assign()

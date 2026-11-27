@@ -403,8 +403,23 @@ def _marker(flags):
     return "|".join(sorted(f.lower() for f in flags if f.lower() in ("\\seen", "\\flagged", "\\deleted")))
 
 
-def _labels(folder, flags, roles):
-    labs = [_folder_to_label(folder, roles)]
+def _lmap(S):
+    try:
+        d = S.get("imap_label_map")
+        if d is None:
+            d = {}
+            S["imap_label_map"] = d
+        return d
+    except Exception:
+        return {}
+
+
+def _xkey(S, folder, uid):
+    return "%s|%s|%s" % (str(S.get("mail_address", "")).lower(), folder, uid)
+
+
+def _labels(folder, flags, roles, extra=()):
+    labs = [_folder_to_label(folder, roles)] + [x for x in extra if x != _folder_to_label(folder, roles)]
     if "\\Seen" not in flags and "\\seen" not in {f.lower() for f in flags}:
         labs.append("UNREAD")
     if "\\flagged" in {f.lower() for f in flags}:
@@ -428,7 +443,7 @@ def _meta_msg(S, folder, m, roles):
                "headers": [h for h in hl if h["name"].lower() in ("from", "to", "subject", "date", "message-id")]}
     if m["attach"]:
         payload["parts"] = [{"filename": "attachment"}]
-    return {"id": tid, "threadId": tid, "labelIds": _labels(folder, m["flags"], roles), "snippet": snip, "internalDate": str(date), "payload": payload}
+    return {"id": tid, "threadId": tid, "labelIds": _labels(folder, m["flags"], roles, _lmap(S).get(_xkey(S, folder, m["uid"]), ())), "snippet": snip, "internalDate": str(date), "payload": payload}
 
 
 def _thread_of(msg):
@@ -483,7 +498,7 @@ def _full_msg(S, folder, uid, c, roles):
     except Exception:
         pass
     snip = re.sub(r"\s+", " ", plain).strip()[:140]
-    return {"id": tid, "threadId": tid, "labelIds": _labels(folder, m["flags"], roles), "snippet": snip, "internalDate": str(date), "payload": pay}
+    return {"id": tid, "threadId": tid, "labelIds": _labels(folder, m["flags"], roles, _lmap(S).get(_xkey(S, folder, uid), ())), "snippet": snip, "internalDate": str(date), "payload": pay}
 
 
 def _b64u(b):
@@ -860,6 +875,8 @@ def _modify(S, c, tids, add, remove, trash):
     for f, us in byf.items():
         _select(c, f)
         uset = ",".join(str(u) for u in us)
+        for u in us:
+            _META.pop((_key(S), enc(f, u)), None)                            # what the list remembers about it is out of date now
         if "UNREAD" in remove:
             c.uid("STORE", uset, "+FLAGS.SILENT", "(\\Seen)")
         if "UNREAD" in add:
@@ -869,24 +886,100 @@ def _modify(S, c, tids, add, remove, trash):
         if "STARRED" in remove:
             c.uid("STORE", uset, "-FLAGS.SILENT", "(\\Flagged)")
         dest = None
+        sysx = ("UNREAD", "STARRED", "INBOX", "TRASH", "SPAM", "IMPORTANT", "SENT", "DRAFT")
+        user_add = [x for x in add if x not in sysx and not x.startswith("CATEGORY_") and x != f]
+        user_rm = [x for x in remove if x not in sysx and not x.startswith("CATEGORY_")]
+        lm = _lmap(S)
+        mids = _msgids(c, us) if (user_add or user_rm) else {}
         if trash or "TRASH" in add:
             dest = roles.get("TRASH") or "Trash"
         elif "SPAM" in add:
             dest = roles.get("SPAM") or "Junk"
+        elif user_add:
+            # a label is a folder here: the email is copied into it (it stays where it is, like a Gmail label); "move to" (INBOX removed) moves it
+            first_move = "INBOX" in remove and f == roles["INBOX"]
+            for j, x in enumerate(user_add):
+                if j == 0 and first_move:
+                    dest = x
+                    _ensure(c, x)
+                else:
+                    _copy(c, uset, x)
+                    for u in us:
+                        k = _xkey(S, f, u)
+                        cur = list(lm.get(k, []))
+                        if x not in cur:
+                            cur.append(x)
+                        lm[k] = cur
         elif "INBOX" in remove and f == roles["INBOX"]:
             dest = roles.get("ARCHIVE") or roles.get("ALL") or "Archive"
         elif "INBOX" in add and f != roles["INBOX"]:
             dest = roles["INBOX"]
-        else:
-            for x in add:
-                if x not in ("UNREAD", "STARRED", "INBOX", "TRASH", "SPAM", "IMPORTANT", "SENT", "DRAFT") and not x.startswith("CATEGORY_") and x != f:
-                    c.uid("COPY", uset, '"%s"' % _utf7_enc(x))
-            for x in remove:
-                if x == f and x not in (roles["INBOX"],):
-                    dest = roles["INBOX"]
+        for x in user_rm:
+            if x == f:
+                if not dest:
+                    dest = roles["INBOX"]                                    # taken out of the label it is being viewed in: it goes back to the inbox
+            else:
+                _drop_copies(c, x, [mids.get(u) for u in us])
+                for u in us:
+                    k = _xkey(S, f, u)
+                    if x in lm.get(k, []):
+                        lm[k] = [y for y in lm[k] if y != x]
         if dest and dest != f:
             _move(c, uset, dest, caps)
+            for u in us:                                                     # the labels it had follow it to its new place when it moved into a label
+                lm.pop(_xkey(S, f, u), None)
     return {}
+
+
+def _msgids(c, us):
+    out = {}
+    try:
+        typ, d = c.uid("FETCH", ",".join(str(u) for u in us), "(UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
+        for m in _parse_fetch(d):
+            mm = re.search(r"(?i)message-id:\s*(<[^>]+>)", (m["lits"][0] if m["lits"] else b"").decode("utf-8", "replace"))
+            if m["uid"] and mm:
+                out[m["uid"]] = mm.group(1)
+    except Exception:
+        pass
+    return out
+
+
+def _ensure(c, folder):
+    q = '"%s"' % _utf7_enc(folder)
+    try:
+        c.create(q)
+    except Exception:
+        pass
+
+
+def _copy(c, uset, dest):
+    q = '"%s"' % _utf7_enc(dest)
+    typ, r = c.uid("COPY", uset, q)
+    if typ != "OK":
+        _ensure(c, dest)
+        typ, r = c.uid("COPY", uset, q)
+    if typ != "OK":
+        raise RuntimeError("the mail server could not put the email in %s" % dest)
+
+
+def _drop_copies(c, folder, mids):
+    """Take the label off: the copy of the email in that label's folder is deleted (found by its Message-ID); the original is not touched."""
+    mids = [m for m in mids if m]
+    if not mids:
+        return
+    sel = getattr(c, "_sel", None)
+    try:
+        _select(c, folder)
+        for mid in mids:
+            for u in _search(c, ["HEADER", "Message-ID", mid]):
+                c.uid("STORE", str(u), "+FLAGS.SILENT", "(\\Deleted)")
+                c.uid("EXPUNGE", str(u)) if "UIDPLUS" in " ".join(getattr(c, "capabilities", ()) or ()).upper() else c.expunge()
+    finally:
+        if sel:
+            try:
+                _select(c, sel)
+            except Exception:
+                pass
 
 
 def _move(c, uset, dest, caps):

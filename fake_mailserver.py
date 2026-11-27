@@ -254,6 +254,11 @@ class ImapH(socketserver.StreamRequestHandler):
                 i += 1
                 lo = int(toks[i].split(":")[0])
                 ok = x["uid"] >= lo
+            elif t == "HEADER":
+                name = toks[i + 1].strip('"').lower()
+                v = toks[i + 2].strip('"').lower()
+                i += 2
+                ok = any(l.lower().startswith(name + ":") and v in l.lower() for l in head.splitlines())
             elif t in ("TEXT", "FROM", "TO", "SUBJECT"):
                 i += 1
                 v = toks[i].strip('"').lower()
