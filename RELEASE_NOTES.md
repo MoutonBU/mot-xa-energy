@@ -1,10 +1,11 @@
 # MCP Practice Suite - Release notes
 
-Current version: 1.86.362
+Current version: 1.86.363
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
+- **Fixed a freeze when mail with big drawing PDFs arrived.** Reading order sheets from attachments could lock the program for minutes on large A1 drawing PDFs (found from a user's bug report). Big sheets are now skipped for table reading and there is a time limit.
 - **Other email accounts in Mail (your own domain, Outlook, Yahoo, iCloud).** In Mail press the + Add account square (or the settings cog) > Other email account, type the address and password: the program finds the mail server itself (or tick "Other ways to connect" to type the servers). The account then sits next to your Gmail ones with the same inbox, reading, replying, folders as labels, search, stars, trash, attachments and new-mail pop-ups; replies are sent through that account's own mail server and kept in its Sent folder. **This version needs the full installer** (it uses a new part of Python's mail library).
 - **Projects: Today view, daily summary and templates.** The Today button lists everything of yours that is overdue, due today, due tomorrow or urgent (double-click opens its project). Once a day, from 07:00, a pop-up gives the same summary, even with the window closed to the tray. From template starts a project with its groups and to-dos ready: House plans, Building line departure, Council submission, Site development plan.
 - **Mail and Projects linked.** In Mail, right-click a mail > Add to a project. The project card shows an envelope with the number of mails; open them from the project window or its right-click menu. Creating a project from a mail links that mail automatically.

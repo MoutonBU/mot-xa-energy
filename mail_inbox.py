@@ -355,8 +355,12 @@ def attachment_texts(msg):
                     import pymupdf as fitz
                 doc = fitz.open(stream=data, filetype="pdf")
                 tx = []
-                for pg in list(doc)[:12]:
+                import time as _tm
+                t_end = _tm.time() + 6                       # table finding can take minutes on big drawing sheets and freezes the program: small pages only, with a time limit
+                for pi, pg in enumerate(list(doc)[:12]):
                     tx.append(pg.get_text())
+                    if pi >= 4 or _tm.time() > t_end or pg.rect.width * pg.rect.height > 1200 * 1700:
+                        continue
                     try:
                         for t in pg.find_tables().tables:
                             htmls.append(_rows_html(t.extract()))
