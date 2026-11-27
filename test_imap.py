@@ -169,7 +169,8 @@ SS["mail_rules"] = [{"from": "dewann", "to": "", "subject": "", "label": "Client
 SS.pop("mail_ruled", None)
 mp.label = "INBOX"
 mp.load_list(reset=True)
-assert wait(lambda: len(mo.gmail_call(mp.S, "GET", "threads", {"labelIds": ["Clients/Dewann"]})["threads"]) >= 1, 10), "rule did not label"
+_ok = wait(lambda: len(mo.gmail_call(mp.S, "GET", "threads", {"labelIds": ["Clients/Dewann"]})["threads"]) >= 1, 10)
+assert _ok, "rule did not label"
 lt = mo.gmail_call(mp.S, "GET", "threads", {"labelIds": ["Clients/Dewann"]})["threads"]
 assert len(lt) == 1
 assert U.mail_rule_match({"from": "dewann", "subject": "erf"}, {"_from": "dewann blaauw <d@y.com>", "subject": "Erf 670 plans"})

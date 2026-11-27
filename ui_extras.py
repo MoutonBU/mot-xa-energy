@@ -2885,108 +2885,214 @@ def mail_rule_match(rule, row):
 
 
 def mail_rule_text(r):
+    """A rule as a plain sentence."""
     bits = []
     if r.get("from"):
-        bits.append("from \"%s\"" % r["from"])
+        bits.append("from %s" % r["from"])
     if r.get("to"):
-        bits.append("to \"%s\"" % r["to"])
+        bits.append("sent to %s" % r["to"])
     if r.get("subject"):
-        bits.append("subject has \"%s\"" % r["subject"])
-    return "%s  \u2192  %s%s%s" % (" and ".join(bits) or "(empty)", r.get("label", "?"), "  (marked read)" if r.get("read") else "",
-                                 "" if not r.get("acct") else "  [%s only]" % r["acct"])
+        bits.append("with \"%s\" in the subject" % r["subject"])
+    return "Emails %s  \u2192  go into  %s%s%s" % (" and ".join(bits) or "(nothing chosen)", r.get("label", "?"), "  (and are marked as read)" if r.get("read") else "",
+                                               "" if not r.get("acct") else "   [only for %s]" % r["acct"])
+
+
+def _rules_list_style(page, w):
+    try:
+        light = bool(page.is_light())
+    except Exception:
+        light = False
+    bg, fg, bd = ("#FFFFFF", "#15181c", "#b8bec6") if light else ("#17181c", "#e8eaed", "#3a3d44")
+    w.setStyleSheet("QListWidget{background:%s;color:%s;border:1px solid %s;border-radius:8px;padding:4px;}"
+                    "QListWidget::item{padding:6px;}QListWidget::item:selected{background:#E0A030;color:#111111;}" % (bg, fg, bd))
 
 
 class MailRuleEdit(_QD):
-    """One auto-label rule: who the email is from (or to, or what the subject says) and which label it goes into."""
+    """Sort emails automatically: three easy steps (who sends it, which label it goes into, mark as read), with a live line that shows how many emails it fits."""
 
-    def __init__(self, page, rule=None):
+    def __init__(self, page, rule=None, sender=""):
         super().__init__(page)
+        self.page = page
         r = dict(rule or {})
-        self.setWindowTitle("Auto-label rule")
-        self.setMinimumWidth(520)
+        self.setWindowTitle("Sort emails automatically")
+        self.setMinimumWidth(560)
         v = _VB(self)
-        intro = _QL("New emails that fit go into the label by themselves. Fill in one or more boxes; an email has to fit every box you fill in. "
-                    "Use part of an address, for example <i>@cosmo.co.za</i> for everyone at Cosmo, or a name.")
-        intro.setWordWrap(True)
-        v.addWidget(intro)
-        self.f = _QLE(r.get("from", ""))
-        self.f.setPlaceholderText("is from ... (address, domain or name)")
-        self.t = _QLE(r.get("to", ""))
-        self.t.setPlaceholderText("is sent to ... (optional)")
+        v.setSpacing(8)
+        v.addWidget(_QL("<h3>Sort emails automatically</h3>When an email like this arrives, the program puts it in the label you choose, by itself. You do not have to do anything."))
+        v.itemAt(v.count() - 1).widget().setWordWrap(True)
+        v.itemAt(v.count() - 1).widget().setMinimumHeight(74)
+        v.addWidget(_QL("<b>Step 1.  Which emails?</b>"))
+        _l1 = _QL("Emails from (pick one, or type an email address, a company like <i>@cosmo.co.za</i>, or a name):")
+        _l1.setWordWrap(True)
+        v.addWidget(_l1)
+        self.f = _QCombo()
+        self.f.setEditable(True)
+        self.f.setMinimumHeight(32)
+        seen = set()
+        sugg = []
+        for row in page.rows:
+            ad, nm = str(row.get("addr", "") or ""), str(row.get("sender", "") or "")
+            if ad and ad not in seen:
+                seen.add(ad)
+                sugg.append((ad, "%s   (%s)" % (nm, ad) if nm and nm != "me" else ad))
+            dm = "@" + ad.split("@")[1] if "@" in ad else ""
+            if dm and dm not in seen and dm.lower() not in ("@gmail.com", "@outlook.com", "@hotmail.com", "@yahoo.com", "@icloud.com"):
+                seen.add(dm)
+                sugg.append((dm, "Everyone at %s" % dm[1:]))
+        self._sg = dict((t, val) for val, t in sugg)
+        for val, t in sugg:
+            self.f.addItem(t)
+        start = r.get("from", "") or sender
+        self.f.setEditText(next((t for val, t in sugg if val == start), start))
+        v.addWidget(self.f)
+        self.more_b = _QPB("More choices  (subject, sent to, one account only)  \u25be")
+        self.more_b.setFlat(True)
+        self.more_b.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.more_b.setStyleSheet("text-align:left;padding:2px;")
+        v.addWidget(self.more_b)
+        self.more = _QW()
+        mv = _VB(self.more)
+        mv.setContentsMargins(0, 0, 0, 0)
         self.sj = _QLE(r.get("subject", ""))
-        self.sj.setPlaceholderText("subject has ... (optional, for example Erf 4901)")
-        for lab, w in (("From", self.f), ("To", self.t), ("Subject", self.sj)):
-            v.addWidget(_QL("<b>%s</b>" % lab))
+        self.sj.setPlaceholderText("only if the subject has these words (for example an erf number)")
+        self.t = _QLE(r.get("to", ""))
+        self.t.setPlaceholderText("only if it was sent to this address")
+        self.ac = _QCombo()
+        self.ac.addItem("For all my email accounts", "")
+        for a_ in page._accounts():
+            ad = str(a_.get("address", "") or "")
+            if ad:
+                self.ac.addItem("Only for " + ad, ad.lower())
+        self.ac.setCurrentIndex(max(0, self.ac.findData(str(r.get("acct", "") or "").lower())))
+        for w in (self.sj, self.t, self.ac):
             w.setMinimumHeight(30)
-            v.addWidget(w)
-        v.addWidget(_QL("<b>Put it in the label</b> (pick one, or type a new name; use / for a sub-label, like Cosmo/Areas)"))
-        self.lab = _QCombo()
-        self.lab.setEditable(True)
-        self.lab.setMinimumHeight(30)
-        for _n, _i, _l, full in mail_label_tree(page.labels):
-            self.lab.addItem(full)
-        self.lab.setEditText(r.get("label", ""))
-        v.addWidget(self.lab)
-        self.rd = _QCheck("Also mark it as read")
+            mv.addWidget(w)
+        self.more.setVisible(bool(r.get("subject") or r.get("to") or r.get("acct")))
+        self.more_b.clicked.connect(lambda: (self.more.setVisible(not self.more.isVisible()), self.adjustSize()))
+        v.addWidget(self.more)
+        v.addWidget(_QL("<b>Step 2.  Which label should they go into?</b>"))
+        from PySide6.QtWidgets import QListWidget as _LW, QListWidgetItem as _LI
+        self.lw = _LW()
+        self.lw.setMaximumHeight(150)
+        _rules_list_style(page, self.lw)
+        for _n, ind, _l, full in mail_label_tree(page.labels):
+            it = _LI("    " * ind + _n)
+            it.setData(Qt.ItemDataRole.UserRole, full)
+            self.lw.addItem(it)
+        v.addWidget(self.lw)
+        self.nl = _QLE()
+        self.nl.setMinimumHeight(30)
+        self.nl.setPlaceholderText("or make a new label here (to put it inside another, write it like Cosmo/Areas)")
+        v.addWidget(self.nl)
+        cur = r.get("label", "")
+        for i in range(self.lw.count()):
+            if self.lw.item(i).data(Qt.ItemDataRole.UserRole) == cur:
+                self.lw.setCurrentRow(i)
+        if cur and self.lw.currentRow() < 0:
+            self.nl.setText(cur)
+        self.lw.itemSelectionChanged.connect(lambda: (self.nl.clear() if self.lw.currentRow() >= 0 else None, self._pv()))
+        self.nl.textChanged.connect(lambda *_: (self.lw.clearSelection(), self.lw.setCurrentRow(-1)) if self.nl.text() else None)
+        self.nl.textChanged.connect(lambda *_: self._pv())
+        v.addWidget(_QL("<b>Step 3.  Anything else?</b>"))
+        self.rd = _QCheck("Also mark them as read (so they do not add to the unread number)")
         self.rd.setChecked(bool(r.get("read")))
         v.addWidget(self.rd)
-        v.addWidget(_QL("<b>Account</b>"))
-        self.ac = _QCombo()
-        self.ac.addItem("All my accounts", "")
-        for a in page._accounts():
-            ad = str(a.get("address", "") or "")
-            if ad:
-                self.ac.addItem(ad, ad.lower())
-        k = self.ac.findData(str(r.get("acct", "") or "").lower())
-        self.ac.setCurrentIndex(max(0, k))
-        v.addWidget(self.ac)
+        self.pvl = _QL("")
+        self.pvl.setWordWrap(True)
+        self.pvl.setStyleSheet("padding:8px;border:1px solid #888;border-radius:8px;")
+        v.addWidget(self.pvl)
         self.msg = _QL("")
-        self.msg.setStyleSheet("color:#E0A020;")
+        self.msg.setStyleSheet("color:#E0A020;font-weight:700;")
+        self.msg.setWordWrap(True)
         v.addWidget(self.msg)
         row = _HB()
         row.addStretch(1)
-        no, ok = _QPB("Cancel"), _QPB("Save rule")
+        no, ok = _QPB("Cancel"), _QPB("Save and sort my inbox")
         ok.setDefault(True)
+        ok.setMinimumHeight(36)
+        ok.setStyleSheet("font-weight:700;")
+        no.setMinimumHeight(36)
         no.clicked.connect(self.reject)
         ok.clicked.connect(self._ok)
         row.addWidget(no)
         row.addWidget(ok)
         v.addLayout(row)
+        for w in (self.sj, self.t):
+            w.textChanged.connect(lambda *_: self._pv())
+        self.f.editTextChanged.connect(lambda *_: self._pv())
+        self.rd.toggled.connect(lambda *_: self._pv())
+        self._pv()
+
+    def _from(self):
+        t = self.f.currentText().strip()
+        return self._sg.get(t, t)
+
+    def _label(self):
+        it = self.lw.currentItem()
+        return it.data(Qt.ItemDataRole.UserRole) if it is not None else re.sub(r"\s*/\s*", "/", self.nl.text().strip().strip("/"))
+
+    def _pv(self):
+        part = {"from": self._from(), "to": self.t.text(), "subject": self.sj.text()}
+        lab = self._label()
+        if not (part["from"] or part["to"] or part["subject"]):
+            self.pvl.setText("Choose who the emails are from (step 1) and which label they go into (step 2).")
+            return
+        n = sum(1 for row in self.page.rows if mail_rule_match(part, row))
+        who = part["from"] or part["subject"] or part["to"]
+        self.pvl.setText("<b>What will happen:</b> every email from <b>%s</b> %s%s. Right now %d email%s in your inbox fit%s." % (
+            _html.escape(who), ("will go into <b>%s</b>" % _html.escape(lab)) if lab else "will go into the label you pick in step 2",
+            " and be marked as read" if self.rd.isChecked() else "", n, "" if n == 1 else "s", "s" if n == 1 else ""))
 
     def _ok(self):
-        if not (self.f.text().strip() or self.t.text().strip() or self.sj.text().strip()):
-            self.msg.setText("Fill in at least one of From, To or Subject.")
+        if not (self._from() or self.t.text().strip() or self.sj.text().strip()):
+            self.msg.setText("Step 1: type or pick who the emails are from.")
             return
-        if not self.lab.currentText().strip():
-            self.msg.setText("Choose or type the label it goes into.")
+        if not self._label():
+            self.msg.setText("Step 2: pick the label they should go into, or type a new label name.")
             return
         self.accept()
 
     def rule(self):
-        return {"from": self.f.text().strip(), "to": self.t.text().strip(), "subject": self.sj.text().strip(),
-                "label": re.sub(r"\s*/\s*", "/", self.lab.currentText().strip().strip("/")), "read": self.rd.isChecked(), "acct": self.ac.currentData() or ""}
+        return {"from": self._from(), "to": self.t.text().strip(), "subject": self.sj.text().strip(), "label": self._label(),
+                "read": self.rd.isChecked(), "acct": self.ac.currentData() or ""}
 
 
 class MailRulesDialog(_QD):
-    """All the auto-label rules, with add, change and remove, and a button to run them on the emails in the inbox now."""
+    """Automatic sorting: the rules as plain sentences, with big clear buttons."""
 
     def __init__(self, page):
         super().__init__(page)
         self.page = page
-        self.setWindowTitle("Auto-label rules")
-        self.resize(720, 440)
+        self.setWindowTitle("Automatic sorting")
+        self.resize(760, 460)
         v = _VB(self)
-        v.addWidget(_QL("New emails that fit a rule are put in its label as they arrive (like a Gmail filter). The first rule that fits is used."))
+        t = _QL("<h3>Automatic sorting</h3>Tell the program once, and new emails are put in the right label by themselves, like a filing assistant. "
+                "<b>Tip:</b> you can also right-click any email in your inbox and choose <i>Always sort emails like this</i>.")
+        t.setWordWrap(True)
+        v.addWidget(t)
         from PySide6.QtWidgets import QListWidget as _LW
+        self.empty = _QL("No sorting rules yet.\nPress the big button below to make your first one.")
+        self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        v.addWidget(self.empty)
         self.lw = _LW()
+        self.lw.setWordWrap(True)
+        _rules_list_style(page, self.lw)
+        self.lw.itemDoubleClicked.connect(lambda *_: self.edit())
         v.addWidget(self.lw, 1)
+        big = _QPB("+  Make a new sorting rule")
+        big.setMinimumHeight(44)
+        big.setStyleSheet("font-weight:700;font-size:15px;")
+        big.clicked.connect(self.add)
+        v.addWidget(big)
         row = _HB()
-        for lab, fn in (("Add a rule...", self.add), ("Change...", self.edit), ("Remove", self.remove), ("Run them on the inbox now", self.run_now)):
+        for lab, fn in (("Change the selected one", self.edit), ("Delete the selected one", self.remove), ("Sort my inbox now", self.run_now)):
             b = _QPB(lab)
+            b.setMinimumHeight(32)
             b.clicked.connect(fn)
             row.addWidget(b)
         row.addStretch(1)
         c = _QPB("Close")
+        c.setMinimumHeight(32)
         c.clicked.connect(self.accept)
         row.addWidget(c)
         v.addLayout(row)
@@ -2999,6 +3105,8 @@ class MailRulesDialog(_QD):
         self.lw.clear()
         for r in self.rules():
             self.lw.addItem(mail_rule_text(r))
+        self.empty.setVisible(not self.rules())
+        self.lw.setVisible(bool(self.rules()))
 
     def _save(self):
         try:
@@ -3006,6 +3114,8 @@ class MailRulesDialog(_QD):
         except Exception:
             pass
         self.refill()
+        self.page._rules_reset()
+        self.page._apply_rules(list(self.page.rows), force=True)
 
     def add(self):
         d = MailRuleEdit(self.page)
@@ -3015,11 +3125,13 @@ class MailRulesDialog(_QD):
 
     def edit(self):
         i = self.lw.currentRow()
-        if 0 <= i < len(self.rules()):
-            d = MailRuleEdit(self.page, self.rules()[i])
-            if d.exec():
-                self.rules()[i] = d.rule()
-                self._save()
+        if not (0 <= i < len(self.rules())):
+            self.page.say("Click one of the rules in the list first.")
+            return
+        d = MailRuleEdit(self.page, self.rules()[i])
+        if d.exec():
+            self.rules()[i] = d.rule()
+            self._save()
 
     def remove(self):
         i = self.lw.currentRow()
@@ -4399,6 +4511,10 @@ class MailPage(_QW):
         self.all_read_btn.setToolTip("Marks every unread email in this account's inbox as read, in Gmail too, so the number on the home screen goes away")
         self.all_read_btn.clicked.connect(self.mark_all_read)
         top.addWidget(self.all_read_btn)
+        self.sort_btn = _QPB("Auto-sort")
+        self.sort_btn.setToolTip("Tell the program once which emails go into which label, and new emails are sorted by themselves")
+        self.sort_btn.clicked.connect(self._rules_dialog)
+        top.addWidget(self.sort_btn)
         self.set_btn = _QPB("Settings  \u25be")
         self.set_btn.setToolTip("Your email signature and the new-mail pop-up")
         self.set_btn.clicked.connect(self._settings_menu)
@@ -4992,7 +5108,7 @@ class MailPage(_QW):
         ar.setCheckable(True)
         ar.setChecked(bool(self.G.get("mail_auto_read", True)))
         ar.toggled.connect(lambda on: (self.G.__setitem__("mail_auto_read", bool(on)), self.get_M().save_settings()))
-        m.addAction("Auto-label rules...", self._rules_dialog)
+        m.addAction("Automatic sorting (rules)...", self._rules_dialog)
         a = m.addAction("Pop-up when new mail arrives")
         a.setCheckable(True)
         a.setChecked(bool(self.S.get("mail_notify", True)))
@@ -5587,7 +5703,7 @@ class MailPage(_QW):
         a_link = m.addAction("Add to a project...") if (getattr(self.host, "board_page", None) is not None) else None
         m.addSeparator()
         a_arc = m.addAction("Archive")
-        a_rule = m.addAction("Auto-label emails like this...")
+        a_rule = m.addAction("Always sort emails like this into a label...")
         a_del = m.addAction("Delete")
         act = m.exec(self.list.viewport().mapToGlobal(pos))
         if act is None:
@@ -5800,6 +5916,11 @@ class MailPage(_QW):
         if hit and not quiet:
             self.rows, self.next_token = list(hit[0]), hit[1]
             self._fill_list()                                   # show what we had at once
+            if label == "INBOX" and not query:
+                try:
+                    self._apply_rules(self.rows)
+                except Exception:
+                    pass
             if hit[2] is not None and hit[2] == self._hid:
                 self.say("")
                 return                                          # nothing changed in the mailbox since: no request at all
@@ -5887,7 +6008,7 @@ class MailPage(_QW):
 
         def done(lid, err):
             if err or not lid:
-                self.say("Auto-label: %s" % (err or "the label could not be made"), True)
+                self.say("Automatic sorting: %s" % (err or "the label could not be made"), True)
                 return
             self.modify(ids, add=[lid], remove=["UNREAD"] if rd else [], cb=lambda: self.say("%d email%s put in %s" % (len(ids), "" if len(ids) == 1 else "s", lab)))
             self.load_labels(quiet=True)
