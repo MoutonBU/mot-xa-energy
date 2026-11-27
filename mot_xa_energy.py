@@ -10008,6 +10008,8 @@ class MainWindow(QMainWindow):
                 return getattr(self, "cov_steps", None)
             if i_ in (7, 8, 9):
                 return getattr(getattr(self, ("area_page", "site_page", "guidelines_page")[i_ - 7], None), "steps", None)
+            if i_ == 15:
+                return getattr(getattr(self, "sdp_page", None), "steps", None)
             return None
 
         def _step_move(d_):
@@ -14982,7 +14984,7 @@ class MainWindow(QMainWindow):
         g.setSpacing(24)
         for i, (title, sub, ico, tgt) in enumerate((
                 ("Building lines", "Draw the stand and set the building lines<br><br>See what encroaches, coverage and floor area ratio, write a departure motivation, and keep the area schedule: every room by block, level and unit.", "land", "Building lines"),
-                ("SDP Creator", "Site Development Plan for council<br><br>List the blocks by phase with units, footprint, floor area and parking, check coverage, floor area ratio, density and parking, and save the sheet as a PDF.", "plan", "SDP Creator"))):
+                ("SDP Creator", "Site Development Plan for council<br><br>Load the survey, place the blocks, draw the parking areas and let the tool fill them with bays (2.5 x 5 m, 7 m aisle, 0.5 m from the buildings). Schedule, checks and the PDF sheet.", "plan", "SDP Creator"))):
             t_ = tile(title, sub, ico, tgt)
             t_.setMinimumHeight(300)
             t_.setMaximumHeight(380)

@@ -571,10 +571,14 @@ class Ribbon(QFrame):
             ("Review", [T("Measure", "results", step("guidelines_page", 1), hot=True), T("Show on plan", "eye", tool("guidelines_page", "show_on_plan"))]),
             ("Reports", [T("Preview", "eye", tool("guidelines_page", "preview")), T("PDF", "pdf", tool("guidelines_page", "export"))])])
         self.pages[15] = self._page([
-            ("Blocks", [T("Add", "add", tool("sdp_page", "add_block"), hot=True), T("Several", "add", tool("sdp_page", "add_run")),
-                        T("From Building lines", "land", tool("sdp_page", "read_from_site")), T("Floor areas", "layers", tool("sdp_page", "read_floor_areas")),
-                        T("Remove selected", "trash", tool("sdp_page", "remove_blocks"))]),
-            ("Check", [T("The site", "pin", step("sdp_page", 0)), T("The sheet", "results", step("sdp_page", 2))]),
+            ("Survey", [T("Load", "land", tool("sdp_page", "load_drawing", "site"), hot=True), T("Pick", "land", tool("sdp_page", "pick_shape", "site", "stand")),
+                        T("Trace", "land", tool("sdp_page", "start_trace", "trace_stand", "site"))]),
+            ("Buildings", [T("Add", "add", tool("sdp_page", "add_building")), T("IFC", "cube", tool("sdp_page", "footprint_from_ifc")),
+                           T("Drawing", "pdf", tool("sdp_page", "load_drawing", "fp")), T("Trace", "land", tool("sdp_page", "start_trace", "trace_building", "fp"))]),
+            ("Parking", [T("Draw area", "pin", tool("sdp_page", "start_zone"), hot=True), T("Whole stand", "land", tool("sdp_page", "zone_whole_stand")),
+                         T("Fill", "check_circle", tool("sdp_page", "fill_all")), T("Add bay", "add", tool("sdp_page", "start_add_bay")),
+                         T("Delete bay", "trash", tool("sdp_page", "delete_bay"))]),
+            ("Check", [T("Schedule", "layers", step("sdp_page", 3)), T("Result", "results", step("sdp_page", 4))]),
             ("Reports", [T("Preview", "eye", tool("sdp_page", "preview")), T("PDF", "pdf", tool("sdp_page", "export"))])])
         self.pages[12] = self._page([
             ("Stand", [T("Rectangle", "land", tool("services_page", "make_rect")), T("From Building lines", "land", tool("services_page", "from_site_page"), hot=True),

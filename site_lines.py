@@ -417,7 +417,7 @@ class PlanView(QWidget):
         self.mode, self.role = mode, role
         self.tpts, self.cal, self.snap_pt, self.hover = [], [], None, None
         self.drag = None
-        self.setCursor(Qt.CursorShape.CrossCursor if mode in ("trace_stand", "trace_building", "calibrate") else
+        self.setCursor(Qt.CursorShape.CrossCursor if mode in ("trace_stand", "trace_building", "trace_parking", "calibrate") else
                        Qt.CursorShape.SizeAllCursor if mode == "move_under" else Qt.CursorShape.ArrowCursor)
         self.setFocus()
         self.update()
@@ -501,7 +501,7 @@ class PlanView(QWidget):
             self.page.set_hint("Drag round to point north. Hold Shift to step in 15 degrees. Right-click the arrow for more.")
             return
         ortho = bool(e.modifiers() & Qt.KeyboardModifier.ShiftModifier)
-        if self.mode in ("trace_stand", "trace_building"):
+        if self.mode in ("trace_stand", "trace_building", "trace_parking"):
             ref = self.tpts[-1] if self.tpts else None
             q, sn = self._snap(w)
             if sn is None:
@@ -577,7 +577,7 @@ class PlanView(QWidget):
                 self.page.changed()
                 self.update()
             return
-        if self.mode in ("trace_stand", "trace_building", "calibrate"):
+        if self.mode in ("trace_stand", "trace_building", "trace_parking", "calibrate"):
             q, sn = self._snap(w)
             ref = (self.tpts or self.cal or [None])[-1]
             if sn is None:
@@ -596,7 +596,7 @@ class PlanView(QWidget):
         self.drag = None
         self.pan = None
         self.rclick = None
-        self.setCursor(Qt.CursorShape.CrossCursor if self.mode in ("trace_stand", "trace_building", "calibrate") else
+        self.setCursor(Qt.CursorShape.CrossCursor if self.mode in ("trace_stand", "trace_building", "trace_parking", "calibrate") else
                        Qt.CursorShape.SizeAllCursor if self.mode == "move_under" else Qt.CursorShape.ArrowCursor)
         if was_north:
             self.page.changed()
@@ -684,6 +684,7 @@ def spin(lo, hi, val, dec=2, suffix=""):
 class SitePage(ToolBase):
     KEY = "site"
     TITLE = "Building lines"
+    PLAN_CLS = PlanView
     STEP_NAMES = ["The stand", "The buildings", "The result", "Area schedule"]
     STEP_HINTS = ["Describe the stand: its corners in metres and the building line on each boundary. A plain rectangle takes two numbers.",
                   "Place each building by its corner position and size, or drag it in the plan. Red means it goes over a building line.",
@@ -697,7 +698,7 @@ class SitePage(ToolBase):
         self.under = {"site": None, "fp": None}
         self._under_note = {}
         self._grp_n = 0
-        self.plan = PlanView(self)
+        self.plan = self.PLAN_CLS(self)
         # ---- step 1
         p1 = QWidget()
         v1 = QVBoxLayout(p1)
@@ -886,10 +887,13 @@ class SitePage(ToolBase):
         self._motiv_user = False
         self._area_host = QWidget()                      # the area schedule lives in the last step
         QVBoxLayout(self._area_host).setContentsMargins(0, 0, 0, 0)
-        self.build_frame([p1, p2, p3, self._area_host], side=self._plan_panel())
+        self._assemble(p1, p2, p3)
         self.make_rect()
         self.restore()
         self._after_edit()
+
+    def _assemble(self, p1, p2, p3):
+        self.build_frame([p1, p2, p3, self._area_host], side=self._plan_panel())
 
     def fuse_area(self, area_page):
         """The area schedule is the last step of Building lines: the page is kept as it was, it just sits in this tool."""
