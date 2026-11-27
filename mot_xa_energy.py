@@ -14763,6 +14763,33 @@ class MainWindow(QMainWindow):
             def opened(_=False, t=target):
                 self.main_tabs.setCurrentIndex(self._tab_index(t))              # straight in, no title card
             b.clicked.connect(opened)
+            if title == "Mail":                 # a red number on the card: how many unread emails are waiting
+                bd = QLabel("", b)
+                bd.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                bd.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+                bd.setStyleSheet("background:#ff3b4d;color:#ffffff;font-weight:800;font-size:13px;border-radius:13px;")
+                bd.hide()
+                def _badge():
+                    try:
+                        mp = getattr(self, "mail_page", None)
+                        n = mp.unread_total() if mp is not None else 0
+                        if not n or not b.isVisible():
+                            bd.hide()
+                            return
+                        t_ = "99+" if n > 99 else str(n)
+                        if bd.text() != t_:
+                            bd.setText(t_)
+                        w_ = 26 if len(t_) < 3 else 38
+                        bd.setGeometry(b.width() - w_ - 18, 14, w_, 26)
+                        bd.raise_()
+                        bd.show()
+                    except Exception:
+                        pass
+                bt_ = QTimer(b)
+                bt_.timeout.connect(_badge)
+                bt_.start(1500)
+                QTimer.singleShot(600, _badge)
+                b._unread_badge = bd
             return b
 
         def page(title, back=None, scroll=False):

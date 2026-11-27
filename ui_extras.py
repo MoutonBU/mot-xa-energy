@@ -3883,6 +3883,19 @@ class MailPage(_QW):
         self.restyle()
 
     # ---------------------------------------------- several Gmail accounts: squares to switch between them, one is the default
+    def unread_total(self):
+        """Unread emails in the inbox of every account (the home screen's Mail card shows it)."""
+        n = 0
+        try:
+            for a in self._accounts():
+                if a is getattr(self, "_act", None):
+                    n += int(((getattr(self, "_counts_keep", {}) or {}).get("INBOX") or (0, 0))[0] or 0)
+                else:
+                    n += int(a.get("unread") or 0)
+        except Exception:
+            pass
+        return n
+
     def _accounts(self):
         """[the main account (the one the whole program uses)] + the accounts added in the Mail tab."""
         self._main["address"] = str(self.G.get("mail_address") or "")

@@ -1,11 +1,12 @@
 # MCP Architecture and Interiors XA Energy - Release notes
 
-Current version: 1.86.339
+Current version: 1.86.340
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
 ### New features
+- **Mail card on the start screen shows unread mail.** A red number in the corner of the Mail card counts the unread emails in all your accounts and updates by itself.
 - **Mail: paste a picture into a new message.** Copy a screenshot you marked up (Win+Shift+S) and press Ctrl+V in the message box, or the new Paste picture button, or drop a picture file onto it. The picture sits in the text where you put it and arrives inside the email for the client to see, not as an attachment.
 - **Animated pop-ups.** A new email now pops up with an envelope that flies in, opens and lifts out a letter with the number of new mails; a new order pops up with a price tag that drops in, swings, rings and gets ticked in the same thin line style and colours as the home-screen cards (red and faster when urgent).
 - Zoom (Ctrl + wheel, magnifier) is now many times faster: a zoom step took about 8 seconds, it now takes about half a second, and several quick wheel turns are added together and drawn once. The percentage on the little bar changes at once; sizes and text change first and the colours/borders follow a moment later. (The program-wide and window-wide style sheets are no longer applied again at every step; only the rail and the ribbon carry the shell's look.)
