@@ -2667,7 +2667,7 @@ def mail_sig_html(S):
     return _SIGC[key]
 
 
-def mail_compose(S, to="", cc="", bcc="", subject="", html_body="", plain_body="", files=(), in_reply_to="", references="", signature=True, quote_html="", quote_plain="", quote_inline=None):
+def mail_compose(S, to="", cc="", bcc="", subject="", html_body="", plain_body="", files=(), in_reply_to="", references="", signature=True, quote_html="", quote_plain="", quote_inline=None, pics=None):
     """The finished email: plain and HTML, my signature picture (or my signature lines) at the end, and the attachments."""
     msg = _EmailMessage()
     me = S.get("mail_address") or S.get("sig_email") or ""
@@ -2715,6 +2715,8 @@ def mail_compose(S, to="", cc="", bcc="", subject="", html_body="", plain_body="
             msg.get_payload()[1].add_related(_data, maintype="image", subtype=_kind, cid="<%s>" % _ref, filename=_ref.split("@")[0][:40] + "." + ("jpg" if _kind == "jpeg" else _kind), disposition="inline")
     for _i, _b in enumerate(sig_jp):
         msg.get_payload()[1].add_related(_b, maintype="image", subtype="jpeg", cid="<mcpsig%d>" % _i, filename="signature%d.jpg" % _i, disposition="inline")
+    for _cid, _png in (pics or {}).items():                      # pictures pasted into the message (screenshots): shown inside the email, not as attachments
+        msg.get_payload()[1].add_related(_png, maintype="image", subtype="png", cid="<%s>" % _cid, filename=_cid + ".png", disposition="inline")
     import mimetypes
     for f in files:
         try:
@@ -2969,6 +2971,68 @@ class _AutoBrowser(_QTB):
         e.ignore()                                   # the wheel scrolls the page, not each message
 
 
+class MailBody(_QTE):
+    """The message box. Ctrl+V (or dropping a picture file) puts a picture, such as a marked-up screenshot, into the message itself."""
+
+    def __init__(self, *a):
+        super().__init__(*a)
+        self.pics = {}                                            # name -> png bytes, for every picture in the message
+        self._n = 0
+
+    def canInsertFromMimeData(self, src):
+        return src.hasImage() or self._files(src) != [] or super().canInsertFromMimeData(src)
+
+    @staticmethod
+    def _files(src):
+        out = []
+        if src.hasUrls():
+            for u in src.urls():
+                f = u.toLocalFile()
+                if f and f.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp")):
+                    out.append(f)
+        return out
+
+    def add_picture(self, img):
+        from PySide6.QtCore import QBuffer, QByteArray, QIODevice
+        from PySide6.QtGui import QTextImageFormat
+        if img is None or img.isNull():
+            return False
+        self._n += 1
+        name = "pasted%d.png" % self._n
+        ba = QByteArray()
+        bf = QBuffer(ba)
+        bf.open(QIODevice.OpenModeFlag.WriteOnly)
+        img.save(bf, "PNG")
+        self.pics[name] = bytes(ba)
+        self.document().addResource(2, QUrl(name), img)           # 2 = QTextDocument.ResourceType.ImageResource
+        fmt = QTextImageFormat()
+        fmt.setName(name)
+        w = min(img.width(), 640)                                 # shown (and sent) at most 640 px wide; the full picture travels with it
+        fmt.setWidth(w)
+        fmt.setHeight(img.height() * w / float(img.width()))
+        self.textCursor().insertImage(fmt)
+        return True
+
+    def insertFromMimeData(self, src):
+        if src.hasImage():
+            img = src.imageData()
+            if isinstance(img, QImage) and self.add_picture(img):
+                return
+        fl = self._files(src)
+        if fl:
+            for f in fl:
+                self.add_picture(QImage(f))
+            return
+        super().insertFromMimeData(src)
+
+    def paste_picture(self):
+        cb = QApplication.clipboard()
+        if cb.mimeData().hasImage():
+            self.insertFromMimeData(cb.mimeData())
+            return True
+        return False
+
+
 class MailCompose(_QD):
     """New email, reply, reply to all or forward, with my signature. Sends through the Gmail account that is signed in."""
 
@@ -3011,17 +3075,21 @@ class MailCompose(_QD):
         self.bcc_btn.clicked.connect(self._show_cc)
         att = _QPB("Attach files...")
         att.clicked.connect(self._attach)
+        pst = _QPB("Paste picture")
+        pst.setToolTip("Paste a screenshot you copied (Win+Shift+S, then mark it up): it goes into the message. Ctrl+V in the message does the same.")
+        pst.clicked.connect(self._paste_pic)
         self.sig = _QCheck("Add my signature")
         self.sig.setChecked(True)
         bar.addWidget(self.bcc_btn)
         bar.addWidget(att)
+        bar.addWidget(pst)
         bar.addWidget(self.sig)
         bar.addStretch(1)
         v.addLayout(bar)
         self.att_lbl = _QL("")
         self.att_lbl.setWordWrap(True)
         v.addWidget(self.att_lbl)
-        self.body = _QTE()
+        self.body = MailBody()
         self.body.setAcceptRichText(True)
         if html_body:
             self.body.setStyleSheet("QTextEdit{background:#ffffff;color:#202124;border:1px solid #d9dde2;border-radius:8px;padding:6px;}")   # a quoted email is drawn on white: typed text is dark on it
@@ -3098,6 +3166,13 @@ class MailCompose(_QD):
             self._extra[k][1].show()
         self.bcc_btn.hide()
 
+    def _paste_pic(self):
+        self.body.setFocus()
+        if not self.body.paste_picture():
+            self.status.setText("There is no picture on the clipboard. Copy a screenshot first (Win+Shift+S), then press this again.")
+        else:
+            self.status.setText("")
+
     def _attach(self):
         fs, _ = _QFD.getOpenFileNames(self, "Attach files")
         if fs:
@@ -3113,8 +3188,14 @@ class MailCompose(_QD):
             extra = dict(quote_html="<br><div style='color:#5f6368;font-family:Arial,sans-serif;font-size:13px'>%s</div><blockquote style='margin:0 0 0 8px;border-left:2px solid #bbb;padding-left:10px'>%s</blockquote>" % (q["head_html"], q["html"]),
                          quote_plain="\n\n" + q["head_plain"] + "\n" + "\n".join("> " + x for x in qp.strip().splitlines()),
                          quote_inline=q["inline"])
+        html, used = self._html(), {}
+        for nm, png in self.body.pics.items():                        # pasted pictures become inline pictures of the email (cid), only those still in the text
+            if re.search(r"src=[\"']%s[\"']" % re.escape(nm), html):
+                cid = "mcppaste-" + nm.replace(".png", "")
+                html = re.sub(r"src=([\"'])%s\1" % re.escape(nm), 'src="cid:%s"' % cid, html)
+                used[cid] = png
         return mail_compose(self.S, self.to.text().strip(), self.cc.text().strip(), self.bcc.text().strip(), self.subject.text().strip(),
-                            self._html(), self.body.toPlainText(), self.files, self.in_reply_to, self.references, self.sig.isChecked(), **extra)
+                            html, self.body.toPlainText(), self.files, self.in_reply_to, self.references, self.sig.isChecked(), pics=used, **extra)
 
     def _html(self):
         h = self.body.toHtml()
