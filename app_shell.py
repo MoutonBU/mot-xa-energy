@@ -118,7 +118,7 @@ class Rail(QFrame):
         navsc.setWidgetResizable(True)
         navsc.setFrameShape(QFrame.Shape.NoFrame)
         navsc.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        navsc.setStyleSheet("QScrollArea{background:transparent;} #railNavBox{background:transparent;} QScrollBar:vertical{width:6px;}")
+        navsc.setStyleSheet("QScrollArea{background:transparent;} #railNavBox{background:transparent;} QScrollBar:vertical{width:8px;background:transparent;margin:2px 0;} QScrollBar::handle:vertical{background:rgba(128,134,144,150);border-radius:3px;min-height:40px;} QScrollBar::handle:vertical:hover{background:rgba(128,134,144,210);} QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{width:0;height:0;} QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{background:transparent;}")
         navsc.setWidget(navw)
         v.addWidget(navsc, 1)
         self.stripe = QFrame()                       # a thin line in the colour of the tool you are in
@@ -311,7 +311,7 @@ class Ribbon(QFrame):
         sc.setFrameShape(QFrame.Shape.NoFrame)
         sc.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         sc.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        sc.setStyleSheet("QScrollArea{background:transparent;} QScrollArea > QWidget > QWidget{background:transparent;} QScrollBar:horizontal{height:6px;}")
+        sc.setStyleSheet("QScrollArea{background:transparent;} QScrollArea > QWidget > QWidget{background:transparent;} QScrollBar:horizontal{height:8px;background:transparent;margin:0 8px 2px 8px;} QScrollBar::handle:horizontal{background:rgba(128,134,144,150);border-radius:3px;min-width:40px;} QScrollBar::handle:horizontal:hover{background:rgba(128,134,144,210);} QScrollBar::add-line:horizontal,QScrollBar::sub-line:horizontal{width:0;height:0;} QScrollBar::add-page:horizontal,QScrollBar::sub-page:horizontal{background:transparent;}")
         sc.setWidget(self.stack)
         v.addWidget(sc)
         self.pages = {}

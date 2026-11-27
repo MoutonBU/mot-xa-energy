@@ -3542,8 +3542,10 @@ class ImapAccountDialog(_QD):
         self.cfg = None
         self._closed = False
         v = _VB(self)
-        v.addWidget(_QL("<h3>Add another email account</h3>Type the address and password of the mailbox (for example <i>you@yourcompany.co.za</i>). "
-                        "The program finds the mail server by itself and shows this mailbox next to your Gmail ones."))
+        intro = _QL("<h3>Add another email account</h3>Type the address and password of the mailbox (for example <i>you@yourcompany.co.za</i>). "
+                    "The program finds the mail server by itself and shows this mailbox next to your Gmail ones.")
+        intro.setWordWrap(True)
+        v.addWidget(intro)
         self.addr = _QLE()
         self.addr.setPlaceholderText("name@yourdomain.co.za")
         self.pw = _QLE()

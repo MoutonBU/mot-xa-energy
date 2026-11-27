@@ -1,10 +1,11 @@
 # MCP Practice Suite - Release notes
 
-Current version: 1.86.367
+Current version: 1.86.368
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
+- **Light mode check of the whole program.** Every tool, sub-tab and pop-up was opened in light mode and checked. Fixed: the South Africa map in Location now has a light look with matching zoom buttons, table headings and amber/red/green notes that were too pale are now dark enough to read, the sideways bars under the toolbar and the left menu now match the theme (soft rounded bars instead of grey lines with arrows), and the Add email account window text no longer gets cut off.
 - **Orders: faster with hundreds of orders.** The house squares no longer re-read the whole order list once per house (that grew very slow with 300 to 400 orders), the order lines are made only for the rows you can see (and the fixed drop-downs are lighter), so opening, filtering and changing a status take about half the time.
 - **Orders: only the newest mail is looked at.** The order inbox check now reads only the 15 newest unread matching emails of the last 4 days, so old mail from weeks or months ago is never picked up again and the check is much faster.
 - **Mail: Promotions, Social, Updates and Forums are marked read by themselves.** Only real mail (the Primary tab) stays unread, counts only real mail, and only real mail gives a pop-up. Works for every Gmail account and also clears the ones already waiting. It can be switched off in the Mail settings cog.

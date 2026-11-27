@@ -2759,7 +2759,10 @@ _LIGHT_MAP = [("#16171a", "#f1f2f4"), ("#1f2125", "#ffffff"), ("#1b1d21", "#f8f9
               ("#6b7179", "#8f969e"), ("#8a9099", "#6b727b"), ("#9aa0a8", "#5c636b"), ("#eceef0", "#1c1f23"),
               ("#4a3a1c", "#fff0d2"), ("#ffd98a", "#7a4f00"), ("#c8932f", "#d9a441"), ("#ff8f9c", "#c4161c"),
               ("#17171b", "#e9ebee"), ("#1f1f24", "#dde0e4"), ("#26262c", "#c3c9d0"),
-              ("#e8e8ec", "#1c1f23"), ("#3fbf6b", "#1b7f3b"), ("#5fd38a", "#1b7f3b"), ("#ff7b8b", "#c4161c")]
+              ("#e8e8ec", "#1c1f23"), ("#3fbf6b", "#1b7f3b"), ("#5fd38a", "#1b7f3b"), ("#ff7b8b", "#c4161c"),
+              ("#b8bec6", "#4a525c"), ("#9aa0a6", "#5c636b"), ("#ff6b6b", "#c4161c"), ("#ffb454", "#a85f00"), ("#e0a030", "#a86800"),
+              ("#5ecb8a", "#1b7f3b"), ("#ff9a9a", "#c4161c"), ("#b0b6be", "#59616b"), ("#c4cad2", "#59616b"), ("#aab0b8", "#59616b"),
+              ("#d8932f", "#b0740f"), ("#d9a21b", "#a67800"), ("#e0a020", "#a67800")]
 
 
 _QSS_CACHE = {}
@@ -8571,6 +8574,7 @@ class ZaZoneMap(QWidget):
                             "QPushButton:hover{background:#c8102e;border-color:#ff4056;}")
             b.clicked.connect(lambda _=False, f=fn: f())
             self._btns.append(b)
+        self._restyle_btns()
 
     @staticmethod
     def _smooth_ring(ring, rounds=2):
@@ -8802,12 +8806,30 @@ class ZaZoneMap(QWidget):
         L = close if len(close) >= 5 else L[:5]
         return [(t, km) for km, t in L]
 
+    def _restyle_btns(self):
+        lt = light()
+        self._lt_state = lt
+        for b in self._btns:
+            b.setStyleSheet(("QPushButton{background:rgba(255,255,255,235);border:1px solid rgba(0,0,0,0.22);border-radius:7px;color:#1c1f23;font-weight:bold;padding:0px;min-width:0px;"
+                             "min-height:0px;font-size:13px;}QPushButton:hover{background:#c8102e;border-color:#ff4056;color:white;}") if lt else
+                            ("QPushButton{background:rgba(30,31,36,235);border:1px solid rgba(255,255,255,0.18);"
+                             "border-radius:7px;color:white;font-weight:bold;padding:0px;min-width:0px;"
+                             "min-height:0px;font-size:13px;}"
+                             "QPushButton:hover{background:#c8102e;border-color:#ff4056;}"))
+
+    def showEvent(self, e):
+        if getattr(self, "_lt_state", False) != light():
+            self._restyle_btns()
+        super().showEvent(e)
+
     def paintEvent(self, e):
+        if getattr(self, "_lt_state", False) != light():
+            self._restyle_btns()
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         card = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        p.setPen(QPen(QColor(255, 255, 255, 22), 1))
-        p.setBrush(QColor(20, 21, 25))
+        p.setPen(QPen(QColor(0, 0, 0, 40) if light() else QColor(255, 255, 255, 22), 1))
+        p.setBrush(QColor(226, 231, 238) if light() else QColor(20, 21, 25))
         p.drawRoundedRect(card, 12, 12)
         if self._cache is None:
             self._render_base()
@@ -8861,7 +8883,7 @@ class ZaZoneMap(QWidget):
                         p.drawText(r.translated(dx * 0.7, dy * 0.7), Qt.AlignLeft | Qt.AlignVCenter, t.rstrip(" *"))
                     p.setPen(QColor(236, 236, 240))
                     p.drawText(r, Qt.AlignLeft | Qt.AlignVCenter, t.rstrip(" *"))
-        p.setPen(QColor(255, 255, 255, 110))
+        p.setPen(QColor(40, 46, 54, 190) if light() else QColor(255, 255, 255, 110))
         f3 = p.font()
         f3.setPointSizeF(8.0)
         p.setFont(f3)
