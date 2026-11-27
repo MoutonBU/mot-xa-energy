@@ -8,7 +8,7 @@ import time
 
 from PySide6.QtCore import QPointF, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QPen, QPolygonF
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QHBoxLayout,
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout,
                                QHeaderView, QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout,
                                QWidget)
 
@@ -21,8 +21,8 @@ from site_lines import PlanView, SitePage, bpoly, signed_area
 
 TYPES = kb.module_names() + ["Gatehouse", "Other"]
 COLS = ["Block", "Phase", "Type", "Storeys", "Units", "Unit area m2", "Patio m2", "Common m2", "Footprint m2", "Floor area m2", "Counts"]
-BAY_TYPES = ["Open", "Covered", "Garage", "Shade cloth", "Tandem"]
-BAY_COL = {"Open": (46, 158, 91), "Covered": (74, 127, 181), "Garage": (196, 140, 50), "Shade cloth": (60, 170, 170), "Tandem": (230, 160, 90)}
+BAY_TYPES = ["Open", "Covered", "Garage", "Shade cloth", "Tandem", "Compact", "Accessible", "EV"]
+BAY_COL = {"Open": (46, 158, 91), "Covered": (74, 127, 181), "Garage": (196, 140, 50), "Shade cloth": (60, 170, 170), "Tandem": (230, 160, 90), "Compact": (120, 150, 210), "Accessible": (40, 90, 220), "EV": (150, 80, 200)}
 SCALES = ["1:200", "1:250", "1:500", "1:1000", "1:1250", "1:2000"]
 
 
@@ -283,7 +283,7 @@ class SdpPage(SitePage):
                   "What complies and what does not, then save the Site Development Plan as a PDF for council."]
 
     def __init__(self, win):
-        self.zones, self.bays, self._bad = [], [], []
+        self.zones, self.bays, self._bad, self.schemes = [], [], [], []
         self.sel_bay = -1
         self.sel_zone = -1
         self._pbusy = False
@@ -343,6 +343,33 @@ class SdpPage(SitePage):
         br.addWidget(b)
         br.addStretch(1)
         bv.addLayout(br)
+        v.addWidget(bx)
+        bx, bv = self.box("Accessible and EV bays, schemes, export", "Like the TestFit parking solver: set aside accessible and electric-vehicle bays (nearest the buildings), keep several layouts as schemes and compare them, and export to CAD or CSV.")
+        fl = FlowLayout(None, 10, 6)
+        self.ada_pct, self.ev_pct = sl.spin(0, 100, 2, 1, " %"), sl.spin(0, 100, 0, 1, " %")
+        self.ada_pct.setToolTip("Share of the bays set aside for accessible parking. Check the figure your municipality asks for.")
+        fl.addWidget(self._pair("Accessible bays", self.ada_pct))
+        fl.addWidget(self._pair("EV bays", self.ev_pct))
+        bv.addLayout(fl)
+        br = FlowLayout(None, 8, 6)
+        for txt, fn in (("Set them aside", self.assign_special), ("Save as a scheme", self.save_scheme), ("Export to CAD (DXF)", self.export_dxf), ("Export numbers (CSV)", self.export_csv)):
+            b = QPushButton(txt)
+            b.clicked.connect(lambda _=False, f=fn: f())
+            br.addWidget(b)
+        br.addStretch(1)
+        bv.addLayout(br)
+        row = QHBoxLayout()
+        self.scheme_cb = QComboBox()
+        row.addWidget(self.scheme_cb, 1)
+        for txt, fn in (("Open scheme", self.load_scheme), ("Delete scheme", self.delete_scheme)):
+            b = QPushButton(txt)
+            b.clicked.connect(lambda _=False, f=fn: f())
+            row.addWidget(b)
+        bv.addLayout(row)
+        self.scheme_lbl = QLabel("")
+        self.scheme_lbl.setTextFormat(Qt.TextFormat.RichText)
+        self.scheme_lbl.setWordWrap(True)
+        bv.addWidget(self.scheme_lbl)
         v.addWidget(bx)
         bx, bv = self.box("Parking rules", "A bay is 2.5 by 5.0 m and needs 7 m in front of it to reverse out. A bay that breaks a rule shows red on the plan.")
         fl = FlowLayout(None, 10, 6)
@@ -825,6 +852,126 @@ class SdpPage(SitePage):
         del self.bays[self.sel_bay]
         self.sel_bay = -1
         self.refresh_parking(user=True)
+
+    # ------------------------------------------------------------- accessible / EV, schemes, export
+    def assign_special(self):
+        """accessible and EV bays: the auto bays nearest a building door (the building centre) are set aside"""
+        auto = [b for b in self.bays if b.get("auto") and b.get("type", "Open") != "Tandem"]
+        zt = {z["name"]: z.get("type", "Open") for z in self.zones}
+        for b in auto:
+            if b.get("type") in ("Accessible", "EV"):
+                b["type"] = zt.get(b.get("zone"), "Open")
+        cs = []
+        for b in self.buildings():
+            if kind_of(b["name"]) == "block":
+                P = bpoly(b)
+                cs.append((sum(q[0] for q in P) / len(P), sum(q[1] for q in P) / len(P)))
+        if not auto or not cs:
+            QMessageBox.information(self, self.TITLE, "Place buildings and fill the parking first.")
+            return
+        auto.sort(key=lambda b: min(math.hypot(b["x"] - c[0], b["y"] - c[1]) for c in cs))
+        na = int(math.ceil(len(auto) * self.ada_pct.value() / 100.0 - 1e-9))
+        ne = int(math.ceil(len(auto) * self.ev_pct.value() / 100.0 - 1e-9))
+        for i, b in enumerate(auto):
+            if i < na:
+                b["type"] = "Accessible"
+            elif i < na + ne:
+                b["type"] = "EV"
+        self.refresh_parking(user=True)
+        self.set_hint("%d accessible and %d EV bays set aside, nearest the buildings." % (na, ne))
+
+    def _scheme_numbers(self):
+        a = self.sdp()
+        t = a["total"]
+        return {"units": t["units"], "bays": a["bays"], "need": a["bays_needed"], "cov": round(a["cov"], 2), "far": round(a["far"], 3),
+                "per_unit": round(a["bays"] / float(t["units"]), 2) if t["units"] else 0.0, "per_bay": round(a["area"] / a["bays"]) if a["bays"] else 0,
+                "blocks": len(self.blocks()), "ada": sum(1 for b in self.bays if b.get("type") == "Accessible"), "ev": sum(1 for b in self.bays if b.get("type") == "EV")}
+
+    def save_scheme(self):
+        st = self.state()
+        st.pop("schemes", None)
+        n = len(self.schemes) + 1
+        self.schemes.append({"name": "Scheme %d" % n, "num": self._scheme_numbers(), "state": st})
+        self._show_schemes()
+        self.changed()
+        self.set_hint("Saved as Scheme %d. Change the layout and save again to compare." % n)
+
+    def _show_schemes(self):
+        if getattr(self, "scheme_cb", None) is None:
+            return
+        self.scheme_cb.clear()
+        self.scheme_cb.addItems([sc_["name"] for sc_ in self.schemes])
+        if not self.schemes:
+            self.scheme_lbl.setText("")
+            return
+        h = "<table cellpadding='3'><tr><th align=left>Scheme</th><th>Blocks</th><th>Units</th><th>Bays</th><th>Needed</th><th>Per unit</th><th>m2 / bay</th><th>Cover %</th><th>FAR</th></tr>"
+        for sc_ in self.schemes:
+            n = sc_["num"]
+            col = "#2e9e5b" if n["bays"] >= n["need"] else "#e0243a"
+            h += "<tr><td>%s</td><td align=right>%d</td><td align=right>%d</td><td align=right style='color:%s'><b>%d</b></td><td align=right>%d</td><td align=right>%.2f</td><td align=right>%d</td><td align=right>%.1f</td><td align=right>%.2f</td></tr>" % (
+                sc_["name"], n["blocks"], n["units"], col, n["bays"], n["need"], n["per_unit"], n["per_bay"], n["cov"], n["far"])
+        self.scheme_lbl.setText(h + "</table>")
+
+    def load_scheme(self):
+        i = self.scheme_cb.currentIndex()
+        if not (0 <= i < len(self.schemes)):
+            return
+        keep = self.schemes
+        self.set_state(dict(self.schemes[i]["state"]))
+        self.schemes = keep
+        self._show_schemes()
+        self.scheme_cb.setCurrentIndex(i)
+        self.plan.fit()
+
+    def delete_scheme(self):
+        i = self.scheme_cb.currentIndex()
+        if 0 <= i < len(self.schemes):
+            del self.schemes[i]
+            self._show_schemes()
+            self.changed()
+
+    def export_csv(self, path=None):
+        if path is None:
+            path, _ = QFileDialog.getSaveFileName(self, "Export numbers", "sdp_numbers.csv", "CSV (*.csv)")
+        if not path:
+            return
+        a = self.sdp()
+        rows = [["Item", "Value"], ["Units", a["total"]["units"]], ["Bays counted", a["bays"]], ["Bays needed", a["bays_needed"]], ["Site area m2", "%.2f" % a["area"]],
+                ["Coverage %", "%.2f" % a["cov"]], ["FAR", "%.4f" % a["far"]], ["Density u/ha", "%.1f" % a["density"]]]
+        for k, (ok, bad) in sorted(self.bay_counts().items()):
+            rows.append(["Bays - " + k, ok + bad])
+        rows += [[], ["Block", "Phase", "Type", "Storeys", "Units", "Footprint m2", "Floor area m2"]]
+        rows += [[b["block"], b["phase"], b["type"], b["storeys"], b["units"], "%.2f" % b["foot"], "%.2f" % b["floor"]] for b in self.blocks()]
+        import csv
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerows(rows)
+        self.set_hint("Numbers saved to " + path)
+
+    def export_dxf(self, path=None):
+        if path is None:
+            path, _ = QFileDialog.getSaveFileName(self, "Export to CAD", "sdp_layout.dxf", "DXF (*.dxf)")
+        if not path:
+            return
+        import ezdxf
+        doc = ezdxf.new("R2010")
+        msp = doc.modelspace()
+        for name, col in (("STAND", 7), ("BUILDINGS", 1), ("BAYS", 3), ("BAY_ACCESSIBLE", 5), ("BAY_EV", 6), ("BAY_OTHER", 30), ("PARKING_AREAS", 8)):
+            doc.layers.add(name, color=col)
+        poly = lambda pts, layer: msp.add_lwpolyline([(q[0], q[1]) for q in pts], close=True, dxfattribs={"layer": layer})
+        if len(self.verts()) >= 3:
+            poly(self.verts(), "STAND")
+        for b in self.buildings():
+            poly(bpoly(b), "BUILDINGS")
+            P = bpoly(b)
+            msp.add_text(b["name"], dxfattribs={"layer": "BUILDINGS", "height": 1.5, "insert": (sum(q[0] for q in P) / len(P), sum(q[1] for q in P) / len(P))})
+        for z in self.zones:
+            poly(z["poly"], "PARKING_AREAS")
+        r = self.rules_now()
+        for b in self.bays:
+            t = b.get("type", "Open")
+            poly(sp.bay_poly(b, r), {"Accessible": "BAY_ACCESSIBLE", "EV": "BAY_EV"}.get(t, "BAYS" if t == "Open" else "BAY_OTHER"))
+        doc.saveas(path)
+        self.set_hint("Drawing saved to " + path)
 
     # ------------------------------------------------------------- the solver
     def _gen_names(self):
@@ -1413,7 +1560,7 @@ class SdpPage(SitePage):
     def state(self):
         d = super().state()
         d.update({"sdp": self.site(), "blocks": self.blocks(), "zones": [dict(z) for z in self.zones], "bays": [dict(b) for b in self.bays],
-                  "prules": self.rules_now(), "gen": self._gen_names()})
+                  "prules": self.rules_now(), "gen": self._gen_names(), "schemes": self.schemes})
         return d
 
     def set_state(self, d):
@@ -1442,6 +1589,9 @@ class SdpPage(SitePage):
             self.bays = [dict(b) for b in (d.get("bays") or []) if isinstance(b, dict) and "x" in b]
             self.sel_bay = self.sel_zone = -1
             self.gen_names = [str(n) for n in (d.get("gen") or [])]
+            if "schemes" in d:
+                self.schemes = [x for x in (d.get("schemes") or []) if isinstance(x, dict) and x.get("state")]
+            self._show_schemes()
         finally:
             self._pbusy = False
         self._refresh_sum()

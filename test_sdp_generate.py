@@ -52,3 +52,20 @@ for _ in range(30):
 assert len(pg3.bays) != n0 and not any(pg3._bad), (n0, len(pg3.bays))
 os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
 print("ok live")
+# ada / ev, schemes, export
+import tempfile
+pg3.ada_pct.setValue(4); pg3.ev_pct.setValue(2)
+pg3.assign_special()
+c = pg3.bay_counts()
+assert sum(c.get("Accessible", (0, 0))) >= 1 and sum(c.get("EV", (0, 0))) >= 1, c
+pg3.save_scheme(); pg3.add_building({"name": "H3", "x": 44, "y": 25, "w": 10, "d": 8}); pg3._live_fill(); pg3.save_scheme()
+assert len(pg3.schemes) == 2 and "Scheme 2" in pg3.scheme_lbl.text()
+nb = len(pg3.buildings()); pg3.scheme_cb.setCurrentIndex(0); pg3.load_scheme()
+assert len(pg3.buildings()) == nb - 1 and len(pg3.schemes) == 2
+d = tempfile.mkdtemp()
+pg3.export_dxf(d + "/a.dxf"); pg3.export_csv(d + "/a.csv")
+import ezdxf; assert len(list(ezdxf.readfile(d + "/a.dxf").modelspace())) > 20
+assert os.path.getsize(d + "/a.csv") > 50
+pg4 = sc.SdpPage(W()); pg4.set_state(pg3.state()); assert len(pg4.schemes) == 2
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+print("ok extras")
