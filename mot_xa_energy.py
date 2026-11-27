@@ -13581,7 +13581,7 @@ class MainWindow(QMainWindow):
             os.remove(path)
         except Exception:
             return
-        self.new_project()
+        self.new_project(ask=False)                       # a restore after an update or reload never asks
         self.current_file = data.get("_current_file")
         self._apply_project_data(data)
         if not data.get("_dirty"):
