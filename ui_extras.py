@@ -6746,6 +6746,53 @@ class _BoardCol(QListWidget):
             return (r["id"], (r["id"], i))
         return (ln["r"].get("parent_id") or r["id"], (r["id"], i))
 
+    def _make_ghost(self):
+        """a see-through copy of the picked-up to-do (or "3 to-dos") that follows the mouse"""
+        pg = self.page
+        ids = list(pg.sel_ids)
+        if not ids:
+            return
+        bg, fg, mute, line = pg.colors()
+        r = pg.rows.get(ids[0]) or {}
+        title = str(r.get("title") or "")
+        if len(ids) > 1:
+            title = "%s  +%d more" % (title, len(ids) - 1)
+        w, h = min(380, max(160, self.viewport().width() - 40)), TODO_H + 8
+        pm = QPixmap(w * 2, h * 2)
+        pm.setDevicePixelRatio(2)
+        pm.fill(Qt.GlobalColor.transparent)
+        q = QPainter(pm)
+        q.setRenderHint(QPainter.RenderHint.Antialiasing)
+        q.setPen(QPen(QColor(BOARD_ACCENT), 1.6))
+        q.setBrush(QColor(pg.card_bg()))
+        q.drawRoundedRect(QRectF(2, 2, w - 4, h - 4), 8, 8)
+        q.setPen(QPen(QColor(BOARD_ACCENT), 1.6))
+        q.setBrush(Qt.BrushStyle.NoBrush)
+        q.drawRoundedRect(QRectF(12, h / 2.0 - 7, 14, 14), 3, 3)
+        f = QFont(q.font())
+        f.setPixelSize(13)
+        f.setBold(True)
+        q.setFont(f)
+        q.setPen(QColor(fg))
+        q.drawText(QRectF(34, 0, w - 46, h), Qt.AlignmentFlag.AlignVCenter, QFontMetrics(f).elidedText(title, Qt.TextElideMode.ElideRight, w - 50))
+        q.end()
+        g = QLabel(self.viewport())
+        g.setPixmap(pm)
+        g.setFixedSize(w, h)
+        g.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        eff = QGraphicsOpacityEffect(g)
+        eff.setOpacity(0.78)
+        g.setGraphicsEffect(eff)
+        g.show()
+        self._ghost = g
+
+    def _drop_ghost(self):
+        g = getattr(self, "_ghost", None)
+        if g is not None:
+            g.hide()
+            g.deleteLater()
+        self._ghost = None
+
     def mouseMoveEvent(self, e):
         dr = getattr(self, "_dr", None)
         if dr is not None and (e.buttons() & Qt.MouseButton.LeftButton):
@@ -6753,7 +6800,12 @@ class _BoardCol(QListWidget):
             if not getattr(self, "_dragging", False) and (p - dr).manhattanLength() >= 8:
                 self._dragging = True
                 self.setCursor(Qt.CursorShape.ClosedHandCursor)
+                self._make_ghost()
             if getattr(self, "_dragging", False):
+                g_ = getattr(self, "_ghost", None)
+                if g_ is not None:
+                    g_.move(p.x() - 24, p.y() - g_.height() // 2)
+                    g_.raise_()
                 t = self._drop_at(p)
                 self.page.drop_hint = t[1] if t else None
                 self.viewport().update()
@@ -6764,6 +6816,7 @@ class _BoardCol(QListWidget):
     def mouseReleaseEvent(self, e):
         if getattr(self, "_dragging", False):
             self._dragging, self._dr, self._pc = False, None, None
+            self._drop_ghost()
             self.unsetCursor()
             self.page.drop_hint = None
             t = self._drop_at(e.position().toPoint())

@@ -287,7 +287,10 @@ def ev(t, p, b=B.Qt.MouseButton.LeftButton, bs=B.Qt.MouseButton.LeftButton):
 col.mousePressEvent(ev(B.QEvent.Type.MouseButtonPress, at(src_i)))
 col.mouseMoveEvent(ev(B.QEvent.Type.MouseMove, at(dst_i), B.Qt.MouseButton.NoButton))
 assert col._dragging and pa.drop_hint == (e4["id"], dst_i), (col._dragging, pa.drop_hint)
+assert col._ghost is not None and col._ghost.isVisible()
+if os.environ.get("DRAG_SHOT"): app.processEvents(); pa.grab().save(os.environ["DRAG_SHOT"])
 col.mouseReleaseEvent(ev(B.QEvent.Type.MouseButtonRelease, at(dst_i)))
+assert col._ghost is None
 pl = [r for r in pa.rows.values() if r["title"] == "Plug layout" and r.get("parent_id") in (g1["id"], g_roof["id"])][0]
 assert wait(lambda: pa.rows[pl["id"]]["parent_id"] == g_roof["id"], 3), pa.rows[pl["id"]]
 pa.duplicate(g_roof["id"])
