@@ -575,7 +575,7 @@ class Ribbon(QFrame):
                         T("Trace", "land", tool("sdp_page", "start_trace", "trace_stand", "site"))]),
             ("Buildings", [T("Add", "add", tool("sdp_page", "add_building")), T("IFC", "cube", tool("sdp_page", "footprint_from_ifc")),
                            T("Drawing", "pdf", tool("sdp_page", "load_drawing", "fp")), T("Trace", "land", tool("sdp_page", "start_trace", "trace_building", "fp"))]),
-            ("Parking", [T("Draw area", "pin", tool("sdp_page", "start_zone"), hot=True), T("Whole stand", "land", tool("sdp_page", "zone_whole_stand")),
+            ("Parking", [T("Generate layout", "land", tool("sdp_page", "generate"), hot=True), T("Draw area", "pin", tool("sdp_page", "start_zone")), T("Whole stand", "land", tool("sdp_page", "zone_whole_stand")),
                          T("Fill", "check_circle", tool("sdp_page", "fill_all")), T("Add bay", "add", tool("sdp_page", "start_add_bay")),
                          T("Delete bay", "trash", tool("sdp_page", "delete_bay"))]),
             ("Check", [T("Schedule", "layers", step("sdp_page", 3)), T("Result", "results", step("sdp_page", 4))]),

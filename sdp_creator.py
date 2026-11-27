@@ -139,6 +139,62 @@ class _BlocksDialog(QDialog):
         return out
 
 
+class _GenerateDialog(QDialog):
+    """Generate a layout: which block, how many (or as many as the parking allows), and the room between blocks"""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setWindowTitle("Generate a layout")
+        f = QFormLayout(self)
+        intro = QLabel("The tool places the blocks inside the building lines in rows, then fills what is left with parking bays. "
+                       "Blocks it made before (named H1, H2 ...) are replaced; blocks you placed yourself stay.")
+        intro.setWordWrap(True)
+        intro.setMinimumWidth(420)
+        f.addRow(intro)
+        self.typ = QComboBox()
+        self.typ.addItems(kb.module_names()[:3])
+        self.typ.currentTextChanged.connect(self._type)
+        f.addRow("Block type", self.typ)
+        self.prefix = QLineEdit("H")
+        f.addRow("Names start with", self.prefix)
+        self.phase = QLineEdit("Phase 1")
+        f.addRow("Phase", self.phase)
+        self.w, self.d = sl.spin(3, 80, 20, 1, " m"), sl.spin(3, 80, 12, 1, " m")
+        f.addRow("Block width", self.w)
+        f.addRow("Block depth", self.d)
+        self.side = sl.spin(0, 40, 6, 1, " m")
+        self.front = sl.spin(0, 60, 17.5, 1, " m")
+        self.side.setToolTip("Between two blocks in a row.")
+        self.front.setToolTip("Between rows of blocks: room for a double row of bays on the 7 m aisle (5.5 + 7 + 5.5 = 18).")
+        f.addRow("Space between blocks in a row", self.side)
+        f.addRow("Space between rows (for parking)", self.front)
+        self.mode = QComboBox()
+        self.mode.addItems(["As many blocks as the parking allows", "This many blocks"])
+        self.mode.currentIndexChanged.connect(lambda i: self.count.setEnabled(i == 1))
+        f.addRow("How many", self.mode)
+        self.count = QSpinBox()
+        self.count.setRange(1, 200)
+        self.count.setValue(6)
+        self.count.setEnabled(False)
+        f.addRow("Number of blocks", self.count)
+        self.parking = QCheckBox("Fill the rest with parking bays")
+        self.parking.setChecked(True)
+        f.addRow(self.parking)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        f.addRow(bb)
+        self._type(self.typ.currentText())
+
+    def _type(self, t):
+        m = kb.module_preset(t)
+        if m:
+            area = m["gross_m2"] / float(m["storeys"])          # one floor of the block
+            w = round(math.sqrt(area * 2.2), 1)
+            self.w.setValue(w)
+            self.d.setValue(round(area / w, 1))
+
+
 # ---------------------------------------------------------------- the plan
 class ParkView(PlanView):
     """Building lines' plan, with the parking drawn over it: the areas, the aisles, the bays (red when one breaks a rule)."""
@@ -240,10 +296,54 @@ class SdpPage(SitePage):
         self._keep = [p3, self._area_host]               # the checks step is the old results step; the area schedule is not used here
         self.build_frame([p1, p2, self._parking_page(), self._schedule_page(), p3], side=self._plan_panel())
 
+    def _plan_panel(self):
+        inner = super()._plan_panel()
+        panel = QWidget()
+        v = QVBoxLayout(panel)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(4)
+        self.metrics_lbl = QLabel("")
+        self.metrics_lbl.setTextFormat(Qt.TextFormat.RichText)
+        self.metrics_lbl.setWordWrap(True)
+        self.metrics_lbl.setObjectName("sdpMetrics")
+        self.metrics_lbl.setStyleSheet("#sdpMetrics { background: rgba(128,128,128,0.14); border-radius: 6px; padding: 6px 10px; }")
+        v.addWidget(self.metrics_lbl)
+        v.addWidget(inner, 1)
+        return panel
+
+    def update_metrics(self):
+        """the numbers that follow every change, over the plan: units, bays, coverage, floor area ratio, density"""
+        if getattr(self, "metrics_lbl", None) is None or getattr(self, "t", None) is None or getattr(self, "zt", None) is None:
+            return
+        a = self.sdp()
+        t = a["total"]
+        ok, bad = "#2e9e5b", "#e0243a"
+        cell = lambda lab, val, good=None: "<span style='color:#8a8f98'>%s</span> <b%s>%s</b>" % (lab, "" if good is None else " style='color:%s'" % (ok if good else bad), val)
+        chk = {c[0]: c[3] for c in a["checks"]}
+        parts = [cell("Units", t["units"]), cell("Bays", "%d / %d needed" % (a["bays"], a["bays_needed"]), chk["Parking bays"])]
+        if t["units"]:
+            parts.append(cell("per unit", "%.2f" % (a["bays"] / float(t["units"]))))
+        if a["bays"]:
+            parts.append(cell("site per bay", "%.0f m2" % (a["area"] / a["bays"])))
+        parts += [cell("Coverage", "%.1f %%" % a["cov"], chk["Coverage"]), cell("FAR", "%.2f" % a["far"], chk["Floor area ratio"]), cell("Density", "%.1f u/ha" % a["density"], chk["Density"])]
+        nb = sum(1 for pr in self._bad if pr)
+        if nb:
+            parts.append("<b style='color:%s'>%d bays break a rule</b>" % (bad, nb))
+        self.metrics_lbl.setText("&nbsp;&nbsp;|&nbsp;&nbsp;".join(parts))
+
     def _parking_page(self):
         p = QWidget()
         v = QVBoxLayout(p)
         v.setContentsMargins(0, 0, 8, 8)
+        bx, bv = self.box("Generate a layout", "Like a site solver: the tool places the blocks in rows inside the building lines and fills the rest with parking, then shows what fits. "
+                          "You can then drag, turn or change anything by hand.")
+        br = FlowLayout(None, 8, 6)
+        b = QPushButton("Generate a layout...")
+        b.clicked.connect(lambda _=False: self.generate())
+        br.addWidget(b)
+        br.addStretch(1)
+        bv.addLayout(br)
+        v.addWidget(bx)
         bx, bv = self.box("Parking rules", "A bay is 2.5 by 5.0 m and needs 7 m in front of it to reverse out. A bay that breaks a rule shows red on the plan.")
         fl = FlowLayout(None, 10, 6)
         self.r_w = sl.spin(1.5, 5, sp.RULES["w"], 2, " m")
@@ -519,6 +619,7 @@ class SdpPage(SitePage):
                 txt += ". <span style='color:#2e9e5b'><b>Every bay keeps the rules.</b></span>"
             self.park_lbl.setText(txt)
         self._need_text()
+        self.update_metrics()
         self.plan.update()
         if user:
             self.changed()
@@ -721,6 +822,95 @@ class SdpPage(SitePage):
         del self.bays[self.sel_bay]
         self.sel_bay = -1
         self.refresh_parking(user=True)
+
+    # ------------------------------------------------------------- the solver
+    def _gen_names(self):
+        return [n for n in getattr(self, "gen_names", [])]
+
+    def _evaluate(self, slots, n, upb, r, own):
+        """parking for n blocks placed in the first n slots: counted bays against the bays the units need"""
+        v = self.verts()
+        env = sl.envelope(v, [e["sb"] for e in self.edges()]) if self.r_lines.isChecked() else None
+        site = sp.Site(v, own + [list(R) for R in slots[:n]], env)
+        bays = sp.fill(v, site, r, None, [], "gen")
+        sd = self.site()
+        need = sp.required(n * upb, _num(sd.get("bays_per_unit"), 1.5), int(_num(sd.get("visitor_per"))))
+        return len(bays), need
+
+    def generate(self, opts=None):
+        v = self.verts()
+        if len(v) < 3:
+            QMessageBox.information(self, self.TITLE, "Set the stand first (first step).")
+            return
+        if opts is None:
+            d = _GenerateDialog(self)
+            if not d.exec():
+                return
+            opts = {"type": d.typ.currentText(), "prefix": d.prefix.text().strip(), "phase": d.phase.text().strip(), "w": d.w.value(), "d": d.d.value(),
+                    "side": d.side.value(), "front": d.front.value(), "count": d.count.value() if d.mode.currentIndex() == 1 else 0, "parking": d.parking.isChecked()}
+        typ, pre, phase = opts["type"], opts.get("prefix") or "H", opts.get("phase") or "Phase 1"
+        m = kb.module_preset(typ)
+        r = self.rules_now()
+        self._pbusy = True
+        old = {n.lower() for n in self._gen_names()}
+        rows = [i for i, b in enumerate(self.buildings()) if b["name"].lower() in old]
+        for i in sorted(rows, reverse=True):
+            self.bt.removeRow(i)
+        self._pbusy = False
+        own = [bpoly(b) for b in self.buildings()]
+        env = sl.envelope(v, [e["sb"] for e in self.edges()]) or v
+        slots = sp.block_slots(env, own, opts["w"], opts["d"], opts["side"], opts["front"])
+        if not slots:
+            QMessageBox.information(self, self.TITLE, "No block of %.1f x %.1f m fits inside the building lines. Make the block smaller or the gaps less." % (opts["w"], opts["d"]))
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            if opts.get("count"):
+                n = min(opts["count"], len(slots))
+            else:                                                        # the most blocks whose parking still meets the requirement
+                lo, hi, n = 0, len(slots), 0
+                c, need = self._evaluate(slots, hi, m["units"], r, own)       # all of them first: often the parking is plenty
+                if c >= need:
+                    lo = hi
+                while lo < hi:
+                    mid = (lo + hi + 1) // 2
+                    c, need = self._evaluate(slots, mid, m["units"], r, own)
+                    if c >= need:
+                        lo, n = mid, mid
+                    else:
+                        hi = mid - 1
+                n = lo or 1
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.gen_names = []
+        was = self._pbusy
+        self._pbusy = True
+        nb0 = self.t.rowCount()
+        for k_ in range(n):
+            R = slots[k_]
+            xs, ys = [q[0] for q in R], [q[1] for q in R]
+            nm = "%s%d" % (pre, k_ + 1)
+            if nm.lower() in {b["name"].lower() for b in self.buildings()}:
+                nm = "%s%d" % (pre, self.bt.rowCount() + 1)
+            self.add_building({"name": nm, "poly": R, "cov": True})
+            self.gen_names.append(nm)
+            have = [bb["block"].lower() for bb in self.blocks()]
+            if nm.lower() not in have:
+                self._row(preset_block(nm, typ, phase))
+        for r_ in range(self.t.rowCount() - 1, -1, -1):                  # the schedule of the blocks made before goes
+            if self.t.item(r_, 0).text().strip().lower() in old and self.t.item(r_, 0).text().strip() not in self.gen_names:
+                self.t.removeRow(r_)
+        self._pbusy = was
+        self.sync_blocks()
+        if opts.get("parking", True):
+            self.zones = [z for z in self.zones if z["name"] != "Whole stand"]
+            self.bays = [b for b in self.bays if not (b.get("auto") and b.get("zone") == "Whole stand")]
+            self._new_zone(v, "Whole stand")
+            self._fill([len(self.zones) - 1])
+        self.plan.fit()
+        self._edited()
+        a = self.sdp()
+        self.set_hint("%d blocks (%d units) placed. Bays: %d counted for %d needed." % (n, a["total"]["units"], a["bays"], a["bays_needed"]))
 
     # ------------------------------------------------------------- refuse area and gatehouse
     def add_refuse(self):
@@ -1193,7 +1383,7 @@ class SdpPage(SitePage):
     def state(self):
         d = super().state()
         d.update({"sdp": self.site(), "blocks": self.blocks(), "zones": [dict(z) for z in self.zones], "bays": [dict(b) for b in self.bays],
-                  "prules": self.rules_now()})
+                  "prules": self.rules_now(), "gen": self._gen_names()})
         return d
 
     def set_state(self, d):
@@ -1221,6 +1411,7 @@ class SdpPage(SitePage):
             self.zones = [dict(z) for z in (d.get("zones") or []) if isinstance(z, dict) and z.get("poly")]
             self.bays = [dict(b) for b in (d.get("bays") or []) if isinstance(b, dict) and "x" in b]
             self.sel_bay = self.sel_zone = -1
+            self.gen_names = [str(n) for n in (d.get("gen") or [])]
         finally:
             self._pbusy = False
         self._refresh_sum()

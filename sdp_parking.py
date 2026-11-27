@@ -177,6 +177,10 @@ def problems(b, r, site, others=()):
 
 
 # ---- the automatic layout
+def _area(poly):
+    return 0.5 * sum(poly[i][0] * poly[(i + 1) % len(poly)][1] - poly[(i + 1) % len(poly)][0] * poly[i][1] for i in range(len(poly)))
+
+
 def _longest_dir(poly):
     best, ang = -1.0, 0.0
     for i in range(len(poly)):
@@ -229,8 +233,9 @@ def fill(zone, site, r=None, angle=None, keep=(), name=""):
     base = _longest_dir(zone) if angle is None else angle
     best = []
     for th in ((base, base + 90.0) if angle is None else (base,)):
-        for ty in [i * 1.0 for i in range(int(math.ceil(2 * r["l"] + r["aisle"])))]:
-            for tx in (0.0, r["w"] / 2.0):
+        big = abs(_area(zone)) > 3000.0              # a big area: fewer shifts, the edge matters less (keeps it quick)
+        for ty in [i * (3.0 if big else 1.0) for i in range(int(math.ceil((2 * r["l"] + r["aisle"]) / (3.0 if big else 1.0))))]:
+            for tx in ((0.0,) if big else (0.0, r["w"] / 2.0)):
                 got = _layout(zone, site, r, th, tx, ty, list(keep))
                 if len(got) > len(best):
                     best = got
@@ -249,3 +254,42 @@ def single(x, y, a, r=None):
 def required(units, per_unit=1.0, visitor_per=5):
     """bays needed: a bay (or more) for every unit, and a visitor's bay for every `visitor_per` units"""
     return int(math.ceil(units * per_unit - 1e-9)) + (int(math.ceil(units / float(visitor_per) - 1e-9)) if visitor_per else 0)
+
+
+# ---- placing blocks (the site solver)
+def block_slots(env, obstacles, w, d, side_gap, front_gap, theta=None):
+    """Where blocks of w x d metres fit inside `env` (the area inside the building lines), in rows along the longest side (or along theta):
+    `side_gap` between blocks in a row, `front_gap` between rows (room for a parking module). Returns the rectangles, first row first.
+    The start of the grid is shifted a little and the layout with the most blocks is kept."""
+    env = [tuple(p) for p in env]
+    if len(env) < 3:
+        return []
+    th = _longest_dir(env) if theta is None else theta
+    c, s = math.cos(math.radians(th)), math.sin(math.radians(th))
+    to_w = lambda x, y: (x * c - y * s, x * s + y * c)
+    loc = [(p[0] * c + p[1] * s, -p[0] * s + p[1] * c) for p in env]
+    x0, y0, x1, y1 = bbox(loc)
+    obst = [[tuple(p) for p in o] for o in obstacles]
+    ob = [bbox(o) for o in obst]
+    best = []
+    for ox in (0.0, w / 2.0, w + side_gap / 2.0):
+        for oy in (0.0, front_gap / 2.0, front_gap):
+            got = []
+            y = y0 + oy
+            while y + d <= y1 + 1e-9:
+                x = x0 + ox
+                while x + w <= x1 + 1e-9:
+                    cx, cy = to_w(x + w / 2.0, y + d / 2.0)
+                    R = rect(cx, cy, th, w, d)
+                    if inside(R, env):
+                        box = bbox(R)
+                        if all(not _near(box, ob[k], side_gap) or poly_dist(R, obst[k]) >= side_gap - 1e-6 for k in range(len(obst))) and \
+                                all(poly_dist(R, g) >= side_gap - 1e-6 for g in got):
+                            got.append(R)
+                            x += w + side_gap
+                            continue
+                    x += 1.0
+                y += d + front_gap
+            if len(got) > len(best):
+                best = got
+    return best
