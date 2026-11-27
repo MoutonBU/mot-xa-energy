@@ -6137,15 +6137,17 @@ class MailPage(_QW):
         self._rw = self.sa.viewport().width()
         bg, fg, mute, line = self.colors()
         n = len(self.msgs)
-        for i, (m, html, plain, atts, inline) in enumerate(self.msgs):
+        for i, (m, html, plain, atts, inline) in reversed(list(enumerate(self.msgs))):          # the newest reply is on top, the oldest at the bottom
             card = _QF()
-            card.setStyleSheet("QFrame#mcard{border:1px solid %s;border-radius:8px;}" % line)
+            fresh = "UNREAD" in (m.get("labelIds") or [])
+            card.setStyleSheet("QFrame#mcard{border:2px solid #2fb465;border-radius:8px;}" if fresh else "QFrame#mcard{border:1px solid %s;border-radius:8px;}" % line)
             card.setObjectName("mcard")
             cv = _VB(card)
             fr = mail_header(m, "From")
             to = mail_header(m, "To")
             cc = mail_header(m, "Cc")
-            hd = _QL("<b>%s</b> &lt;%s&gt; &nbsp; <span style='color:%s'>%s</span><br><span style='color:%s'>to %s%s</span>" % (
+            hd = _QL("%s<b>%s</b> &lt;%s&gt; &nbsp; <span style='color:%s'>%s</span><br><span style='color:%s'>to %s%s</span>" % (
+                "<span style='background:#2fb465;color:#ffffff;font-weight:800;'>&nbsp;NEW&nbsp;</span>&nbsp; " if fresh else "",
                 _html.escape(mail_name(fr)), _html.escape(_parseaddr(fr)[1]), mute, _html.escape(mail_full_date(m)), mute,
                 _html.escape(to or "me"), _html.escape(("   cc " + cc) if cc else "")))
             hd.setTextFormat(Qt.TextFormat.RichText)

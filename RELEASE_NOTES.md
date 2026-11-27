@@ -1,10 +1,11 @@
 # MCP Practice Suite - Release notes
 
-Current version: 1.86.363
+Current version: 1.86.364
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
+- **Mail: newest reply on top.** In an open conversation the newest email is now at the top and the oldest at the bottom. Emails you have not read yet get a green border and a green NEW tag.
 - **Fixed a freeze when mail with big drawing PDFs arrived.** Reading order sheets from attachments could lock the program for minutes on large A1 drawing PDFs (found from a user's bug report). Big sheets are now skipped for table reading and there is a time limit.
 - **Other email accounts in Mail (your own domain, Outlook, Yahoo, iCloud).** In Mail press the + Add account square (or the settings cog) > Other email account, type the address and password: the program finds the mail server itself (or tick "Other ways to connect" to type the servers). The account then sits next to your Gmail ones with the same inbox, reading, replying, folders as labels, search, stars, trash, attachments and new-mail pop-ups; replies are sent through that account's own mail server and kept in its Sent folder. **This version needs the full installer** (it uses a new part of Python's mail library).
 - **Projects: Today view, daily summary and templates.** The Today button lists everything of yours that is overdue, due today, due tomorrow or urgent (double-click opens its project). Once a day, from 07:00, a pop-up gives the same summary, even with the window closed to the tray. From template starts a project with its groups and to-dos ready: House plans, Building line departure, Council submission, Site development plan.
