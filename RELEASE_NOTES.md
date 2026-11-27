@@ -1,10 +1,11 @@
 # MCP Practice Suite - Release notes
 
-Current version: 1.86.364
+Current version: 1.86.365
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
+- **Mail: Promotions, Social, Updates and Forums are marked read by themselves.** Only real mail (the Primary tab) stays unread, counts only real mail, and only real mail gives a pop-up. Works for every Gmail account and also clears the ones already waiting. It can be switched off in the Mail settings cog.
 - **Mail: newest reply on top.** In an open conversation the newest email is now at the top and the oldest at the bottom. Emails you have not read yet get a green border and a green NEW tag.
 - **Fixed a freeze when mail with big drawing PDFs arrived.** Reading order sheets from attachments could lock the program for minutes on large A1 drawing PDFs (found from a user's bug report). Big sheets are now skipped for table reading and there is a time limit.
 - **Other email accounts in Mail (your own domain, Outlook, Yahoo, iCloud).** In Mail press the + Add account square (or the settings cog) > Other email account, type the address and password: the program finds the mail server itself (or tick "Other ways to connect" to type the servers). The account then sits next to your Gmail ones with the same inbox, reading, replying, folders as labels, search, stars, trash, attachments and new-mail pop-ups; replies are sent through that account's own mail server and kept in its Sent folder. **This version needs the full installer** (it uses a new part of Python's mail library).

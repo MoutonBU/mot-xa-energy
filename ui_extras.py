@@ -1984,6 +1984,7 @@ from PySide6.QtWidgets import (QAbstractItemView as _AIV, QCheckBox as _QCheck, 
                                QScrollArea as _QSA, QSizePolicy as _QSP, QMenu as _QMenu, QComboBox as _QCombo, QInputDialog as _QID)
 
 MAIL_SYSTEM = [("INBOX", "Inbox"), ("STARRED", "Starred"), ("SENT", "Sent"), ("DRAFT", "Drafts"), ("SPAM", "Spam"), ("TRASH", "Trash"), ("ALL", "All Mail")]
+MAIL_AUTO_READ = ("CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL", "CATEGORY_UPDATES", "CATEGORY_FORUMS")
 MAIL_CATEGORIES = [("CATEGORY_PERSONAL", "Primary"), ("CATEGORY_PROMOTIONS", "Promotions"), ("CATEGORY_SOCIAL", "Social"), ("CATEGORY_UPDATES", "Updates")]
 ROLE_THREAD, ROLE_SENDER, ROLE_SUBJECT, ROLE_SNIP, ROLE_DATE, ROLE_UNREAD, ROLE_STAR, ROLE_CHECK, ROLE_CLIP = [Qt.ItemDataRole.UserRole + i for i in range(1, 10)]
 ROLE_LABS = Qt.ItemDataRole.UserRole + 10          # the colours of the user labels on a conversation
@@ -4281,6 +4282,8 @@ class MailPage(_QW):
         self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self._row_menu)
         self._topen = {}
+        self._sweep = {}
+        self._swept_now = False
         self._tlock = {}
         self._tpend = {}
         self._qopen = set()                                       # messages whose quoted text is shown
@@ -4746,6 +4749,10 @@ class MailPage(_QW):
         w_.setCheckable(True)
         w_.setChecked(bool(self.S.get("mail_white")))
         w_.toggled.connect(self._set_white)
+        ar = m.addAction("Mark Promotions, Social and Updates as read by itself")
+        ar.setCheckable(True)
+        ar.setChecked(bool(self.G.get("mail_auto_read", True)))
+        ar.toggled.connect(lambda on: (self.G.__setitem__("mail_auto_read", bool(on)), self.get_M().save_settings()))
         a = m.addAction("Pop-up when new mail arrives")
         a.setCheckable(True)
         a.setChecked(bool(self.S.get("mail_notify", True)))
@@ -4901,6 +4908,8 @@ class MailPage(_QW):
                 for ma in rec.get("messagesAdded", []) or []:
                     m = ma.get("message", {})
                     lb = m.get("labelIds") or []
+                    if any(x in lb for x in MAIL_AUTO_READ):
+                        continue                                                    # Promotions / Social / Updates: no pop-up, and they are marked read below
                     if m.get("id") and "INBOX" in lb and "DRAFT" not in lb and m["id"] not in ids:          # mail you send to yourself is in the inbox too
                         ids.append(m["id"])
             rows = []
@@ -4915,6 +4924,8 @@ class MailPage(_QW):
                              "tid": g.get("threadId", mid), "acct": str(S.get("mail_address", "")), "multi": multi})
             return h.get("historyId") or hid, rows
 
+        S_on = bool(G.get("mail_auto_read", True))
+
         def work():
             out = []
             for a in accs:                                               # every account is watched, whichever one is open
@@ -4922,6 +4933,15 @@ class MailPage(_QW):
                     hid, rows = one(a)
                 except Exception:
                     continue
+                swept = 0
+                if S_on and not MailAcct(G, a).get("imap_host") and _time.time() - self._sweep.get(self._acc_key(a), 0) > 40:
+                    self._sweep[self._acc_key(a)] = _time.time()
+                    try:
+                        swept = self._auto_read(MailAcct(G, a))
+                    except Exception:
+                        swept = 0
+                if swept and a is self._act:
+                    self._swept_now = True
                 unread = None
                 if due and a is not self._act:
                     try:
@@ -4938,6 +4958,11 @@ class MailPage(_QW):
             if err or not res:
                 return
             allrows = []
+            if getattr(self, "_swept_now", False):
+                self._swept_now = False
+                if self.isVisible() and self.stack.currentIndex() == 0 and not self.query:
+                    self.load_labels(quiet=True)
+                    self.load_list(reset=False, quiet=True)
             for a, hid, rows, unread in res:
                 if hid:
                     MailAcct(G, a)["mail_notify_hid"] = hid
@@ -4954,6 +4979,21 @@ class MailPage(_QW):
                 self._show_toast(allrows)
             self._rebuild_acc_bar()
         self.run(work, done, any_account=True)
+
+    def _auto_read(self, S):
+        """Promotions, Social, Updates and Forums mail is marked as read by itself: only real mail (Primary) stays unread. Returns how many were changed."""
+        q = "is:unread (category:promotions OR category:social OR category:updates OR category:forums)"
+        n = 0
+        for _ in range(4):
+            res = self.mo.gmail_call(S, "GET", "messages", params={"q": q, "labelIds": ["INBOX"], "maxResults": 500}) or {}
+            ids = [m["id"] for m in (res.get("messages") or [])]
+            if not ids:
+                break
+            self.mo.gmail_call(S, "POST", "messages/batchModify", body={"ids": ids, "removeLabelIds": ["UNREAD"]})
+            n += len(ids)
+            if len(ids) < 500:
+                break
+        return n
 
     def _show_toast(self, rows):
         try:

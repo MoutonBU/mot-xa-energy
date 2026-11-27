@@ -172,3 +172,16 @@ d2.connect_now()
 assert wait(lambda: "Could not" in d2.status.text()), d2.status.text()
 print("dialog ok:", d2.status.text())
 print("ALL OK")
+
+# ---- Promotions / Social / Updates are marked read by themselves (Gmail accounts)
+calls = []
+def gm2(S_, method, path, params=None, body=None, timeout=60):
+    calls.append((method, path, params, body))
+    if path == "messages":
+        return {"messages": [{"id": "p1"}, {"id": "p2"}]}
+    return {}
+mo.gmail_call = gm2
+n = mp._auto_read(M.SETTINGS)
+assert n == 2 and any(c[1] == "messages/batchModify" and c[3]["ids"] == ["p1", "p2"] and c[3]["removeLabelIds"] == ["UNREAD"] for c in calls), calls
+assert "category:promotions" in calls[0][2]["q"] and "is:unread" in calls[0][2]["q"]
+print("auto-read ok")
