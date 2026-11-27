@@ -91,3 +91,15 @@ assert len(pg6.schemes) >= 2, len(pg6.schemes)
 st = pg6.state(); pg7 = sc.SdpPage(W()); pg7.set_state(st); assert len(pg7.excl) == 1
 os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
 print("ok options", [s_["name"] for s_ in pg6.schemes])
+# drag corners by hand
+pg8 = sc.SdpPage(W()); pg8.q_w.setValue(60), pg8.q_d.setValue(40); pg8.make_rect()
+pg8.zone_whole_stand(); pg8.fill_all()
+v0 = [tuple(q) for q in pg8.verts()]
+h = pg8.corner_at((v0[2][0] - 0.2, v0[2][1] + 0.1), 1.0)
+assert h and h[0] in ("stand", "zone"), h
+pg8.move_corner(("stand", 0, 2), v0[2][0] - 10, v0[2][1]); pg8.corner_released()
+assert abs(pg8.verts()[2][0] - (v0[2][0] - 10)) < 0.01
+pg8.move_corner(("zone", 0, 1), 40.0, 5.0); pg8.corner_released()
+assert pg8.zones[0]["poly"][1] == [40.0, 5.0] and not any(pg8._bad)
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+print("ok corners")

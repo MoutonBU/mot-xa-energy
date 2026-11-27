@@ -216,6 +216,13 @@ class ParkView(PlanView):
                     pg.add_bay_at(w)
                     return
                 if self.mode == "select" and not self._hit_north(e.position()):
+                    h = pg.corner_at(w, 10.0 / self._v[0])
+                    if h is not None:
+                        self.setFocus()
+                        self.drag = ("corner",) + h
+                        self.setCursor(Qt.CursorShape.SizeAllCursor)
+                        pg.set_hint("Drag the corner to where you want it.")
+                        return
                     from site_import import point_in_poly
                     if not any(point_in_poly(w, bpoly(b)) for b in pg.buildings()):
                         i = pg.bay_at(w)
@@ -236,6 +243,9 @@ class ParkView(PlanView):
     def mouseMoveEvent(self, e):
         w = self._world(e.position())
         if w is not None:
+            if self.drag and self.drag[0] == "corner":
+                self.page.move_corner(self.drag[1:], round(w[0] * 20) / 20, round(w[1] * 20) / 20)
+                return
             if self.drag and self.drag[0] == "bay":
                 _, i, dx, dy = self.drag
                 b = self.page.bays[i]
@@ -249,6 +259,11 @@ class ParkView(PlanView):
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
+        if self.drag and self.drag[0] == "corner":
+            self.drag = None
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+            self.page.corner_released()
+            return
         if self.drag and self.drag[0] == "bay":
             self.drag = None
             self.setCursor(Qt.CursorShape.ArrowCursor)
@@ -720,6 +735,39 @@ class SdpPage(SitePage):
             return
         self.plan.begin("trace_parking")
         self.set_hint("Click each corner of the parking area, round the buildings. Hold Shift to keep a line straight. Double-click or press Enter to finish.")
+
+    def corner_at(self, w, tol):
+        """the corner (of the stand, a parking area or a keep-clear area) under world point w: (kind, i, k) or None"""
+        best, hit = tol, None
+        for kind, polys in (("excl", self.excl), ("zone", [z["poly"] for z in self.zones]), ("stand", [self.verts()])):
+            for i, pl in enumerate(polys):
+                for k, q in enumerate(pl):
+                    d = math.hypot(q[0] - w[0], q[1] - w[1])
+                    if d < best:
+                        best, hit = d, (kind, i, k)
+        return hit
+
+    def move_corner(self, h, x, y):
+        kind, i, k = h
+        if kind == "stand":
+            vs = [tuple(q) for q in self.verts()]
+            vs[k] = (x, y)
+            self.set_vertices(vs)
+        elif kind == "zone":
+            self.zones[i]["poly"][k] = [x, y]
+        else:
+            self.excl[i][k] = [x, y]
+        self.plan.update()
+
+    def corner_released(self):
+        """a corner was moved: the parking is checked again, and re-parked when 'by itself' is on"""
+        if self.live.isChecked() and self.zones:
+            self._fill(list(range(len(self.zones))))
+        else:
+            self.refresh_parking(user=True)
+        self.changed()
+        self._after_edit(True)
+        self.set_hint("Corner moved. Drag any corner of the stand, a parking area or a keep-clear area.")
 
     def start_excl(self):
         if len(self.verts()) < 3:
@@ -1326,6 +1374,13 @@ class SdpPage(SitePage):
                 p.setPen(QColor("#ffffff") if k == "refuse" else QColor("#111111"))
                 c = pl.boundingRect().center()
                 p.drawText(_QR(c.x() - 70, c.y() - 9, 140, 18), int(Qt.AlignmentFlag.AlignCenter), b["name"])
+        if not snapshot and self.plan.mode == "select":                  # handles on every corner that can be dragged
+            p.setPen(QPen(QColor("#222222"), 1))
+            p.setBrush(QColor("#ffffff"))
+            for pl in [self.verts()] + [z["poly"] for z in self.zones] + list(self.excl):
+                for q in pl:
+                    c = to(q)
+                    p.drawRect(QRectF(c.x() - 4, c.y() - 4, 8, 8))
         for e in self.excl:
             p.setPen(QPen(QColor(110, 110, 110), 1.4))
             p.setBrush(QBrush(QColor(120, 120, 120, 110), Qt.BrushStyle.BDiagPattern))

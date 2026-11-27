@@ -1,10 +1,11 @@
 # MCP Practice Suite - Release notes
 
-Current version: 1.86.390
+Current version: 1.86.391
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
+- **SDP Creator: drag the corners by hand.** In the plan, every corner of the stand, of a parking area and of a keep-clear area shows a small white square; drag it to move the corner. The parking follows when you let go (when 'Re-park by itself' is on).
 - **SDP Creator: keep-clear areas and Find options (TestFit site solver).** "Keep an area clear" draws an area (flood zone, servitude, slope, trees) where no block or bay may go; the generator and the parking work round it. "Find options..." solves every block type in both directions, keeps those that meet your limits (minimum units, maximum coverage, parking requirement met) as schemes, and opens the one with the most units, so you can compare them side by side.
 - **SDP Creator: New plan, and parking fills the area you draw.** A "New plan" button (Parking step and ribbon) clears the stand, buildings, parking, schedule and schemes for a fresh SDP. When you finish drawing a parking polygon round the buildings it is filled with bays straight away (tick box to turn that off); the live re-parking keeps it up to date when you move a building.
 - **SDP Creator parking solver extras (like TestFit).** On the Parking step: set aside accessible and EV bays (a percentage you type; the bays nearest the buildings are used, shown in their own colours and counted in the sheet), save the layout as a scheme and compare several schemes side by side (blocks, units, bays against needed, bays per unit, m2 per bay, coverage, FAR), open or delete a scheme, and export the layout to CAD (DXF with layers for stand, buildings, bays, accessible and EV bays) or the numbers to CSV.
