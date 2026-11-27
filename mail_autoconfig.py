@@ -27,7 +27,7 @@ def parse_autoconfig(xml_text, email):
     for s in root.iter("outgoingServer"):
         if (s.get("type") or "smtp") != "smtp":
             continue
-        host = (s.findtext("hostname") or "").strip()
+        host = (s.findtext("hostname") or "").strip().replace("%EMAILDOMAIN%", dom).replace("%EMAILLOCALPART%", local).replace("%EMAILADDRESS%", email)
         port = int((s.findtext("port") or "587").strip() or 587)
         sock = (s.findtext("socketType") or "STARTTLS").upper()
         sec = "SSL" if sock in ("SSL", "TLS") else "STARTTLS" if sock == "STARTTLS" else "None"
@@ -129,3 +129,85 @@ def detect(email, password, progress=None):
     if dom in KNOWN and first_err:
         raise RuntimeError("could not reach %s. %s" % (KNOWN[dom][0], first_err))
     raise RuntimeError("could not find the mail server for %s. Tick \"Other ways to connect\" and type the outgoing (SMTP) server, which your email provider can tell you." % dom)
+
+
+# ------------------------------------------------------------------ reading mail (IMAP) for accounts that are not Gmail
+KNOWN_IMAP = {
+    "gmail.com": ("imap.gmail.com", 993, "SSL"), "googlemail.com": ("imap.gmail.com", 993, "SSL"),
+    "outlook.com": ("outlook.office365.com", 993, "SSL"), "hotmail.com": ("outlook.office365.com", 993, "SSL"),
+    "live.com": ("outlook.office365.com", 993, "SSL"), "yahoo.com": ("imap.mail.yahoo.com", 993, "SSL"),
+    "icloud.com": ("imap.mail.me.com", 993, "SSL"), "me.com": ("imap.mail.me.com", 993, "SSL"),
+}
+
+
+def parse_autoconfig_imap(xml_text, email):
+    out = []
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return out
+    local, dom = email.split("@", 1)
+    for s in root.iter("incomingServer"):
+        if (s.get("type") or "") != "imap":
+            continue
+        host = (s.findtext("hostname") or "").strip().replace("%EMAILDOMAIN%", dom).replace("%EMAILLOCALPART%", local).replace("%EMAILADDRESS%", email)
+        port = int((s.findtext("port") or "993").strip() or 993)
+        sock = (s.findtext("socketType") or "SSL").upper()
+        sec = "SSL" if sock in ("SSL", "TLS") else "STARTTLS" if sock == "STARTTLS" else "None"
+        user = (s.findtext("username") or "%EMAILADDRESS%").replace("%EMAILADDRESS%", email).replace("%EMAILLOCALPART%", local).replace("%EMAILDOMAIN%", dom)
+        if host:
+            out.append((host, port, sec, user))
+    return out
+
+
+def imap_candidates(email):
+    local, dom = email.lower().split("@", 1)
+    c = []
+    if dom in KNOWN_IMAP:
+        h, p, s = KNOWN_IMAP[dom]
+        c.append((h, p, s, email))
+    for url in ("https://autoconfig.%s/mail/config-v1.1.xml" % dom, "https://%s/.well-known/autoconfig/mail/config-v1.1.xml" % dom,
+                "https://autoconfig.thunderbird.net/v1.1/%s" % dom):
+        c += parse_autoconfig_imap(fetch(url), email)
+        if c:
+            break
+    for h in ("imap.%s" % dom, "mail.%s" % dom, dom):
+        for p, s in ((993, "SSL"), (143, "STARTTLS")):
+            c.append((h, p, s, email))
+    seen, out = set(), []
+    for x in c:
+        if x[:3] not in seen:
+            seen.add(x[:3])
+            out.append(x)
+    return out
+
+
+def detect_imap(email, password, progress=None, candidates_=None):
+    """Finds the incoming (IMAP) server that accepts this login. Returns {"imap_host", "imap_port", "imap_security", "imap_user"}; raises RuntimeError with a plain reason."""
+    import mail_imap
+    email = email.strip()
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        raise RuntimeError("that does not look like an email address")
+    refused, first_err = None, ""
+    for host, port, sec, user in (candidates_ or imap_candidates(email)):
+        if progress:
+            progress("Looking for the mail server (%s) ..." % host)
+        users = [user] + ([email.split("@")[0]] if user == email else [])
+        for u in users:
+            r, why = mail_imap.test_login(host, port, sec, u, password)
+            if r == "ok":
+                return {"imap_host": host, "imap_port": port, "imap_security": sec, "imap_user": u}
+            if r == "down" and not first_err:
+                first_err = "%s port %d: %s" % (host, port, why)
+            if r == "auth":
+                refused = host
+            if r == "down":
+                break
+        if refused:
+            break
+    dom = email.split("@")[1].lower()
+    if refused:
+        if dom in APP_PASSWORD_DOMAINS:
+            raise RuntimeError("%s refused the password. %s needs a special app password instead of your normal one." % (refused, dom.split(".")[0].title()))
+        raise RuntimeError("%s found your mail account but refused the email or password. Check them and try again." % refused)
+    raise RuntimeError("could not find the incoming mail server for %s (%s). Tick \"Other ways to connect\" and type the incoming (IMAP) server, which your email provider can tell you." % (dom, first_err or "no answer"))

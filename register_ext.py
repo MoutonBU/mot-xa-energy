@@ -698,6 +698,12 @@ def deliver(S, m, bcc_me=False, thread_id=""):
     c = {x: S.get(x, "") for x in ("smtp_host", "smtp_port", "smtp_security", "smtp_user", "smtp_pass")}
     rc = [a for hdr in ("To", "Cc") for a in addresses(m[hdr] or "")] + ([me] if bcc_me and me else [])
     MailMixin._send_with_bcc(c, m, rc) if rc else smtp_send(c, m)
+    if S.get("imap_host"):                                       # a non-Gmail account in the Mail tab: keep a copy in its Sent folder
+        try:
+            import mail_imap
+            mail_imap.append_sent(S, m)
+        except Exception:
+            pass
 
 
 def smtp_send(c, msg):

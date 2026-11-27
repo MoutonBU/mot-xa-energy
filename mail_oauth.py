@@ -350,6 +350,9 @@ def _gmail_http(method, path, hdr, data, timeout):
 
 def gmail_call(S, method, path, params=None, body=None, timeout=60):
     """Any call to https://gmail.googleapis.com/gmail/v1/users/me/<path> (GET, POST ...); returns the decoded JSON. Used by the Mail tab."""
+    if S.get("imap_host"):                                       # a non-Gmail account: the same calls are answered over IMAP
+        import mail_imap
+        return mail_imap.call(S, method, path, params, body, timeout)
     tok = access_token(S, "gmail")
     url = "/gmail/v1/users/me/" + path + (("?" + urllib.parse.urlencode(params, doseq=True)) if params else "")
     data = json.dumps(body).encode() if body is not None else None
@@ -393,6 +396,9 @@ def gmail_batch(S, paths, timeout=60):
     """Up to 100 GET calls in ONE round trip (Gmail's batch endpoint): returns a list of decoded JSON (None where one failed), or None if the batch itself failed."""
     if not paths:
         return []
+    if S.get("imap_host"):
+        import mail_imap
+        return mail_imap.batch(S, paths, timeout)
     tok = access_token(S, "gmail")
     bd = "mot" + secrets.token_hex(8)
     parts = []
@@ -431,6 +437,9 @@ def gmail_batch(S, paths, timeout=60):
 
 def gmail_bytes(S, path, timeout=120):
     """Raw GET (attachments come back as JSON with base64 data, decoded here)."""
+    if S.get("imap_host"):
+        import mail_imap
+        return mail_imap.bytes_(S, path, timeout)
     j = gmail_call(S, "GET", path, timeout=timeout)
     d = j.get("data", "")
     return base64.urlsafe_b64decode(d + "=" * (-len(d) % 4))

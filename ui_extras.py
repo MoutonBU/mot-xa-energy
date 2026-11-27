@@ -3474,17 +3474,28 @@ class MailAcct:
     """The settings as one Gmail account of the Mail tab sees them: that account's own sign-in, address and change marker; everything else is shared.
     The main account (the one the rest of the program uses) is passed straight through, so nothing changes for it."""
     OWN = {"google_refresh": "refresh", "gmail_modify": "modify", "gmail_read": "read", "mail_address": "address", "mail_notify_hid": "hid"}
+    IMAP_OWN = ("imap_host", "imap_port", "imap_security", "imap_user", "imap_pass", "smtp_host", "smtp_port", "smtp_security", "smtp_user", "smtp_pass")
 
     def __init__(self, G, acct=None):
         self.G, self.a = G, acct
 
+    def _imap(self):
+        return self.a is not None and not self.a.get("main") and self.a.get("kind") == "imap"
+
     def _own(self, k):
-        return self.a is not None and not self.a.get("main") and k in self.OWN
+        return self.a is not None and not self.a.get("main") and (k in self.OWN or (k in self.IMAP_OWN and self._imap()))
 
     def get(self, k, d=None):
         if self._own(k):
-            v = self.a.get(self.OWN[k])
+            v = self.a.get(self.OWN.get(k, k))
             return d if v is None else v
+        if self._imap():
+            if k == "mail_provider":
+                return "smtp"
+            if k in ("gmail_modify", "gmail_read"):
+                return True
+            if k == "imap_host":
+                return self.a.get("imap_host")
         if k == "mail_provider" and self.a is not None and not self.a.get("main"):
             return "gmail"
         return self.G.get(k, d)
@@ -3497,7 +3508,7 @@ class MailAcct:
 
     def __setitem__(self, k, v):
         if self._own(k):
-            self.a[self.OWN[k]] = v
+            self.a[self.OWN.get(k, k)] = v
         else:
             self.G[k] = v
 
@@ -3512,10 +3523,148 @@ class MailAcct:
     def pop(self, k, d=None):
         v = self.get(k, d)
         if self._own(k):
-            self.a.pop(self.OWN[k], None)
+            self.a.pop(self.OWN.get(k, k), None)
         else:
             self.G.pop(k, None)
         return v
+
+
+class ImapAccountDialog(_QD):
+    """Add an email account that is not Gmail (your own domain, Outlook, Yahoo, iCloud ...): address + password, the servers are found automatically."""
+    prog = _Signal(str)
+    fin = _Signal(bool, str, object)
+
+    def __init__(self, parent, existing=None):
+        super().__init__(parent)
+        self.setWindowTitle("Add an email account")
+        self.setMinimumWidth(480)
+        self.cfg = None
+        self._closed = False
+        v = _VB(self)
+        v.addWidget(_QL("<h3>Add another email account</h3>Type the address and password of the mailbox (for example <i>you@yourcompany.co.za</i>). "
+                        "The program finds the mail server by itself and shows this mailbox next to your Gmail ones."))
+        self.addr = _QLE()
+        self.addr.setPlaceholderText("name@yourdomain.co.za")
+        self.pw = _QLE()
+        self.pw.setEchoMode(_QLE.EchoMode.Password)
+        self.pw.setPlaceholderText("Email password (Yahoo, iCloud, Outlook: an app password)")
+        v.addWidget(_QL("<b>Email address</b>"))
+        v.addWidget(self.addr)
+        v.addWidget(_QL("<b>Password</b>"))
+        v.addWidget(self.pw)
+        self.adv = _QCheck("Other ways to connect (type the servers by hand)")
+        v.addWidget(self.adv)
+        self.man = _QW()
+        g = _VB(self.man)
+        g.setContentsMargins(0, 0, 0, 0)
+        self.f = {}
+        for key, lab, ph in (("imap_host", "Incoming (IMAP) server", "mail.yourdomain.co.za"), ("smtp_host", "Outgoing (SMTP) server", "mail.yourdomain.co.za")):
+            row = _HB()
+            row.addWidget(_QL(lab))
+            e = _QLE()
+            e.setPlaceholderText(ph)
+            pt = _QLE()
+            pt.setFixedWidth(60)
+            pt.setText("993" if key == "imap_host" else "465")
+            sc = _QCombo()
+            sc.addItems(["SSL", "STARTTLS", "None"])
+            sc.setCurrentIndex(0 if key == "imap_host" else 0)
+            row.addWidget(e, 1)
+            row.addWidget(pt)
+            row.addWidget(sc)
+            g.addLayout(row)
+            self.f[key] = (e, pt, sc)
+        urow = _HB()
+        urow.addWidget(_QL("User name (if not the address)"))
+        self.user = _QLE()
+        urow.addWidget(self.user, 1)
+        g.addLayout(urow)
+        self.man.setVisible(False)
+        self.adv.toggled.connect(self.man.setVisible)
+        v.addWidget(self.man)
+        self.status = _QL("")
+        self.status.setWordWrap(True)
+        v.addWidget(self.status)
+        row = _HB()
+        row.addStretch(1)
+        self.go = _QPB("Connect")
+        self.go.setDefault(True)
+        cancel = _QPB("Cancel")
+        row.addWidget(cancel)
+        row.addWidget(self.go)
+        v.addLayout(row)
+        cancel.clicked.connect(self.reject)
+        self.go.clicked.connect(self.connect_now)
+        self.prog.connect(self.status.setText)
+        self.fin.connect(self._finished)
+        self.existing = existing
+
+    def done(self, r):
+        self._closed = True
+        super().done(r)
+
+    def _emit(self, sig, *a):
+        try:
+            if not self._closed:
+                sig.emit(*a)
+        except RuntimeError:
+            pass
+
+    def connect_now(self):
+        import mail_autoconfig as ac
+        addr, pw = self.addr.text().strip(), self.pw.text()
+        if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", addr):
+            self.status.setText("Type the full email address first.")
+            return
+        if not pw:
+            self.status.setText("Type the password first.")
+            return
+        dom = addr.split("@")[1].lower()
+        if dom in ac.APP_PASSWORD_DOMAINS:
+            pw = pw.replace(" ", "")
+        if self.existing and addr.lower() in self.existing:
+            self.status.setText("%s is already in the Mail tab." % addr)
+            return
+        manual = self.adv.isChecked() and self.f["imap_host"][0].text().strip()
+        user = self.user.text().strip()
+        self.go.setEnabled(False)
+        self.status.setText("Connecting ...")
+        fl = {k: (e.text().strip(), pt.text().strip(), sc.currentText()) for k, (e, pt, sc) in self.f.items()}
+
+        def work():
+            try:
+                if manual:
+                    h, p, sec = fl["imap_host"]
+                    u = user or addr
+                    r, why = __import__("mail_imap").test_login(h, int(p or 993), sec, u, pw)
+                    if r != "ok":
+                        raise RuntimeError("the incoming server %s did not accept the login (%s)" % (h, why or "refused"))
+                    cfg = {"imap_host": h, "imap_port": int(p or 993), "imap_security": sec, "imap_user": u}
+                    sh, sp, ss = fl["smtp_host"]
+                    if sh:
+                        cfg.update({"smtp_host": sh, "smtp_port": int(sp or 465), "smtp_security": ss, "smtp_user": u})
+                else:
+                    cfg = ac.detect_imap(addr, pw, progress=lambda t: self._emit(self.prog, t))
+                    try:
+                        self._emit(self.prog, "Found the incoming server. Now looking for the outgoing server ...")
+                        cfg.update(ac.detect(addr, pw, progress=lambda t: self._emit(self.prog, t)))
+                    except Exception as e:
+                        cfg["smtp_warning"] = str(e)
+                cfg["imap_pass"] = pw
+                cfg["smtp_pass"] = pw
+                cfg["address"] = addr.lower()
+                self._emit(self.fin, True, "", cfg)
+            except Exception as e:
+                self._emit(self.fin, False, str(e), None)
+        _th.Thread(target=work, daemon=True).start()
+
+    def _finished(self, ok, msg, cfg):
+        self.go.setEnabled(True)
+        if not ok:
+            self.status.setText("Could not connect: " + msg)
+            return
+        self.cfg = cfg
+        self.accept()
 
 
 class _AccTile(_QF):
@@ -4274,6 +4423,8 @@ class MailPage(_QW):
 
     def _acc_ready(self, a):
         S = MailAcct(self.G, a)
+        if S.get("imap_host"):
+            return True
         return bool(self.mo.configured(S, "gmail") and self.mo.signed_in(S, "gmail") and S.get("gmail_modify"))
 
     def _rebuild_acc_bar(self, force=False):
@@ -4310,7 +4461,7 @@ class MailPage(_QW):
                          lambda a=a: self._switch_account(a.get("address")), lambda pos, a=a: self._tile_menu(a, pos), self._acc_photo(a))
             t.setToolTip("%s\nClick to switch to this account; right-click for photo, colour and default" % addr)
             self.acc_lay.addWidget(t)
-        add = _AccTile("+", "Add account", "another Gmail", "#8a9099", False, pal, self._add_account)
+        add = _AccTile("+", "Add account", "Gmail or other email", "#8a9099", False, pal, self._add_menu)
         add.setMinimumWidth(150)
         self.acc_lay.addWidget(add)
         self.acc_lay.addStretch(1)
@@ -4383,6 +4534,33 @@ class MailPage(_QW):
         self.ensure_loaded()
         QTimer.singleShot(0, lambda: self.say(""))
 
+    def _add_menu(self):
+        m = _QMenu(self)
+        m.addAction("Gmail account (sign in with Google)...", self._add_account)
+        m.addAction("Other email account (your own domain, Outlook, Yahoo ...)...", self._add_other)
+        m.exec(QCursor.pos())
+
+    def _add_other(self):
+        have = {str(a.get("address", "")).lower() for a in self._accounts()}
+        d = ImapAccountDialog(self, have)
+        if d.exec() != _QD.DialogCode.Accepted or not d.cfg:
+            return
+        cfg = d.cfg
+        lst = self.G.setdefault("mail_accounts", [])
+        used = {a.get("color") for a in self._accounts()}
+        col = next((c for c in MAIL_ACC_COLS if c not in used), MAIL_ACC_COLS[len(lst) % len(MAIL_ACC_COLS)])
+        warn = cfg.pop("smtp_warning", "")
+        acc = {"kind": "imap", "hid": "", "color": col, "modify": True, "read": True}
+        acc.update(cfg)
+        lst.append(acc)
+        try:
+            self.get_M().save_settings()
+        except Exception:
+            pass
+        self._rebuild_acc_bar(True)
+        self._switch_account(acc["address"])
+        self.say("Added %s.%s" % (acc["address"], (" Reading works, but sending did not: " + warn) if warn else ""), bool(warn))
+
     def _add_account(self):
         if not (self.mo.configured(self.G, "gmail") and self._main.get("address") is not None):
             return
@@ -4422,7 +4600,7 @@ class MailPage(_QW):
     def _remove_account(self, a):
         if a.get("main"):
             return
-        if _QMB.question(self, "Remove account", "Remove %s from the Mail tab?\nThe mail stays in Gmail; you can add the account again later." % a.get("address")) != _QMB.StandardButton.Yes:
+        if _QMB.question(self, "Remove account", "Remove %s from the Mail tab?\nThe mail stays where it is on the mail server; you can add the account again later." % a.get("address")) != _QMB.StandardButton.Yes:
             return
         if a is self._act:
             self._switch_account(self._main.get("address"))
@@ -4560,6 +4738,7 @@ class MailPage(_QW):
         from PySide6.QtWidgets import QMenu
         m = QMenu(self)
         m.addAction("Add another Gmail account...", self._add_account)
+        m.addAction("Add other email account (your own domain, Outlook, Yahoo)...", self._add_other)
         m.addAction("Make this account my default", lambda: self._make_default(self._act))
         m.addSeparator()
         m.addAction("My email signature...", self._edit_signature)
@@ -4637,6 +4816,8 @@ class MailPage(_QW):
         _th.Thread(target=work, daemon=True).start()
 
     def ready(self):
+        if self.S.get("imap_host"):
+            return True
         return bool(self.mo.configured(self.S, "gmail") and self.mo.signed_in(self.S, "gmail") and self.S.get("gmail_modify"))
 
     def _refresh_state(self):
@@ -5301,7 +5482,9 @@ class MailPage(_QW):
         gen = self.gen
         tok = self.tokens[-1] if self.tokens else ""
         label, query, cat = self.label, self.query, self.cat
-        self.cats.setVisible(label == "INBOX" and not query)
+        if self.S.get("imap_host"):
+            cat = 0                                                  # other mail servers have no Promotions / Social tabs
+        self.cats.setVisible(label == "INBOX" and not query and not self.S.get("imap_host"))
         key = (label, query, cat, tok)
         hit = self._lcache.get(key)
         if hit and not quiet:
@@ -5364,7 +5547,7 @@ class MailPage(_QW):
             import time as _tp
             self.mo.background(True)                                 # it never queues in front of what you click on
             _tp.sleep(delay / 1000.0)
-            jobs = [("SENT", "", 0), ("DRAFT", "", 0), ("STARRED", "", 0)] + [("INBOX", "", i) for i in range(1, len(MAIL_CATEGORIES))] + [("INBOX", "", 0), ("ALL", "", 0)]
+            jobs = [("SENT", "", 0), ("DRAFT", "", 0), ("STARRED", "", 0)] + ([] if self.S.get("imap_host") else [("INBOX", "", i) for i in range(1, len(MAIL_CATEGORIES))]) + [("INBOX", "", 0), ("ALL", "", 0)]
             for lab, q, c in jobs:
                 key = (lab, q, c, "")
                 if key in self._lcache:
