@@ -3,12 +3,13 @@ load the survey (DXF, DWG or PDF) under the plan, set the stand and its building
 the parking areas round them. The tool fills an area with bays (2.5 x 5.0 m, with the 7 m aisle in front to reverse out), keeps every bay 0.5 m
 clear of the buildings and checks each bay against the rules. A schedule of the blocks and one PDF sheet finish it.
 The stand, buildings, survey, rotation, north arrow and footprints are Building lines' own (site_lines.SitePage); this file adds the parking."""
+import copy
 import math
 import time
 
 from PySide6.QtCore import QPointF, Qt, QTimer
 from PySide6.QtGui import QBrush, QColor, QFont, QPen, QPolygonF
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout,
+from PySide6.QtWidgets import (QMenu, QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout,
                                QHeaderView, QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout,
                                QWidget)
 
@@ -223,6 +224,15 @@ class ParkView(PlanView):
                         self.setCursor(Qt.CursorShape.SizeAllCursor)
                         pg.set_hint("Drag the corner to where you want it.")
                         return
+                    zi = pg.zone_edge_at(w, 7.0 / self._v[0])
+                    if zi >= 0:
+                        self.setFocus()
+                        pg.pick_zone(zi)
+                        self.drag = ("zone", zi, w[0], w[1], [list(q) for q in pg.zones[zi]["poly"]],
+                                     [(b, b["x"], b["y"]) for b in pg.bays if b.get("auto") and b.get("zone") == pg.zones[zi]["name"]])
+                        self.setCursor(Qt.CursorShape.SizeAllCursor)
+                        pg.set_hint("Drag to move the whole parking area. Right-click it to copy it.")
+                        return
                     from site_import import point_in_poly
                     if not any(point_in_poly(w, bpoly(b)) for b in pg.buildings()):
                         i = pg.bay_at(w)
@@ -246,6 +256,15 @@ class ParkView(PlanView):
             if self.drag and self.drag[0] == "corner":
                 self.page.move_corner(self.drag[1:], round(w[0] * 20) / 20, round(w[1] * 20) / 20)
                 return
+            self._lastw = w
+            if self.drag and self.drag[0] == "zone":
+                _, zi, x0, y0, orig, bays0 = self.drag
+                dx, dy = round((w[0] - x0) * 20) / 20, round((w[1] - y0) * 20) / 20
+                self.page.zones[zi]["poly"] = [[q[0] + dx, q[1] + dy] for q in orig]
+                for b, bx, by in bays0:
+                    b["x"], b["y"] = bx + dx, by + dy
+                self.update()
+                return
             if self.drag and self.drag[0] == "bay":
                 _, i, dx, dy = self.drag
                 b = self.page.bays[i]
@@ -259,6 +278,11 @@ class ParkView(PlanView):
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
+        if self.drag and self.drag[0] == "zone":
+            self.drag = None
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+            self.page.zone_released()
+            return
         if self.drag and self.drag[0] == "corner":
             self.drag = None
             self.setCursor(Qt.CursorShape.ArrowCursor)
@@ -271,6 +295,27 @@ class ParkView(PlanView):
             return
         super().mouseReleaseEvent(e)
 
+    def _context(self, gpos, pos):
+        w = self._world(pos)
+        pg = self.page
+        if w is not None and self.mode == "select" and not self._hit_north(pos):
+            zi = pg.zone_edge_at(w, 7.0 / self._v[0])
+            if zi < 0:
+                from site_import import point_in_poly
+                if not any(point_in_poly(w, bpoly(b)) for b in pg.buildings()) and pg.bay_at(w) < 0:
+                    zi = pg.zone_inside_at(w)
+            if zi >= 0 or pg.clip_zone is not None:
+                menu = QMenu(self)
+                if zi >= 0:
+                    pg.pick_zone(zi)
+                    menu.addAction("Copy this parking area", lambda: pg.copy_zone(zi))
+                    menu.addAction("Delete this parking area", lambda: pg.delete_zone(zi))
+                if pg.clip_zone is not None:
+                    menu.addAction("Paste a copy here", lambda: pg.paste_zone(w))
+                menu.exec(gpos)
+                return
+        super()._context(gpos, pos)
+
     def begin(self, mode, role=None):
         super().begin(mode, role)
         if mode == "add_bay":
@@ -278,7 +323,12 @@ class ParkView(PlanView):
 
     def keyPressEvent(self, e):
         k = e.key()
-        if k in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and self.mode == "select" and self.page.sel_bay >= 0:
+        pg = self.page
+        if e.modifiers() & Qt.KeyboardModifier.ControlModifier and k == Qt.Key.Key_C and pg.sel_bay < 0 and pg.sel_zone >= 0:
+            pg.copy_zone(pg.sel_zone)
+        elif e.modifiers() & Qt.KeyboardModifier.ControlModifier and k == Qt.Key.Key_V and pg.clip_zone is not None:
+            pg.paste_zone(getattr(self, "_lastw", None))
+        elif k in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and self.mode == "select" and self.page.sel_bay >= 0:
             self.page.delete_bay()
         elif k == Qt.Key.Key_R and self.mode in ("select", "add_bay"):
             self.page.rotate_bay()
@@ -299,6 +349,7 @@ class SdpPage(SitePage):
 
     def __init__(self, win):
         self.zones, self.bays, self._bad, self.schemes, self.excl, self.roads = [], [], [], [], [], []
+        self.clip_zone = None
         self._rq = (None, [])
         self._tracing_road = False
         self._tracing_excl = False
@@ -1157,6 +1208,64 @@ class SdpPage(SitePage):
         self.zones.append({"name": nm, "poly": [list(p) for p in pts], "angle": None, "type": "Open"})
         self.sel_zone = len(self.zones) - 1
         self.refresh_parking(user=True)
+
+    def zone_edge_at(self, w, tol):
+        """the parking area whose border is under world point w, or -1 (corners are handled first)"""
+        best, hit = tol, -1
+        for i, z in enumerate(self.zones):
+            pl = z["poly"]
+            if z["name"] == "Whole stand":                          # its border is the stand's own: left to the stand's edge menu
+                continue
+            for k in range(len(pl)):
+                d = sp.seg_pt(tuple(w), tuple(pl[k]), tuple(pl[(k + 1) % len(pl)]))
+                if d < best:
+                    best, hit = d, i
+        return hit
+
+    def zone_inside_at(self, w):
+        for i in range(len(self.zones) - 1, -1, -1):
+            if sp.pip(tuple(w), [tuple(q) for q in self.zones[i]["poly"]]):
+                return i
+        return -1
+
+    def pick_zone(self, i):
+        self.sel_zone = i
+        if 0 <= i < self.zt.rowCount():
+            self.zt.selectRow(i)
+        self.plan.update()
+
+    def zone_released(self):
+        """a whole parking area was dragged: its bays are laid again where it now stands (the road bays follow it)"""
+        self.corner_released()
+
+    def copy_zone(self, i):
+        if 0 <= i < len(self.zones):
+            self.clip_zone = {k: (copy.deepcopy(v) if k != "name" else v) for k, v in self.zones[i].items()}
+            self.set_hint("Parking area copied. Right-click on the plan and choose 'Paste a copy here' (or Ctrl+V).")
+
+    def paste_zone(self, w=None):
+        z = self.clip_zone
+        if z is None:
+            return
+        pl = z["poly"]
+        cx, cy = sum(q[0] for q in pl) / len(pl), sum(q[1] for q in pl) / len(pl)
+        tx, ty = (w[0], w[1]) if w is not None else (cx + 12.0, cy + 12.0)
+        n = len(self.zones) + 1
+        nm = "Parking area %d" % n
+        while any(x["name"] == nm for x in self.zones):
+            n += 1
+            nm = "Parking area %d" % n
+        nz = copy.deepcopy(z)
+        nz["name"] = nm
+        nz["poly"] = [[round(q[0] - cx + tx, 3), round(q[1] - cy + ty, 3)] for q in pl]
+        self.zones.append(nz)
+        self.sel_zone = len(self.zones) - 1
+        self._fill([len(self.zones) - 1])
+        self.set_hint("Pasted as %s. Drag its border to move it." % nm)
+
+    def delete_zone(self, i):
+        self.pick_zone(i)
+        self.remove_zone()
 
     def zone_whole_stand(self):
         v = self.verts()

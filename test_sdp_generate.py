@@ -221,3 +221,29 @@ rb = [b for b in pg15.bays if str(b["zone"]).startswith("Road")]
 assert rb and not any(pg15._bad) and pg15.roads[0]["_zs"]
 os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
 print("ok flush")
+# move a whole parking area by its border, copy and paste it
+from PySide6.QtCore import QPointF, Qt, QEvent
+from PySide6.QtGui import QMouseEvent
+pg16 = sc.SdpPage(W()); pg16.resize(1300, 800); pg16.show(); pg16.q_w.setValue(100), pg16.q_d.setValue(60); pg16.make_rect()
+pg16._new_zone([(20, 20), (50, 20), (50, 34), (20, 34)], "Lot A"); pg16._fill([0])
+for _ in range(5): app.processEvents()
+n0 = len(pg16.bays); poly0 = [list(q) for q in pg16.zones[0]["poly"]]
+pl = pg16.plan
+pl.grab(); s_, cx, cy, W_, H_ = pl._v
+sc_pt = lambda q: pl._sc(q, (s_, cx, cy), W_, H_)
+a, b = sc_pt((35, 20)), sc_pt((35 + 15, 20 + 25))                      # press on the bottom border, drag 15 m right and 25 m up
+def ev(t, p, btn=Qt.MouseButton.LeftButton, buttons=Qt.MouseButton.LeftButton):
+    return QMouseEvent(t, QPointF(p.x(), p.y()), pl.mapToGlobal(QPointF(p.x(), p.y())), btn, buttons, Qt.KeyboardModifier.NoModifier)
+pl.mousePressEvent(ev(QEvent.Type.MouseButtonPress, a))
+assert pl.drag and pl.drag[0] == "zone", pl.drag
+pl.mouseMoveEvent(ev(QEvent.Type.MouseMove, b, Qt.MouseButton.NoButton))
+pl.mouseReleaseEvent(ev(QEvent.Type.MouseButtonRelease, b, Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton))
+p1 = pg16.zones[0]["poly"]
+assert abs(p1[0][0] - poly0[0][0] - 15) < 0.6 and abs(p1[0][1] - poly0[0][1] - 25) < 0.6, (p1, poly0)
+assert len(pg16.bays) > 10 and not any(pg16._bad)
+pg16.copy_zone(0); pg16.paste_zone((75, 15))
+assert len(pg16.zones) == 2 and abs(sum(q[0] for q in pg16.zones[1]["poly"]) / 4 - 75) < 0.2 and not any(pg16._bad)
+assert {b["zone"] for b in pg16.bays} >= {pg16.zones[0]["name"], pg16.zones[1]["name"]}
+pg16.delete_zone(1); assert len(pg16.zones) == 1
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+print("ok move copy")
