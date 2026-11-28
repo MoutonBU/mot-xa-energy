@@ -1,10 +1,11 @@
 # MCP Practice Suite - Release notes
 
-Current version: 1.86.393
+Current version: 1.86.394
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
+- **SDP Creator: a width for each road.** The Roads box has a list of the roads you drew (with width and length) and a Width box: pick a road, type its width, and the road and the bays along it update. Clicking a road's white square also picks it. New roads take the width in the box.
 - **SDP Creator: draw roads as a spline.** New "Roads" box on the Parking step and "Draw road" in the ribbon: click the points a road goes through and it is drawn as a smooth curve (width you set, 7 m to start; tick box for straight pieces). Blocks and bays keep off the road, and bays are placed down both sides of it with the road as their aisle, so the parking joins the road seamlessly. Drag the white squares to bend the road and the bays follow. Roads are saved with the plan, move and turn with it, and go into the DXF export (road edges and centreline layers).
 - **SDP Creator: unit mix, more like this, best by goal.** A unit mix (share of 1, 2 and 3 bed units and the bays each needs) sets the bays per unit and the beds shown in the live bar. "More like this" makes six variations of the last generated layout (block size and spacing) and saves them as schemes. The scheme list marks the best one by the goal you choose: most units, most spare bays, least coverage or fewest m2 per bay.
 - **SDP Creator: drag the corners by hand.** In the plan, every corner of the stand, of a parking area and of a keep-clear area shows a small white square; drag it to move the corner. The parking follows when you let go (when 'Re-park by itself' is on).

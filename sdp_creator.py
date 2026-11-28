@@ -383,11 +383,16 @@ class SdpPage(SitePage):
         fl = FlowLayout(None, 10, 6)
         self.road_w = sl.spin(3, 15, 7, 1, " m")
         self.road_w.valueChanged.connect(self.road_width_changed)
+        self.road_cb = QComboBox()
+        self.road_cb.setMinimumWidth(230)
+        self.road_cb.setToolTip("Pick a road, then change its width in the box next to it.")
+        self.road_cb.currentIndexChanged.connect(self._road_picked)
+        fl.addWidget(self._pair("Road", self.road_cb))
         self.road_smooth = QCheckBox("Smooth curve")
         self.road_smooth.setChecked(True)
         self.road_type = QComboBox()
         self.road_type.addItems(BAY_TYPES)
-        fl.addWidget(self._pair("Road width", self.road_w))
+        fl.addWidget(self._pair("Width", self.road_w))
         fl.addWidget(self.road_smooth)
         fl.addWidget(self._pair("Bays along it are", self.road_type))
         bv.addLayout(fl)
@@ -791,11 +796,38 @@ class SdpPage(SitePage):
         self.set_hint("Click the points the road goes through, from the gate inwards. Double-click or press Enter to finish: the road is drawn as a smooth curve.")
 
     def road_width_changed(self, v):
-        for r in self.roads:
-            r["w"] = float(v)
-        if self.roads and not self._pbusy:
+        """the width box sets the chosen road (and the next one you draw)"""
+        if self._pbusy or getattr(self, "_rw_busy", False):
+            return
+        i = self.road_cb.currentIndex()
+        if 0 <= i < len(self.roads):
+            self.roads[i]["w"] = float(v)
+            self._show_roads(i)
             self.park_roads()
             self.refresh_parking(user=True)
+            self.changed()
+
+    def _show_roads(self, sel=None):
+        """the list of roads: one entry each, the box shows the width of the chosen one"""
+        if getattr(self, "road_cb", None) is None:
+            return
+        self._rw_busy = True
+        try:
+            i = self.road_cb.currentIndex() if sel is None else sel
+            self.road_cb.clear()
+            self.road_cb.addItems(["Road %d  (%.1f m wide, %.0f m long)" % (k + 1, r["w"], sp.road_length(r["pts"], r.get("smooth", True))) for k, r in enumerate(self.roads)])
+            if self.roads:
+                i = max(0, min(i, len(self.roads) - 1))
+                self.road_cb.setCurrentIndex(i)
+                self.road_w.setValue(self.roads[i]["w"])
+        finally:
+            self._rw_busy = False
+
+    def _road_picked(self, i):
+        if 0 <= i < len(self.roads) and not getattr(self, "_rw_busy", False):
+            self._rw_busy = True
+            self.road_w.setValue(self.roads[i]["w"])
+            self._rw_busy = False
 
     def park_roads(self):
         """bays down both sides of every road, nose to the kerb (the road is their aisle)"""
@@ -822,6 +854,7 @@ class SdpPage(SitePage):
 
     def clear_roads(self):
         self.roads = []
+        self._show_roads()
         self.bays = [b for b in self.bays if not str(b.get("zone", "")).startswith("Road ")]
         self.refresh_parking(user=True)
 
@@ -853,6 +886,8 @@ class SdpPage(SitePage):
 
     def move_corner(self, h, x, y):
         kind, i, k = h
+        if kind == "road" and getattr(self, "road_cb", None) is not None and self.road_cb.currentIndex() != i and not getattr(self, "_rw_busy", False):
+            self.road_cb.setCurrentIndex(i)
         if kind == "stand":
             vs = [tuple(q) for q in self.verts()]
             vs[k] = (x, y)
@@ -872,6 +907,7 @@ class SdpPage(SitePage):
             self._fill(list(range(len(self.zones))) if self.zones else [], quiet=True)
         else:
             self.refresh_parking(user=True)
+        self._show_roads()
         self.changed()
         self._after_edit(True)
         self.set_hint("Corner moved. Drag any corner of the stand, a parking area or a keep-clear area.")
@@ -894,6 +930,7 @@ class SdpPage(SitePage):
         if self._tracing_road:
             self._tracing_road = False
             self.roads.append({"pts": [list(q) for q in pts], "w": self.road_w.value(), "smooth": self.road_smooth.isChecked()})
+            self._show_roads(len(self.roads) - 1)
             if self.auto_fill.isChecked():
                 self.park_roads_clicked()
             else:
@@ -1943,6 +1980,7 @@ class SdpPage(SitePage):
             self._show_schemes()
         finally:
             self._pbusy = False
+        self._show_roads(0)
         self._refresh_sum()
         self.refresh_parking()
         self._after_edit()

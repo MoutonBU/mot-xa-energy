@@ -139,3 +139,15 @@ import tempfile as _t2; _d = _t2.mkdtemp(); pg10.export_dxf(_d + "/r.dxf")
 pg10.clear_roads(); assert not pg10.roads and not any(str(b["zone"]).startswith("Road") for b in pg10.bays)
 os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
 print("ok roads")
+# road width per road
+pg12 = sc.SdpPage(W()); pg12.q_w.setValue(100), pg12.q_d.setValue(60); pg12.make_rect()
+pg12.start_road(); pg12.trace_done("trace_road", "", [(3, 15), (50, 12), (97, 15)])
+pg12.road_w.setValue(6.0)
+pg12.start_road(); pg12.trace_done("trace_road", "", [(3, 45), (50, 48), (97, 45)])
+assert [r["w"] for r in pg12.roads] == [6.0, 6.0], [r["w"] for r in pg12.roads]
+pg12.road_cb.setCurrentIndex(1); pg12.road_w.setValue(9.0)
+assert [r["w"] for r in pg12.roads] == [6.0, 9.0] and not any(pg12._bad)
+pg12.road_cb.setCurrentIndex(0); assert abs(pg12.road_w.value() - 6.0) < 1e-9
+assert "9.0 m wide" in pg12.road_cb.itemText(1)
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+print("ok widths")
