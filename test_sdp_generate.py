@@ -461,3 +461,47 @@ for tri in fl:
 assert any(len(q) == 3 for q in pg29.road_quads_all())
 os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
 print("ok junction corners")
+# the turning handle: drag it to turn a building or a parking area
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+from PySide6.QtCore import QPointF, Qt, QEvent
+from PySide6.QtGui import QMouseEvent
+pg30 = sc.SdpPage(W()); pg30.resize(1300, 800); pg30.show(); pg30.q_w.setValue(100), pg30.q_d.setValue(60); pg30.make_rect()
+pg30.add_building({"name": "H1", "x": 30, "y": 20, "w": 20, "d": 10})
+pg30._new_zone([(60, 15), (90, 15), (90, 30), (60, 30)], "Lot"); pg30._fill([0])
+for _ in range(5): app.processEvents()
+pl = pg30.plan; pl.grab()
+def sc_pt(q):
+    s_, cx, cy, W_, H_ = pl._v
+    return pl._sc(q, (s_, cx, cy), W_, H_)
+def mev(t, q, btn=Qt.MouseButton.LeftButton, buttons=Qt.MouseButton.LeftButton, mod=Qt.KeyboardModifier.NoModifier):
+    p_ = sc_pt(q)
+    return QMouseEvent(t, QPointF(p_.x(), p_.y()), pl.mapToGlobal(QPointF(p_.x(), p_.y())), btn, buttons, mod)
+def turn(g, deg):
+    c, h = g["c"], g["h"]
+    a = sc.math.atan2(h[1] - c[1], h[0] - c[0]) + sc.math.radians(deg)
+    return (c[0] + g["R"] * sc.math.cos(a), c[1] + g["R"] * sc.math.sin(a))
+pl.sel = 0
+g = pg30.gizmo(); assert g and g["kind"] == "bld"
+P0 = [tuple(q) for q in sc.bpoly(pg30.buildings()[0])]
+pl.mousePressEvent(mev(QEvent.Type.MouseButtonPress, g["h"]))
+assert pl.drag and pl.drag[0] == "grot", pl.drag
+pl.mouseMoveEvent(mev(QEvent.Type.MouseMove, turn(g, 30), Qt.MouseButton.NoButton))
+pl.mouseReleaseEvent(mev(QEvent.Type.MouseButtonRelease, turn(g, 30), Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton))
+P1 = [tuple(q) for q in sc.bpoly(pg30.buildings()[0])]
+e0, e1 = (P0[1][0] - P0[0][0], P0[1][1] - P0[0][1]), (P1[1][0] - P1[0][0], P1[1][1] - P1[0][1])
+ang = sc.math.degrees(sc.math.atan2(e1[1], e1[0]) - sc.math.atan2(e0[1], e0[0]))
+assert abs(((ang + 180) % 360) - 180 - 30) < 3, ang
+# a parking area
+pl.sel = -1; pg30.zt.selectRow(0); pg30.sel_zone = 0
+g = pg30.gizmo(); assert g and g["kind"] == "zone"
+z0 = [list(q) for q in pg30.zones[0]["poly"]]
+pl.mousePressEvent(mev(QEvent.Type.MouseButtonPress, g["h"]))
+assert pl.drag and pl.drag[0] == "grot"
+pl.mouseMoveEvent(mev(QEvent.Type.MouseMove, turn(g, 90), Qt.MouseButton.NoButton))
+pl.mouseReleaseEvent(mev(QEvent.Type.MouseButtonRelease, turn(g, 90), Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton))
+z1 = pg30.zones[0]["poly"]
+w0, d0 = abs(z0[1][0] - z0[0][0]), abs(z0[2][1] - z0[1][1])
+assert abs(abs(z1[1][1] - z1[0][1]) - w0) < 1.5 and abs(abs(z1[2][0] - z1[1][0]) - d0) < 1.5, (z0, z1)    # 30 x 15 turned a quarter
+assert not any(pg30._bad)
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+print("ok turning handle")

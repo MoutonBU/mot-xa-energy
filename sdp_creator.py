@@ -233,6 +233,13 @@ class ParkView(PlanView):
                     pg.add_bay_at(w)
                     return
                 if self.mode == "select" and not self._hit_north(e.position()):
+                    gz = pg.gizmo()
+                    if gz is not None and math.hypot(gz["h"][0] - w[0], gz["h"][1] - w[1]) * self._v[0] < 12:
+                        self.setFocus()
+                        self.drag = ("grot", gz, math.atan2(w[1] - gz["c"][1], w[0] - gz["c"][0]), pg.gz_ang, pg.gizmo_snapshot(gz))
+                        self.setCursor(Qt.CursorShape.SizeAllCursor)
+                        pg.set_hint("Turn it: drag the round handle. Hold Shift to turn in steps of 15 degrees.")
+                        return
                     h = pg.corner_at(w, 10.0 / self._v[0])
                     if h is not None:
                         self.setFocus()
@@ -273,6 +280,15 @@ class ParkView(PlanView):
                 self.page.move_corner(self.drag[1:], round(w[0] * 20) / 20, round(w[1] * 20) / 20)
                 return
             self._lastw = w
+            if self.drag and self.drag[0] == "grot":
+                _, gz, a0, g0, snap = self.drag
+                d = math.atan2(w[1] - gz["c"][1], w[0] - gz["c"][0]) - a0
+                d = (d + math.pi) % (2 * math.pi) - math.pi
+                if e.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                    step = math.radians(15.0)
+                    d = round((g0 + d) / step) * step - g0
+                self.page.gizmo_turn(gz, snap, d, g0)
+                return
             if self.drag and self.drag[0] == "zone":
                 _, zi, x0, y0, orig, bays0 = self.drag
                 dx, dy = round((w[0] - x0) * 20) / 20, round((w[1] - y0) * 20) / 20
@@ -294,6 +310,12 @@ class ParkView(PlanView):
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
+        if self.drag and self.drag[0] == "grot":
+            gz = self.drag[1]
+            self.drag = None
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+            self.page.gizmo_done(gz)
+            return
         if self.drag and self.drag[0] == "zone":
             self.drag = None
             self.setCursor(Qt.CursorShape.ArrowCursor)
@@ -404,6 +426,7 @@ class SdpPage(SitePage):
         self.clip_bld = None
         self._rq = (None, [], [], [])
         self._tracing_road = False
+        self.gz_ang, self._gz_key = 0.0, None
         self._undo, self._redo, self._ulast = [], [], None
         QTimer.singleShot(600, self._undo_baseline)
         self._tracing_path = False
@@ -2331,6 +2354,23 @@ class SdpPage(SitePage):
                 m = to((b["x"] + math.cos(a) * dp / 2, b["y"] + math.sin(a) * dp / 2))
                 p.setPen(QPen(QColor("#1f7a45") if not bad else QColor("#b01028"), 1))
                 p.drawLine(m, to((b["x"] + math.cos(a) * (dp / 2 - 0.5), b["y"] + math.sin(a) * (dp / 2 - 0.5))))
+        if not snapshot and self.plan.mode == "select":              # the turning ring
+            gz = self.gizmo()
+            if gz is not None:
+                pink = QColor("#d6209a")
+                cs, hs = to(gz["c"]), to(gz["h"])
+                rpx = gz["R"] * s
+                p.setPen(QPen(pink, 1.4, Qt.PenStyle.DashLine))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawEllipse(cs, rpx, rpx)
+                p.drawLine(cs, hs)
+                p.setPen(QPen(pink, 2))
+                p.setBrush(QBrush(QColor("white")))
+                p.drawEllipse(hs, 8, 8)
+                p.drawEllipse(cs, 4, 4)
+                p.setPen(pink)
+                p.setFont(QFont("Arial", 9, QFont.Weight.Bold))
+                p.drawText(QPointF(hs.x() + 12, hs.y() - 10), "%d\u00b0" % round(math.degrees(self.gz_ang)))
         if not snapshot:                                           # the outline of each purple area on top of everything
             p.setBrush(Qt.BrushStyle.NoBrush)
             for i, z in enumerate(self.zones):
@@ -2733,6 +2773,59 @@ class SdpPage(SitePage):
         d.update({"sdp": self.site(), "blocks": self.blocks(), "zones": [dict(z) for z in self.zones], "bays": [dict(b) for b in self.bays],
                   "prules": self.rules_now(), "gen": self._gen_names(), "schemes": self.schemes, "excl": self.excl, "roads": self.roads, "mix": {k: [w[0].value(), w[1].value()] for k, w in self.mix.items()}})
         return d
+
+    # --- the turning handle (like the one in the house spacing tool): a ring round the selected building or parking area with a round handle to drag
+    def gizmo(self):
+        if self.sel_bay >= 0 or getattr(self, "zt", None) is None:
+            return None
+        bl = self.buildings()
+        g = None
+        if 0 <= self.plan.sel < len(bl):
+            rows = sorted(self._group_rows(self.plan.sel))
+            pts = [q for i in rows for q in bpoly(bl[i])]
+            g = {"kind": "bld", "rows": rows, "pts": pts, "key": ("b", tuple(rows))}
+        elif 0 <= self.sel_zone < len(self.zones) and len(self.zones[self.sel_zone]["poly"]) >= 3 and self.zones[self.sel_zone]["name"] != "Whole stand":
+            pts = [tuple(q) for q in self.zones[self.sel_zone]["poly"]]
+            g = {"kind": "zone", "idx": self.sel_zone, "pts": pts, "key": ("z", self.sel_zone)}
+        if g is None:
+            return None
+        if g["key"] != getattr(self, "_gz_key", None) and not (self.plan.drag and self.plan.drag[0] == "grot"):
+            self._gz_key, self.gz_ang = g["key"], 0.0
+        xs, ys = [q[0] for q in g["pts"]], [q[1] for q in g["pts"]]
+        c = ((min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0)
+        R = max(math.hypot(q[0] - c[0], q[1] - c[1]) for q in g["pts"]) + 1.6
+        g["c"], g["R"] = c, R
+        g["h"] = (c[0] + R * math.cos(self.gz_ang), c[1] + R * math.sin(self.gz_ang))
+        return g
+
+    def gizmo_snapshot(self, g):
+        if g["kind"] == "bld":
+            bl = self.buildings()
+            return {"polys": {i: [tuple(q) for q in bpoly(bl[i])] for i in g["rows"]}}
+        z = self.zones[g["idx"]]
+        return {"poly": [list(q) for q in z["poly"]], "bays": [(b, b["x"], b["y"], b["a"]) for b in self.bays if b.get("auto") and b.get("zone") == z["name"]]}
+
+    def gizmo_turn(self, g, snap, d, g0):
+        self.gz_ang = g0 + d
+        if g["kind"] == "bld":
+            for i, P in snap["polys"].items():
+                self._set_poly(i, self._rot_pts(P, d, g["c"][0], g["c"][1]))
+        else:
+            z = self.zones[g["idx"]]
+            z["poly"] = [list(q) for q in self._rot_pts([tuple(q) for q in snap["poly"]], d, g["c"][0], g["c"][1])]
+            for b, bx, by, ba in snap["bays"]:
+                (b["x"], b["y"]), = self._rot_pts([(bx, by)], d, g["c"][0], g["c"][1])
+                b["a"] = (ba + math.degrees(d)) % 360.0
+        self.plan.update()
+
+    def gizmo_done(self, g):
+        if g["kind"] == "bld":
+            self._after_edit(True)
+            self.changed()
+            self.refresh_parking(user=True)
+        else:
+            self.zone_released()
+        self.set_hint("Turned %d degrees." % round(math.degrees(self.gz_ang)))
 
     def _guard_wheel(self):
         if getattr(self, "_nw", None) is None:
