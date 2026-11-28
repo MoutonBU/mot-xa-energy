@@ -127,9 +127,10 @@ def _near(box, ob, gap):
 class Site:
     """what the bays are tested against: the stand, the buildings, the building lines"""
 
-    def __init__(self, stand, buildings, env=None, others=None, roads=None):
+    def __init__(self, stand, buildings, env=None, others=None, roads=None, road_owner=None):
         self.roads = [[tuple(p) for p in q] for q in (roads or [])]       # road pieces: bays may not stand on them, their aisles may
         self.rboxes = [bbox(q) for q in self.roads]
+        self.rowner = list(road_owner) if road_owner else [-1] * len(self.roads)   # which road each piece belongs to (a road's own bays may stand on it)
         self.stand = [tuple(p) for p in stand]
         self.blds = [[tuple(p) for p in b] for b in buildings]
         self.env = [tuple(p) for p in env] if env else None
@@ -159,6 +160,8 @@ def problems(b, r, site, others=()):
             out.append("%.2f m from a building (needs %.2f m)" % (d, r["bld"]))
             break
     for k, q in enumerate(site.roads):
+        if b.get("rid") is not None and site.rowner[k] == b["rid"]:
+            continue                                                  # the bays of a road are set by its own kerb and pushback
         if _near(box, site.rboxes[k], 0) and overlap(P, q, 0.05):
             out.append("on a road")
             break
@@ -572,3 +575,86 @@ def push_off(pts, obstacles, clear, pinned, smooth=True, iters=30):
             P[idx][0] += acc[idx][0] / acc[idx][2] * 0.8
             P[idx][1] += acc[idx][1] / acc[idx][2] * 0.8
     return P
+
+
+def _along(c, t, arc, s):
+    """the point and the (unit) direction at s metres along the sampled centreline"""
+    if s <= 0:
+        return c[0], t[0]
+    if s >= arc[-1]:
+        return c[-1], t[-1]
+    lo, hi = 0, len(arc) - 1
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if arc[mid] <= s:
+            lo = mid
+        else:
+            hi = mid
+    f = (s - arc[lo]) / ((arc[hi] - arc[lo]) or 1.0)
+    d = (t[lo][0] + (t[hi][0] - t[lo][0]) * f, t[lo][1] + (t[hi][1] - t[lo][1]) * f)
+    L = math.hypot(d[0], d[1]) or 1.0
+    return (c[lo][0] + (c[hi][0] - c[lo][0]) * f, c[lo][1] + (c[hi][1] - c[lo][1]) * f), (d[0] / L, d[1] / L)
+
+
+def road_plan(pts, width, smooth, r, left, right, start, zones, reach=4.0):
+    """where the bays along a road go: a bay position every bay width, on either side (+1 left, -1 right), wanted because the road is told to have bays there
+    (left / right: how many, -1 = as many as fit, 0 = none, from `start` metres) or because a parking area (name, polygon, most bays) reaches the road there.
+    Where both sides have bays the road is a double-sided aisle and gets thicker: returns {"st": [(k, side, zone or None)], "dbl": [(from, to)]}"""
+    r = rules(r)
+    c = spline(pts, 0.25, smooth)
+    if len(c) < 2:
+        return {"st": [], "dbl": []}
+    t, arc = _tangents(c), _arc(c)
+    L, w = arc[-1], r["w"]
+    n = int(L // w)
+    want = {}
+    for sd, cap in ((1, left), (-1, right)):
+        if not cap:
+            continue
+        placed = 0
+        for k in range(n):
+            if k * w + w / 2.0 < start:
+                continue
+            if cap > 0 and placed >= cap:
+                break
+            want[(k, sd)] = None
+            placed += 1
+    half = max(width, r["aisle"]) / 2.0
+    for name, poly, mx in zones:
+        got = []
+        for k in range(n):
+            sv = k * w + w / 2.0
+            (px, py), (tx, ty) = _along(c, t, arc, sv)
+            for sd in (1, -1):
+                nx, ny = -ty * sd, tx * sd
+                if any(pip((px + nx * tt, py + ny * tt), poly) for tt in [x * 1.0 for x in range(0, int(half + r["l"] + reach) + 1)]):
+                    got.append((k, sd))
+        if mx:
+            got = got[:int(mx)]
+        for key in got:
+            want.setdefault(key, name)
+    dbl = merge_spans([(k * w, (k + 1) * w) for (k, sd) in want if (k, -sd) in want], 0.01)
+    return {"st": [(k, sd, z) for (k, sd), z in sorted(want.items())], "dbl": dbl}
+
+
+def road_place(pts, width, site, r, keep, name, rid, smooth, plan):
+    """put the bays of a road plan on the ground, nose towards the road. The pushback (the aisle, 7 m) always ends exactly at the kerb on the other side:
+    on a one-sided stretch the nose stands (aisle - half the road width) from the centre line, on a two-sided one the noses are the aisle apart"""
+    r = rules(r)
+    c = spline(pts, 0.25, smooth)
+    if len(c) < 2:
+        return []
+    t, arc = _tangents(c), _arc(c)
+    w, A, out = r["w"], r["aisle"], []
+    both = {(k, sd) for k, sd, z in plan["st"]}
+    for k, sd, zn in plan["st"]:
+        (px, py), (tx, ty) = _along(c, t, arc, k * w + w / 2.0)
+        nose = A / 2.0 if (k, -sd) in both else A - width / 2.0
+        nx, ny = -ty * sd, tx * sd
+        off = nose + r["l"] / 2.0
+        bay = {"x": px + nx * off, "y": py + ny * off, "a": math.degrees(math.atan2(-ny, -nx)) % 360.0, "auto": True, "zone": name, "rid": rid}
+        if zn:
+            bay["rz"] = zn
+        if not problems(bay, r, site, list(keep) + out):
+            out.append(bay)
+    return out

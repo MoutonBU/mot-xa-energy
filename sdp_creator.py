@@ -380,7 +380,7 @@ class SdpPage(SitePage):
         self.zones, self.bays, self._bad, self.schemes, self.excl, self.roads = [], [], [], [], [], []
         self.clip_zone = None
         self.clip_bld = None
-        self._rq = (None, [])
+        self._rq = (None, [], [])
         self._tracing_road = False
         self._tracing_excl = False
         self.sel_bay = -1
@@ -462,8 +462,8 @@ class SdpPage(SitePage):
         v.addWidget(bx)
         bx, bv = self.box("Roads", "Draw a road as a smooth curve. Blocks and bays keep off it, bays run along both sides of it (the road is their aisle) and parking areas next to it line up with it.")
         fl = FlowLayout(None, 10, 6)
-        self.road_w = sl.spin(3, 15, 6, 1, " m")
-        self.road_w.setToolTip("The road width where it has no parking. Where it has bays it is at least as wide as the pushback (the aisle, 7 m).")
+        self.road_w = sl.spin(3, 15, 7, 1, " m")
+        self.road_w.setToolTip("The width of the road. With bays on one side, the 7 m pushback ends at the kerb on the other side (7 m is the width that fits exactly). With bays on both sides the road is made at least 7 m wide.")
         self.road_w.valueChanged.connect(self.road_width_changed)
         self.road_cb = QComboBox()
         self.road_cb.setMinimumWidth(230)
@@ -777,7 +777,7 @@ class SdpPage(SitePage):
         env = None
         if self.r_lines.isChecked() and len(v) >= 3:
             env = sl.envelope(v, [e["sb"] for e in self.edges()])
-        return sp.Site(v, [bpoly(b) for b in self.buildings()] + [[tuple(q) for q in e] for e in self.excl], env, roads=self.road_quads_all())
+        return sp.Site(v, [bpoly(b) for b in self.buildings()] + [[tuple(q) for q in e] for e in self.excl], env, roads=self.road_quads_all(), road_owner=self.road_owner_all())
 
     def _rules_changed(self, *_a):
         if not self._pbusy:
@@ -905,9 +905,8 @@ class SdpPage(SitePage):
         return max(self.r_aisle.value(), rd["w"])
 
     def road_span(self, rd):
-        """the stretches of the road that are as wide as the pushback: where it has its own bays and where a parking area joins it"""
-        one = sp.bay_span(rd["pts"], rd.get("left", 0), rd.get("right", 0), rd.get("start", 0.0), self.r_w.value(), (rd.get("segs") or rd.get("smooth", True)))
-        return sp.merge_spans(([one] if one else []) + list(rd.get("_zs", [])), 0.5)
+        """the stretches of the road that are thickened to the pushback: only where there are bays on both sides of it"""
+        return sp.merge_spans(list(rd.get("_zs", [])), 0.5)
 
     def road_geom(self, rd):
         return sp.road_quads(rd["pts"], rd["w"], (rd.get("segs") or rd.get("smooth", True)), self.road_span(rd), self.road_wide(rd))
@@ -915,11 +914,20 @@ class SdpPage(SitePage):
     def road_quads_all(self):
         if not self.roads:
             return []
-        key = repr([(r["pts"], r["w"], (r.get("segs") or r.get("smooth", True)), r.get("left", 0), r.get("right", 0), r.get("start", 0.0), r.get("_zs", []), self.r_aisle.value(), self.r_w.value(),
-                     self.corner_r.value()) for r in self.roads])
-        if self._rq[0] != key:
-            self._rq = (key, [q for r in self.roads for q in self.road_geom(r)] + self.road_fillets())
+        key = repr([(r["pts"], r["w"], (r.get("segs") or r.get("smooth", True)), r.get("_zs", []), self.r_aisle.value(), self.corner_r.value()) for r in self.roads])
+        if self._rq[0] != key or len(self._rq) < 3:
+            quads, owner = [], []
+            for i, r in enumerate(self.roads):
+                g = self.road_geom(r)
+                quads += g
+                owner += [i] * len(g)
+            fl = self.road_fillets()
+            self._rq = (key, quads + fl, owner + [-1] * len(fl))
         return self._rq[1]
+
+    def road_owner_all(self):
+        self.road_quads_all()
+        return self._rq[2] if (self.roads and len(self._rq) > 2) else []
 
     def _half_at(self, rd, s):
         return (self.road_wide(rd) if any(a - 0.01 <= s <= b + 0.01 for a, b in self.road_span(rd)) else rd["w"]) / 2.0
@@ -939,6 +947,8 @@ class SdpPage(SitePage):
                         best = jn
                 if best and best[0] > 0.02:
                     rd["pts"][e] = [round(best[1][0], 3), round(best[1][1], 3)]
+                    if rd.get("base") and len(rd["base"]) == len(rd["pts"]):
+                        rd["base"][e] = list(rd["pts"][e])
                     moved = True
         return moved
 
@@ -974,11 +984,12 @@ class SdpPage(SitePage):
 
     def reroute_roads(self):
         """the road bends round buildings: control points that leave less than the clear room are pushed away (the ends at the boundary stay)"""
-        if not self.roads or not self.follow_bld.isChecked():
+        if not self.roads:
             return False
-        obs = [bpoly(b) for b in self.buildings()] + [[tuple(q) for q in e] for e in self.excl]
-        if not obs:
-            return False
+        obs = [bpoly(b) for b in self.buildings()] + [[tuple(q) for q in e] for e in self.excl] if self.follow_bld.isChecked() else []
+        for rd in self.roads:                                   # "base" = the points as drawn; the road round the buildings is worked out from it, so it springs back
+            if not rd.get("base") or len(rd["base"]) != len(rd["pts"]):
+                rd["base"] = [list(q) for q in rd["pts"]]
         v = [tuple(q) for q in self.verts()]
         r = self.rules_now()
         moved = False
@@ -986,7 +997,7 @@ class SdpPage(SitePage):
             pin = {0, len(rd["pts"]) - 1}                      # the ends (the gate) stay where you put them
             wide = self.road_wide(rd) if (rd.get("left", 0) or rd.get("right", 0)) else rd["w"]
             clear = wide / 2.0 + r["bld"] + 0.3 + (r["l"] if (rd.get("left", 0) or rd.get("right", 0)) else 0.0)
-            new = sp.push_off(rd["pts"], obs, clear, pin, (rd.get("segs") or rd.get("smooth", True)))
+            new = sp.push_off(rd["base"], obs, clear, pin, (rd.get("segs") or rd.get("smooth", True))) if obs else [list(q) for q in rd["base"]]
             for k_ in range(1, len(new) - 1):                  # a bend never leaves the stand
                 if len(v) >= 3 and not sp.pip(tuple(new[k_]), v):
                     best, bq = 1e18, None
@@ -1082,47 +1093,31 @@ class SdpPage(SitePage):
             self.changed()
 
     def park_roads(self):
-        """bays down the sides of every road, nose to the kerb (the road is their aisle); and where a parking area runs along a road, its bays
-        stand along the road too, and the road is widened to the pushback there"""
+        """bays along the roads, nose to the road. A road is told how many bays it has on each side, and a parking area that runs along a road gets its bays standing
+        along it. The 7 m pushback always ends exactly at the kerb on the other side; only where there are bays on both sides is the road made thicker (to 7 m)"""
         self.bays = [b for b in self.bays if not str(b.get("zone", "")).startswith("Road ")]
         for rd in self.roads:
             rd["_zs"] = []
-        self._rq = (None, [])
+        self._rq = (None, [], [])
         if not self.roads:
             return 0
         r, n = self.rules_now(), 0
+        zs = [(z["name"], [tuple(q) for q in z["poly"]], int(z.get("max", 0))) for z in self.zones if z.get("join", True) and len(z["poly"]) >= 3]
+        plans = []
+        for rd in self.roads:
+            pl = sp.road_plan(rd["pts"], rd["w"], self.road_flags(rd), r, rd.get("left", 0), rd.get("right", 0), rd.get("start", 0.0), zs)
+            rd["_zs"] = pl["dbl"]
+            plans.append(pl)
+        self._rq = (None, [], [])
         site = self.site_obj()
+        ztype = {z["name"]: z.get("type", "Open") for z in self.zones}
         for i, rd in enumerate(self.roads):
-            got = sp.road_bays(rd["pts"], rd["w"], site, r, list(self.bays), "Road %d" % (i + 1), (rd.get("segs") or rd.get("smooth", True)), rd.get("left", 0), rd.get("right", 0),
-                               rd.get("start", 0.0), self.road_wide(rd))
+            got = sp.road_place(rd["pts"], rd["w"], site, r, list(self.bays), "Road %d" % (i + 1), i, self.road_flags(rd), plans[i])
             for b in got:
-                b["type"] = self.road_type.currentText()
+                b["type"] = ztype.get(b.get("rz"), self.road_type.currentText())
             self.bays += got
             n += len(got)
-        for z in self.zones:
-            if not z.get("join", True) or len(z["poly"]) < 3:
-                continue
-            for i, rd in enumerate(self.roads):
-                got = sp.road_bays(rd["pts"], rd["w"], site, r, list(self.bays), "Road %d" % (i + 1), (rd.get("segs") or rd.get("smooth", True)), -1, -1, 0.0, self.road_wide(rd),
-                                   [tuple(q) for q in z["poly"]])
-                if not got:
-                    continue
-                if z.get("max"):
-                    got = got[:int(z["max"])]
-                ss = sorted(b.pop("s") for b in got)
-                runs = []
-                for sv in ss:                                            # the stretches of road these bays run along
-                    if runs and sv - runs[-1][1] <= r["w"] * 2.5:
-                        runs[-1][1] = sv
-                    else:
-                        runs.append([sv, sv])
-                rd["_zs"] = list(rd.get("_zs", [])) + [(a_ - r["w"], b_ + r["w"]) for a_, b_ in runs]
-                for b in got:
-                    b["type"] = z.get("type", "Open")
-                    b["rz"] = z["name"]
-                self.bays += got
-                n += len(got)
-        self._rq = (None, [])
+        self._rq = (None, [], [])
         self._show_roads()
         return n
 
@@ -1131,7 +1126,7 @@ class SdpPage(SitePage):
             if not rd.get("left") and not rd.get("right"):
                 rd["left"] = rd["right"] = -1
         self._show_roads()
-        self._rq = (None, [])
+        self._rq = (None, [], [])
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             n = self.park_roads()
@@ -1182,6 +1177,9 @@ class SdpPage(SitePage):
             self.set_vertices(vs)
         elif kind == "road":
             self.roads[i]["pts"][k] = [x, y]
+            bs = self.roads[i].get("base")
+            if bs and len(bs) == len(self.roads[i]["pts"]):
+                bs[k] = [x, y]
         elif kind == "zone":
             self.zones[i]["poly"][k] = [x, y]
         else:
@@ -1365,7 +1363,7 @@ class SdpPage(SitePage):
         return best[1:] if best else None
 
     def _roads_changed(self):
-        self._rq = (None, [])
+        self._rq = (None, [], [])
         self.settle_roads()
         if self.zones or self.roads:
             self.park_roads()
@@ -1392,6 +1390,7 @@ class SdpPage(SitePage):
         rd = self.roads[i]
         f = self.road_flags(rd)
         rd["pts"].insert(piece + 1, [round(pt[0], 3), round(pt[1], 3)])
+        rd.pop("base", None)
         f.insert(piece + 1, f[piece])
         rd["segs"] = f
         self.pick_road(i)
@@ -1404,6 +1403,7 @@ class SdpPage(SitePage):
             return
         f = self.road_flags(rd)
         del rd["pts"][k]
+        rd.pop("base", None)
         del f[k - 1 if k > 0 else 0]
         rd["segs"] = f
         self._roads_changed()
@@ -1887,7 +1887,7 @@ class SdpPage(SitePage):
         """parking for n blocks placed in the first n slots: counted bays against the bays the units need"""
         v = self.verts()
         env = sl.envelope(v, [e["sb"] for e in self.edges()]) if self.r_lines.isChecked() else None
-        site = sp.Site(v, own + [[tuple(q) for q in e] for e in self.excl] + [list(R) for R in slots[:n]], env, roads=self.road_quads_all())
+        site = sp.Site(v, own + [[tuple(q) for q in e] for e in self.excl] + [list(R) for R in slots[:n]], env, roads=self.road_quads_all(), road_owner=self.road_owner_all())
         bays = sp.fill(v, site, r, None, [], "gen")
         sd = self.site()
         need = sp.required(n * upb, _num(sd.get("bays_per_unit"), 1.5), int(_num(sd.get("visitor_per"))))
@@ -2081,6 +2081,8 @@ class SdpPage(SitePage):
         self.excl = [[[x + dx, y + dy] for x, y in e] for e in getattr(self, "excl", [])]
         for r_ in getattr(self, "roads", []):
             r_["pts"] = [[x + dx, y + dy] for x, y in r_["pts"]]
+            if r_.get("base"):
+                r_["base"] = [[x + dx, y + dy] for x, y in r_["base"]]
         for b in getattr(self, "bays", []):
             b["x"] += dx
             b["y"] += dy
@@ -2094,6 +2096,8 @@ class SdpPage(SitePage):
         self.excl = [[list(q) for q in self._rot_pts([tuple(p) for p in e], a, cx, cy)] for e in getattr(self, "excl", [])]
         for r_ in getattr(self, "roads", []):
             r_["pts"] = [list(q) for q in self._rot_pts([tuple(p) for p in r_["pts"]], a, cx, cy)]
+            if r_.get("base"):
+                r_["base"] = [list(q) for q in self._rot_pts([tuple(p) for p in r_["base"]], a, cx, cy)]
         for b in getattr(self, "bays", []):
             (b["x"], b["y"]), = self._rot_pts([(b["x"], b["y"])], a, cx, cy)
             b["a"] = (b["a"] + math.degrees(a)) % 360

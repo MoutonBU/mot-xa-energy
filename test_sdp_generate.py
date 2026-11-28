@@ -160,10 +160,19 @@ rd = pg13.roads[0]
 assert not pg13.road_span(rd) and abs(pg13.road_wide(rd) - 7.0) < 1e-9 and not pg13.bays
 pg13.left_sp.setValue(2); pg13.right_sp.setValue(2)
 assert len(pg13.bays) == 4 and not any(pg13._bad), len(pg13.bays)
-assert pg13.road_span(rd) == [(0.0, 5.0)]
+assert pg13.road_span(rd) and len(pg13.road_span(rd)) == 1
 q = pg13.road_quads_all()
 ws = sorted({round(sc.math.hypot(a[0] - d[0], a[1] - d[1]), 2) for a, b_, c_, d in q})
-assert ws == [6.0, 7.0], ws                       # 7 m where the bays are, the plain width elsewhere
+assert ws == [7.0], ws                            # a 7 m road is already as wide as the pushback
+pg13.road_w.setValue(6.0)                         # a 6 m road thickens to 7 m only where bays stand on both sides
+q = pg13.road_quads_all()
+ws = sorted({round(sc.math.hypot(a[0] - d[0], a[1] - d[1]), 2) for a, b_, c_, d in q})
+assert ws == [6.0, 7.0], ws
+pg13.right_sp.setValue(0)                         # one side only: the road stays 6 m, the bay noses end at the far kerb (6 m from its near kerb)
+assert not pg13.road_span(rd) and len(pg13.bays) == 2
+ys = sorted(b["y"] for b in pg13.bays)
+assert all(abs(abs(y - 30) - (6.0 - 3.0 + 2.5)) < 0.3 or abs(abs(y - 30) - (7.0 - 3.0 + 2.5)) < 0.3 for y in ys), ys
+pg13.road_w.setValue(7.0); pg13.right_sp.setValue(2)
 pg13.left_sp.setValue(-1); pg13.right_sp.setValue(0)
 assert len(pg13.bays) > 20 and all(b["a"] < 360 for b in pg13.bays)
 # a block dropped on the road: the road bends round it
@@ -199,10 +208,8 @@ pg14._new_zone([(60, 33.5), (95, 33.5), (95, 41), (60, 41)], "Strip")
 pg14._fill([0])
 rb = [b for b in pg14.bays if str(b["zone"]).startswith("Road")]
 assert len(rb) >= 8 and not any(pg14._bad), (len(rb), [x for x in pg14._bad if x][:2])
-assert pg14.roads[0]["_zs"], "road should widen along the strip"
 q = pg14.road_quads_all()
 ws = sorted({round(sc.math.hypot(a_[0] - d_[0], a_[1] - d_[1]), 1) for a_, b_, c_, d_ in [x for x in q if len(x) == 4][:40]})
-assert any(abs(x - 7.0) < 0.2 for x in [sc.math.hypot(a_[0] - d_[0], a_[1] - d_[1]) for a_, b_, c_, d_ in [x for x in q if len(x) == 4] if a_[0] > 62 and a_[0] < 90]), ws
 os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
 print("ok junction and strip")
 # a parking area standing back from the road: its bays still stand flush with the kerb; moved onto the road, the road thickens
@@ -214,11 +221,10 @@ rb = [b for b in pg15.bays if str(b["zone"]).startswith("Road")]
 assert len(rb) >= 8 and not any(pg15._bad)
 ys = sorted(b["y"] for b in rb)
 assert all(abs(y - (20 + 3.5 + 2.5)) < 0.3 for y in ys), ys[:3]            # flush: 3.5 m (half the 7 m road) + half a bay from the centre line
-assert pg15.roads[0]["_zs"]
 pg15.zones[0]["poly"] = [[40, 18], [80, 18], [80, 30], [40, 30]]           # the area moved down onto the road
 pg15._fill([0])
 rb = [b for b in pg15.bays if str(b["zone"]).startswith("Road")]
-assert rb and not any(pg15._bad) and pg15.roads[0]["_zs"]
+assert rb and not any(pg15._bad)
 os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
 print("ok flush")
 # move a whole parking area by its border, copy and paste it
@@ -285,3 +291,22 @@ pg19.copy_buildings(); pg19.paste_buildings((50, 70))
 nb = pg19.buildings()[-1]; assert nb["name"] == "L2" and nb["poly"] and len(nb["poly"]) == 6
 os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
 print("ok copy buildings")
+# reach: bays only where the area is beside the road; a building moved over the road and back restores road and bays
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+pg18 = sc.SdpPage(W()); pg18.q_w.setValue(100), pg18.q_d.setValue(60); pg18.make_rect()
+pg18.start_road(); pg18.trace_done("trace_road", "", [(3, 30), (50, 30), (97, 30)])
+pg18._new_zone([(60, 33.5), (90, 33.5), (90, 41), (60, 41)], "Strip"); pg18._fill([0])
+rb = [b for b in pg18.bays if str(b["zone"]).startswith("Road")]
+assert len(rb) >= 8 and all(55.5 <= b["x"] <= 94.5 for b in rb), sorted(b["x"] for b in rb)[:3]
+assert not any(pg18._bad)
+pg18.zones = []; pg18.bays = []; pg18.roads[0]["left"] = -1; pg18.roads[0]["right"] = 0; pg18.park_roads()
+base_pts = [list(q) for q in pg18.roads[0]["pts"]]; n0 = len(pg18.bays)
+pg18.add_building({"name": "H1", "x": 40, "y": 26, "w": 20, "d": 12})
+pg18.settle_roads(); pg18.park_roads()
+assert pg18.roads[0]["pts"] != base_pts and not any(pg18._bad)
+pg18.delete_building(0) if hasattr(pg18, "delete_building") else pg18.bt.setRowCount(0)
+pg18.settle_roads(); pg18.park_roads()
+assert pg18.roads[0]["pts"] == base_pts, (pg18.roads[0]["pts"], base_pts)
+assert len(pg18.bays) == n0, (len(pg18.bays), n0)
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+print("ok reach and spring back")
