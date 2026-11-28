@@ -1,10 +1,11 @@
 # MCP Practice Suite - Release notes
 
-Current version: 1.86.407
+Current version: 1.86.408
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
+- **SDP Creator: South African parking standards, angled bays, aisle guard.** New "Standard" choice in the parking rules (City of Cape Town: bay 2.5 x 5.0 m, parallel bay 6 x 2.5 m, accessible bay 3.7 m wide, 1.75 bays and 0.25 visitor bays per unit; Mangaung: aisle 7.5 m, accessible 3.5 m, 1.5 bays and 0.5 visitor bays per unit). Each parking area has a "Bay angle" of 90, 60 or 45 degrees, with the aisle for that angle (5.4 m at 60 degrees, 5.2 m at 45 degrees). Setting the accessible bays follows the municipal table (1 bay for 1-50 bays, 2 for 51-100, 3 for 101-150, 4 for 151-200, then one more per 100) and makes each one 3.7 m wide. The number boxes no longer change when you scroll the mouse wheel over them, and the bar over the plan turns red when the aisle is under 7 m.
 - **SDP Creator: parallel parking along the kerb.** A parking area has a new "Bay style": Automatic, Across the road, or Parallel to the road. Automatic keeps bays across the road with the 7 m pushback (5 m bay, 7 m aisle), and where the purple area is only a narrow strip beside the road, too shallow for a bay across it, the bays are laid parallel to the kerb (5 m along the road, 2.5 m deep, the road itself is the aisle). Parallel bays do not thicken the road.
 - **SDP Creator: no stray bays when you move things.** Bays the program places itself are checked after every move: any that stand on a road, overlap another bay or fall outside their parking area are dropped (bays you place by hand are kept and marked red). Dragging a whole parking area always parks it again where it now stands, whatever the "by itself" box says. The purple outline now stays visible on top of the grey pushback.
 - **SDP Creator: squared parking areas, numbered bays, grey pushback.** A parking area you trace freehand is squared up to a rectangle when you finish it (its corners can still be dragged). The purple area is for working only: it is left out of the exported plan and PDF. Every bay is numbered on the plan (and in the DXF, layer BAY_NUMBERS). The pushback (aisle) in front of the bays is filled in the same grey as the road instead of a faint tint.

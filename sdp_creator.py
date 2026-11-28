@@ -8,7 +8,7 @@ import json
 import math
 import time
 
-from PySide6.QtCore import QPointF, Qt, QTimer
+from PySide6.QtCore import QEvent, QObject, QPointF, Qt, QTimer
 from PySide6.QtGui import QBrush, QColor, QFont, QPen, QPolygonF
 from PySide6.QtWidgets import (QMenu, QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout,
                                QHeaderView, QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout,
@@ -23,6 +23,12 @@ from site_lines import PlanView, SitePage, bpoly, signed_area
 
 TYPES = kb.module_names() + ["Gatehouse", "Other"]
 COLS = ["Block", "Phase", "Type", "Storeys", "Units", "Unit area m2", "Patio m2", "Common m2", "Footprint m2", "Floor area m2", "Counts"]
+# South African parking standards the tool can apply. Sources: City of Cape Town zoning scheme (bay 5 x 2.5 m, parallel 6 x 2.5 m, accessible 3.7 x 5 m, group housing and flats 1.75 bays + 0.25 visitor
+# bays per unit), Mangaung land use scheme (bay 2.5 x 5.0 m, aisle 7.5 m, accessible 3.5 m, 0.5 visitor bay per unit, 1.5 bays for 3 habitable rooms), South African parking standards (aisle 5.4 m at 60
+# degrees, 5.2 m at 45 degrees).
+STANDARDS = {"My rules (7 m aisle)": None,
+             "City of Cape Town": {"w": 2.5, "l": 5.0, "aisle": 7.0, "par_l": 6.0, "ada_w": 3.7, "bays_per_unit": 1.75, "visitor_per": 4},
+             "Mangaung (Free State)": {"w": 2.5, "l": 5.0, "aisle": 7.5, "par_l": 6.0, "ada_w": 3.5, "bays_per_unit": 1.5, "visitor_per": 2}}
 BAY_TYPES = ["Open", "Covered", "Garage", "Shade cloth", "Tandem", "Compact", "Accessible", "EV"]
 BAY_COL = {"Open": (46, 158, 91), "Covered": (74, 127, 181), "Garage": (196, 140, 50), "Shade cloth": (60, 170, 170), "Tandem": (230, 160, 90), "Compact": (120, 150, 210), "Accessible": (40, 90, 220), "EV": (150, 80, 200)}
 SCALES = ["1:200", "1:250", "1:500", "1:1000", "1:1250", "1:2000"]
@@ -198,6 +204,15 @@ class _GenerateDialog(QDialog):
 
 
 # ---------------------------------------------------------------- the plan
+class _NoWheel(QObject):
+    """a number box changes with the mouse wheel only while you are typing in it: scrolling the page must never change the aisle or a bay size"""
+    def eventFilter(self, o, e):
+        if e.type() == QEvent.Type.Wheel and not o.hasFocus():
+            e.ignore()
+            return True
+        return False
+
+
 class ParkView(PlanView):
     """Building lines' plan, with the parking drawn over it: the areas, the aisles, the bays (red when one breaks a rule)."""
 
@@ -437,6 +452,8 @@ class SdpPage(SitePage):
         if a["bays"]:
             parts.append(cell("site per bay", "%.0f m2" % (a["area"] / a["bays"])))
         parts += [cell("Coverage", "%.1f %%" % a["cov"], chk["Coverage"]), cell("FAR", "%.2f" % a["far"], chk["Floor area ratio"]), cell("Density", "%.1f u/ha" % a["density"], chk["Density"])]
+        if self.r_aisle.value() < 7.0 - 1e-6:
+            parts.append("<b style='color:%s'>Aisle %.1f m is under the 7 m standard</b>" % (bad, self.r_aisle.value()))
         nb = sum(1 for pr in self._bad if pr)
         if nb:
             parts.append("<b style='color:%s'>%d bays break a rule</b>" % (bad, nb))
@@ -534,8 +551,12 @@ class SdpPage(SitePage):
         v.addWidget(bx)
         bx, bv = self.box("Accessible and EV bays, schemes, export", "Like the TestFit parking solver: set aside accessible and electric-vehicle bays (nearest the buildings), keep several layouts as schemes and compare them, and export to CAD or CSV.")
         fl = FlowLayout(None, 10, 6)
+        self.ada_tab = QCheckBox("Accessible bays as the municipal table asks")
+        self.ada_tab.setChecked(True)
+        self.ada_tab.setToolTip("City of Cape Town: 1 accessible bay for 1-50 bays, 2 for 51-100, 3 for 101-150, 4 for 151-200, then one more for every further 100. Each is 3.7 m wide, so it takes the room of a neighbouring bay. Untick to use the percentage instead.")
         self.ada_pct, self.ev_pct = sl.spin(0, 100, 2, 1, " %"), sl.spin(0, 100, 0, 1, " %")
         self.ada_pct.setToolTip("Share of the bays set aside for accessible parking. Check the figure your municipality asks for.")
+        fl.addWidget(self.ada_tab)
         fl.addWidget(self._pair("Accessible bays", self.ada_pct))
         fl.addWidget(self._pair("EV bays", self.ev_pct))
         bv.addLayout(fl)
@@ -582,8 +603,19 @@ class SdpPage(SitePage):
         self.r_aisle = sl.spin(3, 12, sp.RULES["aisle"], 2, " m")
         self.r_bld = sl.spin(0, 5, sp.RULES["bld"], 2, " m")
         self.r_bound = sl.spin(0, 5, sp.RULES["bound"], 2, " m")
+        self.r_parl = sl.spin(4, 9, sp.RULES["par_l"], 2, " m")
+        self.r_adaw = sl.spin(2.5, 5, sp.RULES["ada_w"], 2, " m")
+        self.std_cb = QComboBox()
+        self.std_cb.addItems(list(STANDARDS))
+        self.std_cb.setToolTip("South African municipal parking standards. Pressing 'Use this standard' sets the bay sizes, aisle, parallel bay, accessible bay width and the parking ratio for the residents and visitors.")
+        std_b = QPushButton("Use this standard")
+        std_b.clicked.connect(lambda _=False: self.use_standard())
+        fl.addWidget(self._pair("Standard", self.std_cb))
+        fl.addWidget(std_b)
         for lab, w, tip in (("Bay width", self.r_w, ""), ("Bay length", self.r_l, ""), ("Room to reverse out", self.r_aisle, "The aisle in front of a bay."),
-                            ("Clear of a building", self.r_bld, "The nearest a bay may be to a building."), ("Clear of the boundary", self.r_bound, "0 means a bay may touch the boundary.")):
+                            ("Clear of a building", self.r_bld, "The nearest a bay may be to a building."), ("Clear of the boundary", self.r_bound, "0 means a bay may touch the boundary."),
+                            ("Parallel bay length", self.r_parl, "A bay along the kerb: 6 m x 2.5 m (City of Cape Town zoning scheme)."),
+                            ("Accessible bay width", self.r_adaw, "An accessible bay is at least 3.7 m wide and 5 m long (City of Cape Town); 3.5 m in Mangaung. Setting the accessible bays widens them.")):
             w.setToolTip(tip)
             w.valueChanged.connect(self._rules_changed)
             fl.addWidget(self._pair(lab, w))
@@ -642,6 +674,11 @@ class SdpPage(SitePage):
         self.style_cb.addItems(["Automatic", "Across the road", "Parallel to the road"])
         self.style_cb.setToolTip("Automatic: bays stand across the road with the 7 m pushback; where the area is only a narrow strip beside the road (too shallow for a bay across it) they are laid parallel to the kerb.")
         self.style_cb.currentIndexChanged.connect(self._zone_opts)
+        self.ang_cb = QComboBox()
+        self.ang_cb.addItems(["90 degrees (square)", "60 degrees", "45 degrees"])
+        self.ang_cb.setToolTip("Angled bays save space on a one-way aisle: aisle 5.4 m at 60 degrees, 5.2 m at 45 degrees (South African parking standards). A bay is still 2.5 x 5.0 m.")
+        self.ang_cb.currentIndexChanged.connect(self._zone_opts)
+        fl.addWidget(self._pair("Bay angle", self.ang_cb))
         fl.addWidget(self._pair("Bay style", self.style_cb))
         fl.addWidget(self._pair("Bays on", self.side_cb))
         fl.addWidget(self._pair("Bays in the selected area", self.max_sp))
@@ -805,7 +842,7 @@ class SdpPage(SitePage):
     # ------------------------------------------------------------- parking: rules and what they are tested against
     def rules_now(self):
         return {"w": self.r_w.value(), "l": self.r_l.value(), "aisle": self.r_aisle.value(), "bld": self.r_bld.value(), "bound": self.r_bound.value(),
-                "outside_lines": self.r_lines.isChecked()}
+                "outside_lines": self.r_lines.isChecked(), "par_l": self.r_parl.value(), "ada_w": self.r_adaw.value()}
 
     def site_obj(self):
         v = self.verts()
@@ -1151,7 +1188,7 @@ class SdpPage(SitePage):
         if not self.roads:
             return 0
         r, n = self.rules_now(), 0
-        zs = [(z["name"], [tuple(q) for q in z["poly"]], int(z.get("max", 0)), int(z.get("side", 0)), int(z.get("style", 0))) for z in self.zones if z.get("join", True) and len(z["poly"]) >= 3]
+        zs = [(z["name"], [tuple(q) for q in z["poly"]], int(z.get("max", 0)), int(z.get("side", 0)), int(z.get("style", 0))) for z in self.zones if z.get("join", True) and len(z["poly"]) >= 3 and int(z.get("bay_angle", 90)) == 90]
         plans = []
         for rd in self.roads:
             if rd.get("path"):
@@ -1550,6 +1587,7 @@ class SdpPage(SitePage):
             self.zones[i]["max"] = self.max_sp.value()
             self.zones[i]["side"] = self.side_cb.currentIndex()
             self.zones[i]["style"] = self.style_cb.currentIndex()
+            self.zones[i]["bay_angle"] = (90, 60, 45)[self.ang_cb.currentIndex()]
             self._fill([i])
 
     def _zone_picked(self):
@@ -1561,6 +1599,7 @@ class SdpPage(SitePage):
                 self.max_sp.setValue(int(self.zones[i].get("max", 0)))
                 self.side_cb.setCurrentIndex(int(self.zones[i].get("side", 0)))
                 self.style_cb.setCurrentIndex(int(self.zones[i].get("style", 0)))
+                self.ang_cb.setCurrentIndex({90: 0, 60: 1, 45: 2}.get(int(self.zones[i].get("bay_angle", 90)), 0))
             finally:
                 self._zo_busy = False
 
@@ -1622,7 +1661,7 @@ class SdpPage(SitePage):
                 keep = list(self.bays)
                 roads = self.road_quads_all() if (z.get("join", True) and self.roads) else None
                 got = sp.fill([tuple(p) for p in z["poly"]], site, r, z.get("angle"), keep, z["name"], roads, int(z.get("max", 0)),
-                              [self.road_angle_near(z["poly"])] if roads else ())
+                              [self.road_angle_near(z["poly"])] if roads else (), 90 - int(z.get("bay_angle", 90)))
                 for b_ in got:
                     b_["type"] = z.get("type", "Open")
                 self.bays += got
@@ -1850,6 +1889,7 @@ class SdpPage(SitePage):
         for b in auto:
             if b.get("type") in ("Accessible", "EV"):
                 b["type"] = zt.get(b.get("zone"), "Open")
+            sp.unwiden(b)
         cs = []
         for b in self.buildings():
             if kind_of(b["name"]) == "block":
@@ -1859,15 +1899,20 @@ class SdpPage(SitePage):
             QMessageBox.information(self, self.TITLE, "Place buildings and fill the parking first.")
             return
         auto.sort(key=lambda b: min(math.hypot(b["x"] - c[0], b["y"] - c[1]) for c in cs))
-        na = int(math.ceil(len(auto) * self.ada_pct.value() / 100.0 - 1e-9))
+        na = sp.accessible_required(len(self.bays)) if self.ada_tab.isChecked() else int(math.ceil(len(auto) * self.ada_pct.value() / 100.0 - 1e-9))
+        na = min(na, len(auto))
         ne = int(math.ceil(len(auto) * self.ev_pct.value() / 100.0 - 1e-9))
+        r = self.rules_now()
+        gone = []
         for i, b in enumerate(auto):
             if i < na:
                 b["type"] = "Accessible"
+                gone += sp.widen(b, [x for x in self.bays if x not in gone], r, r["ada_w"])      # 3.7 m wide: it takes the room of the bay beside it
             elif i < na + ne:
                 b["type"] = "EV"
+        self.bays = [b for b in self.bays if not any(b is g for g in gone) or b.get("type") == "Accessible"]
         self.refresh_parking(user=True)
-        self.set_hint("%d accessible and %d EV bays set aside, nearest the buildings." % (na, ne))
+        self.set_hint("%d accessible (%.1f m wide) and %d EV bays set aside, nearest the buildings." % (na, r["ada_w"], ne))
 
     def _scheme_numbers(self):
         a = self.sdp()
@@ -2689,8 +2734,34 @@ class SdpPage(SitePage):
                   "prules": self.rules_now(), "gen": self._gen_names(), "schemes": self.schemes, "excl": self.excl, "roads": self.roads, "mix": {k: [w[0].value(), w[1].value()] for k, w in self.mix.items()}})
         return d
 
+    def _guard_wheel(self):
+        if getattr(self, "_nw", None) is None:
+            self._nw = _NoWheel(self)
+        for w in self.findChildren(QDoubleSpinBox) + self.findChildren(QSpinBox) + self.findChildren(QComboBox):
+            if w.property("_nw") is None:
+                w.setProperty("_nw", True)
+                w.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+                w.installEventFilter(self._nw)
+
+    def use_standard(self):
+        d = STANDARDS.get(self.std_cb.currentText())
+        if not d:
+            self.set_hint("These are your own rules: change them in the boxes.")
+            return
+        self._pbusy = True
+        try:
+            self.r_w.setValue(d["w"]), self.r_l.setValue(d["l"]), self.r_aisle.setValue(d["aisle"]), self.r_parl.setValue(d["par_l"]), self.r_adaw.setValue(d["ada_w"])
+            self.f["bays_per_unit"].setValue(d["bays_per_unit"])
+            self.f["visitor_per"].setValue(d["visitor_per"])
+        finally:
+            self._pbusy = False
+        self._rules_changed()
+        self.set_hint("%s: bay %.1f x %.1f m, aisle %.1f m, parallel bay %.1f m, accessible bay %.1f m wide, %.2f bays per unit and a visitor bay for every %d units." % (
+            self.std_cb.currentText(), d["w"], d["l"], d["aisle"], d["par_l"], d["ada_w"], d["bays_per_unit"], d["visitor_per"]))
+
     def _undo_baseline(self):
         self._undo, self._redo, self._ulast = [], [], None
+        self._guard_wheel()
         self.undo_snap()
 
     def set_state(self, d):
@@ -2715,7 +2786,7 @@ class SdpPage(SitePage):
                 else:
                     w.setPlainText(str(val or ""))
             pr = sp.rules(d.get("prules"))
-            self.r_w.setValue(pr["w"]), self.r_l.setValue(pr["l"]), self.r_aisle.setValue(pr["aisle"]), self.r_bld.setValue(pr["bld"]), self.r_bound.setValue(pr["bound"])
+            self.r_w.setValue(pr["w"]), self.r_l.setValue(pr["l"]), self.r_aisle.setValue(pr["aisle"]), self.r_bld.setValue(pr["bld"]), self.r_bound.setValue(pr["bound"]), self.r_parl.setValue(pr["par_l"]), self.r_adaw.setValue(pr["ada_w"])
             self.r_lines.setChecked(bool(pr["outside_lines"]))
             self.fill_blocks([b for b in (d.get("blocks") or []) if isinstance(b, dict)])
             self.zones = [dict(z) for z in (d.get("zones") or []) if isinstance(z, dict) and z.get("poly")]

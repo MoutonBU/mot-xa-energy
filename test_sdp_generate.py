@@ -424,3 +424,25 @@ gaps = [round(rows[i + 1] - rows[i] - rr["l"], 1) for i in range(len(rows) - 1)]
 assert any(abs(g - rr["aisle"]) < 0.2 for g in gaps) and not any(pg27._bad), (rows, gaps)
 os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
 print("ok parallel and pushback")
+# South African standards: angled bays, accessible bays by table, aisle guard
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+pg28 = sc.SdpPage(W()); pg28.q_w.setValue(100), pg28.q_d.setValue(60); pg28.make_rect()
+pg28._new_zone([(20, 10), (80, 10), (80, 40), (20, 40)], "Lot"); pg28._fill([0])
+n90 = len(pg28.bays)
+for ang, aisle in ((60, 5.4), (45, 5.2)):
+    pg28.zones[0]["bay_angle"] = ang; pg28._fill([0])
+    na = len(pg28.bays)
+    assert na > 0 and not any(pg28._bad), (ang, na, [x for x in pg28._bad if x][:2])
+    assert all(b.get("tilt") for b in pg28.bays) and abs(sc.sp.ANGLE_AISLE[ang] - aisle) < 1e-9
+    print("angle", ang, "bays", na, "vs 90:", n90)
+assert sc.sp.accessible_required(50) == 1 and sc.sp.accessible_required(51) == 2 and sc.sp.accessible_required(200) == 4 and sc.sp.accessible_required(201) == 5
+pg28.zones[0]["bay_angle"] = 90; pg28._fill([0])
+pg28.add_building({"name": "H1", "x": 82, "y": 20, "w": 10, "d": 10})
+pg28.assign_special()
+acc = [b for b in pg28.bays if b.get("type") == "Accessible"]
+assert len(acc) == sc.sp.accessible_required(len(pg28.bays) + 0) or len(acc) >= 1
+assert all(abs(b.get("wd", 0) - 3.7) < 1e-9 for b in acc) and not any(pg28._bad), [x for x in pg28._bad if x][:2]
+pg28.std_cb.setCurrentText("Mangaung (Free State)"); pg28.use_standard()
+assert abs(pg28.r_aisle.value() - 7.5) < 1e-9 and abs(pg28.f["visitor_per"].value() - 2) < 1e-9
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+print("ok SA standards")

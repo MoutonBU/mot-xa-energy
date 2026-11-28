@@ -5,7 +5,9 @@ bay opens onto its aisle. The bay is `w` wide and `l` long, and the aisle (the r
 Rules (RULES): bay 2.5 x 5.0 m, aisle 7.0 m, 0.5 m clear of every building, a clearance to the boundary, and optionally outside the building lines."""
 import math
 
-RULES = {"w": 2.5, "l": 5.0, "aisle": 7.0, "bld": 0.5, "bound": 0.0, "outside_lines": False}
+RULES = {"w": 2.5, "l": 5.0, "aisle": 7.0, "bld": 0.5, "bound": 0.0, "outside_lines": False, "par_l": 6.0, "ada_w": 3.7}
+# aisle width for bays at an angle to the aisle (South African parking standards: 60 degrees 5.4 m, 45 degrees 5.2 m, two-way); 90 degrees uses the "aisle" rule
+ANGLE_AISLE = {60: 5.4, 45: 5.2}
 EPS = 1e-9
 
 
@@ -33,15 +35,28 @@ def depth(b, r):
 
 def bay_poly(b, r):
     if b.get("par"):
-        return rect(b["x"], b["y"], b["a"], r["w"], r["l"])
-    return rect(b["x"], b["y"], b["a"], r["l"], r["w"])
+        return rect(b["x"], b["y"], b["a"], r["w"], r["par_l"])
+    return rect(b["x"], b["y"], b["a"], r["l"], b.get("wd", r["w"]))
+
+
+def tilt_depth(r, t):
+    """how deep (across the aisle) a bay tilted t degrees from square reaches"""
+    t = math.radians(abs(t))
+    return r["l"] * math.cos(t) + r["w"] * math.sin(t)
 
 
 def aisle_poly(b, r):
     a = math.radians(b["a"])
     if b.get("par"):                                      # a parallel bay pulls out into the road itself: the strip in front of it
         d = r["w"] / 2.0 + 1.5
-        return rect(b["x"] + math.cos(a) * d, b["y"] + math.sin(a) * d, b["a"], 3.0, r["l"])
+        return rect(b["x"] + math.cos(a) * d, b["y"] + math.sin(a) * d, b["a"], 3.0, r["par_l"])
+    if b.get("tilt"):                                     # an angled bay: the aisle runs along the row, square to it
+        t = b["tilt"]
+        n = math.radians(b["a"] - t)
+        h = tilt_depth(r, t)
+        A = b.get("ai", r["aisle"])
+        d = h / 2.0 + A / 2.0
+        return rect(b["x"] + math.cos(n) * d, b["y"] + math.sin(n) * d, b["a"] - t, A, r["w"] / math.cos(math.radians(abs(t))))
     d = r["l"] / 2.0 + r["aisle"] / 2.0
     return rect(b["x"] + math.cos(a) * d, b["y"] + math.sin(a) * d, b["a"], r["aisle"], r["w"])
 
@@ -216,8 +231,10 @@ def _in_aisles(P, keepA):
     return any(_near(pb, ab, 0.1) and overlap(P, A) for A, ab in keepA)
 
 
-def _layout(zone, site, r, theta, tx, ty, keep):
-    """bays for rows running along theta, the whole pattern shifted by (tx, ty)"""
+def _layout(zone, site, r, theta, tx, ty, keep, t=0.0):
+    """bays for rows running along theta, the whole pattern shifted by (tx, ty); t = how many degrees the bays lean from square to the aisle (0 = square)"""
+    if t:
+        return _layout_tilt(zone, site, r, theta, tx, ty, keep, t)
     c, s = math.cos(math.radians(theta)), math.sin(math.radians(theta))
     to_w = lambda x, y: (x * c - y * s, x * s + y * c)
     loc = [(p[0] * c + p[1] * s, -p[0] * s + p[1] * c) for p in zone]
@@ -249,7 +266,41 @@ def _layout(zone, site, r, theta, tx, ty, keep):
     return out
 
 
-def fill(zone, site, r=None, angle=None, keep=(), name="", connect=None, limit=0, extra_angles=()):
+def _layout_tilt(zone, site, r, theta, tx, ty, keep, t):
+    """rows of angled bays: both rows lean the same way (one-way flow) with the aisle for that angle between them"""
+    c, s = math.cos(math.radians(theta)), math.sin(math.radians(theta))
+    to_w = lambda x, y: (x * c - y * s, x * s + y * c)
+    loc = [(p[0] * c + p[1] * s, -p[0] * s + p[1] * c) for p in zone]
+    x0, y0, x1, y1 = bbox(loc)
+    W = r["w"]
+    h = tilt_depth(r, t)
+    A = ANGLE_AISLE.get(int(round(90 - abs(t))), r["aisle"])
+    pitch_x = W / math.cos(math.radians(abs(t)))
+    out, zbox = [], bbox(zone)
+    keepA = [(aisle_poly(k, r), bbox(aisle_poly(k, r))) for k in keep]
+    ys = y0 - ty
+    while ys < y1:
+        for lower in (True, False):
+            if lower:
+                cy_, loc_a, tl = ys + h / 2.0, 90.0 - abs(t), -abs(t)
+            else:
+                cy_, loc_a, tl = ys + h + A + h / 2.0, 270.0 + abs(t), abs(t)
+            if cy_ - h / 2.0 > y1 or cy_ + h / 2.0 < y0:
+                continue
+            xs = x0 - tx
+            while xs < x1:
+                wx, wy = to_w(xs + pitch_x / 2.0, cy_)
+                bay = {"x": wx, "y": wy, "a": (loc_a + theta) % 360.0, "auto": True, "tilt": tl, "ai": A}
+                P = bay_poly(bay, r)
+                if _near(bbox(P), zbox, 0) and inside(P, zone) and inside(aisle_poly(bay, r), zone):
+                    if not problems(bay, r, site, keep) and not _in_aisles(P, keepA):
+                        out.append(bay)
+                xs += pitch_x
+        ys += 2 * h + A
+    return out
+
+
+def fill(zone, site, r=None, angle=None, keep=(), name="", connect=None, limit=0, extra_angles=(), tilt=0.0):
     """Park a zone full. Rows run along the longest side of the zone (or along `angle`); the pattern is shifted a little in steps
     and turned a quarter, and the layout with the most bays wins. Bays you placed by hand (`keep`) stay where they are.
     connect: road pieces; a layout whose aisles meet the road wins over one that does not. limit: keep only that many bays (the ones nearest the road), 0 = all"""
@@ -267,9 +318,10 @@ def fill(zone, site, r=None, angle=None, keep=(), name="", connect=None, limit=0
     big = abs(_area(zone)) > 3000.0
     step = 3.0 if big else 1.0
     for th in angs:
-        for ty in [i * step for i in range(int(math.ceil((2 * r["l"] + r["aisle"]) / step)))]:
+        mod = (2 * tilt_depth(r, tilt) + ANGLE_AISLE.get(int(round(90 - abs(tilt))), r["aisle"])) if tilt else (2 * r["l"] + r["aisle"])
+        for ty in [i * step for i in range(int(math.ceil(mod / step)))]:
             for tx in ((0.0,) if big else (0.0, r["w"] / 2.0)):
-                got = _layout(zone, site, r, th, tx, ty, list(keep))
+                got = _layout(zone, site, r, th, tx, ty, list(keep), tilt)
                 key = (1 if (connect and got and connected(got, r, connect, qb)) else 0, len(got))
                 if key > best_key:
                     best, best_key = got, key
@@ -648,7 +700,7 @@ def road_plan(pts, width, smooth, r, left, right, start, zones, reach=4.0):
             placed += 1
     half = max(width, r["aisle"]) / 2.0
     par = {}
-    Lp = r["l"]
+    Lp = r["par_l"]
     npar = int(L // Lp)
     for zz in zones:
         name, poly, mx = zz[0], zz[1], zz[2]
@@ -710,7 +762,7 @@ def road_place(pts, width, site, r, keep, name, rid, smooth, plan):
             bay["rz"] = zn
         if not problems(bay, r, site, list(keep) + out):
             out.append(bay)
-    Lp = r["l"]
+    Lp = r["par_l"]
     for j, sd, zn in plan.get("par", []):
         (px, py), (tx, ty) = _along(c, t, arc, j * Lp + Lp / 2.0)
         nx, ny = -ty * sd, tx * sd
@@ -758,3 +810,45 @@ def min_rect(pts):
     _, a, ux, uy, x0, x1, y0, y1 = best
     w = lambda x, y: (round(a[0] + x * ux - y * uy, 3), round(a[1] + x * uy + y * ux, 3))
     return [w(x0, y0), w(x1, y0), w(x1, y1), w(x0, y1)]
+
+
+def accessible_required(total):
+    """accessible bays a parking area must have (City of Cape Town zoning scheme 19.3.2): 1-50 bays 1, 51-100 2, 101-150 3, 151-200 4, then one more for every further 100"""
+    if total <= 0:
+        return 0
+    if total <= 200:
+        return int(math.ceil(total / 50.0))
+    return 4 + int(math.ceil((total - 200) / 100.0))
+
+
+def widen(b, others, r, width):
+    """make bay b `width` wide (an accessible bay) on whichever side disturbs the fewer bays; the bays it now overlaps are returned (to be removed)"""
+    if "wd0" not in b:
+        b["wd0"] = (b["x"], b["y"])
+    x0, y0 = b["wd0"]
+    a = math.radians(b["a"])
+    vx, vy = -math.sin(a), math.cos(a)
+    if b.get("tilt"):
+        t = math.radians(b["a"] - b["tilt"])
+        vx, vy = -math.sin(t), math.cos(t)
+        k = (width - r["w"]) / 2.0 / math.cos(math.radians(abs(b["tilt"])))
+        back = (width - r["w"]) * math.sin(math.radians(abs(b["tilt"]))) / 2.0          # a wider tilted bay is deeper: keep its nose on the aisle edge
+        x0, y0 = x0 - math.cos(t) * back, y0 - math.sin(t) * back
+    else:
+        k = (width - r["w"]) / 2.0
+    best = None
+    for sg in (1, -1):
+        g = dict(b, wd=width, x=x0 + vx * k * sg, y=y0 + vy * k * sg)
+        P = bay_poly(g, r)
+        hit = [o for o in others if o is not b and overlap(P, bay_poly(o, r), 0.02)]
+        if best is None or len(hit) < len(best[1]):
+            best = (g, hit)
+    g, hit = best
+    b.update(wd=width, x=g["x"], y=g["y"])
+    return hit
+
+
+def unwiden(b):
+    if "wd0" in b:
+        b["x"], b["y"] = b.pop("wd0")
+    b.pop("wd", None)
