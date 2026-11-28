@@ -376,3 +376,14 @@ assert abs(e[0][0] * e[1][0] + e[0][1] * e[1][1]) < 0.5, e                     #
 img = pg23.plan.snapshot(1500, 760); assert not img.isNull()
 os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
 print("ok square area")
+# a parking area straddling the road: bays on both sides, road kept at the pushback width there
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+pg24 = sc.SdpPage(W()); pg24.q_w.setValue(100), pg24.q_d.setValue(60); pg24.make_rect()
+pg24.start_road(); pg24.trace_done("trace_road", "", [(3, 25), (50, 25), (97, 25)]); pg24.road_w.setValue(6.0)
+pg24.trace_done("trace_parking", "", [(20, 15), (80, 15), (80, 35), (20, 35)])
+rb24 = [b for b in pg24.bays if str(b["zone"]).startswith("Road")]
+assert any(b["y"] > 25 for b in rb24) and any(b["y"] < 25 for b in rb24) and pg24.road_span(pg24.roads[0]) and not any(pg24._bad)
+q = pg24.road_quads_all()
+assert any(abs(sc.math.hypot(a[0] - d[0], a[1] - d[1]) - 7.0) < 0.05 for a, b_, c_, d in [x for x in q if len(x) == 4])
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+print("ok straddle")
