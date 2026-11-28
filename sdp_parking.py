@@ -680,3 +680,40 @@ def road_place(pts, width, site, r, keep, name, rid, smooth, plan):
         if not problems(bay, r, site, list(keep) + out):
             out.append(bay)
     return out
+
+
+def min_rect(pts):
+    """the smallest rectangle (any angle) that holds the points: a hand-drawn parking area is squared up to it"""
+    P = sorted(set((round(x, 6), round(y, 6)) for x, y in pts))
+    if len(P) < 3:
+        return [tuple(q) for q in pts]
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+    lo, up = [], []
+    for q in P:
+        while len(lo) >= 2 and cross(lo[-2], lo[-1], q) <= 0:
+            lo.pop()
+        lo.append(q)
+    for q in reversed(P):
+        while len(up) >= 2 and cross(up[-2], up[-1], q) <= 0:
+            up.pop()
+        up.append(q)
+    H = lo[:-1] + up[:-1]
+    best = None
+    for i in range(len(H)):
+        a, b = H[i], H[(i + 1) % len(H)]
+        L = math.hypot(b[0] - a[0], b[1] - a[1])
+        if L < 1e-9:
+            continue
+        ux, uy = (b[0] - a[0]) / L, (b[1] - a[1]) / L
+        xs = [(q[0] - a[0]) * ux + (q[1] - a[1]) * uy for q in H]
+        ys = [-(q[0] - a[0]) * uy + (q[1] - a[1]) * ux for q in H]
+        x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+        ar = (x1 - x0) * (y1 - y0)
+        if best is None or ar < best[0]:
+            best = (ar, a, ux, uy, x0, x1, y0, y1)
+    if best is None:
+        return [tuple(q) for q in pts]
+    _, a, ux, uy, x0, x1, y0, y1 = best
+    w = lambda x, y: (round(a[0] + x * ux - y * uy, 3), round(a[1] + x * uy + y * ux, 3))
+    return [w(x0, y0), w(x1, y0), w(x1, y1), w(x0, y1)]

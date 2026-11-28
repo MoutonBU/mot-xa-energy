@@ -1281,7 +1281,7 @@ class SdpPage(SitePage):
             self.refresh_parking(user=True)
             self.set_hint("Keep-clear area added. Press Generate or Fill again to park round it.")
             return
-        self._new_zone(sl.si.clean(pts))
+        self._new_zone(sp.min_rect(sl.si.clean(pts)))           # drawn freehand, squared up when you finish
         if self.auto_fill.isChecked():
             self._fill([len(self.zones) - 1])
             self.set_hint("Area drawn and parked. Draw another area, or drag the corners/buildings and it follows.")
@@ -1905,7 +1905,7 @@ class SdpPage(SitePage):
         import ezdxf
         doc = ezdxf.new("R2010")
         msp = doc.modelspace()
-        for name, col in (("STAND", 7), ("BUILDINGS", 1), ("BAYS", 3), ("BAY_ACCESSIBLE", 5), ("BAY_EV", 6), ("BAY_OTHER", 30), ("PARKING_AREAS", 8), ("ROADS", 9), ("PATHWAYS", 2), ("ROAD_CENTRELINE", 4)):
+        for name, col in (("STAND", 7), ("BUILDINGS", 1), ("BAYS", 3), ("BAY_ACCESSIBLE", 5), ("BAY_EV", 6), ("BAY_OTHER", 30), ("PARKING_AREAS", 8), ("BAY_NUMBERS", 3), ("ROADS", 9), ("PATHWAYS", 2), ("ROAD_CENTRELINE", 4)):
             doc.layers.add(name, color=col)
         poly = lambda pts, layer: msp.add_lwpolyline([(q[0], q[1]) for q in pts], close=True, dxfattribs={"layer": layer})
         if len(self.verts()) >= 3:
@@ -1929,6 +1929,7 @@ class SdpPage(SitePage):
         r = self.rules_now()
         for b in self.bays:
             t = b.get("type", "Open")
+            msp.add_text(str(self.bays.index(b) + 1), dxfattribs={"layer": "BAY_NUMBERS", "height": 0.7, "insert": (b["x"] - 0.4, b["y"] - 0.35)})
             poly(sp.bay_poly(b, r), {"Accessible": "BAY_ACCESSIBLE", "EV": "BAY_EV"}.get(t, "BAYS" if t == "Open" else "BAY_OTHER"))
         doc.saveas(path)
         self.set_hint("Drawing saved to " + path)
@@ -2217,13 +2218,15 @@ class SdpPage(SitePage):
             p.setPen(QPen(QColor(110, 110, 110), 1.4))
             p.setBrush(QBrush(QColor(120, 120, 120, 110), Qt.BrushStyle.BDiagPattern))
             p.drawPolygon(QPolygonF([to(q) for q in e]))
-        for i, z in enumerate(self.zones):
-            p.setPen(QPen(QColor("#7a3fc4"), 3 if (i == self.sel_zone and not snapshot) else 1.4, Qt.PenStyle.DashLine))
+        for i, z in enumerate(self.zones):                         # the purple area is a working aid: not in the printed plan
+            if snapshot:
+                break
+            p.setPen(QPen(QColor("#7a3fc4"), 3 if i == self.sel_zone else 1.4, Qt.PenStyle.DashLine))
             p.setBrush(QColor(122, 63, 196, 28))
             p.drawPolygon(QPolygonF([to(q) for q in z["poly"]]))
-        for b in self.bays:                                        # the aisles first, under the bays
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(110, 110, 110, 34))
+        for b in self.bays:                                        # the pushback (aisle) in road grey, under the bays
+            p.setPen(QPen(QColor(128, 130, 138), 1.0))
+            p.setBrush(QColor(128, 130, 138))
             p.drawPolygon(QPolygonF([to(q) for q in sp.aisle_poly(b, r)]))
         big = W >= 900
         for i, b in enumerate(self.bays):
@@ -2239,7 +2242,15 @@ class SdpPage(SitePage):
                 m = to((b["x"] + math.cos(a) * r["l"] / 2, b["y"] + math.sin(a) * r["l"] / 2))
                 p.setPen(QPen(QColor("#1f7a45") if not bad else QColor("#b01028"), 1))
                 p.drawLine(m, to((b["x"] + math.cos(a) * (r["l"] / 2 - 0.5), b["y"] + math.sin(a) * (r["l"] / 2 - 0.5))))
-        if self.zones and s > 3:
+        if self.bays and s > 5:                                    # bay numbers
+            f = QFont("Arial")
+            f.setPixelSize(int(max(6, min(12, 1.7 * s))))
+            p.setFont(f)
+            for i, b in enumerate(self.bays):
+                c = to((b["x"], b["y"]))
+                p.setPen(QColor("#0b3d1e"))
+                p.drawText(QRectF(c.x() - 14, c.y() - 7, 28, 14), int(Qt.AlignmentFlag.AlignCenter), str(i + 1))
+        if self.zones and s > 3 and not snapshot:
             f = QFont("Arial")
             f.setPixelSize(15 if big else 11)
             f.setBold(True)

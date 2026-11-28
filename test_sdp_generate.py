@@ -364,3 +364,15 @@ for b in za:
     assert b["x"] > 21 - 0.2 and 22 - 0.2 <= b["y"] <= 32 + 0.2 or sp_inside_ok(b) if False else (20.8 <= b["x"] <= 60.2 and 21.8 <= b["y"] <= 32.2), b
 os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
 print("ok stays inside")
+# a freehand area is squared up; the purple area is not in the printed plan; bays are numbered
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+pg23 = sc.SdpPage(W()); pg23.q_w.setValue(100), pg23.q_d.setValue(60); pg23.make_rect()
+pg23.start_parking() if hasattr(pg23, "start_parking") else None
+pg23.trace_done("trace_parking", "", [(20, 20), (60, 23), (62, 36), (35, 39), (19, 33)])
+z = pg23.zones[-1]["poly"]; assert len(z) == 4
+import math as _m
+e = [(z[(i + 1) % 4][0] - z[i][0], z[(i + 1) % 4][1] - z[i][1]) for i in range(4)]
+assert abs(e[0][0] * e[1][0] + e[0][1] * e[1][1]) < 0.5, e                     # right angles
+img = pg23.plan.snapshot(1500, 760); assert not img.isNull()
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+print("ok square area")
