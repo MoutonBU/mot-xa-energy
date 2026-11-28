@@ -197,6 +197,12 @@ def _longest_dir(poly):
     return ang
 
 
+def _in_aisles(P, keepA):
+    """the bay stands in the aisle of a bay that is already there"""
+    pb = bbox(P)
+    return any(_near(pb, ab, 0.1) and overlap(P, A) for A, ab in keepA)
+
+
 def _layout(zone, site, r, theta, tx, ty, keep):
     """bays for rows running along theta, the whole pattern shifted by (tx, ty)"""
     c, s = math.cos(math.radians(theta)), math.sin(math.radians(theta))
@@ -207,6 +213,7 @@ def _layout(zone, site, r, theta, tx, ty, keep):
     pitch = 2 * L + A
     out = []
     zbox = bbox(zone)
+    keepA = [(aisle_poly(k, r), bbox(aisle_poly(k, r))) for k in keep]
     ys = y0 - ty
     while ys < y1:
         for lower in (True, False):
@@ -222,34 +229,48 @@ def _layout(zone, site, r, theta, tx, ty, keep):
                 bay = {"x": wx, "y": wy, "a": ang % 360.0, "auto": True}
                 P = bay_poly(bay, r)
                 if _near(bbox(P), zbox, 0) and inside(P, zone) and inside(aisle_poly(bay, r), zone):
-                    if not problems(bay, r, site, keep):
+                    if not problems(bay, r, site, keep) and not _in_aisles(P, keepA):
                         out.append(bay)
                 xs += W
         ys += pitch
     return out
 
 
-def fill(zone, site, r=None, angle=None, keep=(), name=""):
+def fill(zone, site, r=None, angle=None, keep=(), name="", connect=None, limit=0, extra_angles=()):
     """Park a zone full. Rows run along the longest side of the zone (or along `angle`); the pattern is shifted a little in steps
-    and turned a quarter, and the layout with the most bays wins. Bays you placed by hand (`keep`) stay where they are."""
+    and turned a quarter, and the layout with the most bays wins. Bays you placed by hand (`keep`) stay where they are.
+    connect: road pieces; a layout whose aisles meet the road wins over one that does not. limit: keep only that many bays (the ones nearest the road), 0 = all"""
     r = rules(r)
     zone = [tuple(p) for p in zone]
     if len(zone) < 3:
         return []
     base = _longest_dir(zone) if angle is None else angle
-    best = []
-    for th in ((base, base + 90.0) if angle is None else (base,)):
-        big = abs(_area(zone)) > 3000.0              # a big area: fewer shifts, the edge matters less (keeps it quick)
-        for ty in [i * (3.0 if big else 1.0) for i in range(int(math.ceil((2 * r["l"] + r["aisle"]) / (3.0 if big else 1.0))))]:
+    angs = [base, base + 90.0] if angle is None else [base]
+    for e in extra_angles:
+        if e is not None:
+            angs += [e, e + 90.0]
+    qb = [bbox(q) for q in connect] if connect else []
+    best, best_key = [], (-1, -1)
+    big = abs(_area(zone)) > 3000.0
+    step = 3.0 if big else 1.0
+    for th in angs:
+        for ty in [i * step for i in range(int(math.ceil((2 * r["l"] + r["aisle"]) / step)))]:
             for tx in ((0.0,) if big else (0.0, r["w"] / 2.0)):
                 got = _layout(zone, site, r, th, tx, ty, list(keep))
-                if len(got) > len(best):
-                    best = got
+                key = (1 if (connect and got and connected(got, r, connect, qb)) else 0, len(got))
+                if key > best_key:
+                    best, best_key = got, key
     placed = []
     for b in best:
         b["zone"] = name
         if not problems(b, r, site, list(keep) + placed):
             placed.append(b)
+    if limit and len(placed) > limit:
+        if connect:
+            def near(b):
+                return min(math.hypot(b["x"] - (q[0][0] + q[2][0]) / 2.0, b["y"] - (q[0][1] + q[2][1]) / 2.0) for q in connect)
+            placed.sort(key=near)
+        placed = placed[:limit]
     return placed
 
 
@@ -334,13 +355,34 @@ def _tangents(c):
     return out
 
 
-def road_quads(pts, width, smooth=True):
-    """the road as short four-sided pieces along its centreline (easy to test against bays and blocks)"""
+def _arc(c):
+    out, run = [0.0], 0.0
+    for a, b in zip(c, c[1:]):
+        run += math.hypot(b[0] - a[0], b[1] - a[1])
+        out.append(run)
+    return out
+
+
+def bay_span(pts, left, right, start, w_bay, smooth=True):
+    """the stretch of the road (from, to, in metres along it) that has bays on one side or both: the road is wide there. None when no bays.
+    left / right: the number of bays on that side (-1 = as many as fit, 0 = none)"""
+    if not left and not right:
+        return None
+    L = road_length(pts, smooth)
+    n = -1 if (left < 0 or right < 0) else max(left, right)
+    s0 = max(0.0, min(start, L))
+    s1 = L if n < 0 else min(L, s0 + n * w_bay)
+    return (s0, s1) if s1 > s0 else None
+
+
+def road_quads(pts, width, smooth=True, span=None, wide=None):
+    """the road as short four-sided pieces along its centreline (easy to test against bays and blocks). Inside `span` the road is `wide` metres wide"""
     c = spline(pts, 1.5, smooth)
     if len(c) < 2:
         return []
-    t, h = _tangents(c), width / 2.0
-    side = lambda i, s: (c[i][0] - t[i][1] * h * s, c[i][1] + t[i][0] * h * s)
+    t, a = _tangents(c), _arc(c)
+    wd = lambda i: (wide if (span and wide and span[0] - 0.01 <= a[i] <= span[1] + 0.01) else width) / 2.0
+    side = lambda i, s: (c[i][0] - t[i][1] * wd(i) * s, c[i][1] + t[i][0] * wd(i) * s)
     return [[side(i, 1), side(i + 1, 1), side(i + 1, -1), side(i, -1)] for i in range(len(c) - 1)]
 
 
@@ -349,24 +391,101 @@ def road_length(pts, smooth=True):
     return sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(c, c[1:]))
 
 
-def road_bays(pts, width, site, r=None, keep=(), name="Road", smooth=True):
-    """bays down both sides of the road, nose to the kerb: the road is their aisle, so they connect to it seamlessly"""
+def road_bays(pts, width, site, r=None, keep=(), name="Road", smooth=True, left=-1, right=-1, start=0.0, wide=None):
+    """bays down the sides of the road, nose to the kerb: the road is their aisle, so they connect to it seamlessly.
+    left / right: how many bays on that side (-1 as many as fit, 0 none), counted from `start` metres along the road. `wide` is the road width in the stretch with bays"""
     r = rules(r)
     c = spline(pts, 0.25, smooth)
     if len(c) < 2:
         return []
-    t = _tangents(c)
-    out, off = [], width / 2.0 + r["l"] / 2.0
-    for sd in (1, -1):
-        run, nxt = 0.0, r["w"] / 2.0
+    t, arc = _tangents(c), _arc(c)
+    wd = wide or width
+    out, off = [], wd / 2.0 + r["l"] / 2.0
+    for sd, cap in ((1, left), (-1, right)):
+        if cap == 0:
+            continue
+        nxt, placed = start + r["w"] / 2.0, 0
         for i in range(len(c)):
-            if i:
-                run += math.hypot(c[i][0] - c[i - 1][0], c[i][1] - c[i - 1][1])
-            if run < nxt:
+            if arc[i] < nxt:
                 continue
+            if cap > 0 and placed >= cap:
+                break
             nxt += r["w"]
             nx, ny = -t[i][1] * sd, t[i][0] * sd                      # the normal on this side, pointing away from the road
             bay = {"x": c[i][0] + nx * off, "y": c[i][1] + ny * off, "a": math.degrees(math.atan2(-ny, -nx)) % 360.0, "auto": True, "zone": name}
             if not problems(bay, r, site, list(keep) + out):
                 out.append(bay)
+                placed += 1
     return out
+
+
+def connected(bays, r, quads, qboxes):
+    """some bay's aisle meets the road: the parking is joined to it"""
+    for b in bays:
+        A = aisle_poly(b, r)
+        ab = bbox(A)
+        for k, q in enumerate(quads):
+            if _near(ab, qboxes[k], 0.05) and poly_dist(A, q) < 0.05:
+                return True
+    return False
+
+
+def push_off(pts, obstacles, clear, pinned, smooth=True, iters=30):
+    """move the control points of a road away from buildings until the road keeps `clear` metres off them (the pinned points stay, e.g. at the gate).
+    Returns the new points"""
+    P = [list(p) for p in pts]
+    obs = [[tuple(q) for q in o] for o in obstacles]
+    if len(P) < 2 or not obs:
+        return P
+    for _ in range(iters):
+        c = spline(P, 1.5, smooth)
+        # which control segment each sample belongs to (Catmull-Rom pieces are in order, equal share per control segment)
+        segs = []
+        for i in range(len(P) - 1):
+            n = max(2, int(math.ceil(math.hypot(P[i + 1][0] - P[i][0], P[i + 1][1] - P[i][1]) / 1.5)))
+            segs += [(i, (k + 1) / float(n)) for k in range(n)]
+        acc = [[0.0, 0.0, 0.0] for _ in P]
+        worst = 0.0
+        for j in range(1, len(c)):
+            if j - 1 >= len(segs):
+                break
+            k, tt = segs[j - 1]
+            p = c[j]
+            for o in obs:
+                if bbox(o)[0] - clear > p[0] or bbox(o)[2] + clear < p[0] or bbox(o)[1] - clear > p[1] or bbox(o)[3] + clear < p[1]:
+                    continue
+                best, q = 1e18, None
+                for m in range(len(o)):
+                    a, b = o[m], o[(m + 1) % len(o)]
+                    dx, dy = b[0] - a[0], b[1] - a[1]
+                    L2 = dx * dx + dy * dy or 1.0
+                    u = max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L2))
+                    qq = (a[0] + u * dx, a[1] + u * dy)
+                    d = math.hypot(p[0] - qq[0], p[1] - qq[1])
+                    if d < best:
+                        best, q = d, qq
+                ins = pip(p, o)
+                need = (clear + best) if ins else (clear - best)
+                if need <= 0.02:
+                    continue
+                worst = max(worst, need)
+                if best < 1e-9:
+                    cx, cy = sum(v[0] for v in o) / len(o), sum(v[1] for v in o) / len(o)
+                    vx, vy, L = p[0] - cx, p[1] - cy, math.hypot(p[0] - cx, p[1] - cy) or 1.0
+                else:
+                    sg = -1.0 if ins else 1.0
+                    vx, vy, L = sg * (p[0] - q[0]), sg * (p[1] - q[1]), best
+                vx, vy = vx / L * need, vy / L * need
+                for idx, wgt in ((k, 1.0 - tt), (k + 1, tt)):
+                    if wgt > 1e-6:
+                        acc[idx][0] += wgt * vx
+                        acc[idx][1] += wgt * vy
+                        acc[idx][2] += wgt * wgt
+        if worst < 0.05:
+            break
+        for idx in range(len(P)):
+            if idx in pinned or acc[idx][2] < 1e-9:
+                continue
+            P[idx][0] += acc[idx][0] / acc[idx][2] * 0.8
+            P[idx][1] += acc[idx][1] / acc[idx][2] * 0.8
+    return P
