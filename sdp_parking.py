@@ -620,7 +620,9 @@ def road_plan(pts, width, smooth, r, left, right, start, zones, reach=4.0):
             want[(k, sd)] = None
             placed += 1
     half = max(width, r["aisle"]) / 2.0
-    for name, poly, mx in zones:
+    for zz in zones:
+        name, poly, mx = zz[0], zz[1], zz[2]
+        mode = zz[3] if len(zz) > 3 else 0
         got = []
         for k in range(n):
             sv = k * w + w / 2.0
@@ -628,7 +630,8 @@ def road_plan(pts, width, smooth, r, left, right, start, zones, reach=4.0):
             for sd in (1, -1):
                 nx, ny = -ty * sd, tx * sd
                 if any(pip((px + nx * tt, py + ny * tt), poly) for tt in [x * 1.0 for x in range(0, int(half + r["l"] + reach) + 1)]):
-                    got.append((k, sd))
+                    got += [(k, sd)] if mode == 0 else [(k, -sd)] if mode == 1 else [(k, sd), (k, -sd)]
+        got = sorted(set(got))
         if mx:
             got = got[:int(mx)]
         for key in got:

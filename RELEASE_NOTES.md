@@ -1,10 +1,11 @@
 # MCP Practice Suite - Release notes
 
-Current version: 1.86.401
+Current version: 1.86.402
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
+- **SDP Creator: parking on the other side of the road.** A parking area joined to a road has a new "Bays on" choice: where the area is, the other side of the road, or both sides. Both sides makes the road a double-sided aisle (thickened to 7 m); drag the area up or down and the bays and the road width follow.
 - **SDP Creator: roads and parking follow the rules of the pushback.** Bays beside a road now reach only 4 m out to a parking area, so nothing is added where the polygon is not. The 7 m pushback ends exactly at the kerb on the other side of the road; the road only thickens (to 7 m) where there are bays on both sides. The new-road width starts at 7 m. A road that bends round a building remembers the points you drew: move the building away and back and the road and its bays snap back to their original place.
 - **SDP Creator: copy and paste buildings.** Right-click a building: "Copy this building", then right-click anywhere on the plan: "Paste a copy here" (or Ctrl+C / Ctrl+V), or "Paste several copies..." to lay out a row of copies (how many, the space between them, which way). A copy keeps its shape (traced footprints too) and gets the next free name (H1 gives H2, H3 ...), and its line in the schedule (type, phase, units) is copied with it. Several buildings that are grouped copy as a group.
 - **SDP Creator: straight and curved stretches in one road.** Right-click a road: "Curve this stretch of road" / "Make this stretch of road straight" (the stretch between two bend points), "Make the whole road straight", "Curve the whole road", "Add a bend point here"; right-click a bend point to remove it. Straight stretches run in a true line through their points, so the bays along them are spaced evenly with no fanning; curved stretches stay smooth. There are also "Straighten this road" and "Curve this road" buttons in the Roads box. The choice is saved with the plan.

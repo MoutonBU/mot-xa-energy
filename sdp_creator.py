@@ -608,7 +608,12 @@ class SdpPage(SitePage):
         self.max_sp.setSpecialValueText("all that fit")
         self.max_sp.setToolTip("How many bays in the selected area (the ones nearest the road are kept). 0 = as many as fit.")
         self.max_sp.valueChanged.connect(self._zone_opts)
+        self.side_cb = QComboBox()
+        self.side_cb.addItems(["Where the area is", "Other side of the road", "Both sides of the road"])
+        self.side_cb.setToolTip("Which side of the road the bays along it go. 'Other side' puts them opposite the area; 'Both sides' makes the road a double-sided aisle (7 m).")
+        self.side_cb.currentIndexChanged.connect(self._zone_opts)
         fl.addWidget(self.join_cb)
+        fl.addWidget(self._pair("Bays on", self.side_cb))
         fl.addWidget(self._pair("Bays in the selected area", self.max_sp))
         bv.addLayout(fl)
         v.addWidget(bx)
@@ -1102,7 +1107,7 @@ class SdpPage(SitePage):
         if not self.roads:
             return 0
         r, n = self.rules_now(), 0
-        zs = [(z["name"], [tuple(q) for q in z["poly"]], int(z.get("max", 0))) for z in self.zones if z.get("join", True) and len(z["poly"]) >= 3]
+        zs = [(z["name"], [tuple(q) for q in z["poly"]], int(z.get("max", 0)), int(z.get("side", 0))) for z in self.zones if z.get("join", True) and len(z["poly"]) >= 3]
         plans = []
         for rd in self.roads:
             pl = sp.road_plan(rd["pts"], rd["w"], self.road_flags(rd), r, rd.get("left", 0), rd.get("right", 0), rd.get("start", 0.0), zs)
@@ -1484,6 +1489,7 @@ class SdpPage(SitePage):
         if 0 <= i < len(self.zones):
             self.zones[i]["join"] = self.join_cb.isChecked()
             self.zones[i]["max"] = self.max_sp.value()
+            self.zones[i]["side"] = self.side_cb.currentIndex()
             self._fill([i])
 
     def _zone_picked(self):
@@ -1493,6 +1499,7 @@ class SdpPage(SitePage):
             try:
                 self.join_cb.setChecked(bool(self.zones[i].get("join", True)))
                 self.max_sp.setValue(int(self.zones[i].get("max", 0)))
+                self.side_cb.setCurrentIndex(int(self.zones[i].get("side", 0)))
             finally:
                 self._zo_busy = False
 
