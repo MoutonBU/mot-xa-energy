@@ -638,6 +638,11 @@ class SdpPage(SitePage):
         self.side_cb.setToolTip("Which side of the road the bays along it go. 'Other side' puts them opposite the area; 'Both sides' makes the road a double-sided aisle (7 m).")
         self.side_cb.currentIndexChanged.connect(self._zone_opts)
         fl.addWidget(self.join_cb)
+        self.style_cb = QComboBox()
+        self.style_cb.addItems(["Automatic", "Across the road", "Parallel to the road"])
+        self.style_cb.setToolTip("Automatic: bays stand across the road with the 7 m pushback; where the area is only a narrow strip beside the road (too shallow for a bay across it) they are laid parallel to the kerb.")
+        self.style_cb.currentIndexChanged.connect(self._zone_opts)
+        fl.addWidget(self._pair("Bay style", self.style_cb))
         fl.addWidget(self._pair("Bays on", self.side_cb))
         fl.addWidget(self._pair("Bays in the selected area", self.max_sp))
         bv.addLayout(fl)
@@ -1146,7 +1151,7 @@ class SdpPage(SitePage):
         if not self.roads:
             return 0
         r, n = self.rules_now(), 0
-        zs = [(z["name"], [tuple(q) for q in z["poly"]], int(z.get("max", 0)), int(z.get("side", 0))) for z in self.zones if z.get("join", True) and len(z["poly"]) >= 3]
+        zs = [(z["name"], [tuple(q) for q in z["poly"]], int(z.get("max", 0)), int(z.get("side", 0)), int(z.get("style", 0))) for z in self.zones if z.get("join", True) and len(z["poly"]) >= 3]
         plans = []
         for rd in self.roads:
             if rd.get("path"):
@@ -1544,6 +1549,7 @@ class SdpPage(SitePage):
             self.zones[i]["join"] = self.join_cb.isChecked()
             self.zones[i]["max"] = self.max_sp.value()
             self.zones[i]["side"] = self.side_cb.currentIndex()
+            self.zones[i]["style"] = self.style_cb.currentIndex()
             self._fill([i])
 
     def _zone_picked(self):
@@ -1554,6 +1560,7 @@ class SdpPage(SitePage):
                 self.join_cb.setChecked(bool(self.zones[i].get("join", True)))
                 self.max_sp.setValue(int(self.zones[i].get("max", 0)))
                 self.side_cb.setCurrentIndex(int(self.zones[i].get("side", 0)))
+                self.style_cb.setCurrentIndex(int(self.zones[i].get("style", 0)))
             finally:
                 self._zo_busy = False
 
@@ -2275,9 +2282,10 @@ class SdpPage(SitePage):
             p.drawPolygon(QPolygonF([to(q) for q in poly]))
             if s > 9:                                              # a small tick on the open side, so you can see which way the bay faces
                 a = math.radians(b["a"])
-                m = to((b["x"] + math.cos(a) * r["l"] / 2, b["y"] + math.sin(a) * r["l"] / 2))
+                dp = sp.depth(b, r)
+                m = to((b["x"] + math.cos(a) * dp / 2, b["y"] + math.sin(a) * dp / 2))
                 p.setPen(QPen(QColor("#1f7a45") if not bad else QColor("#b01028"), 1))
-                p.drawLine(m, to((b["x"] + math.cos(a) * (r["l"] / 2 - 0.5), b["y"] + math.sin(a) * (r["l"] / 2 - 0.5))))
+                p.drawLine(m, to((b["x"] + math.cos(a) * (dp / 2 - 0.5), b["y"] + math.sin(a) * (dp / 2 - 0.5))))
         if not snapshot:                                           # the outline of each purple area on top of everything
             p.setBrush(Qt.BrushStyle.NoBrush)
             for i, z in enumerate(self.zones):

@@ -401,3 +401,26 @@ pg25.bays.append({"x": 50, "y": 25, "a": 90, "auto": True, "zone": "Parking area
 assert pg25.prune_auto() >= 1
 os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
 print("ok no stray bays")
+# parallel parking along the kerb where the area is a narrow strip; the 7 m pushback still holds elsewhere
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+pg26 = sc.SdpPage(W()); pg26.q_w.setValue(100), pg26.q_d.setValue(60); pg26.make_rect()
+pg26.start_road(); pg26.trace_done("trace_road", "", [(3, 30), (50, 30), (97, 30)])
+pg26._new_zone([(20, 33.5), (80, 33.5), (80, 36.5), (20, 36.5)], "Kerb"); pg26._fill([0])
+kb = [b for b in pg26.bays if b.get("rz") == "Kerb"]
+assert len(kb) >= 8 and all(b.get("par") for b in kb) and not any(pg26._bad), (len(kb), pg26._bad[:3])
+assert all(abs(b["y"] - (33.5 + 1.25)) < 0.3 for b in kb), [b["y"] for b in kb][:3]            # 2.5 m deep, against the kerb
+pg26.zones[0]["poly"] = [[20, 33.5], [80, 33.5], [80, 45], [20, 45]]; pg26._fill([0])             # a deeper area: bays across the road again
+rz = [b for b in pg26.bays if b.get("rz") == "Kerb"]
+assert rz and not any(b.get("par") for b in rz) and not any(pg26._bad)
+pg26.style_cb.setCurrentIndex(2) if pg26.zt.currentRow() >= 0 else (pg26.zt.selectRow(0), pg26.style_cb.setCurrentIndex(2))
+rz = [b for b in pg26.bays if b.get("rz") == "Kerb"]
+assert rz and all(b.get("par") for b in rz) and pg26.zones[0]["style"] == 2
+# rows of a lot: bay 5 m, pushback 7 m, bay 5 m
+pg27 = sc.SdpPage(W()); pg27.q_w.setValue(100), pg27.q_d.setValue(60); pg27.make_rect()
+pg27._new_zone([(20, 10), (80, 10), (80, 40), (20, 40)], "Lot"); pg27._fill([0])
+rr = sc.sp.rules(pg27.rules_now())
+rows = sorted({round(b["y"], 1) for b in pg27.bays if b["a"] in (90.0, 270.0) or abs(b["a"] - 90) < 1 or abs(b["a"] - 270) < 1})
+gaps = [round(rows[i + 1] - rows[i] - rr["l"], 1) for i in range(len(rows) - 1)]
+assert any(abs(g - rr["aisle"]) < 0.2 for g in gaps) and not any(pg27._bad), (rows, gaps)
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+print("ok parallel and pushback")

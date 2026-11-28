@@ -26,12 +26,22 @@ def rect(cx, cy, ang, along, across):
             (cx + ux * h + vx * k, cy + uy * h + vy * k), (cx - ux * h + vx * k, cy - uy * h + vy * k)]
 
 
+def depth(b, r):
+    """how far a bay reaches from its open side to its back: a bay across the aisle is `l` deep, a parallel bay (along the kerb) is `w` deep"""
+    return r["w"] if b.get("par") else r["l"]
+
+
 def bay_poly(b, r):
+    if b.get("par"):
+        return rect(b["x"], b["y"], b["a"], r["w"], r["l"])
     return rect(b["x"], b["y"], b["a"], r["l"], r["w"])
 
 
 def aisle_poly(b, r):
     a = math.radians(b["a"])
+    if b.get("par"):                                      # a parallel bay pulls out into the road itself: the strip in front of it
+        d = r["w"] / 2.0 + 1.5
+        return rect(b["x"] + math.cos(a) * d, b["y"] + math.sin(a) * d, b["a"], 3.0, r["l"])
     d = r["l"] / 2.0 + r["aisle"] / 2.0
     return rect(b["x"] + math.cos(a) * d, b["y"] + math.sin(a) * d, b["a"], r["aisle"], r["w"])
 
@@ -620,7 +630,7 @@ def road_plan(pts, width, smooth, r, left, right, start, zones, reach=4.0):
     r = rules(r)
     c = spline(pts, 0.25, smooth)
     if len(c) < 2:
-        return {"st": [], "dbl": []}
+        return {"st": [], "dbl": [], "par": []}
     t, arc = _tangents(c), _arc(c)
     L, w = arc[-1], r["w"]
     n = int(L // w)
@@ -637,9 +647,13 @@ def road_plan(pts, width, smooth, r, left, right, start, zones, reach=4.0):
             want[(k, sd)] = None
             placed += 1
     half = max(width, r["aisle"]) / 2.0
+    par = {}
+    Lp = r["l"]
+    npar = int(L // Lp)
     for zz in zones:
         name, poly, mx = zz[0], zz[1], zz[2]
         mode = zz[3] if len(zz) > 3 else 0
+        style = zz[4] if len(zz) > 4 else 0                  # 0 automatic, 1 across the road, 2 parallel to it
         got = []
         for k in range(n):
             sv = k * w + w / 2.0
@@ -647,16 +661,33 @@ def road_plan(pts, width, smooth, r, left, right, start, zones, reach=4.0):
             for sd in (1, -1):
                 nx, ny = -ty * sd, tx * sd
                 if any(pip((px + nx * tt, py + ny * tt), poly) for tt in [x * 1.0 for x in range(0, int(half + r["l"] + reach) + 1)]):
-                    if not any(_in_zone(_road_bay(c, t, arc, k, sd, w, nz, r["l"]), r, poly) for nz in (r["aisle"] - width / 2.0, r["aisle"] / 2.0)):
+                    if style == 2 or not any(_in_zone(_road_bay(c, t, arc, k, sd, w, nz, r["l"]), r, poly) for nz in (r["aisle"] - width / 2.0, r["aisle"] / 2.0)):
                         continue                                   # the bay would stand outside the area
                     got += [(k, sd)] if mode == 0 else [(k, -sd)] if mode == 1 else [(k, sd), (k, -sd)]
         got = sorted(set(got))
+        pg = []
+        if style in (0, 2):                                    # parallel bays along the kerb where the strip is too shallow for bays across it
+            covered = {(k // max(1, int(round(Lp / w)))) for k, sd in got} if style == 0 else set()
+            for j in range(npar):
+                if style == 0 and j in covered:
+                    continue
+                for sd in (1, -1):
+                    (px, py), (tx, ty) = _along(c, t, arc, j * Lp + Lp / 2.0)
+                    nx, ny = -ty * sd, tx * sd
+                    off = width / 2.0 + r["w"] / 2.0
+                    pb = {"x": px + nx * off, "y": py + ny * off, "a": math.degrees(math.atan2(-ny, -nx)) % 360.0, "par": True}
+                    if _in_zone(pb, r, poly):
+                        pg += [(j, sd)] if mode == 0 else [(j, -sd)] if mode == 1 else [(j, sd), (j, -sd)]
+            pg = sorted(set(pg))
         if mx:
             got = got[:int(mx)]
+            pg = pg[:max(0, int(mx) - len(got))]
         for key in got:
             want.setdefault(key, name)
+        for key in pg:
+            par.setdefault(key, name)
     dbl = merge_spans([(k * w, (k + 1) * w) for (k, sd) in want if (k, -sd) in want], 0.01)
-    return {"st": [(k, sd, z) for (k, sd), z in sorted(want.items())], "dbl": dbl}
+    return {"st": [(k, sd, z) for (k, sd), z in sorted(want.items())], "dbl": dbl, "par": [(j, sd, z) for (j, sd), z in sorted(par.items())]}
 
 
 def road_place(pts, width, site, r, keep, name, rid, smooth, plan):
@@ -675,6 +706,16 @@ def road_place(pts, width, site, r, keep, name, rid, smooth, plan):
         nx, ny = -ty * sd, tx * sd
         off = nose + r["l"] / 2.0
         bay = {"x": px + nx * off, "y": py + ny * off, "a": math.degrees(math.atan2(-ny, -nx)) % 360.0, "auto": True, "zone": name, "rid": rid}
+        if zn:
+            bay["rz"] = zn
+        if not problems(bay, r, site, list(keep) + out):
+            out.append(bay)
+    Lp = r["l"]
+    for j, sd, zn in plan.get("par", []):
+        (px, py), (tx, ty) = _along(c, t, arc, j * Lp + Lp / 2.0)
+        nx, ny = -ty * sd, tx * sd
+        off = width / 2.0 + r["w"] / 2.0
+        bay = {"x": px + nx * off, "y": py + ny * off, "a": math.degrees(math.atan2(-ny, -nx)) % 360.0, "auto": True, "zone": name, "rid": rid, "par": True}
         if zn:
             bay["rz"] = zn
         if not problems(bay, r, site, list(keep) + out):

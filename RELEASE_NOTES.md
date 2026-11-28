@@ -1,10 +1,11 @@
 # MCP Practice Suite - Release notes
 
-Current version: 1.86.406
+Current version: 1.86.407
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
+- **SDP Creator: parallel parking along the kerb.** A parking area has a new "Bay style": Automatic, Across the road, or Parallel to the road. Automatic keeps bays across the road with the 7 m pushback (5 m bay, 7 m aisle), and where the purple area is only a narrow strip beside the road, too shallow for a bay across it, the bays are laid parallel to the kerb (5 m along the road, 2.5 m deep, the road itself is the aisle). Parallel bays do not thicken the road.
 - **SDP Creator: no stray bays when you move things.** Bays the program places itself are checked after every move: any that stand on a road, overlap another bay or fall outside their parking area are dropped (bays you place by hand are kept and marked red). Dragging a whole parking area always parks it again where it now stands, whatever the "by itself" box says. The purple outline now stays visible on top of the grey pushback.
 - **SDP Creator: squared parking areas, numbered bays, grey pushback.** A parking area you trace freehand is squared up to a rectangle when you finish it (its corners can still be dragged). The purple area is for working only: it is left out of the exported plan and PDF. Every bay is numbered on the plan (and in the DXF, layer BAY_NUMBERS). The pushback (aisle) in front of the bays is filled in the same grey as the road instead of a faint tint.
 - **SDP Creator: bays stay inside their parking area.** Bays along a road that belong to a parking area are only added where the whole bay stands inside the purple area (its nose may stop up to 0.8 m short of the hand-drawn edge). Nothing is added beside a neighbouring road or at a junction outside the area.
