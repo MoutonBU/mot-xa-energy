@@ -203,7 +203,7 @@ assert abs(e[1] - 30) < 0.6, e                                      # the end sn
 fl = pg14.road_fillets()
 assert len(fl) >= 10, len(fl)
 assert pg14.road_quads_all()[-1] in fl
-pg14.corner_r.setValue(0); assert pg14.road_fillets() == []; pg14.corner_r.setValue(6)
+pg14.corner_r.setValue(0); assert pg14.road_fillets() == []; pg14.corner_r.setValue(2)
 pg14._new_zone([(60, 33.5), (95, 33.5), (95, 41), (60, 41)], "Strip")
 pg14._fill([0])
 rb = [b for b in pg14.bays if str(b["zone"]).startswith("Road")]
@@ -446,3 +446,18 @@ pg28.std_cb.setCurrentText("Mangaung (Free State)"); pg28.use_standard()
 assert abs(pg28.r_aisle.value() - 7.5) < 1e-9 and abs(pg28.f["visitor_per"].value() - 2) < 1e-9
 os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
 print("ok SA standards")
+# junction corners: 3 m at most, no long spikes at shallow angles
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+pg29 = sc.SdpPage(W()); pg29.q_w.setValue(100), pg29.q_d.setValue(60); pg29.make_rect()
+assert pg29.corner_r.maximum() <= 3.0 and abs(pg29.corner_r.value() - 2.0) < 1e-9
+pg29.start_road(); pg29.trace_done("trace_road", "", [(3, 30), (50, 30), (97, 30)])
+pg29.start_road(); pg29.trace_done("trace_road", "", [(10, 40), (30, 32), (45, 29.5)])        # meets the main road at a shallow angle
+pg29.start_road(); pg29.trace_done("trace_road", "", [(70, 5), (70, 20), (70, 29)])
+fl = [q for q in pg29.road_quads_all() if len(q) == 3]
+for tri in fl:
+    for i in range(3):
+        a, b = tri[i], tri[(i + 1) % 3]
+        assert sc.math.hypot(a[0] - b[0], a[1] - b[1]) < 14, tri                     # no spikes
+assert any(len(q) == 3 for q in pg29.road_quads_all())
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+print("ok junction corners")

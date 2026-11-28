@@ -523,13 +523,13 @@ class SdpPage(SitePage):
         fl.addWidget(self._pair("Bays on the left", self.left_sp))
         fl.addWidget(self._pair("Bays on the right", self.right_sp))
         fl.addWidget(self._pair("Bays start at", self.start_sp))
-        self.corner_r = sl.spin(0, 20, 6, 1, " m")
-        self.corner_r.setToolTip("The rounded corner where a road meets another road. 0 = sharp corner.")
+        self.corner_r = sl.spin(0, 3, 2, 1, " m")
+        self.corner_r.setToolTip("The rounded (driving) corner where a road meets another road: 2 m, 3 m at most. 0 = sharp corner.")
         self.corner_r.valueChanged.connect(lambda _v: (None if self._pbusy else (self.refresh_parking(user=True), self.changed())))
         fl.addWidget(self._pair("Corner radius at junctions", self.corner_r))
         self.path_w = sl.spin(0.8, 6, 2.0, 1, " m")
         self.path_w.setToolTip("The width of the next pathway you draw (change a drawn one with the width box above).")
-        self.path_r = sl.spin(0, 6, 0.5, 1, " m")
+        self.path_r = sl.spin(0, 3, 0.5, 1, " m")
         self.path_r.setToolTip("The rounded corner where a pathway meets a road or another pathway. 0 = sharp corner.")
         self.path_r.valueChanged.connect(lambda _v: (None if self._pbusy else (self.refresh_parking(user=True), self.changed())))
         fl.addWidget(self._pair("Pathway width", self.path_w))
@@ -1045,7 +1045,7 @@ class SdpPage(SitePage):
                     ln = math.hypot(b[0] - a[0], b[1] - a[1]) or 1.0
                     d = ((b[0] - a[0]) / ln, (b[1] - a[1]) / ln)
                     pth = bool(rd.get("path") or o.get("path"))
-                    R = self.path_r.value() if pth else self.corner_r.value()
+                    R = min(3.0, self.path_r.value() if pth else self.corner_r.value())
                     if R < 0.1:
                         continue
                     g = sp.junction_fillets(jn[1], jn[2], self._half_at(o, jn[3]), d, self._half_at(rd, 0.0 if e == 0 else L), R)

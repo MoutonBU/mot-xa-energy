@@ -553,10 +553,11 @@ def junction_fillets(J, tm, hm, d, hb, R, n=7):
         me = (tm[0] * sgn, tm[1] * sgn)
         cos = max(-1.0, min(1.0, d[0] * me[0] + d[1] * me[1]))
         th = math.acos(cos)
-        if th < 0.2 or th > math.pi - 0.05:
-            continue
+        if th < 0.35 or th > math.pi - 0.05:
+            continue                                           # a road leaving at a very shallow angle gets no corner (it would be a long thin spike)
+        R = min(R, 3.0)
         Lt = R / math.tan(th / 2.0)
-        if Lt > 25:
+        if Lt > 12:
             continue
         T1 = (K[0] + d[0] * Lt, K[1] + d[1] * Lt)
         T2 = (K[0] + me[0] * Lt, K[1] + me[1] * Lt)
