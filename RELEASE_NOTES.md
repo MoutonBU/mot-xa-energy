@@ -1,10 +1,11 @@
 # MCP Practice Suite - Release notes
 
-Current version: 1.86.399
+Current version: 1.86.400
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
+- **SDP Creator: copy and paste buildings.** Right-click a building: "Copy this building", then right-click anywhere on the plan: "Paste a copy here" (or Ctrl+C / Ctrl+V), or "Paste several copies..." to lay out a row of copies (how many, the space between them, which way). A copy keeps its shape (traced footprints too) and gets the next free name (H1 gives H2, H3 ...), and its line in the schedule (type, phase, units) is copied with it. Several buildings that are grouped copy as a group.
 - **SDP Creator: straight and curved stretches in one road.** Right-click a road: "Curve this stretch of road" / "Make this stretch of road straight" (the stretch between two bend points), "Make the whole road straight", "Curve the whole road", "Add a bend point here"; right-click a bend point to remove it. Straight stretches run in a true line through their points, so the bays along them are spaced evenly with no fanning; curved stretches stay smooth. There are also "Straighten this road" and "Curve this road" buttons in the Roads box. The choice is saved with the plan.
 - **SDP Creator: move, copy and paste a whole parking area.** Click and drag the border of a parking area (not a corner) to move the whole area with its bays; it is laid again where it lands, and the road widens and the road bays follow. Right-click an area for "Copy this parking area" and "Delete this parking area"; right-click anywhere on the plan for "Paste a copy here" (Ctrl+C and Ctrl+V work too). A pasted area keeps its settings (joins the road, bay type, number of bays) and is filled straight away.
 - **SDP Creator: parking next to a road stands flush with it.** A parking area beside a road (even with some grass between them, up to about 12 m) now gets its bays standing flush against the kerb with the road as their 7 m pushback, over the stretch of road the area runs along; the road widens there by itself. Move the area down onto the road and it still does the same. A strip that lies wholly beside the road gets just those bays (no second set of rows with its own aisle). Bays along a road are now spaced evenly, with no gaps.

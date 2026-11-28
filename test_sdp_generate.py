@@ -267,3 +267,21 @@ pg17.set_road_curve(0, None, False)
 st = pg17.state(); pg18 = sc.SdpPage(W()); pg18.set_state(st); assert pg18.roads[0]["segs"] == [False] * (len(pg18.roads[0]["pts"]) - 1)
 os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
 print("ok straight/curved")
+# copy and paste buildings
+pg19 = sc.SdpPage(W()); pg19.q_w.setValue(120), pg19.q_d.setValue(80); pg19.make_rect()
+pg19.add_building({"name": "H1", "x": 10, "y": 10, "w": 20, "d": 12}); pg19._row(sc.preset_block("H1", "Standard 3-storey")); pg19.sync_blocks()
+pg19.bt.selectRow(0); pg19.copy_buildings()
+assert len(pg19.clip_bld) == 1
+pg19.paste_buildings((60, 40))
+assert [b["name"] for b in pg19.buildings()] == ["H1", "H2"], [b["name"] for b in pg19.buildings()]
+b2 = pg19.buildings()[1]; assert abs(b2["x"] + b2["w"] / 2 - 60) < 0.1 and abs(b2["y"] + b2["d"] / 2 - 40) < 0.1 and b2["w"] == 20
+assert [b["block"] for b in pg19.blocks()] == ["H1", "H2"] and pg19.blocks()[1]["units"] == 12
+pg19.paste_buildings((20, 60), 4, 5.0, "right")
+assert [b["name"] for b in pg19.buildings()] == ["H1", "H2", "H3", "H4", "H5", "H6"] and len(pg19.blocks()) == 6
+xs = [b["x"] for b in pg19.buildings()[2:]]; assert all(abs((xs[i + 1] - xs[i]) - 25.0) < 0.01 for i in range(3)), xs
+# a traced (polygon) building keeps its shape
+pg19.add_building({"name": "L1", "poly": [(80, 10), (100, 10), (100, 20), (90, 20), (90, 30), (80, 30)]}); pg19.bt.clearSelection(); pg19.bt.selectRow(pg19.bt.rowCount() - 1)
+pg19.copy_buildings(); pg19.paste_buildings((50, 70))
+nb = pg19.buildings()[-1]; assert nb["name"] == "L2" and nb["poly"] and len(nb["poly"]) == 6
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+print("ok copy buildings")

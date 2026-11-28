@@ -297,6 +297,7 @@ class ParkView(PlanView):
 
     def _context(self, gpos, pos):
         w = self._world(pos)
+        self._ctx_w = w
         pg = self.page
         if w is not None and self.mode == "select" and not self._hit_north(pos) and pg.roads:
             h = pg.corner_at(w, 10.0 / self._v[0])
@@ -348,9 +349,13 @@ class ParkView(PlanView):
     def keyPressEvent(self, e):
         k = e.key()
         pg = self.page
-        if e.modifiers() & Qt.KeyboardModifier.ControlModifier and k == Qt.Key.Key_C and pg.sel_bay < 0 and pg.sel_zone >= 0:
+        if e.modifiers() & Qt.KeyboardModifier.ControlModifier and k == Qt.Key.Key_C and self.sel >= 0 and pg.sel_bay < 0:
+            pg.copy_buildings()
+        elif e.modifiers() & Qt.KeyboardModifier.ControlModifier and k == Qt.Key.Key_V and pg.clip_bld and (self.sel >= 0 or pg.clip_zone is None):
+            pg.paste_buildings(getattr(self, "_lastw", None))
+        elif e.modifiers() & Qt.KeyboardModifier.ControlModifier and k == Qt.Key.Key_C and pg.sel_bay < 0 and pg.sel_zone >= 0:
             pg.copy_zone(pg.sel_zone)
-        elif e.modifiers() & Qt.KeyboardModifier.ControlModifier and k == Qt.Key.Key_V and pg.clip_zone is not None:
+        elif e.modifiers() & Qt.KeyboardModifier.ControlModifier and k == Qt.Key.Key_V and pg.clip_zone is not None and not (pg.clip_bld and self.sel >= 0):
             pg.paste_zone(getattr(self, "_lastw", None))
         elif k in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and self.mode == "select" and self.page.sel_bay >= 0:
             self.page.delete_bay()
@@ -374,6 +379,7 @@ class SdpPage(SitePage):
     def __init__(self, win):
         self.zones, self.bays, self._bad, self.schemes, self.excl, self.roads = [], [], [], [], [], []
         self.clip_zone = None
+        self.clip_bld = None
         self._rq = (None, [])
         self._tracing_road = False
         self._tracing_excl = False
@@ -1240,6 +1246,102 @@ class SdpPage(SitePage):
         self.zones.append({"name": nm, "poly": [list(p) for p in pts], "angle": None, "type": "Open"})
         self.sel_zone = len(self.zones) - 1
         self.refresh_parking(user=True)
+
+    # --- copy and paste buildings
+    def copy_buildings(self):
+        rows = sorted({i.row() for i in self.bt.selectedIndexes()})
+        if not rows and self.plan.sel >= 0:
+            rows = [self.plan.sel]
+        if not rows:
+            self.set_hint("Click a building first, then copy it.")
+            return
+        for r in list(rows):
+            rows += [g for g in self._group_rows(r) if g not in rows]
+        bl, bk = self.buildings(), {b["block"].strip().lower(): b for b in self.blocks()}
+        self.clip_bld = []
+        for r in sorted(set(rows)):
+            b = bl[r]
+            self.clip_bld.append({"name": b["name"], "poly": [list(q) for q in b["poly"]] if b["poly"] else None, "x": b["x"], "y": b["y"], "w": b["w"], "d": b["d"],
+                                  "cov": b["cov"], "grp": b["grp"], "block": dict(bk[b["name"].strip().lower()]) if b["name"].strip().lower() in bk else None})
+        self.set_hint("%d building%s copied. Right-click the plan and choose 'Paste a copy here' (or Ctrl+V)." % (len(self.clip_bld), "" if len(self.clip_bld) == 1 else "s"))
+
+    def _next_name(self, name, taken):
+        import re
+        m = re.match(r"^(.*?)(\d+)$", name.strip())
+        pre = m.group(1) if m else name.strip() + " "
+        n = max([int(x.group(2)) for x in (re.match(r"^(.*?)(\d+)$", t) for t in taken) if x and x.group(1) == pre] + [int(m.group(2)) if m else 0]) + 1
+        return "%s%d" % (pre, n)
+
+    def paste_buildings(self, w=None, count=1, gap=6.0, direction="right"):
+        c = self.clip_bld
+        if not c:
+            self.set_hint("Copy a building first (right-click it).")
+            return
+        pts = [q for b in c for q in (b["poly"] or [(b["x"], b["y"]), (b["x"] + b["w"], b["y"] + b["d"])])]
+        x0, y0, x1, y1 = min(q[0] for q in pts), min(q[1] for q in pts), max(q[0] for q in pts), max(q[1] for q in pts)
+        tx, ty = (w[0], w[1]) if w is not None else ((x0 + x1) / 2.0 + 12.0, (y0 + y1) / 2.0 + 12.0)
+        sx, sy = {"right": (1, 0), "left": (-1, 0), "down": (0, -1), "up": (0, 1)}.get(direction, (1, 0))
+        stepx, stepy = sx * ((x1 - x0) + gap), sy * ((y1 - y0) + gap)
+        made = 0
+        for k in range(max(1, int(count))):
+            dx, dy = tx - (x0 + x1) / 2.0 + k * stepx, ty - (y0 + y1) / 2.0 + k * stepy
+            gid = ("g%d_%d" % (len(self.buildings()), k)) if len(c) > 1 else ""
+            for b in c:
+                taken = [x["name"] for x in self.buildings()]
+                nm = self._next_name(b["name"], taken)
+                d = {"name": nm, "cov": b["cov"], "grp": gid}
+                if b["poly"]:
+                    d["poly"] = [[q[0] + dx, q[1] + dy] for q in b["poly"]]
+                else:
+                    d.update({"x": round(b["x"] + dx, 2), "y": round(b["y"] + dy, 2), "w": b["w"], "d": b["d"]})
+                self.add_building(d)
+                if b.get("block"):
+                    bb = b["block"]
+                    self._row(preset_block(nm, bb["type"], bb["phase"]) if kb.module_preset(bb["type"]) else dict(bb, block=nm))
+                made += 1
+        self.sync_blocks()
+        self._edited()
+        self.set_hint("%d building%s pasted." % (made, "" if made == 1 else "s"))
+
+    def paste_several(self, w=None):
+        if not self.clip_bld:
+            return
+        d = QDialog(self)
+        d.setWindowTitle("Paste several copies")
+        f = QFormLayout(d)
+        n = QSpinBox()
+        n.setRange(1, 100)
+        n.setValue(5)
+        g = sl.spin(0, 100, 6, 1, " m")
+        dr = QComboBox()
+        dr.addItems(["right", "left", "down", "up"])
+        f.addRow("How many copies", n)
+        f.addRow("Space between them", g)
+        f.addRow("In a row going", dr)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        bb.accepted.connect(d.accept)
+        bb.rejected.connect(d.reject)
+        f.addRow(bb)
+        if d.exec():
+            self.paste_buildings(w, n.value(), g.value(), dr.currentText())
+
+    def building_menu(self, menu):
+        w = getattr(self.plan, "_ctx_w", None)
+        menu.addAction("Copy this building", self.copy_buildings)
+        a = menu.addAction("Paste a copy here", lambda: self.paste_buildings(w))
+        a.setEnabled(bool(self.clip_bld))
+        a = menu.addAction("Paste several copies...", lambda: self.paste_several(w))
+        a.setEnabled(bool(self.clip_bld))
+        menu.addSeparator()
+        super().building_menu(menu)
+
+    def plan_menu(self, menu):
+        w = getattr(self.plan, "_ctx_w", None)
+        if self.clip_bld:
+            menu.addAction("Paste a copy of the building here", lambda: self.paste_buildings(w))
+            menu.addAction("Paste several copies of the building...", lambda: self.paste_several(w))
+            menu.addSeparator()
+        super().plan_menu(menu)
 
     # --- one road: curved here, straight there
     def road_flags(self, rd):
