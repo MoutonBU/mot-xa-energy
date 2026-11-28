@@ -505,3 +505,26 @@ assert abs(abs(z1[1][1] - z1[0][1]) - w0) < 1.5 and abs(abs(z1[2][0] - z1[1][0])
 assert not any(pg30._bad)
 os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
 print("ok turning handle")
+
+
+# ---- shorten a road from its end, delete a selected corner
+pg31 = sc.SdpPage(W()); pg31.q_w.setValue(100), pg31.q_d.setValue(60); pg31.make_rect()
+pg31.start_road(); pg31.trace_done("trace_road", "", [(3, 10), (30, 18), (60, 12), (97, 40)])
+pg31.remove_road_point(0, 3)                                  # the far end
+assert len(pg31.roads[0]["pts"]) == 3 and len(pg31.roads[0]["segs"]) == 2 and pg31.roads[0]["pts"][-1] == [60, 12], pg31.roads[0]
+pg31.remove_road_point(0, 0)                                  # the near end
+assert len(pg31.roads[0]["pts"]) == 2 and len(pg31.roads[0]["segs"]) == 1
+pg31.remove_road_point(0, 0)                                  # a road keeps two points
+assert len(pg31.roads[0]["pts"]) == 2
+pg31.start_road(); pg31.trace_done("trace_road", "", [(3, 50), (50, 52), (90, 50)])
+pg31.sel_corner = ("road", 1, 2); pg31.remove_corner(pg31.sel_corner)
+assert len(pg31.roads[1]["pts"]) == 2 and pg31.sel_corner is None
+# a parking area corner: only that area re-parks; never fewer than 3 corners
+pg31.zones.append({"name": "Parking area 1", "poly": [[10, 20], [40, 20], [40, 35], [25, 40], [10, 35]], "max": 0, "side": 0, "join": True, "type": "Open"})
+n0 = len(pg31.zones[0]["poly"])
+pg31.remove_corner(("zone", 0, 3)); assert len(pg31.zones[0]["poly"]) == n0 - 1
+pg31.remove_corner(("zone", 0, 0)); assert len(pg31.zones[0]["poly"]) == n0 - 2
+pg31.remove_corner(("zone", 0, 0)); assert len(pg31.zones[0]["poly"]) == 3        # refused below three
+assert not any(pg31._bad)
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+print("ok road shorten / corner delete")

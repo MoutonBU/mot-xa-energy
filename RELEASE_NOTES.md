@@ -1,10 +1,11 @@
 # MCP Practice Suite - Release notes
 
-Current version: 1.86.410
+Current version: 1.86.411
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
+- **SDP Creator: shorter roads, delete a corner, quicker edits (1.86.411).** Click a corner to select it (it turns orange), then press Delete to remove it, or right-click a road end and choose 'Cut the road back from this end', so a road can be made shorter. Roads keep two points and areas three. Moving a parking-area corner now re-parks only that area, and the bay checks skip anything too far away to matter, so editing is quicker.
 - **SDP Creator: turning handle for buildings and parking areas.** Click a building (or a parking area's edge) and a pink ring appears round it with a round handle, like the one in the house spacing tool. Drag the handle to turn it (the angle shows beside it; hold Shift to turn in steps of 15 degrees). Grouped buildings turn together; a parking area turns with its bays and is parked again when you let go.
 - **SDP Creator: junction corners are driving radii (2 m, 3 m at most).** The rounded corner where a road or pathway meets another road is now 2 m by default and can be set to 3 m at most (it was up to 20 m, which drew long thin spikes where roads meet at a shallow angle). A road that joins at a very shallow angle no longer gets a corner at all, so no spikes are drawn.
 - **SDP Creator: South African parking standards, angled bays, aisle guard.** New "Standard" choice in the parking rules (City of Cape Town: bay 2.5 x 5.0 m, parallel bay 6 x 2.5 m, accessible bay 3.7 m wide, 1.75 bays and 0.25 visitor bays per unit; Mangaung: aisle 7.5 m, accessible 3.5 m, 1.5 bays and 0.5 visitor bays per unit). Each parking area has a "Bay angle" of 90, 60 or 45 degrees, with the aisle for that angle (5.4 m at 60 degrees, 5.2 m at 45 degrees). Setting the accessible bays follows the municipal table (1 bay for 1-50 bays, 2 for 51-100, 3 for 101-150, 4 for 151-200, then one more per 100) and makes each one 3.7 m wide. The number boxes no longer change when you scroll the mouse wheel over them, and the bar over the plan turns red when the aisle is under 7 m.

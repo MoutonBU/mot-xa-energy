@@ -64,15 +64,17 @@ def aisle_poly(b, r):
 def pip(p, poly):
     """point in polygon (the edge counts as in)"""
     x, y = p
-    n = len(poly)
     inside = False
-    for i in range(n):
-        x1, y1 = poly[i]
-        x2, y2 = poly[(i + 1) % n]
-        if seg_pt(p, (x1, y1), (x2, y2)) < 1e-9:
-            return True
-        if (y1 > y) != (y2 > y) and x < (x2 - x1) * (y - y1) / (y2 - y1) + x1:
+    x1, y1 = poly[-1]
+    for x2, y2 in poly:
+        dx, dy = x2 - x1, y2 - y1
+        if (x1 - 1e-9 <= x <= x2 + 1e-9 or x2 - 1e-9 <= x <= x1 + 1e-9) and (y1 - 1e-9 <= y <= y2 + 1e-9 or y2 - 1e-9 <= y <= y1 + 1e-9):
+            L = math.hypot(dx, dy)
+            if L < EPS or abs(dx * (y - y1) - dy * (x - x1)) < 1e-9 * L:
+                return True
+        if (y1 > y) != (y2 > y) and x < dx * (y - y1) / dy + x1:
             inside = not inside
+        x1, y1 = x2, y2
     return inside
 
 
@@ -119,6 +121,9 @@ def overlap(P, Q, shrink=0.02):
         cx = sum(p[0] for p in R) / len(R)
         cy = sum(p[1] for p in R) / len(R)
         return [(cx + (p[0] - cx) * (1 - shrink), cy + (p[1] - cy) * (1 - shrink)) for p in R]
+    px = [p[0] for p in P]; py = [p[1] for p in P]; qx = [p[0] for p in Q]; qy = [p[1] for p in Q]
+    if max(px) < min(qx) or max(qx) < min(px) or max(py) < min(qy) or max(qy) < min(py):
+        return False                                            # boxes apart: they cannot share area
     return poly_dist(small(P), small(Q)) < EPS
 
 
@@ -126,12 +131,21 @@ def inside(R, poly):
     """the shape R lies wholly inside poly (a polygon, may be concave)"""
     if not all(pip(p, poly) for p in R):
         return False
+    rx0, rx1 = min(p[0] for p in R), max(p[0] for p in R)
+    ry0, ry1 = min(p[1] for p in R), max(p[1] for p in R)
+    n = len(poly)
+    near = []
+    for j in range(n):
+        c, d = poly[j], poly[(j + 1) % n]
+        if max(c[0], d[0]) < rx0 or min(c[0], d[0]) > rx1 or max(c[1], d[1]) < ry0 or min(c[1], d[1]) > ry1:
+            continue                                            # this edge is nowhere near the shape
+        near.append((c, d))
     for i in range(len(R)):
         a, b = R[i], R[(i + 1) % len(R)]
-        for j in range(len(poly)):
-            if seg_cross(a, b, poly[j], poly[(j + 1) % len(poly)]):
+        for c, d in near:
+            if seg_cross(a, b, c, d):
                 return False
-    return all(not _strictly_in(q, R) for q in poly)
+    return all(not _strictly_in(q, R) for q in poly if rx0 <= q[0] <= rx1 and ry0 <= q[1] <= ry1)
 
 
 def _strictly_in(p, R):
@@ -184,10 +198,15 @@ def problems(b, r, site, others=()):
         if d < r["bld"] - 1e-6:
             out.append("%.2f m from a building (needs %.2f m)" % (d, r["bld"]))
             break
+    rid = b.get("rid")
+    x0_, y0_, x1_, y1_ = box
     for k, q in enumerate(site.roads):
-        if b.get("rid") is not None and site.rowner[k] == b["rid"]:
+        rb = site.rboxes[k]
+        if x1_ < rb[0] or x0_ > rb[2] or y1_ < rb[1] or y0_ > rb[3]:
+            continue
+        if rid is not None and site.rowner[k] == rid:
             continue                                                  # the bays of a road are set by its own kerb and pushback
-        if _near(box, site.rboxes[k], 0) and overlap(P, q, 0.05):
+        if overlap(P, q, 0.05):
             out.append("on a road")
             break
     abox = bbox(A)
@@ -199,7 +218,11 @@ def problems(b, r, site, others=()):
             aisle_bad = True
     if aisle_bad:
         out.append("no room to reverse (%.1f m aisle blocked)" % r["aisle"])
+    reach = r["l"] + r["aisle"] + r["par_l"] + 2.0
+    bx_, by_ = b["x"], b["y"]
     for o in others:
+        if abs(o["x"] - bx_) > reach or abs(o["y"] - by_) > reach:
+            continue                                            # too far away to touch
         ob = bbox(bay_poly(o, r))
         if _near(box, ob, 0.1) and overlap(P, bay_poly(o, r)):
             out.append("overlaps another bay")

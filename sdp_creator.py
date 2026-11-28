@@ -244,9 +244,14 @@ class ParkView(PlanView):
                     if h is not None:
                         self.setFocus()
                         self.drag = ("corner",) + h
+                        pg.sel_corner = h
                         self.setCursor(Qt.CursorShape.SizeAllCursor)
-                        pg.set_hint("Drag the corner to where you want it.")
+                        pg.set_hint("Drag the corner to where you want it, or press Delete to remove it.")
+                        self.update()
                         return
+                    if pg.sel_corner is not None:
+                        pg.sel_corner = None
+                        self.update()
                     zi = pg.zone_edge_at(w, 7.0 / self._v[0])
                     if zi >= 0:
                         self.setFocus()
@@ -346,8 +351,9 @@ class ParkView(PlanView):
                     ri, k = h[1], h[2]
                     piece = max(0, min(k, len(pg.roads[ri]["pts"]) - 2))
                     pt = None
-                    if 0 < k < len(pg.roads[ri]["pts"]) - 1:
-                        menu.addAction("Remove this bend point", lambda: pg.remove_road_point(ri, k))
+                    if len(pg.roads[ri]["pts"]) > 2:
+                        end = k in (0, len(pg.roads[ri]["pts"]) - 1)
+                        menu.addAction("Cut the road back from this end" if end else "Remove this bend point", lambda: pg.remove_road_point(ri, k))
                 else:
                     ri, piece, pt = hit
                 fl = pg.road_flags(pg.roads[ri])
@@ -401,6 +407,8 @@ class ParkView(PlanView):
             pg.copy_zone(pg.sel_zone)
         elif e.modifiers() & Qt.KeyboardModifier.ControlModifier and k == Qt.Key.Key_V and pg.clip_zone is not None and not (pg.clip_bld and self.sel >= 0):
             pg.paste_zone(getattr(self, "_lastw", None))
+        elif k in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and self.mode == "select" and pg.sel_bay < 0 and pg.sel_corner is not None:
+            pg.remove_corner(pg.sel_corner)
         elif k in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace) and self.mode == "select" and self.page.sel_bay >= 0:
             self.page.delete_bay()
         elif k == Qt.Key.Key_R and self.mode in ("select", "add_bay"):
@@ -413,6 +421,7 @@ class SdpPage(SitePage):
     KEY = "sdp"
     TITLE = "SDP Creator"
     PLAN_CLS = ParkView
+    sel_corner = None
     STEP_NAMES = ["The stand", "The buildings", "Parking", "Schedule", "Check and sheet"]
     STEP_HINTS = ["Load the survey (DXF, DWG, PDF), pick or trace the stand and set the building line on each boundary.",
                   "Bring in each block's footprint (from the IFC model, a drawing, or trace it) and place it on the stand.",
@@ -1305,7 +1314,9 @@ class SdpPage(SitePage):
         if self.live.isChecked() and (self.zones or self.roads):
             self.settle_roads()
             self.park_roads()
-            self._fill(list(range(len(self.zones))) if self.zones else [], quiet=True)
+            kind_, zi_ = (self.sel_corner or (None, -1, 0))[:2]
+            only = [zi_] if kind_ == "zone" and 0 <= zi_ < len(self.zones) else (list(range(len(self.zones))) if self.zones else [])
+            self._fill(only, quiet=True)
         else:
             self.prune_auto()
             self.refresh_parking(user=True)
@@ -1518,14 +1529,42 @@ class SdpPage(SitePage):
 
     def remove_road_point(self, i, k):
         rd = self.roads[i]
-        if len(rd["pts"]) <= 2 or k in (0, len(rd["pts"]) - 1):
+        if len(rd["pts"]) <= 2 or not 0 <= k < len(rd["pts"]):
             return
         f = self.road_flags(rd)
         del rd["pts"][k]
         rd.pop("base", None)
         del f[k - 1 if k > 0 else 0]
         rd["segs"] = f
+        self.sel_corner = None
         self._roads_changed()
+        self.set_hint("Point removed. A road keeps at least two points.")
+
+    def remove_corner(self, h):
+        """delete the selected corner: a road point (a road keeps 2), a parking or keep-clear area corner (keeps 3)"""
+        kind, i, k = h
+        self.sel_corner = None
+        if kind == "road" and 0 <= i < len(self.roads):
+            self.remove_road_point(i, k)
+        elif kind in ("zone", "excl"):
+            pl = self.zones[i]["poly"] if kind == "zone" and i < len(self.zones) else (self.excl[i] if kind == "excl" and i < len(self.excl) else None)
+            if pl is None or len(pl) <= 3 or not 0 <= k < len(pl):
+                self.set_hint("An area needs at least three corners.")
+                self.plan.update()
+                return
+            del pl[k]
+            if kind == "zone":
+                self._fill([i], quiet=True)
+            else:
+                self.prune_auto()
+                self.refresh_parking(user=True)
+            self._show_roads()
+            self.changed()
+            self._after_edit(True)
+            self.set_hint("Corner removed.")
+        else:
+            self.set_hint("The stand's corners are changed in the first step.")
+        self.plan.update()
 
     def pick_road(self, i):
         if getattr(self, "road_cb", None) is not None and 0 <= i < len(self.roads) and self.road_cb.currentIndex() != i:
@@ -2325,6 +2364,15 @@ class SdpPage(SitePage):
                 for q in pl:
                     c = to(q)
                     p.drawRect(QRectF(c.x() - 4, c.y() - 4, 8, 8))
+            sc_ = self.sel_corner
+            if sc_ is not None:
+                try:
+                    q = {"road": lambda: self.roads[sc_[1]]["pts"], "excl": lambda: self.excl[sc_[1]], "zone": lambda: self.zones[sc_[1]]["poly"], "stand": self.verts}[sc_[0]]()[sc_[2]]
+                    c = to(q)
+                    p.setBrush(QColor("#ff8c00"))
+                    p.drawRect(QRectF(c.x() - 5, c.y() - 5, 10, 10))
+                except (IndexError, KeyError):
+                    self.sel_corner = None
         for e in self.excl:
             p.setPen(QPen(QColor(110, 110, 110), 1.4))
             p.setBrush(QBrush(QColor(120, 120, 120, 110), Qt.BrushStyle.BDiagPattern))
