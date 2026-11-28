@@ -1,10 +1,11 @@
 # MCP Practice Suite - Release notes
 
-Current version: 1.86.405
+Current version: 1.86.406
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
+- **SDP Creator: no stray bays when you move things.** Bays the program places itself are checked after every move: any that stand on a road, overlap another bay or fall outside their parking area are dropped (bays you place by hand are kept and marked red). Dragging a whole parking area always parks it again where it now stands, whatever the "by itself" box says. The purple outline now stays visible on top of the grey pushback.
 - **SDP Creator: squared parking areas, numbered bays, grey pushback.** A parking area you trace freehand is squared up to a rectangle when you finish it (its corners can still be dragged). The purple area is for working only: it is left out of the exported plan and PDF. Every bay is numbered on the plan (and in the DXF, layer BAY_NUMBERS). The pushback (aisle) in front of the bays is filled in the same grey as the road instead of a faint tint.
 - **SDP Creator: bays stay inside their parking area.** Bays along a road that belong to a parking area are only added where the whole bay stands inside the purple area (its nose may stop up to 0.8 m short of the hand-drawn edge). Nothing is added beside a neighbouring road or at a junction outside the area.
 - **SDP Creator: undo, pathways, and parking filled behind the road.** Ctrl+Z undoes the last change on the plan (Ctrl+Y or Ctrl+Shift+Z puts it back), also as Undo / Redo buttons. New "Draw a pathway": a narrow path with no bays in a light pavement colour, with its own width and its own small (or zero) corner radius where it meets a road or another pathway (exported on its own PATHWAYS layer). A parking area that stands back from the road is now filled all the way, not only the bays flush with the road.

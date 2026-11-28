@@ -387,3 +387,17 @@ q = pg24.road_quads_all()
 assert any(abs(sc.math.hypot(a[0] - d[0], a[1] - d[1]) - 7.0) < 0.05 for a, b_, c_, d in [x for x in q if len(x) == 4])
 os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
 print("ok straddle")
+# moving an area around never leaves a stray bay: bays standing on a road or outside their area are dropped
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+pg25 = sc.SdpPage(W()); pg25.q_w.setValue(100), pg25.q_d.setValue(60); pg25.make_rect()
+pg25.start_road(); pg25.trace_done("trace_road", "", [(3, 20), (50, 25), (97, 20)])
+pg25.start_road(); pg25.trace_done("trace_road", "", [(40, 55), (60, 40), (63, 22)])
+pg25.trace_done("trace_parking", "", [(25, 10), (75, 20), (72, 36), (22, 28)])
+for dx, dy in ((0, 0), (6, 4), (-8, 3), (4, -6), (10, 10), (-5, -3)):
+    pg25.zones[0]["poly"] = [[x + dx, y + dy] for x, y in pg25.zones[0]["poly"]]
+    pg25._fill([0])
+    assert not any(pg25._bad), (dx, dy, [(i, x) for i, x in enumerate(pg25._bad) if x][:2])
+pg25.bays.append({"x": 50, "y": 25, "a": 90, "auto": True, "zone": "Parking area 1"})       # a stray bay on the road
+assert pg25.prune_auto() >= 1
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+print("ok no stray bays")

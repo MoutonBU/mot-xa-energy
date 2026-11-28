@@ -1242,6 +1242,7 @@ class SdpPage(SitePage):
             self.park_roads()
             self._fill(list(range(len(self.zones))) if self.zones else [], quiet=True)
         else:
+            self.prune_auto()
             self.refresh_parking(user=True)
         self._show_roads()
         self.changed()
@@ -1491,8 +1492,13 @@ class SdpPage(SitePage):
         self.plan.update()
 
     def zone_released(self):
-        """a whole parking area was dragged: its bays are laid again where it now stands (the road bays follow it)"""
-        self.corner_released()
+        """a whole parking area was dragged: its bays are laid again where it now stands (the road bays follow it), whatever the 'by itself' box says"""
+        self.settle_roads()
+        self._fill(list(range(len(self.zones))), quiet=True)
+        self._show_roads()
+        self.changed()
+        self._after_edit(True)
+        self.set_hint("Parking area moved and parked again.")
 
     def copy_zone(self, i):
         if 0 <= i < len(self.zones):
@@ -1594,6 +1600,7 @@ class SdpPage(SitePage):
             finally:
                 self._in_fill = False
         if not idxs and quiet:
+            self.prune_auto()
             self.refresh_parking(user=True)
             return
         if not idxs:
@@ -1614,7 +1621,36 @@ class SdpPage(SitePage):
                 self.bays += got
         finally:
             QApplication.restoreOverrideCursor()
+        self.prune_auto()
         self.refresh_parking(user=True)
+
+    def prune_auto(self):
+        """bays the program placed itself that break a rule (stand on a road, overlap, outside their area) are dropped, so moving things never leaves stray bays behind"""
+        if not self.bays:
+            return 0
+        site, r = self.site_obj(), self.rules_now()
+        zp = {z["name"]: [tuple(q) for q in z["poly"]] for z in self.zones if len(z["poly"]) >= 3}
+        kept = [b for b in self.bays if not b.get("auto")]
+        out, n = [], 0
+        for b in self.bays:
+            if not b.get("auto"):
+                out.append(b)
+                continue
+            poly = zp.get(b.get("zone"))
+            ok = not sp.problems(b, r, site, kept)
+            if ok and poly is not None and not sp.inside(sp.bay_poly(b, r), poly):
+                ok = False
+            if ok and b.get("rz") in zp and not sp._in_zone(b, r, zp[b["rz"]]) and not any(z["name"] == b["rz"] and z.get("side", 0) for z in self.zones):
+                ok = False
+            if ok and str(b.get("zone", "")).startswith("Road") and b.get("rz") is None and False:
+                ok = False
+            if ok:
+                kept.append(b)
+                out.append(b)
+            else:
+                n += 1
+        self.bays = out
+        return n
 
     def zone_hugs_road(self, z):
         """the whole parking area lies within reach of a road (a strip beside it)"""
@@ -2242,6 +2278,11 @@ class SdpPage(SitePage):
                 m = to((b["x"] + math.cos(a) * r["l"] / 2, b["y"] + math.sin(a) * r["l"] / 2))
                 p.setPen(QPen(QColor("#1f7a45") if not bad else QColor("#b01028"), 1))
                 p.drawLine(m, to((b["x"] + math.cos(a) * (r["l"] / 2 - 0.5), b["y"] + math.sin(a) * (r["l"] / 2 - 0.5))))
+        if not snapshot:                                           # the outline of each purple area on top of everything
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            for i, z in enumerate(self.zones):
+                p.setPen(QPen(QColor("#7a3fc4"), 3 if i == self.sel_zone else 1.4, Qt.PenStyle.DashLine))
+                p.drawPolygon(QPolygonF([to(q) for q in z["poly"]]))
         if self.bays and s > 5:                                    # bay numbers
             f = QFont("Arial")
             f.setPixelSize(int(max(6, min(12, 1.7 * s))))
