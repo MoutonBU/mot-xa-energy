@@ -406,7 +406,7 @@ def _near_poly(pt, poly, tol):
     return pip(pt, poly) or min(seg_pt(pt, poly[i], poly[(i + 1) % len(poly)]) for i in range(len(poly))) <= tol
 
 
-def road_bays(pts, width, site, r=None, keep=(), name="Road", smooth=True, left=-1, right=-1, start=0.0, wide=None, zone=None):
+def road_bays(pts, width, site, r=None, keep=(), name="Road", smooth=True, left=-1, right=-1, start=0.0, wide=None, zone=None, reach=12.0):
     """bays down the sides of the road, nose to the kerb: the road is their aisle, so they connect to it seamlessly.
     left / right: how many bays on that side (-1 as many as fit, 0 none), counted from `start` metres along the road. `wide` is the road width in the stretch with bays"""
     r = rules(r)
@@ -425,13 +425,20 @@ def road_bays(pts, width, site, r=None, keep=(), name="Road", smooth=True, left=
                 continue
             if cap > 0 and placed >= cap:
                 break
+            f = 1.0 if i == 0 or arc[i] == arc[i - 1] else (nxt - arc[i - 1]) / (arc[i] - arc[i - 1])   # exactly one bay width on from the last one
+            f = max(0.0, min(1.0, f))
+            px, py = c[i - 1][0] + (c[i][0] - c[i - 1][0]) * f if i else c[i][0], c[i - 1][1] + (c[i][1] - c[i - 1][1]) * f if i else c[i][1]
+            tx_, ty_ = (t[i - 1][0] + (t[i][0] - t[i - 1][0]) * f, t[i - 1][1] + (t[i][1] - t[i - 1][1]) * f) if i else t[i]
+            tl = math.hypot(tx_, ty_) or 1.0
+            tx_, ty_ = tx_ / tl, ty_ / tl
+            sv = nxt
             nxt += r["w"]
-            nx, ny = -t[i][1] * sd, t[i][0] * sd                      # the normal on this side, pointing away from the road
-            bay = {"x": c[i][0] + nx * off, "y": c[i][1] + ny * off, "a": math.degrees(math.atan2(-ny, -nx)) % 360.0, "auto": True, "zone": name}
-            if zone is not None:                                          # only inside this parking area (a metre of give at its edge)
-                if not all(_near_poly(q, zone, 1.0) for q in bay_poly(bay, r)):
+            nx, ny = -ty_ * sd, tx_ * sd                              # the normal on this side, pointing away from the road
+            bay = {"x": px + nx * off, "y": py + ny * off, "a": math.degrees(math.atan2(-ny, -nx)) % 360.0, "auto": True, "zone": name}
+            if zone is not None:                                          # only where this parking area reaches the road: the bay stands flush with the kerb
+                if not any(pip((px + nx * tt, py + ny * tt), zone) for tt in [x * 1.0 for x in range(0, int(wd / 2.0 + r["l"] + reach) + 1)]):
                     continue
-                bay["s"] = arc[i]
+                bay["s"] = sv
             if not problems(bay, r, site, list(keep) + out):
                 out.append(bay)
                 placed += 1

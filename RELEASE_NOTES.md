@@ -1,10 +1,11 @@
 # MCP Practice Suite - Release notes
 
-Current version: 1.86.396
+Current version: 1.86.397
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
+- **SDP Creator: parking next to a road stands flush with it.** A parking area beside a road (even with some grass between them, up to about 12 m) now gets its bays standing flush against the kerb with the road as their 7 m pushback, over the stretch of road the area runs along; the road widens there by itself. Move the area down onto the road and it still does the same. A strip that lies wholly beside the road gets just those bays (no second set of rows with its own aisle). Bays along a road are now spaced evenly, with no gaps.
 - **SDP Creator: roads join with rounded corners, parking strips use the road as their aisle.** A road that ends within 8 m of another road snaps onto it and joins it, with a rounded corner (radius in the Roads box, 6 m to start, 0 for sharp). All roads are drawn as one solid road: the dashed centre stripe is gone. A parking area that runs along a road ("joins the road" ticked) now gets its bays standing along the road, nose to the kerb, inside the polygon, and the road widens to the 7 m pushback along that stretch by itself. Move the polygon or the road and it follows.
 - **SDP Creator: roads and parking as one smart object.** Each road now has "Bays on the left" and "Bays on the right" (a number, 0 for none, or as many as fit) and where along the road they start. The road widens by itself to the 7 m pushback where it has bays and keeps the plain width elsewhere. Roads bend round buildings: move or add a block and the road is pushed away to keep the room for itself and its bays (the two ends stay where you put them, a bend never leaves the stand). A parking area can be set to join the road (its rows are laid so the aisles meet the road) or stand alone as a cul-de-sac, and you can say how many bays it has (the ones nearest the road are kept). Drag a corner of the polygon out and more bays appear. New roads start with no bays until you set them; "Park along the roads" puts bays on every side.
 - **SDP Creator: a width for each road.** The Roads box has a list of the roads you drew (with width and length) and a Width box: pick a road, type its width, and the road and the bays along it update. Clicking a road's white square also picks it. New roads take the width in the box.

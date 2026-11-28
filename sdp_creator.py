@@ -1030,6 +1030,7 @@ class SdpPage(SitePage):
                 rd["_zs"] = list(rd.get("_zs", [])) + [(a_ - r["w"], b_ + r["w"]) for a_, b_ in runs]
                 for b in got:
                     b["type"] = z.get("type", "Open")
+                    b["rz"] = z["name"]
                 self.bays += got
                 n += len(got)
         self._rq = (None, [])
@@ -1238,6 +1239,8 @@ class SdpPage(SitePage):
                 z = self.zones[i]
                 self.bays = [b for b in self.bays if not (b.get("auto") and b.get("zone") == z["name"])]
                 keep = list(self.bays)
+                if self.zone_hugs_road(z) and any(b.get("rz") == z["name"] for b in self.bays):
+                    continue                                          # a strip along the road: the road is its aisle, the bays flush with it are all it needs
                 roads = self.road_quads_all() if (z.get("join", True) and self.roads) else None
                 got = sp.fill([tuple(p) for p in z["poly"]], site, r, z.get("angle"), keep, z["name"], roads, int(z.get("max", 0)),
                               [self.road_angle_near(z["poly"])] if roads else ())
@@ -1247,6 +1250,20 @@ class SdpPage(SitePage):
         finally:
             QApplication.restoreOverrideCursor()
         self.refresh_parking(user=True)
+
+    def zone_hugs_road(self, z):
+        """the whole parking area lies within reach of a road (a strip beside it)"""
+        if not z.get("join", True) or not self.roads:
+            return False
+        reach = self.r_aisle.value() / 2.0 + self.r_l.value() + 12.0
+        for q in z["poly"]:
+            d = 1e18
+            for rd in self.roads:
+                c = sp.spline(rd["pts"], 2.0, rd.get("smooth", True))
+                d = min([d] + [sp.seg_pt(tuple(q), c[i], c[i + 1]) for i in range(len(c) - 1)])
+            if d > reach:
+                return False
+        return True
 
     def fill_selected(self):
         i = self.zt.currentRow()

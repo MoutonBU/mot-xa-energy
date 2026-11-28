@@ -205,3 +205,19 @@ ws = sorted({round(sc.math.hypot(a_[0] - d_[0], a_[1] - d_[1]), 1) for a_, b_, c
 assert any(abs(x - 7.0) < 0.2 for x in [sc.math.hypot(a_[0] - d_[0], a_[1] - d_[1]) for a_, b_, c_, d_ in [x for x in q if len(x) == 4] if a_[0] > 62 and a_[0] < 90]), ws
 os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
 print("ok junction and strip")
+# a parking area standing back from the road: its bays still stand flush with the kerb; moved onto the road, the road thickens
+pg15 = sc.SdpPage(W()); pg15.q_w.setValue(100), pg15.q_d.setValue(60); pg15.make_rect()
+pg15.start_road(); pg15.trace_done("trace_road", "", [(3, 20), (50, 20), (97, 20)])
+pg15._new_zone([(40, 30), (80, 30), (80, 38), (40, 38)], "Back")           # 6 m of grass between the road and the area
+pg15._fill([0])
+rb = [b for b in pg15.bays if str(b["zone"]).startswith("Road")]
+assert len(rb) >= 8 and not any(pg15._bad)
+ys = sorted(b["y"] for b in rb)
+assert all(abs(y - (20 + 3.5 + 2.5)) < 0.3 for y in ys), ys[:3]            # flush: 3.5 m (half the 7 m road) + half a bay from the centre line
+assert pg15.roads[0]["_zs"]
+pg15.zones[0]["poly"] = [[40, 18], [80, 18], [80, 30], [40, 30]]           # the area moved down onto the road
+pg15._fill([0])
+rb = [b for b in pg15.bays if str(b["zone"]).startswith("Road")]
+assert rb and not any(pg15._bad) and pg15.roads[0]["_zs"]
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+print("ok flush")
