@@ -1,10 +1,11 @@
 # MCP Practice Suite - Release notes
 
-Current version: 1.86.403
+Current version: 1.86.404
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
+- **SDP Creator: bays stay inside their parking area.** Bays along a road that belong to a parking area are only added where the whole bay stands inside the purple area (its nose may stop up to 0.8 m short of the hand-drawn edge). Nothing is added beside a neighbouring road or at a junction outside the area.
 - **SDP Creator: undo, pathways, and parking filled behind the road.** Ctrl+Z undoes the last change on the plan (Ctrl+Y or Ctrl+Shift+Z puts it back), also as Undo / Redo buttons. New "Draw a pathway": a narrow path with no bays in a light pavement colour, with its own width and its own small (or zero) corner radius where it meets a road or another pathway (exported on its own PATHWAYS layer). A parking area that stands back from the road is now filled all the way, not only the bays flush with the road.
 - **SDP Creator: parking on the other side of the road.** A parking area joined to a road has a new "Bays on" choice: where the area is, the other side of the road, or both sides. Both sides makes the road a double-sided aisle (thickened to 7 m); drag the area up or down and the bays and the road width follow.
 - **SDP Creator: roads and parking follow the rules of the pushback.** Bays beside a road now reach only 4 m out to a parking area, so nothing is added where the polygon is not. The 7 m pushback ends exactly at the kerb on the other side of the road; the road only thickens (to 7 m) where there are bays on both sides. The new-road width starts at 7 m. A road that bends round a building remembers the points you drew: move the building away and back and the road and its bays snap back to their original place.

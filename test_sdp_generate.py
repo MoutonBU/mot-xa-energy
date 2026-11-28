@@ -218,9 +218,7 @@ pg15.start_road(); pg15.trace_done("trace_road", "", [(3, 20), (50, 20), (97, 20
 pg15._new_zone([(40, 30), (80, 30), (80, 38), (40, 38)], "Back")           # 6 m of grass between the road and the area
 pg15._fill([0])
 rb = [b for b in pg15.bays if str(b["zone"]).startswith("Road")]
-assert len(rb) >= 8 and not any(pg15._bad)
-ys = sorted(b["y"] for b in rb)
-assert all(abs(y - (20 + 3.5 + 2.5)) < 0.3 for y in ys), ys[:3]            # flush: 3.5 m (half the 7 m road) + half a bay from the centre line
+assert not rb and len([b for b in pg15.bays if b["zone"] == "Back"]) >= 8 and not any(pg15._bad)   # standing back: the area is parked with its own aisle, nothing is added outside it
 pg15.zones[0]["poly"] = [[40, 18], [80, 18], [80, 30], [40, 30]]           # the area moved down onto the road
 pg15._fill([0])
 rb = [b for b in pg15.bays if str(b["zone"]).startswith("Road")]
@@ -354,3 +352,15 @@ inner = [b for b in pg21.bays if b["zone"] == "Back"]
 assert len(inner) >= 20 and not any(pg21._bad), (len(inner), [x for x in pg21._bad if x][:2])
 os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
 print("ok paths undo fill")
+# no bay of a parking area stands outside it, also next to a second road
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+pg22 = sc.SdpPage(W()); pg22.q_w.setValue(100), pg22.q_d.setValue(60); pg22.make_rect()
+pg22.start_road(); pg22.trace_done("trace_road", "", [(10, 2), (12, 20), (10, 40)])
+pg22.start_road(); pg22.trace_done("trace_road", "", [(12, 20), (50, 12), (95, 20)])
+pg22._new_zone([(21, 22), (60, 22), (60, 32), (21, 32)], "Area 2"); pg22._fill([0])
+za = [b for b in pg22.bays if b.get("zone") == "Area 2" or b.get("rz") == "Area 2"]
+assert za and not any(pg22._bad)
+for b in za:
+    assert b["x"] > 21 - 0.2 and 22 - 0.2 <= b["y"] <= 32 + 0.2 or sp_inside_ok(b) if False else (20.8 <= b["x"] <= 60.2 and 21.8 <= b["y"] <= 32.2), b
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+print("ok stays inside")

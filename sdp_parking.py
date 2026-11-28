@@ -596,6 +596,23 @@ def _along(c, t, arc, s):
     return (c[lo][0] + (c[hi][0] - c[lo][0]) * f, c[lo][1] + (c[hi][1] - c[lo][1]) * f), (d[0] / L, d[1] / L)
 
 
+def _road_bay(c, t, arc, k, sd, w, nose, l):
+    (px, py), (tx, ty) = _along(c, t, arc, k * w + w / 2.0)
+    nx, ny = -ty * sd, tx * sd
+    off = nose + l / 2.0
+    return {"x": px + nx * off, "y": py + ny * off, "a": math.degrees(math.atan2(-ny, -nx)) % 360.0}
+
+
+def _in_zone(bay, r, poly, tol=0.8):
+    """a bay stands in a parking area when all of it lies inside, except that its nose may stop short of the polygon edge by `tol` (the edge is drawn by hand)"""
+    P = bay_poly(bay, r)
+    for q in P + [(bay["x"], bay["y"])]:
+        q = (bay["x"] + (q[0] - bay["x"]) * 0.97, bay["y"] + (q[1] - bay["y"]) * 0.97)
+        if not (pip(q, poly) or min(seg_pt(q, poly[i], poly[(i + 1) % len(poly)]) for i in range(len(poly))) <= tol):
+            return False
+    return True
+
+
 def road_plan(pts, width, smooth, r, left, right, start, zones, reach=4.0):
     """where the bays along a road go: a bay position every bay width, on either side (+1 left, -1 right), wanted because the road is told to have bays there
     (left / right: how many, -1 = as many as fit, 0 = none, from `start` metres) or because a parking area (name, polygon, most bays) reaches the road there.
@@ -630,6 +647,8 @@ def road_plan(pts, width, smooth, r, left, right, start, zones, reach=4.0):
             for sd in (1, -1):
                 nx, ny = -ty * sd, tx * sd
                 if any(pip((px + nx * tt, py + ny * tt), poly) for tt in [x * 1.0 for x in range(0, int(half + r["l"] + reach) + 1)]):
+                    if not any(_in_zone(_road_bay(c, t, arc, k, sd, w, nz, r["l"]), r, poly) for nz in (r["aisle"] - width / 2.0, r["aisle"] / 2.0)):
+                        continue                                   # the bay would stand outside the area
                     got += [(k, sd)] if mode == 0 else [(k, -sd)] if mode == 1 else [(k, sd), (k, -sd)]
         got = sorted(set(got))
         if mx:
