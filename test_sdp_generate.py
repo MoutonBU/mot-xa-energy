@@ -115,3 +115,27 @@ pg9.goal_cb.setCurrentIndex(2)
 assert "&#9733;" in pg9.scheme_lbl.text()
 os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
 print("ok mix")
+# roads: a spline road, bays along it, blocks and bays keep off it
+pg10 = sc.SdpPage(W()); pg10.q_w.setValue(100), pg10.q_d.setValue(60); pg10.make_rect()
+pg10.start_road(); pg10.trace_done("trace_road", "", [(3, 30), (35, 22), (65, 40), (97, 30)])
+assert len(pg10.roads) == 1
+nr = len(pg10.bays)
+assert nr > 30 and all(str(b["zone"]).startswith("Road") for b in pg10.bays) and not any(pg10._bad), (nr, [x for x in pg10._bad if x][:2])
+pg10.zone_whole_stand(); pg10.fill_all()
+assert len(pg10.bays) > nr and not any(pg10._bad)
+quads = pg10.road_quads_all()
+import sdp_parking as _sp
+for b in pg10.bays:
+    assert not any(_sp.overlap(_sp.bay_poly(b, pg10.rules_now()), q, 0.05) for q in quads[::3]), b
+pg10.generate({"type": "Standard 3-storey", "prefix": "H", "phase": "Phase 1", "w": 20, "d": 12, "side": 6, "front": 17.5, "count": 3, "parking": True})
+for b in pg10.buildings():
+    P = [(b["x"], b["y"]), (b["x"] + b["w"], b["y"]), (b["x"] + b["w"], b["y"] + b["d"]), (b["x"], b["y"] + b["d"])]
+    assert not any(_sp.poly_dist(P, q) < 1e-6 for q in quads), b
+assert not any(pg10._bad)
+pg10.move_corner(("road", 0, 1), 35.0, 12.0); pg10.corner_released()
+assert pg10.roads[0]["pts"][1] == [35.0, 12.0] and not any(pg10._bad)
+st = pg10.state(); pg11 = sc.SdpPage(W()); pg11.set_state(st); assert len(pg11.roads) == 1
+import tempfile as _t2; _d = _t2.mkdtemp(); pg10.export_dxf(_d + "/r.dxf")
+pg10.clear_roads(); assert not pg10.roads and not any(str(b["zone"]).startswith("Road") for b in pg10.bays)
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+print("ok roads")

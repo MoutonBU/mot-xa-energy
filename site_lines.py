@@ -417,7 +417,7 @@ class PlanView(QWidget):
         self.mode, self.role = mode, role
         self.tpts, self.cal, self.snap_pt, self.hover = [], [], None, None
         self.drag = None
-        self.setCursor(Qt.CursorShape.CrossCursor if mode in ("trace_stand", "trace_building", "trace_parking", "calibrate") else
+        self.setCursor(Qt.CursorShape.CrossCursor if mode in ("trace_stand", "trace_building", "trace_parking", "trace_road", "calibrate") else
                        Qt.CursorShape.SizeAllCursor if mode == "move_under" else Qt.CursorShape.ArrowCursor)
         self.setFocus()
         self.update()
@@ -460,8 +460,8 @@ class PlanView(QWidget):
 
     def _finish_trace(self):
         pts = list(self.tpts)
-        if len(pts) < 3:
-            self.page.set_hint("A shape needs at least three corners.")
+        if len(pts) < (2 if self.mode == "trace_road" else 3):
+            self.page.set_hint("A road needs at least two points.")
             return
         mode, role = self.mode, self.role
         self.end()
@@ -501,12 +501,12 @@ class PlanView(QWidget):
             self.page.set_hint("Drag round to point north. Hold Shift to step in 15 degrees. Right-click the arrow for more.")
             return
         ortho = bool(e.modifiers() & Qt.KeyboardModifier.ShiftModifier)
-        if self.mode in ("trace_stand", "trace_building", "trace_parking"):
+        if self.mode in ("trace_stand", "trace_building", "trace_parking", "trace_road"):
             ref = self.tpts[-1] if self.tpts else None
             q, sn = self._snap(w)
             if sn is None:
                 q = self._constrain(w, ref, ortho)
-            if len(self.tpts) >= 3 and math.hypot(q[0] - self.tpts[0][0], q[1] - self.tpts[0][1]) < 11 / self._v[0]:
+            if self.mode != "trace_road" and len(self.tpts) >= 3 and math.hypot(q[0] - self.tpts[0][0], q[1] - self.tpts[0][1]) < 11 / self._v[0]:
                 self._finish_trace()
                 return
             self.tpts.append(q)
@@ -577,7 +577,7 @@ class PlanView(QWidget):
                 self.page.changed()
                 self.update()
             return
-        if self.mode in ("trace_stand", "trace_building", "trace_parking", "calibrate"):
+        if self.mode in ("trace_stand", "trace_building", "trace_parking", "trace_road", "calibrate"):
             q, sn = self._snap(w)
             ref = (self.tpts or self.cal or [None])[-1]
             if sn is None:
@@ -596,7 +596,7 @@ class PlanView(QWidget):
         self.drag = None
         self.pan = None
         self.rclick = None
-        self.setCursor(Qt.CursorShape.CrossCursor if self.mode in ("trace_stand", "trace_building", "trace_parking", "calibrate") else
+        self.setCursor(Qt.CursorShape.CrossCursor if self.mode in ("trace_stand", "trace_building", "trace_parking", "trace_road", "calibrate") else
                        Qt.CursorShape.SizeAllCursor if self.mode == "move_under" else Qt.CursorShape.ArrowCursor)
         if was_north:
             self.page.changed()

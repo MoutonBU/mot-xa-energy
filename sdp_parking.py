@@ -127,7 +127,9 @@ def _near(box, ob, gap):
 class Site:
     """what the bays are tested against: the stand, the buildings, the building lines"""
 
-    def __init__(self, stand, buildings, env=None, others=None):
+    def __init__(self, stand, buildings, env=None, others=None, roads=None):
+        self.roads = [[tuple(p) for p in q] for q in (roads or [])]       # road pieces: bays may not stand on them, their aisles may
+        self.rboxes = [bbox(q) for q in self.roads]
         self.stand = [tuple(p) for p in stand]
         self.blds = [[tuple(p) for p in b] for b in buildings]
         self.env = [tuple(p) for p in env] if env else None
@@ -155,6 +157,10 @@ def problems(b, r, site, others=()):
         d = poly_dist(P, bl)
         if d < r["bld"] - 1e-6:
             out.append("%.2f m from a building (needs %.2f m)" % (d, r["bld"]))
+            break
+    for k, q in enumerate(site.roads):
+        if _near(box, site.rboxes[k], 0) and overlap(P, q, 0.05):
+            out.append("on a road")
             break
     abox = bbox(A)
     aisle_bad = False
@@ -293,3 +299,74 @@ def block_slots(env, obstacles, w, d, side_gap, front_gap, theta=None):
             if len(got) > len(best):
                 best = got
     return best
+
+
+# ---- roads: a spline through the points, a ribbon of road, and bays along its edges
+def spline(pts, step=1.5, smooth=True):
+    """points along the road centreline. smooth: a Catmull-Rom curve through the clicked points; otherwise straight pieces"""
+    pts = [tuple(p) for p in pts]
+    if len(pts) < 2:
+        return pts
+    if not smooth or len(pts) == 2:
+        out = [pts[0]]
+        for a, b in zip(pts, pts[1:]):
+            n = max(1, int(math.ceil(math.hypot(b[0] - a[0], b[1] - a[1]) / step)))
+            out += [(a[0] + (b[0] - a[0]) * i / n, a[1] + (b[1] - a[1]) * i / n) for i in range(1, n + 1)]
+        return out
+    P = [pts[0]] + pts + [pts[-1]]
+    out = [pts[0]]
+    for i in range(1, len(P) - 2):
+        p0, p1, p2, p3 = P[i - 1], P[i], P[i + 1], P[i + 2]
+        n = max(2, int(math.ceil(math.hypot(p2[0] - p1[0], p2[1] - p1[1]) / step)))
+        for k in range(1, n + 1):
+            t = k / float(n)
+            t2, t3 = t * t, t * t * t
+            out.append(tuple(0.5 * ((2 * p1[c]) + (-p0[c] + p2[c]) * t + (2 * p0[c] - 5 * p1[c] + 4 * p2[c] - p3[c]) * t2 + (-p0[c] + 3 * p1[c] - 3 * p2[c] + p3[c]) * t3) for c in (0, 1)))
+    return out
+
+
+def _tangents(c):
+    out = []
+    for i in range(len(c)):
+        a, b = c[max(0, i - 1)], c[min(len(c) - 1, i + 1)]
+        L = math.hypot(b[0] - a[0], b[1] - a[1]) or 1.0
+        out.append(((b[0] - a[0]) / L, (b[1] - a[1]) / L))
+    return out
+
+
+def road_quads(pts, width, smooth=True):
+    """the road as short four-sided pieces along its centreline (easy to test against bays and blocks)"""
+    c = spline(pts, 1.5, smooth)
+    if len(c) < 2:
+        return []
+    t, h = _tangents(c), width / 2.0
+    side = lambda i, s: (c[i][0] - t[i][1] * h * s, c[i][1] + t[i][0] * h * s)
+    return [[side(i, 1), side(i + 1, 1), side(i + 1, -1), side(i, -1)] for i in range(len(c) - 1)]
+
+
+def road_length(pts, smooth=True):
+    c = spline(pts, 1.5, smooth)
+    return sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(c, c[1:]))
+
+
+def road_bays(pts, width, site, r=None, keep=(), name="Road", smooth=True):
+    """bays down both sides of the road, nose to the kerb: the road is their aisle, so they connect to it seamlessly"""
+    r = rules(r)
+    c = spline(pts, 0.25, smooth)
+    if len(c) < 2:
+        return []
+    t = _tangents(c)
+    out, off = [], width / 2.0 + r["l"] / 2.0
+    for sd in (1, -1):
+        run, nxt = 0.0, r["w"] / 2.0
+        for i in range(len(c)):
+            if i:
+                run += math.hypot(c[i][0] - c[i - 1][0], c[i][1] - c[i - 1][1])
+            if run < nxt:
+                continue
+            nxt += r["w"]
+            nx, ny = -t[i][1] * sd, t[i][0] * sd                      # the normal on this side, pointing away from the road
+            bay = {"x": c[i][0] + nx * off, "y": c[i][1] + ny * off, "a": math.degrees(math.atan2(-ny, -nx)) % 360.0, "auto": True, "zone": name}
+            if not problems(bay, r, site, list(keep) + out):
+                out.append(bay)
+    return out

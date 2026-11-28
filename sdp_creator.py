@@ -298,7 +298,9 @@ class SdpPage(SitePage):
                   "What complies and what does not, then save the Site Development Plan as a PDF for council."]
 
     def __init__(self, win):
-        self.zones, self.bays, self._bad, self.schemes, self.excl = [], [], [], [], []
+        self.zones, self.bays, self._bad, self.schemes, self.excl, self.roads = [], [], [], [], [], []
+        self._rq = (None, [])
+        self._tracing_road = False
         self._tracing_excl = False
         self.sel_bay = -1
         self.sel_zone = -1
@@ -374,6 +376,26 @@ class SdpPage(SitePage):
         b = QPushButton("Generate a layout...")
         b.clicked.connect(lambda _=False: self.generate())
         br.addWidget(b)
+        br.addStretch(1)
+        bv.addLayout(br)
+        v.addWidget(bx)
+        bx, bv = self.box("Roads", "Draw a road as a smooth curve. Blocks and bays keep off it, bays run along both sides of it (the road is their aisle) and parking areas next to it line up with it.")
+        fl = FlowLayout(None, 10, 6)
+        self.road_w = sl.spin(3, 15, 7, 1, " m")
+        self.road_w.valueChanged.connect(self.road_width_changed)
+        self.road_smooth = QCheckBox("Smooth curve")
+        self.road_smooth.setChecked(True)
+        self.road_type = QComboBox()
+        self.road_type.addItems(BAY_TYPES)
+        fl.addWidget(self._pair("Road width", self.road_w))
+        fl.addWidget(self.road_smooth)
+        fl.addWidget(self._pair("Bays along it are", self.road_type))
+        bv.addLayout(fl)
+        br = FlowLayout(None, 8, 6)
+        for txt, fn in (("Draw a road", self.start_road), ("Park along the roads", self.park_roads_clicked), ("Remove roads", self.clear_roads)):
+            b = QPushButton(txt)
+            b.clicked.connect(lambda _=False, f=fn: f())
+            br.addWidget(b)
         br.addStretch(1)
         bv.addLayout(br)
         v.addWidget(bx)
@@ -633,7 +655,7 @@ class SdpPage(SitePage):
         env = None
         if self.r_lines.isChecked() and len(v) >= 3:
             env = sl.envelope(v, [e["sb"] for e in self.edges()])
-        return sp.Site(v, [bpoly(b) for b in self.buildings()] + [[tuple(q) for q in e] for e in self.excl], env)
+        return sp.Site(v, [bpoly(b) for b in self.buildings()] + [[tuple(q) for q in e] for e in self.excl], env, roads=self.road_quads_all())
 
     def _rules_changed(self, *_a):
         if not self._pbusy:
@@ -754,10 +776,74 @@ class SdpPage(SitePage):
         self.plan.begin("trace_parking")
         self.set_hint("Click each corner of the parking area, round the buildings. Hold Shift to keep a line straight. Double-click or press Enter to finish.")
 
+    def road_quads_all(self):
+        key = repr([(r["pts"], r["w"], r.get("smooth", True)) for r in self.roads])
+        if self._rq[0] != key:
+            self._rq = (key, [q for r in self.roads for q in sp.road_quads(r["pts"], r["w"], r.get("smooth", True))])
+        return self._rq[1]
+
+    def start_road(self):
+        if len(self.verts()) < 3:
+            QMessageBox.information(self, self.TITLE, "Set the stand first (first step).")
+            return
+        self._tracing_road = True
+        self.plan.begin("trace_road")
+        self.set_hint("Click the points the road goes through, from the gate inwards. Double-click or press Enter to finish: the road is drawn as a smooth curve.")
+
+    def road_width_changed(self, v):
+        for r in self.roads:
+            r["w"] = float(v)
+        if self.roads and not self._pbusy:
+            self.park_roads()
+            self.refresh_parking(user=True)
+
+    def park_roads(self):
+        """bays down both sides of every road, nose to the kerb (the road is their aisle)"""
+        self.bays = [b for b in self.bays if not str(b.get("zone", "")).startswith("Road ")]
+        if not self.roads:
+            return 0
+        site, r, n = self.site_obj(), self.rules_now(), 0
+        for i, rd in enumerate(self.roads):
+            got = sp.road_bays(rd["pts"], rd["w"], site, r, list(self.bays), "Road %d" % (i + 1), rd.get("smooth", True))
+            for b in got:
+                b["type"] = self.road_type.currentText()
+            self.bays += got
+            n += len(got)
+        return n
+
+    def park_roads_clicked(self):
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            n = self.park_roads()
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.refresh_parking(user=True)
+        self.set_hint("%d bays placed along the roads." % n if self.roads else "Draw a road first.")
+
+    def clear_roads(self):
+        self.roads = []
+        self.bays = [b for b in self.bays if not str(b.get("zone", "")).startswith("Road ")]
+        self.refresh_parking(user=True)
+
+    def road_angle_near(self, poly):
+        """the direction of the nearest road at a parking area, so its rows run along the road and join it"""
+        if not self.roads:
+            return None
+        cx = sum(q[0] for q in poly) / len(poly)
+        cy = sum(q[1] for q in poly) / len(poly)
+        best, ang = 1e18, None
+        for rd in self.roads:
+            c = sp.spline(rd["pts"], 2.0, rd.get("smooth", True))
+            for i in range(len(c) - 1):
+                d = sp.seg_pt((cx, cy), c[i], c[i + 1])
+                if d < best:
+                    best, ang = d, math.degrees(math.atan2(c[i + 1][1] - c[i][1], c[i + 1][0] - c[i][0])) % 180.0
+        return ang
+
     def corner_at(self, w, tol):
         """the corner (of the stand, a parking area or a keep-clear area) under world point w: (kind, i, k) or None"""
         best, hit = tol, None
-        for kind, polys in (("excl", self.excl), ("zone", [z["poly"] for z in self.zones]), ("stand", [self.verts()])):
+        for kind, polys in (("road", [r["pts"] for r in self.roads]), ("excl", self.excl), ("zone", [z["poly"] for z in self.zones]), ("stand", [self.verts()])):
             for i, pl in enumerate(polys):
                 for k, q in enumerate(pl):
                     d = math.hypot(q[0] - w[0], q[1] - w[1])
@@ -771,6 +857,8 @@ class SdpPage(SitePage):
             vs = [tuple(q) for q in self.verts()]
             vs[k] = (x, y)
             self.set_vertices(vs)
+        elif kind == "road":
+            self.roads[i]["pts"][k] = [x, y]
         elif kind == "zone":
             self.zones[i]["poly"][k] = [x, y]
         else:
@@ -779,8 +867,9 @@ class SdpPage(SitePage):
 
     def corner_released(self):
         """a corner was moved: the parking is checked again, and re-parked when 'by itself' is on"""
-        if self.live.isChecked() and self.zones:
-            self._fill(list(range(len(self.zones))))
+        if self.live.isChecked() and (self.zones or self.roads):
+            self.park_roads()
+            self._fill(list(range(len(self.zones))) if self.zones else [], quiet=True)
         else:
             self.refresh_parking(user=True)
         self.changed()
@@ -800,8 +889,17 @@ class SdpPage(SitePage):
         self.refresh_parking(user=True)
 
     def trace_done(self, mode, role, pts):
-        if mode != "trace_parking":
+        if mode not in ("trace_parking", "trace_road"):
             return super().trace_done(mode, role, pts)
+        if self._tracing_road:
+            self._tracing_road = False
+            self.roads.append({"pts": [list(q) for q in pts], "w": self.road_w.value(), "smooth": self.road_smooth.isChecked()})
+            if self.auto_fill.isChecked():
+                self.park_roads_clicked()
+            else:
+                self.refresh_parking(user=True)
+            self.set_hint("Road drawn. Bays run along both sides of it. Drag the white squares to bend it.")
+            return
         if self._tracing_excl:
             self._tracing_excl = False
             self.excl.append([list(q) for q in sl.si.clean(pts)])
@@ -867,7 +965,10 @@ class SdpPage(SitePage):
         self.sel_zone = -1
         self.refresh_parking(user=True)
 
-    def _fill(self, idxs):
+    def _fill(self, idxs, quiet=False):
+        if not idxs and quiet:
+            self.refresh_parking(user=True)
+            return
         if not idxs:
             QMessageBox.information(self, self.TITLE, "Draw a parking area first, or press 'Use the whole stand'.")
             return
@@ -1046,6 +1147,7 @@ class SdpPage(SitePage):
         proj = self.f["project"].text() if "project" in self.f else ""
         self.schemes = []
         self.excl = []
+        self.roads = []
         self.set_state({})
         self.schemes = []
         self._show_schemes()
@@ -1160,7 +1262,7 @@ class SdpPage(SitePage):
         import ezdxf
         doc = ezdxf.new("R2010")
         msp = doc.modelspace()
-        for name, col in (("STAND", 7), ("BUILDINGS", 1), ("BAYS", 3), ("BAY_ACCESSIBLE", 5), ("BAY_EV", 6), ("BAY_OTHER", 30), ("PARKING_AREAS", 8)):
+        for name, col in (("STAND", 7), ("BUILDINGS", 1), ("BAYS", 3), ("BAY_ACCESSIBLE", 5), ("BAY_EV", 6), ("BAY_OTHER", 30), ("PARKING_AREAS", 8), ("ROADS", 9), ("ROAD_CENTRELINE", 4)):
             doc.layers.add(name, color=col)
         poly = lambda pts, layer: msp.add_lwpolyline([(q[0], q[1]) for q in pts], close=True, dxfattribs={"layer": layer})
         if len(self.verts()) >= 3:
@@ -1171,6 +1273,15 @@ class SdpPage(SitePage):
             msp.add_text(b["name"], dxfattribs={"layer": "BUILDINGS", "height": 1.5, "insert": (sum(q[0] for q in P) / len(P), sum(q[1] for q in P) / len(P))})
         for z in self.zones:
             poly(z["poly"], "PARKING_AREAS")
+        for rd in self.roads:
+            c = sp.spline(rd["pts"], 1.5, rd.get("smooth", True))
+            msp.add_lwpolyline(c, dxfattribs={"layer": "ROAD_CENTRELINE"})
+            L = [q[0] for q in sp.road_quads(rd["pts"], rd["w"], rd.get("smooth", True))]
+            Rr = [q[3] for q in sp.road_quads(rd["pts"], rd["w"], rd.get("smooth", True))]
+            if L:
+                last = sp.road_quads(rd["pts"], rd["w"], rd.get("smooth", True))[-1]
+                msp.add_lwpolyline(L + [last[1]], dxfattribs={"layer": "ROADS"})
+                msp.add_lwpolyline(Rr + [last[2]], dxfattribs={"layer": "ROADS"})
         r = self.rules_now()
         for b in self.bays:
             t = b.get("type", "Open")
@@ -1186,7 +1297,7 @@ class SdpPage(SitePage):
         """parking for n blocks placed in the first n slots: counted bays against the bays the units need"""
         v = self.verts()
         env = sl.envelope(v, [e["sb"] for e in self.edges()]) if self.r_lines.isChecked() else None
-        site = sp.Site(v, own + [[tuple(q) for q in e] for e in self.excl] + [list(R) for R in slots[:n]], env)
+        site = sp.Site(v, own + [[tuple(q) for q in e] for e in self.excl] + [list(R) for R in slots[:n]], env, roads=self.road_quads_all())
         bays = sp.fill(v, site, r, None, [], "gen")
         sd = self.site()
         need = sp.required(n * upb, _num(sd.get("bays_per_unit"), 1.5), int(_num(sd.get("visitor_per"))))
@@ -1213,7 +1324,7 @@ class SdpPage(SitePage):
         for i in sorted(rows, reverse=True):
             self.bt.removeRow(i)
         self._pbusy = False
-        own = [bpoly(b) for b in self.buildings()] + [[tuple(q) for q in e] for e in self.excl]
+        own = [bpoly(b) for b in self.buildings()] + [[tuple(q) for q in e] for e in self.excl] + self.road_quads_all()
         env = sl.envelope(v, [e["sb"] for e in self.edges()]) or v
         slots = sp.block_slots(env, own, opts["w"], opts["d"], opts["side"], opts["front"], opts.get("theta"))
         if not slots:
@@ -1261,6 +1372,7 @@ class SdpPage(SitePage):
         if opts.get("parking", True):
             self.zones = [z for z in self.zones if z["name"] != "Whole stand"]
             self.bays = [b for b in self.bays if not (b.get("auto") and b.get("zone") == "Whole stand")]
+            self.park_roads()
             self._new_zone(v, "Whole stand")
             self._fill([len(self.zones) - 1])
         self.plan.fit()
@@ -1377,6 +1489,8 @@ class SdpPage(SitePage):
         for z in getattr(self, "zones", []):
             z["poly"] = [[x + dx, y + dy] for x, y in z["poly"]]
         self.excl = [[[x + dx, y + dy] for x, y in e] for e in getattr(self, "excl", [])]
+        for r_ in getattr(self, "roads", []):
+            r_["pts"] = [[x + dx, y + dy] for x, y in r_["pts"]]
         for b in getattr(self, "bays", []):
             b["x"] += dx
             b["y"] += dy
@@ -1388,6 +1502,8 @@ class SdpPage(SitePage):
             if z.get("angle") is not None:
                 z["angle"] = (z["angle"] + math.degrees(a)) % 180
         self.excl = [[list(q) for q in self._rot_pts([tuple(p) for p in e], a, cx, cy)] for e in getattr(self, "excl", [])]
+        for r_ in getattr(self, "roads", []):
+            r_["pts"] = [list(q) for q in self._rot_pts([tuple(p) for p in r_["pts"]], a, cx, cy)]
         for b in getattr(self, "bays", []):
             (b["x"], b["y"]), = self._rot_pts([(b["x"], b["y"])], a, cx, cy)
             b["a"] = (b["a"] + math.degrees(a)) % 360
@@ -1424,10 +1540,18 @@ class SdpPage(SitePage):
                 p.setPen(QColor("#ffffff") if k == "refuse" else QColor("#111111"))
                 c = pl.boundingRect().center()
                 p.drawText(_QR(c.x() - 70, c.y() - 9, 140, 18), int(Qt.AlignmentFlag.AlignCenter), b["name"])
+        for rd in self.roads:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(90, 90, 100, 150))
+            for q in sp.road_quads(rd["pts"], rd["w"], rd.get("smooth", True)):
+                p.drawPolygon(QPolygonF([to(c_) for c_ in q]))
+            p.setPen(QPen(QColor(250, 250, 250), 1.2, Qt.PenStyle.DashLine))
+            c = sp.spline(rd["pts"], 1.5, rd.get("smooth", True))
+            p.drawPolyline(QPolygonF([to(q) for q in c]))
         if not snapshot and self.plan.mode == "select":                  # handles on every corner that can be dragged
             p.setPen(QPen(QColor("#222222"), 1))
             p.setBrush(QColor("#ffffff"))
-            for pl in [self.verts()] + [z["poly"] for z in self.zones] + list(self.excl):
+            for pl in [self.verts()] + [z["poly"] for z in self.zones] + list(self.excl) + [r_["pts"] for r_ in self.roads]:
                 for q in pl:
                     c = to(q)
                     p.drawRect(QRectF(c.x() - 4, c.y() - 4, 8, 8))
@@ -1595,7 +1719,7 @@ class SdpPage(SitePage):
             return
         had = getattr(self, "_sig", None) is not None
         self._sig = sig
-        if had and self.live.isChecked() and any(z.get("poly") for z in self.zones):
+        if had and self.live.isChecked() and (any(z.get("poly") for z in self.zones) or self.roads):
             t = getattr(self, "_live_t", None)
             if t is None:
                 t = self._live_t = QTimer(self)
@@ -1606,8 +1730,9 @@ class SdpPage(SitePage):
     def _live_fill(self):
         self._filling = True
         try:
-            if self.zones and self.live.isChecked():
-                self._fill(list(range(len(self.zones))))
+            if (self.zones or self.roads) and self.live.isChecked():
+                self.park_roads()
+                self._fill(list(range(len(self.zones))), quiet=True)
                 self.set_hint("Parking updated to the buildings.")
         finally:
             self._filling = False
@@ -1779,7 +1904,7 @@ class SdpPage(SitePage):
     def state(self):
         d = super().state()
         d.update({"sdp": self.site(), "blocks": self.blocks(), "zones": [dict(z) for z in self.zones], "bays": [dict(b) for b in self.bays],
-                  "prules": self.rules_now(), "gen": self._gen_names(), "schemes": self.schemes, "excl": self.excl, "mix": {k: [w[0].value(), w[1].value()] for k, w in self.mix.items()}})
+                  "prules": self.rules_now(), "gen": self._gen_names(), "schemes": self.schemes, "excl": self.excl, "roads": self.roads, "mix": {k: [w[0].value(), w[1].value()] for k, w in self.mix.items()}})
         return d
 
     def set_state(self, d):
@@ -1809,6 +1934,7 @@ class SdpPage(SitePage):
             self.sel_bay = self.sel_zone = -1
             self.gen_names = [str(n) for n in (d.get("gen") or [])]
             self.excl = [[list(q) for q in e] for e in (d.get("excl") or [])]
+            self.roads = [dict(r_) for r_ in (d.get("roads") or []) if isinstance(r_, dict) and len(r_.get("pts") or []) >= 2]
             for k, vv in (d.get("mix") or {}).items():
                 if k in self.mix and len(vv) == 2:
                     self.mix[k][0].setValue(vv[0]), self.mix[k][1].setValue(vv[1])
