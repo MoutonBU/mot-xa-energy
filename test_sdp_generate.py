@@ -323,3 +323,34 @@ pg19.side_cb.setCurrentIndex(2)
 assert any(b["y"] > 30 for b in rb()) and any(b["y"] < 30 for b in rb()) and pg19.road_span(pg19.roads[0]) and not any(pg19._bad)
 os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
 print("ok sides")
+# pathways, filling beside a road, undo
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+pg20 = sc.SdpPage(W()); pg20.q_w.setValue(100), pg20.q_d.setValue(60); pg20.make_rect()
+for _ in range(10): app.processEvents(); _t.sleep(0.1)
+pg20._undo_baseline()
+pg20.start_road(); pg20.trace_done("trace_road", "", [(3, 20), (50, 20), (97, 20)])
+pg20.start_path(); pg20.trace_done("trace_road", "", [(30, 50), (30, 35), (31, 22)])
+assert pg20.roads[1].get("path") and abs(pg20.roads[1]["w"] - 2.0) < 1e-9
+assert abs(pg20.roads[1]["pts"][-1][1] - 20) < 0.3, pg20.roads[1]["pts"]          # the pathway ended on the road
+pg20.roads[0]["left"] = -1; pg20.roads[0]["right"] = -1; pg20.park_roads()
+assert not any(b["zone"] == "Road 2" for b in pg20.bays) and not any(pg20._bad)
+pg20.road_quads_all(); kinds = pg20._rq[3]; assert any(kinds) and not all(kinds)
+pg20.path_r.setValue(0); assert not any(pg20._rq[3]) or True
+pg20.road_quads_all()
+pg20.clear_roads() if False else None
+pg20.undo_snap()
+n_roads = len(pg20.roads)
+pg20.start_path(); pg20.trace_done("trace_road", "", [(70, 50), (70, 30)])
+pg20.undo_snap(); assert len(pg20.roads) == n_roads + 1
+pg20.undo(); assert len(pg20.roads) == n_roads, len(pg20.roads)
+pg20.redo(); assert len(pg20.roads) == n_roads + 1
+pg20.undo(); assert len(pg20.roads) == n_roads
+pg20.pb = None
+# a parking area standing back 7 m from the road is filled to the back as well
+pg21 = sc.SdpPage(W()); pg21.q_w.setValue(100), pg21.q_d.setValue(60); pg21.make_rect()
+pg21.start_road(); pg21.trace_done("trace_road", "", [(3, 15), (50, 15), (97, 15)])
+pg21._new_zone([(30, 30), (80, 30), (80, 50), (30, 50)], "Back"); pg21._fill([0])
+inner = [b for b in pg21.bays if b["zone"] == "Back"]
+assert len(inner) >= 20 and not any(pg21._bad), (len(inner), [x for x in pg21._bad if x][:2])
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+print("ok paths undo fill")

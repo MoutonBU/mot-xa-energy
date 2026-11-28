@@ -4,6 +4,7 @@ the parking areas round them. The tool fills an area with bays (2.5 x 5.0 m, wit
 clear of the buildings and checks each bay against the rules. A schedule of the blocks and one PDF sheet finish it.
 The stand, buildings, survey, rotation, north arrow and footprints are Building lines' own (site_lines.SitePage); this file adds the parking."""
 import copy
+import json
 import math
 import time
 
@@ -349,6 +350,12 @@ class ParkView(PlanView):
     def keyPressEvent(self, e):
         k = e.key()
         pg = self.page
+        if e.modifiers() & Qt.KeyboardModifier.ControlModifier and k == Qt.Key.Key_Z and not (e.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+            pg.undo()
+            return
+        if e.modifiers() & Qt.KeyboardModifier.ControlModifier and (k == Qt.Key.Key_Y or (k == Qt.Key.Key_Z and e.modifiers() & Qt.KeyboardModifier.ShiftModifier)):
+            pg.redo()
+            return
         if e.modifiers() & Qt.KeyboardModifier.ControlModifier and k == Qt.Key.Key_C and self.sel >= 0 and pg.sel_bay < 0:
             pg.copy_buildings()
         elif e.modifiers() & Qt.KeyboardModifier.ControlModifier and k == Qt.Key.Key_V and pg.clip_bld and (self.sel >= 0 or pg.clip_zone is None):
@@ -380,8 +387,11 @@ class SdpPage(SitePage):
         self.zones, self.bays, self._bad, self.schemes, self.excl, self.roads = [], [], [], [], [], []
         self.clip_zone = None
         self.clip_bld = None
-        self._rq = (None, [], [])
+        self._rq = (None, [], [], [])
         self._tracing_road = False
+        self._undo, self._redo, self._ulast = [], [], None
+        QTimer.singleShot(600, self._undo_baseline)
+        self._tracing_path = False
         self._tracing_excl = False
         self.sel_bay = -1
         self.sel_zone = -1
@@ -443,6 +453,14 @@ class SdpPage(SitePage):
         b.setToolTip("Clear the stand, buildings, parking and schedule and start a fresh SDP.")
         b.clicked.connect(lambda _=False: self.new_plan())
         br.addWidget(b)
+        b = QPushButton("Undo")
+        b.setToolTip("Undo the last change (Ctrl+Z).")
+        b.clicked.connect(lambda _=False: self.undo())
+        br.addWidget(b)
+        b = QPushButton("Redo")
+        b.setToolTip("Put back what you undid (Ctrl+Y).")
+        b.clicked.connect(lambda _=False: self.redo())
+        br.addWidget(b)
         b = QPushButton("Keep an area clear")
         b.setToolTip("Draw a no-build, no-parking area: flood zone, servitude, steep slope, trees.")
         b.clicked.connect(lambda _=False: self.start_excl())
@@ -462,7 +480,7 @@ class SdpPage(SitePage):
         v.addWidget(bx)
         bx, bv = self.box("Roads", "Draw a road as a smooth curve. Blocks and bays keep off it, bays run along both sides of it (the road is their aisle) and parking areas next to it line up with it.")
         fl = FlowLayout(None, 10, 6)
-        self.road_w = sl.spin(3, 15, 7, 1, " m")
+        self.road_w = sl.spin(1, 15, 7, 1, " m")
         self.road_w.setToolTip("The width of the road. With bays on one side, the 7 m pushback ends at the kerb on the other side (7 m is the width that fits exactly). With bays on both sides the road is made at least 7 m wide.")
         self.road_w.valueChanged.connect(self.road_width_changed)
         self.road_cb = QComboBox()
@@ -492,6 +510,13 @@ class SdpPage(SitePage):
         self.corner_r.setToolTip("The rounded corner where a road meets another road. 0 = sharp corner.")
         self.corner_r.valueChanged.connect(lambda _v: (None if self._pbusy else (self.refresh_parking(user=True), self.changed())))
         fl.addWidget(self._pair("Corner radius at junctions", self.corner_r))
+        self.path_w = sl.spin(0.8, 6, 2.0, 1, " m")
+        self.path_w.setToolTip("The width of the next pathway you draw (change a drawn one with the width box above).")
+        self.path_r = sl.spin(0, 6, 0.5, 1, " m")
+        self.path_r.setToolTip("The rounded corner where a pathway meets a road or another pathway. 0 = sharp corner.")
+        self.path_r.valueChanged.connect(lambda _v: (None if self._pbusy else (self.refresh_parking(user=True), self.changed())))
+        fl.addWidget(self._pair("Pathway width", self.path_w))
+        fl.addWidget(self._pair("Pathway corner radius", self.path_r))
         self.follow_bld = QCheckBox("Roads bend round buildings")
         self.follow_bld.setChecked(True)
         fl.addWidget(self.follow_bld)
@@ -499,7 +524,7 @@ class SdpPage(SitePage):
         fl.addWidget(self._pair("Bays along it are", self.road_type))
         bv.addLayout(fl)
         br = FlowLayout(None, 8, 6)
-        for txt, fn in (("Draw a road", self.start_road), ("Straighten this road", lambda: self._curve_picked(False)), ("Curve this road", lambda: self._curve_picked(True)),
+        for txt, fn in (("Draw a road", self.start_road), ("Draw a pathway", self.start_path), ("Straighten this road", lambda: self._curve_picked(False)), ("Curve this road", lambda: self._curve_picked(True)),
                         ("Park along the roads", self.park_roads_clicked), ("Remove roads", self.clear_roads)):
             b = QPushButton(txt)
             b.clicked.connect(lambda _=False, f=fn: f())
@@ -907,7 +932,7 @@ class SdpPage(SitePage):
 
     def road_wide(self, rd):
         """the road is as wide as the pushback (7 m) where it has bays, and as wide as you set it elsewhere"""
-        return max(self.r_aisle.value(), rd["w"])
+        return rd["w"] if rd.get("path") else max(self.r_aisle.value(), rd["w"])
 
     def road_span(self, rd):
         """the stretches of the road that are thickened to the pushback: only where there are bays on both sides of it"""
@@ -919,15 +944,16 @@ class SdpPage(SitePage):
     def road_quads_all(self):
         if not self.roads:
             return []
-        key = repr([(r["pts"], r["w"], (r.get("segs") or r.get("smooth", True)), r.get("_zs", []), self.r_aisle.value(), self.corner_r.value()) for r in self.roads])
-        if self._rq[0] != key or len(self._rq) < 3:
+        key = repr([(bool(r.get("path")), r["pts"], r["w"], self.path_r.value(), (r.get("segs") or r.get("smooth", True)), r.get("_zs", []), self.r_aisle.value(), self.corner_r.value()) for r in self.roads])
+        if self._rq[0] != key or len(self._rq) < 4:
             quads, owner = [], []
             for i, r in enumerate(self.roads):
                 g = self.road_geom(r)
                 quads += g
                 owner += [i] * len(g)
+            self._fpath = []
             fl = self.road_fillets()
-            self._rq = (key, quads + fl, owner + [-1] * len(fl))
+            self._rq = (key, quads + fl, owner + [-1] * len(fl), [bool(self.roads[o_].get("path")) for o_ in owner] + list(self._fpath))
         return self._rq[1]
 
     def road_owner_all(self):
@@ -948,7 +974,7 @@ class SdpPage(SitePage):
                     if j == i:
                         continue
                     jn = sp.road_junction(o["pts"], (o.get("segs") or o.get("smooth", True)), q)
-                    if jn and jn[0] <= 8.0 and (best is None or jn[0] < best[0]):
+                    if jn and jn[0] <= (3.0 if rd.get("path") else 8.0) and (best is None or jn[0] < best[0]):
                         best = jn
                 if best and best[0] > 0.02:
                     rd["pts"][e] = [round(best[1][0], 3), round(best[1][1], 3)]
@@ -960,9 +986,6 @@ class SdpPage(SitePage):
     def road_fillets(self):
         """the rounded corners where one road meets the side of another"""
         out = []
-        R = self.corner_r.value()
-        if R < 0.1:
-            return out
         for i, rd in enumerate(self.roads):
             c = sp.spline(rd["pts"], 0.5, (rd.get("segs") or rd.get("smooth", True)))
             if len(c) < 8:
@@ -979,7 +1002,13 @@ class SdpPage(SitePage):
                     a, b = (c[0], c[min(8, len(c) - 1)]) if e == 0 else (c[-1], c[max(-9, -len(c))])
                     ln = math.hypot(b[0] - a[0], b[1] - a[1]) or 1.0
                     d = ((b[0] - a[0]) / ln, (b[1] - a[1]) / ln)
-                    out += sp.junction_fillets(jn[1], jn[2], self._half_at(o, jn[3]), d, self._half_at(rd, 0.0 if e == 0 else L), R)
+                    pth = bool(rd.get("path") or o.get("path"))
+                    R = self.path_r.value() if pth else self.corner_r.value()
+                    if R < 0.1:
+                        continue
+                    g = sp.junction_fillets(jn[1], jn[2], self._half_at(o, jn[3]), d, self._half_at(rd, 0.0 if e == 0 else L), R)
+                    out += g
+                    self._fpath = getattr(self, "_fpath", []) + [pth] * len(g)
         return out
 
     def settle_roads(self):
@@ -1028,8 +1057,18 @@ class SdpPage(SitePage):
             QMessageBox.information(self, self.TITLE, "Set the stand first (first step).")
             return
         self._tracing_road = True
+        self._tracing_path = False
         self.plan.begin("trace_road")
         self.set_hint("Click the points the road goes through, from the gate inwards. Double-click or press Enter to finish: the road is drawn as a smooth curve.")
+
+    def start_path(self):
+        if len(self.verts()) < 3:
+            QMessageBox.information(self, self.TITLE, "Set the stand first (first step).")
+            return
+        self._tracing_road = True
+        self._tracing_path = True
+        self.plan.begin("trace_road")
+        self.set_hint("Click the points the pathway goes through. Double-click or press Enter to finish. A pathway has no bays and its own light pavement colour; it joins a road or another pathway if it ends on it.")
 
     def road_width_changed(self, v):
         """the width box sets the chosen road (and the next one you draw)"""
@@ -1051,7 +1090,7 @@ class SdpPage(SitePage):
         try:
             i = self.road_cb.currentIndex() if sel is None else sel
             self.road_cb.clear()
-            self.road_cb.addItems(["Road %d  (%.1f m wide%s, %.0f m long)" % (k + 1, r["w"], "" if not self.road_span(r) else ", %.1f with bays" % self.road_wide(r), sp.road_length(r["pts"], (r.get("segs") or r.get("smooth", True))))
+            self.road_cb.addItems(["%s %d  (%.1f m wide%s, %.0f m long)" % ("Pathway" if r.get("path") else "Road", k + 1, r["w"], "" if not self.road_span(r) else ", %.1f with bays" % self.road_wide(r), sp.road_length(r["pts"], (r.get("segs") or r.get("smooth", True))))
                                    for k, r in enumerate(self.roads)])
             if self.roads:
                 i = max(0, min(i, len(self.roads) - 1))
@@ -1103,17 +1142,20 @@ class SdpPage(SitePage):
         self.bays = [b for b in self.bays if not str(b.get("zone", "")).startswith("Road ")]
         for rd in self.roads:
             rd["_zs"] = []
-        self._rq = (None, [], [])
+        self._rq = (None, [], [], [])
         if not self.roads:
             return 0
         r, n = self.rules_now(), 0
         zs = [(z["name"], [tuple(q) for q in z["poly"]], int(z.get("max", 0)), int(z.get("side", 0))) for z in self.zones if z.get("join", True) and len(z["poly"]) >= 3]
         plans = []
         for rd in self.roads:
+            if rd.get("path"):
+                plans.append({"st": [], "dbl": []})
+                continue
             pl = sp.road_plan(rd["pts"], rd["w"], self.road_flags(rd), r, rd.get("left", 0), rd.get("right", 0), rd.get("start", 0.0), zs)
             rd["_zs"] = pl["dbl"]
             plans.append(pl)
-        self._rq = (None, [], [])
+        self._rq = (None, [], [], [])
         site = self.site_obj()
         ztype = {z["name"]: z.get("type", "Open") for z in self.zones}
         for i, rd in enumerate(self.roads):
@@ -1122,16 +1164,18 @@ class SdpPage(SitePage):
                 b["type"] = ztype.get(b.get("rz"), self.road_type.currentText())
             self.bays += got
             n += len(got)
-        self._rq = (None, [], [])
+        self._rq = (None, [], [], [])
         self._show_roads()
         return n
 
     def park_roads_clicked(self):
         for rd in self.roads:
+            if rd.get("path"):
+                continue
             if not rd.get("left") and not rd.get("right"):
                 rd["left"] = rd["right"] = -1
         self._show_roads()
-        self._rq = (None, [], [])
+        self._rq = (None, [], [], [])
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             n = self.park_roads()
@@ -1221,11 +1265,15 @@ class SdpPage(SitePage):
             return super().trace_done(mode, role, pts)
         if self._tracing_road:
             self._tracing_road = False
-            self.roads.append({"pts": [list(q) for q in pts], "w": self.road_w.value(), "smooth": self.road_smooth.isChecked(), "left": 0, "right": 0, "start": 0.0})
+            pth = self._tracing_path
+            self._tracing_path = False
+            self.roads.append({"pts": [list(q) for q in pts], "w": self.path_w.value() if pth else self.road_w.value(), "smooth": self.road_smooth.isChecked(), "left": 0, "right": 0, "start": 0.0})
+            if pth:
+                self.roads[-1]["path"] = True
             self.settle_roads()
             self._show_roads(len(self.roads) - 1)
             self.refresh_parking(user=True)
-            self.set_hint("Road drawn. Now say where the bays go: set 'Bays on the left / right' for it (or press 'Park along the roads'). Drag the white squares to bend it.")
+            self.set_hint("Pathway drawn. Drag the white squares to bend it, set its width above." if pth else "Road drawn. Now say where the bays go: set 'Bays on the left / right' for it (or press 'Park along the roads'). Drag the white squares to bend it.")
             return
         if self._tracing_excl:
             self._tracing_excl = False
@@ -1368,7 +1416,7 @@ class SdpPage(SitePage):
         return best[1:] if best else None
 
     def _roads_changed(self):
-        self._rq = (None, [], [])
+        self._rq = (None, [], [], [])
         self.settle_roads()
         if self.zones or self.roads:
             self.park_roads()
@@ -1558,8 +1606,6 @@ class SdpPage(SitePage):
                 z = self.zones[i]
                 self.bays = [b for b in self.bays if not (b.get("auto") and b.get("zone") == z["name"])]
                 keep = list(self.bays)
-                if self.zone_hugs_road(z) and any(b.get("rz") == z["name"] for b in self.bays):
-                    continue                                          # a strip along the road: the road is its aisle, the bays flush with it are all it needs
                 roads = self.road_quads_all() if (z.get("join", True) and self.roads) else None
                 got = sp.fill([tuple(p) for p in z["poly"]], site, r, z.get("angle"), keep, z["name"], roads, int(z.get("max", 0)),
                               [self.road_angle_near(z["poly"])] if roads else ())
@@ -1859,7 +1905,7 @@ class SdpPage(SitePage):
         import ezdxf
         doc = ezdxf.new("R2010")
         msp = doc.modelspace()
-        for name, col in (("STAND", 7), ("BUILDINGS", 1), ("BAYS", 3), ("BAY_ACCESSIBLE", 5), ("BAY_EV", 6), ("BAY_OTHER", 30), ("PARKING_AREAS", 8), ("ROADS", 9), ("ROAD_CENTRELINE", 4)):
+        for name, col in (("STAND", 7), ("BUILDINGS", 1), ("BAYS", 3), ("BAY_ACCESSIBLE", 5), ("BAY_EV", 6), ("BAY_OTHER", 30), ("PARKING_AREAS", 8), ("ROADS", 9), ("PATHWAYS", 2), ("ROAD_CENTRELINE", 4)):
             doc.layers.add(name, color=col)
         poly = lambda pts, layer: msp.add_lwpolyline([(q[0], q[1]) for q in pts], close=True, dxfattribs={"layer": layer})
         if len(self.verts()) >= 3:
@@ -1877,8 +1923,9 @@ class SdpPage(SitePage):
             Rr = [q[3] for q in self.road_geom(rd)]
             if L:
                 last = self.road_geom(rd)[-1]
-                msp.add_lwpolyline(L + [last[1]], dxfattribs={"layer": "ROADS"})
-                msp.add_lwpolyline(Rr + [last[2]], dxfattribs={"layer": "ROADS"})
+                lay = "PATHWAYS" if rd.get("path") else "ROADS"
+                msp.add_lwpolyline(L + [last[1]], dxfattribs={"layer": lay})
+                msp.add_lwpolyline(Rr + [last[2]], dxfattribs={"layer": lay})
         r = self.rules_now()
         for b in self.bays:
             t = b.get("type", "Open")
@@ -2146,8 +2193,19 @@ class SdpPage(SitePage):
         road_col = QColor(128, 130, 138)
         p.setPen(QPen(road_col, 1.2))
         p.setBrush(road_col)
-        for q in self.road_quads_all():                                   # one solid road: no centre stripe, no seams
-            p.drawPolygon(QPolygonF([to(c_) for c_ in q]))
+        self.road_quads_all()
+        kinds = self._rq[3] if len(self._rq) > 3 else []
+        for pth_ in (True, False):                                        # pathways (pavement) first, so the road covers where they end on it
+            if pth_:
+                pav = QColor(206, 196, 178)
+                p.setPen(QPen(pav, 1.0))
+                p.setBrush(pav)
+            else:
+                p.setPen(QPen(road_col, 1.2))
+                p.setBrush(road_col)
+            for q, k_ in zip(self._rq[1], kinds):
+                if bool(k_) == pth_:
+                    p.drawPolygon(QPolygonF([to(c_) for c_ in q]))
         if not snapshot and self.plan.mode == "select":                  # handles on every corner that can be dragged
             p.setPen(QPen(QColor("#222222"), 1))
             p.setBrush(QColor("#ffffff"))
@@ -2309,6 +2367,69 @@ class SdpPage(SitePage):
         self._edited()
         QMessageBox.information(self, self.TITLE, ("Floor area filled in for %d block%s." % (n, "" if n == 1 else "s")) if n else
                                 "No block name in the Area schedule matches a block here. Use the same names, for example H1.")
+
+    # --- undo and redo: a snapshot of the plan after each change (a drag counts as one change)
+    def changed(self, *_a):
+        super().changed(*_a)
+        if getattr(self, "_undo", None) is not None and not getattr(self, "_restoring", False):
+            t = getattr(self, "_undo_t", None)
+            if t is None:
+                t = self._undo_t = QTimer(self)
+                t.setSingleShot(True)
+                t.timeout.connect(self.undo_snap)
+            t.start(350)
+
+    def _snap_text(self):
+        d = self.state()
+        d.pop("under", None)
+        return json.dumps(d, default=str, sort_keys=True)
+
+    def undo_snap(self):
+        if getattr(self, "_undo", None) is None or getattr(self, "_restoring", False) or getattr(self, "zt", None) is None:
+            return
+        txt = self._snap_text()
+        if txt == self._ulast:
+            return
+        if self._ulast is not None:
+            self._undo.append(self._ulast)
+            del self._undo[:-40]
+            self._redo = []
+        self._ulast = txt
+
+    def _restore_snap(self, txt):
+        d = json.loads(txt)
+        d["under"] = self.state().get("under") or {}
+        self._restoring = True
+        try:
+            super_state = d
+            self.set_state(super_state)
+            self._rq = (None, [], [], [])
+            self.refresh_parking(user=True)
+            self._show_roads()
+        finally:
+            self._restoring = False
+        self._ulast = txt
+        self.changed()
+
+    def undo(self):
+        self.undo_snap()
+        if not self._undo:
+            self.set_hint("Nothing to undo.")
+            return
+        self._redo.append(self._ulast)
+        self._restore_snap(self._undo.pop())
+        self.set_hint("Undone (Ctrl+Y puts it back).")
+
+    def redo(self):
+        self.undo_snap()
+        if not self._redo:
+            self.set_hint("Nothing to redo.")
+            return
+        cur = self._ulast
+        txt = self._redo.pop()
+        self._restore_snap(txt)
+        self._undo.append(cur)
+        self.set_hint("Done again.")
 
     def _after_edit(self, user=False):
         super()._after_edit(user)
@@ -2508,8 +2629,15 @@ class SdpPage(SitePage):
                   "prules": self.rules_now(), "gen": self._gen_names(), "schemes": self.schemes, "excl": self.excl, "roads": self.roads, "mix": {k: [w[0].value(), w[1].value()] for k, w in self.mix.items()}})
         return d
 
+    def _undo_baseline(self):
+        self._undo, self._redo, self._ulast = [], [], None
+        self.undo_snap()
+
     def set_state(self, d):
         d = d or {}
+        if not getattr(self, "_restoring", False) and getattr(self, "_undo", None) is not None:
+            self._undo, self._redo, self._ulast = [], [], None
+            QTimer.singleShot(400, self._undo_baseline)
         super().set_state(d)
         if getattr(self, "zt", None) is None:
             return
