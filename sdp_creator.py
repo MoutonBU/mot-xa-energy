@@ -407,6 +407,10 @@ class SdpPage(SitePage):
         fl.addWidget(self._pair("Bays on the left", self.left_sp))
         fl.addWidget(self._pair("Bays on the right", self.right_sp))
         fl.addWidget(self._pair("Bays start at", self.start_sp))
+        self.corner_r = sl.spin(0, 20, 6, 1, " m")
+        self.corner_r.setToolTip("The rounded corner where a road meets another road. 0 = sharp corner.")
+        self.corner_r.valueChanged.connect(lambda _v: (None if self._pbusy else (self.refresh_parking(user=True), self.changed())))
+        fl.addWidget(self._pair("Corner radius at junctions", self.corner_r))
         self.follow_bld = QCheckBox("Roads bend round buildings")
         self.follow_bld.setChecked(True)
         fl.addWidget(self.follow_bld)
@@ -819,7 +823,9 @@ class SdpPage(SitePage):
         return max(self.r_aisle.value(), rd["w"])
 
     def road_span(self, rd):
-        return sp.bay_span(rd["pts"], rd.get("left", 0), rd.get("right", 0), rd.get("start", 0.0), self.r_w.value(), rd.get("smooth", True))
+        """the stretches of the road that are as wide as the pushback: where it has its own bays and where a parking area joins it"""
+        one = sp.bay_span(rd["pts"], rd.get("left", 0), rd.get("right", 0), rd.get("start", 0.0), self.r_w.value(), rd.get("smooth", True))
+        return sp.merge_spans(([one] if one else []) + list(rd.get("_zs", [])), 0.5)
 
     def road_geom(self, rd):
         return sp.road_quads(rd["pts"], rd["w"], rd.get("smooth", True), self.road_span(rd), self.road_wide(rd))
@@ -827,10 +833,62 @@ class SdpPage(SitePage):
     def road_quads_all(self):
         if not self.roads:
             return []
-        key = repr([(r["pts"], r["w"], r.get("smooth", True), r.get("left", 0), r.get("right", 0), r.get("start", 0.0), self.r_aisle.value(), self.r_w.value()) for r in self.roads])
+        key = repr([(r["pts"], r["w"], r.get("smooth", True), r.get("left", 0), r.get("right", 0), r.get("start", 0.0), r.get("_zs", []), self.r_aisle.value(), self.r_w.value(),
+                     self.corner_r.value()) for r in self.roads])
         if self._rq[0] != key:
-            self._rq = (key, [q for r in self.roads for q in self.road_geom(r)])
+            self._rq = (key, [q for r in self.roads for q in self.road_geom(r)] + self.road_fillets())
         return self._rq[1]
+
+    def _half_at(self, rd, s):
+        return (self.road_wide(rd) if any(a - 0.01 <= s <= b + 0.01 for a, b in self.road_span(rd)) else rd["w"]) / 2.0
+
+    def connect_roads(self):
+        """roads that end on another road join it: the end is snapped onto the other road's centre line"""
+        moved = False
+        for i, rd in enumerate(self.roads):
+            for e in (0, -1):
+                q = rd["pts"][e]
+                best = None
+                for j, o in enumerate(self.roads):
+                    if j == i:
+                        continue
+                    jn = sp.road_junction(o["pts"], o.get("smooth", True), q)
+                    if jn and jn[0] <= 8.0 and (best is None or jn[0] < best[0]):
+                        best = jn
+                if best and best[0] > 0.02:
+                    rd["pts"][e] = [round(best[1][0], 3), round(best[1][1], 3)]
+                    moved = True
+        return moved
+
+    def road_fillets(self):
+        """the rounded corners where one road meets the side of another"""
+        out = []
+        R = self.corner_r.value()
+        if R < 0.1:
+            return out
+        for i, rd in enumerate(self.roads):
+            c = sp.spline(rd["pts"], 0.5, rd.get("smooth", True))
+            if len(c) < 8:
+                continue
+            L = sp.road_length(rd["pts"], rd.get("smooth", True))
+            for e in (0, -1):
+                q = rd["pts"][e]
+                for j, o in enumerate(self.roads):
+                    if j == i:
+                        continue
+                    jn = sp.road_junction(o["pts"], o.get("smooth", True), q)
+                    if not jn or jn[0] > 0.6:
+                        continue
+                    a, b = (c[0], c[min(8, len(c) - 1)]) if e == 0 else (c[-1], c[max(-9, -len(c))])
+                    ln = math.hypot(b[0] - a[0], b[1] - a[1]) or 1.0
+                    d = ((b[0] - a[0]) / ln, (b[1] - a[1]) / ln)
+                    out += sp.junction_fillets(jn[1], jn[2], self._half_at(o, jn[3]), d, self._half_at(rd, 0.0 if e == 0 else L), R)
+        return out
+
+    def settle_roads(self):
+        a = self.reroute_roads()
+        b = self.connect_roads()
+        return a or b
 
     def reroute_roads(self):
         """the road bends round buildings: control points that leave less than the clear room are pushed away (the ends at the boundary stay)"""
@@ -929,17 +987,22 @@ class SdpPage(SitePage):
         if 0 <= i < len(self.roads):
             rd = self.roads[i]
             rd["left"], rd["right"], rd["start"] = self.left_sp.value(), self.right_sp.value(), self.start_sp.value()
-            self.reroute_roads()
+            self.settle_roads()
             self.park_roads()
             self.refresh_parking(user=True)
             self.changed()
 
     def park_roads(self):
-        """bays down both sides of every road, nose to the kerb (the road is their aisle)"""
+        """bays down the sides of every road, nose to the kerb (the road is their aisle); and where a parking area runs along a road, its bays
+        stand along the road too, and the road is widened to the pushback there"""
         self.bays = [b for b in self.bays if not str(b.get("zone", "")).startswith("Road ")]
+        for rd in self.roads:
+            rd["_zs"] = []
+        self._rq = (None, [])
         if not self.roads:
             return 0
-        site, r, n = self.site_obj(), self.rules_now(), 0
+        r, n = self.rules_now(), 0
+        site = self.site_obj()
         for i, rd in enumerate(self.roads):
             got = sp.road_bays(rd["pts"], rd["w"], site, r, list(self.bays), "Road %d" % (i + 1), rd.get("smooth", True), rd.get("left", 0), rd.get("right", 0),
                                rd.get("start", 0.0), self.road_wide(rd))
@@ -947,6 +1010,30 @@ class SdpPage(SitePage):
                 b["type"] = self.road_type.currentText()
             self.bays += got
             n += len(got)
+        for z in self.zones:
+            if not z.get("join", True) or len(z["poly"]) < 3:
+                continue
+            for i, rd in enumerate(self.roads):
+                got = sp.road_bays(rd["pts"], rd["w"], site, r, list(self.bays), "Road %d" % (i + 1), rd.get("smooth", True), -1, -1, 0.0, self.road_wide(rd),
+                                   [tuple(q) for q in z["poly"]])
+                if not got:
+                    continue
+                if z.get("max"):
+                    got = got[:int(z["max"])]
+                ss = sorted(b.pop("s") for b in got)
+                runs = []
+                for sv in ss:                                            # the stretches of road these bays run along
+                    if runs and sv - runs[-1][1] <= r["w"] * 2.5:
+                        runs[-1][1] = sv
+                    else:
+                        runs.append([sv, sv])
+                rd["_zs"] = list(rd.get("_zs", [])) + [(a_ - r["w"], b_ + r["w"]) for a_, b_ in runs]
+                for b in got:
+                    b["type"] = z.get("type", "Open")
+                self.bays += got
+                n += len(got)
+        self._rq = (None, [])
+        self._show_roads()
         return n
 
     def park_roads_clicked(self):
@@ -1014,7 +1101,7 @@ class SdpPage(SitePage):
     def corner_released(self):
         """a corner was moved: the parking is checked again, and re-parked when 'by itself' is on"""
         if self.live.isChecked() and (self.zones or self.roads):
-            self.reroute_roads()
+            self.settle_roads()
             self.park_roads()
             self._fill(list(range(len(self.zones))) if self.zones else [], quiet=True)
         else:
@@ -1042,7 +1129,7 @@ class SdpPage(SitePage):
         if self._tracing_road:
             self._tracing_road = False
             self.roads.append({"pts": [list(q) for q in pts], "w": self.road_w.value(), "smooth": self.road_smooth.isChecked(), "left": 0, "right": 0, "start": 0.0})
-            self.reroute_roads()
+            self.settle_roads()
             self._show_roads(len(self.roads) - 1)
             self.refresh_parking(user=True)
             self.set_hint("Road drawn. Now say where the bays go: set 'Bays on the left / right' for it (or press 'Park along the roads'). Drag the white squares to bend it.")
@@ -1132,6 +1219,12 @@ class SdpPage(SitePage):
         self.refresh_parking(user=True)
 
     def _fill(self, idxs, quiet=False):
+        if self.roads and not getattr(self, "_in_fill", False):
+            self._in_fill = True
+            try:
+                self.park_roads()
+            finally:
+                self._in_fill = False
         if not idxs and quiet:
             self.refresh_parking(user=True)
             return
@@ -1709,13 +1802,12 @@ class SdpPage(SitePage):
                 c = pl.boundingRect().center()
                 p.drawText(_QR(c.x() - 70, c.y() - 9, 140, 18), int(Qt.AlignmentFlag.AlignCenter), b["name"])
         for rd in self.roads:
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(90, 90, 100, 150))
-            for q in self.road_geom(rd):
-                p.drawPolygon(QPolygonF([to(c_) for c_ in q]))
-            p.setPen(QPen(QColor(250, 250, 250), 1.2, Qt.PenStyle.DashLine))
-            c = sp.spline(rd["pts"], 1.5, rd.get("smooth", True))
-            p.drawPolyline(QPolygonF([to(q) for q in c]))
+            pass
+        road_col = QColor(128, 130, 138)
+        p.setPen(QPen(road_col, 1.2))
+        p.setBrush(road_col)
+        for q in self.road_quads_all():                                   # one solid road: no centre stripe, no seams
+            p.drawPolygon(QPolygonF([to(c_) for c_ in q]))
         if not snapshot and self.plan.mode == "select":                  # handles on every corner that can be dragged
             p.setPen(QPen(QColor("#222222"), 1))
             p.setBrush(QColor("#ffffff"))
@@ -1899,7 +1991,7 @@ class SdpPage(SitePage):
         self._filling = True
         try:
             if (self.zones or self.roads) and self.live.isChecked():
-                self.reroute_roads()
+                self.settle_roads()
                 self.park_roads()
                 self._fill(list(range(len(self.zones))), quiet=True)
                 self.set_hint("Parking updated to the buildings.")

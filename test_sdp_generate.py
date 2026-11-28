@@ -157,10 +157,10 @@ print("ok widths")
 pg13 = sc.SdpPage(W()); pg13.q_w.setValue(100), pg13.q_d.setValue(60); pg13.make_rect()
 pg13.start_road(); pg13.trace_done("trace_road", "", [(3, 30), (50, 30), (97, 30)])
 rd = pg13.roads[0]
-assert pg13.road_span(rd) is None and abs(pg13.road_wide(rd) - 7.0) < 1e-9 and not pg13.bays
+assert not pg13.road_span(rd) and abs(pg13.road_wide(rd) - 7.0) < 1e-9 and not pg13.bays
 pg13.left_sp.setValue(2); pg13.right_sp.setValue(2)
 assert len(pg13.bays) == 4 and not any(pg13._bad), len(pg13.bays)
-assert pg13.road_span(rd) == (0.0, 5.0)
+assert pg13.road_span(rd) == [(0.0, 5.0)]
 q = pg13.road_quads_all()
 ws = sorted({round(sc.math.hypot(a[0] - d[0], a[1] - d[1]), 2) for a, b_, c_, d in q})
 assert ws == [6.0, 7.0], ws                       # 7 m where the bays are, the plain width elsewhere
@@ -185,3 +185,23 @@ assert len(lot) == 10 and pg13.zones[0]["max"] == 10 and not any(pg13._bad)
 pg13.join_cb.setChecked(False); assert pg13.zones[0]["join"] is False
 os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
 print("ok smart road")
+# junction with rounded corners, and a parking strip along a road
+pg14 = sc.SdpPage(W()); pg14.q_w.setValue(100), pg14.q_d.setValue(60); pg14.make_rect()
+pg14.start_road(); pg14.trace_done("trace_road", "", [(3, 30), (50, 30), (97, 30)])
+pg14.start_road(); pg14.trace_done("trace_road", "", [(50, 4), (52, 12), (53, 26)])
+e = pg14.roads[1]["pts"][-1]
+assert abs(e[1] - 30) < 0.6, e                                      # the end snapped onto the main road
+fl = pg14.road_fillets()
+assert len(fl) >= 10, len(fl)
+assert pg14.road_quads_all()[-1] in fl
+pg14.corner_r.setValue(0); assert pg14.road_fillets() == []; pg14.corner_r.setValue(6)
+pg14._new_zone([(60, 33.5), (95, 33.5), (95, 41), (60, 41)], "Strip")
+pg14._fill([0])
+rb = [b for b in pg14.bays if str(b["zone"]).startswith("Road")]
+assert len(rb) >= 8 and not any(pg14._bad), (len(rb), [x for x in pg14._bad if x][:2])
+assert pg14.roads[0]["_zs"], "road should widen along the strip"
+q = pg14.road_quads_all()
+ws = sorted({round(sc.math.hypot(a_[0] - d_[0], a_[1] - d_[1]), 1) for a_, b_, c_, d_ in [x for x in q if len(x) == 4][:40]})
+assert any(abs(x - 7.0) < 0.2 for x in [sc.math.hypot(a_[0] - d_[0], a_[1] - d_[1]) for a_, b_, c_, d_ in [x for x in q if len(x) == 4] if a_[0] > 62 and a_[0] < 90]), ws
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+print("ok junction and strip")

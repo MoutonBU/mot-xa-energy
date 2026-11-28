@@ -375,13 +375,24 @@ def bay_span(pts, left, right, start, w_bay, smooth=True):
     return (s0, s1) if s1 > s0 else None
 
 
+def merge_spans(spans, gap=0.0):
+    out = []
+    for a, b in sorted(x for x in spans if x and x[1] > x[0]):
+        if out and a <= out[-1][1] + gap:
+            out[-1] = (out[-1][0], max(out[-1][1], b))
+        else:
+            out.append((a, b))
+    return out
+
+
 def road_quads(pts, width, smooth=True, span=None, wide=None):
     """the road as short four-sided pieces along its centreline (easy to test against bays and blocks). Inside `span` the road is `wide` metres wide"""
     c = spline(pts, 1.5, smooth)
     if len(c) < 2:
         return []
     t, a = _tangents(c), _arc(c)
-    wd = lambda i: (wide if (span and wide and span[0] - 0.01 <= a[i] <= span[1] + 0.01) else width) / 2.0
+    spans = [span] if (span and isinstance(span[0], (int, float))) else list(span or [])
+    wd = lambda i: (wide if (wide and any(x0 - 0.01 <= a[i] <= x1 + 0.01 for x0, x1 in spans)) else width) / 2.0
     side = lambda i, s: (c[i][0] - t[i][1] * wd(i) * s, c[i][1] + t[i][0] * wd(i) * s)
     return [[side(i, 1), side(i + 1, 1), side(i + 1, -1), side(i, -1)] for i in range(len(c) - 1)]
 
@@ -391,7 +402,11 @@ def road_length(pts, smooth=True):
     return sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(c, c[1:]))
 
 
-def road_bays(pts, width, site, r=None, keep=(), name="Road", smooth=True, left=-1, right=-1, start=0.0, wide=None):
+def _near_poly(pt, poly, tol):
+    return pip(pt, poly) or min(seg_pt(pt, poly[i], poly[(i + 1) % len(poly)]) for i in range(len(poly))) <= tol
+
+
+def road_bays(pts, width, site, r=None, keep=(), name="Road", smooth=True, left=-1, right=-1, start=0.0, wide=None, zone=None):
     """bays down the sides of the road, nose to the kerb: the road is their aisle, so they connect to it seamlessly.
     left / right: how many bays on that side (-1 as many as fit, 0 none), counted from `start` metres along the road. `wide` is the road width in the stretch with bays"""
     r = rules(r)
@@ -413,9 +428,62 @@ def road_bays(pts, width, site, r=None, keep=(), name="Road", smooth=True, left=
             nxt += r["w"]
             nx, ny = -t[i][1] * sd, t[i][0] * sd                      # the normal on this side, pointing away from the road
             bay = {"x": c[i][0] + nx * off, "y": c[i][1] + ny * off, "a": math.degrees(math.atan2(-ny, -nx)) % 360.0, "auto": True, "zone": name}
+            if zone is not None:                                          # only inside this parking area (a metre of give at its edge)
+                if not all(_near_poly(q, zone, 1.0) for q in bay_poly(bay, r)):
+                    continue
+                bay["s"] = arc[i]
             if not problems(bay, r, site, list(keep) + out):
                 out.append(bay)
                 placed += 1
+    return out
+
+
+def road_junction(main_pts, main_smooth, p):
+    """where point p meets the centreline of another road: (distance, point on the centreline, tangent there, metres along it)"""
+    c = spline(main_pts, 0.5, main_smooth)
+    if len(c) < 2:
+        return None
+    t, a = _tangents(c), _arc(c)
+    i = min(range(len(c)), key=lambda k: (c[k][0] - p[0]) ** 2 + (c[k][1] - p[1]) ** 2)
+    return math.hypot(c[i][0] - p[0], c[i][1] - p[1]), c[i], t[i], a[i]
+
+
+def junction_fillets(J, tm, hm, d, hb, R, n=7):
+    """the rounded corners where a branch road (leaving the junction point J in direction d, half width hb) meets the edge of the main road
+    (tangent tm, half width hm): one fan of triangles for each side of the branch"""
+    out = []
+    nm, nb = (-tm[1], tm[0]), (-d[1], d[0])
+    nd = nm[0] * d[0] + nm[1] * d[1]
+    if abs(nd) < 0.05:
+        return out
+    sg = 1.0 if nd > 0 else -1.0
+    for e in (1.0, -1.0):
+        v = (sg * hm - e * hb * (nm[0] * nb[0] + nm[1] * nb[1])) / nd
+        if v < 0:
+            continue
+        K = (J[0] + e * hb * nb[0] + v * d[0], J[1] + e * hb * nb[1] + v * d[1])
+        tb = tm[0] * nb[0] + tm[1] * nb[1]
+        if abs(tb) < 1e-6:
+            continue
+        sgn = 1.0 if e * tb > 0 else -1.0
+        me = (tm[0] * sgn, tm[1] * sgn)
+        cos = max(-1.0, min(1.0, d[0] * me[0] + d[1] * me[1]))
+        th = math.acos(cos)
+        if th < 0.2 or th > math.pi - 0.05:
+            continue
+        Lt = R / math.tan(th / 2.0)
+        if Lt > 25:
+            continue
+        T1 = (K[0] + d[0] * Lt, K[1] + d[1] * Lt)
+        T2 = (K[0] + me[0] * Lt, K[1] + me[1] * Lt)
+        bx, by = d[0] + me[0], d[1] + me[1]
+        bl = math.hypot(bx, by) or 1.0
+        dist = R / math.sin(th / 2.0)
+        C = (K[0] + bx / bl * dist, K[1] + by / bl * dist)
+        a1, a2 = math.atan2(T1[1] - C[1], T1[0] - C[0]), math.atan2(T2[1] - C[1], T2[0] - C[0])
+        da = (a2 - a1 + math.pi) % (2 * math.pi) - math.pi
+        arc = [(C[0] + R * math.cos(a1 + da * k / float(n)), C[1] + R * math.sin(a1 + da * k / float(n))) for k in range(n + 1)]
+        out += [[K, arc[k], arc[k + 1]] for k in range(n)]
     return out
 
 
