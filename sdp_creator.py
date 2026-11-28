@@ -298,6 +298,30 @@ class ParkView(PlanView):
     def _context(self, gpos, pos):
         w = self._world(pos)
         pg = self.page
+        if w is not None and self.mode == "select" and not self._hit_north(pos) and pg.roads:
+            h = pg.corner_at(w, 10.0 / self._v[0])
+            hit = pg.road_at(w)
+            if (h is not None and h[0] == "road") or hit is not None:
+                menu = QMenu(self)
+                if h is not None and h[0] == "road":
+                    ri, k = h[1], h[2]
+                    piece = max(0, min(k, len(pg.roads[ri]["pts"]) - 2))
+                    pt = None
+                    if 0 < k < len(pg.roads[ri]["pts"]) - 1:
+                        menu.addAction("Remove this bend point", lambda: pg.remove_road_point(ri, k))
+                else:
+                    ri, piece, pt = hit
+                fl = pg.road_flags(pg.roads[ri])
+                if fl[piece]:
+                    menu.addAction("Make this stretch of road straight", lambda: pg.set_road_curve(ri, piece, False))
+                else:
+                    menu.addAction("Curve this stretch of road", lambda: pg.set_road_curve(ri, piece, True))
+                menu.addAction("Make the whole road straight", lambda: pg.set_road_curve(ri, None, False))
+                menu.addAction("Curve the whole road", lambda: pg.set_road_curve(ri, None, True))
+                if pt is not None:
+                    menu.addAction("Add a bend point here", lambda: pg.add_road_point(ri, piece, pt))
+                menu.exec(gpos)
+                return
         if w is not None and self.mode == "select" and not self._hit_north(pos):
             zi = pg.zone_edge_at(w, 7.0 / self._v[0])
             if zi < 0:
@@ -469,7 +493,8 @@ class SdpPage(SitePage):
         fl.addWidget(self._pair("Bays along it are", self.road_type))
         bv.addLayout(fl)
         br = FlowLayout(None, 8, 6)
-        for txt, fn in (("Draw a road", self.start_road), ("Park along the roads", self.park_roads_clicked), ("Remove roads", self.clear_roads)):
+        for txt, fn in (("Draw a road", self.start_road), ("Straighten this road", lambda: self._curve_picked(False)), ("Curve this road", lambda: self._curve_picked(True)),
+                        ("Park along the roads", self.park_roads_clicked), ("Remove roads", self.clear_roads)):
             b = QPushButton(txt)
             b.clicked.connect(lambda _=False, f=fn: f())
             br.addWidget(b)
@@ -875,16 +900,16 @@ class SdpPage(SitePage):
 
     def road_span(self, rd):
         """the stretches of the road that are as wide as the pushback: where it has its own bays and where a parking area joins it"""
-        one = sp.bay_span(rd["pts"], rd.get("left", 0), rd.get("right", 0), rd.get("start", 0.0), self.r_w.value(), rd.get("smooth", True))
+        one = sp.bay_span(rd["pts"], rd.get("left", 0), rd.get("right", 0), rd.get("start", 0.0), self.r_w.value(), (rd.get("segs") or rd.get("smooth", True)))
         return sp.merge_spans(([one] if one else []) + list(rd.get("_zs", [])), 0.5)
 
     def road_geom(self, rd):
-        return sp.road_quads(rd["pts"], rd["w"], rd.get("smooth", True), self.road_span(rd), self.road_wide(rd))
+        return sp.road_quads(rd["pts"], rd["w"], (rd.get("segs") or rd.get("smooth", True)), self.road_span(rd), self.road_wide(rd))
 
     def road_quads_all(self):
         if not self.roads:
             return []
-        key = repr([(r["pts"], r["w"], r.get("smooth", True), r.get("left", 0), r.get("right", 0), r.get("start", 0.0), r.get("_zs", []), self.r_aisle.value(), self.r_w.value(),
+        key = repr([(r["pts"], r["w"], (r.get("segs") or r.get("smooth", True)), r.get("left", 0), r.get("right", 0), r.get("start", 0.0), r.get("_zs", []), self.r_aisle.value(), self.r_w.value(),
                      self.corner_r.value()) for r in self.roads])
         if self._rq[0] != key:
             self._rq = (key, [q for r in self.roads for q in self.road_geom(r)] + self.road_fillets())
@@ -903,7 +928,7 @@ class SdpPage(SitePage):
                 for j, o in enumerate(self.roads):
                     if j == i:
                         continue
-                    jn = sp.road_junction(o["pts"], o.get("smooth", True), q)
+                    jn = sp.road_junction(o["pts"], (o.get("segs") or o.get("smooth", True)), q)
                     if jn and jn[0] <= 8.0 and (best is None or jn[0] < best[0]):
                         best = jn
                 if best and best[0] > 0.02:
@@ -918,16 +943,16 @@ class SdpPage(SitePage):
         if R < 0.1:
             return out
         for i, rd in enumerate(self.roads):
-            c = sp.spline(rd["pts"], 0.5, rd.get("smooth", True))
+            c = sp.spline(rd["pts"], 0.5, (rd.get("segs") or rd.get("smooth", True)))
             if len(c) < 8:
                 continue
-            L = sp.road_length(rd["pts"], rd.get("smooth", True))
+            L = sp.road_length(rd["pts"], (rd.get("segs") or rd.get("smooth", True)))
             for e in (0, -1):
                 q = rd["pts"][e]
                 for j, o in enumerate(self.roads):
                     if j == i:
                         continue
-                    jn = sp.road_junction(o["pts"], o.get("smooth", True), q)
+                    jn = sp.road_junction(o["pts"], (o.get("segs") or o.get("smooth", True)), q)
                     if not jn or jn[0] > 0.6:
                         continue
                     a, b = (c[0], c[min(8, len(c) - 1)]) if e == 0 else (c[-1], c[max(-9, -len(c))])
@@ -955,7 +980,7 @@ class SdpPage(SitePage):
             pin = {0, len(rd["pts"]) - 1}                      # the ends (the gate) stay where you put them
             wide = self.road_wide(rd) if (rd.get("left", 0) or rd.get("right", 0)) else rd["w"]
             clear = wide / 2.0 + r["bld"] + 0.3 + (r["l"] if (rd.get("left", 0) or rd.get("right", 0)) else 0.0)
-            new = sp.push_off(rd["pts"], obs, clear, pin, rd.get("smooth", True))
+            new = sp.push_off(rd["pts"], obs, clear, pin, (rd.get("segs") or rd.get("smooth", True)))
             for k_ in range(1, len(new) - 1):                  # a bend never leaves the stand
                 if len(v) >= 3 and not sp.pip(tuple(new[k_]), v):
                     best, bq = 1e18, None
@@ -1004,7 +1029,7 @@ class SdpPage(SitePage):
         try:
             i = self.road_cb.currentIndex() if sel is None else sel
             self.road_cb.clear()
-            self.road_cb.addItems(["Road %d  (%.1f m wide%s, %.0f m long)" % (k + 1, r["w"], "" if not self.road_span(r) else ", %.1f with bays" % self.road_wide(r), sp.road_length(r["pts"], r.get("smooth", True)))
+            self.road_cb.addItems(["Road %d  (%.1f m wide%s, %.0f m long)" % (k + 1, r["w"], "" if not self.road_span(r) else ", %.1f with bays" % self.road_wide(r), sp.road_length(r["pts"], (r.get("segs") or r.get("smooth", True))))
                                    for k, r in enumerate(self.roads)])
             if self.roads:
                 i = max(0, min(i, len(self.roads) - 1))
@@ -1026,6 +1051,13 @@ class SdpPage(SitePage):
             self.start_sp.setValue(float(rd.get("start", 0.0)))
         finally:
             self._rw_busy = False
+
+    def _curve_picked(self, curved):
+        i = self.road_cb.currentIndex()
+        if 0 <= i < len(self.roads):
+            self.set_road_curve(i, None, curved)
+        else:
+            self.set_hint("Draw a road first.")
 
     def _road_picked(self, i):
         if 0 <= i < len(self.roads) and not getattr(self, "_rw_busy", False):
@@ -1055,7 +1087,7 @@ class SdpPage(SitePage):
         r, n = self.rules_now(), 0
         site = self.site_obj()
         for i, rd in enumerate(self.roads):
-            got = sp.road_bays(rd["pts"], rd["w"], site, r, list(self.bays), "Road %d" % (i + 1), rd.get("smooth", True), rd.get("left", 0), rd.get("right", 0),
+            got = sp.road_bays(rd["pts"], rd["w"], site, r, list(self.bays), "Road %d" % (i + 1), (rd.get("segs") or rd.get("smooth", True)), rd.get("left", 0), rd.get("right", 0),
                                rd.get("start", 0.0), self.road_wide(rd))
             for b in got:
                 b["type"] = self.road_type.currentText()
@@ -1065,7 +1097,7 @@ class SdpPage(SitePage):
             if not z.get("join", True) or len(z["poly"]) < 3:
                 continue
             for i, rd in enumerate(self.roads):
-                got = sp.road_bays(rd["pts"], rd["w"], site, r, list(self.bays), "Road %d" % (i + 1), rd.get("smooth", True), -1, -1, 0.0, self.road_wide(rd),
+                got = sp.road_bays(rd["pts"], rd["w"], site, r, list(self.bays), "Road %d" % (i + 1), (rd.get("segs") or rd.get("smooth", True)), -1, -1, 0.0, self.road_wide(rd),
                                    [tuple(q) for q in z["poly"]])
                 if not got:
                     continue
@@ -1116,7 +1148,7 @@ class SdpPage(SitePage):
         cy = sum(q[1] for q in poly) / len(poly)
         best, ang = 1e18, None
         for rd in self.roads:
-            c = sp.spline(rd["pts"], 2.0, rd.get("smooth", True))
+            c = sp.spline(rd["pts"], 2.0, (rd.get("segs") or rd.get("smooth", True)))
             for i in range(len(c) - 1):
                 d = sp.seg_pt((cx, cy), c[i], c[i + 1])
                 if d < best:
@@ -1208,6 +1240,75 @@ class SdpPage(SitePage):
         self.zones.append({"name": nm, "poly": [list(p) for p in pts], "angle": None, "type": "Open"})
         self.sel_zone = len(self.zones) - 1
         self.refresh_parking(user=True)
+
+    # --- one road: curved here, straight there
+    def road_flags(self, rd):
+        f = rd.get("segs") or rd.get("smooth", True)
+        n = len(rd["pts"]) - 1
+        if isinstance(f, (list, tuple)):
+            f = list(f)
+            return (f + [f[-1] if f else True] * (n - len(f)))[:n]
+        return [bool(f)] * n
+
+    def road_at(self, w, tol=1.0):
+        """(road, control piece, point on the centre line) under world point w, or None"""
+        best = None
+        for i, rd in enumerate(self.roads):
+            c, sg, _t = sp._spline_seg(rd["pts"], 1.0, self.road_flags(rd))
+            lim = self.road_wide(rd) / 2.0 + tol
+            for k in range(len(c) - 1):
+                d = sp.seg_pt(tuple(w), c[k], c[k + 1])
+                if d <= lim and (best is None or d < best[0]):
+                    best = (d, i, sg[k + 1], c[k])
+        return best[1:] if best else None
+
+    def _roads_changed(self):
+        self._rq = (None, [])
+        self.settle_roads()
+        if self.zones or self.roads:
+            self.park_roads()
+            self._fill(list(range(len(self.zones))), quiet=True)
+        else:
+            self.refresh_parking(user=True)
+        self._show_roads()
+        self.changed()
+
+    def set_road_curve(self, i, piece, curved):
+        """piece = None: the whole road. Otherwise just that stretch between two bend points"""
+        rd = self.roads[i]
+        f = self.road_flags(rd)
+        if piece is None:
+            f = [curved] * len(f)
+        else:
+            f[piece] = curved
+        rd["segs"] = f
+        self.pick_road(i)
+        self._roads_changed()
+        self.set_hint("%s. Right-click the road again to change another stretch." % ("Curved" if curved else "Straight"))
+
+    def add_road_point(self, i, piece, pt):
+        rd = self.roads[i]
+        f = self.road_flags(rd)
+        rd["pts"].insert(piece + 1, [round(pt[0], 3), round(pt[1], 3)])
+        f.insert(piece + 1, f[piece])
+        rd["segs"] = f
+        self.pick_road(i)
+        self._roads_changed()
+        self.set_hint("Bend point added. Drag its white square to bend the road there.")
+
+    def remove_road_point(self, i, k):
+        rd = self.roads[i]
+        if len(rd["pts"]) <= 2 or k in (0, len(rd["pts"]) - 1):
+            return
+        f = self.road_flags(rd)
+        del rd["pts"][k]
+        del f[k - 1 if k > 0 else 0]
+        rd["segs"] = f
+        self._roads_changed()
+
+    def pick_road(self, i):
+        if getattr(self, "road_cb", None) is not None and 0 <= i < len(self.roads) and self.road_cb.currentIndex() != i:
+            self.road_cb.setCurrentIndex(i)
 
     def zone_edge_at(self, w, tol):
         """the parking area whose border is under world point w, or -1 (corners are handled first)"""
@@ -1368,7 +1469,7 @@ class SdpPage(SitePage):
         for q in z["poly"]:
             d = 1e18
             for rd in self.roads:
-                c = sp.spline(rd["pts"], 2.0, rd.get("smooth", True))
+                c = sp.spline(rd["pts"], 2.0, (rd.get("segs") or rd.get("smooth", True)))
                 d = min([d] + [sp.seg_pt(tuple(q), c[i], c[i + 1]) for i in range(len(c) - 1)])
             if d > reach:
                 return False
@@ -1661,7 +1762,7 @@ class SdpPage(SitePage):
         for z in self.zones:
             poly(z["poly"], "PARKING_AREAS")
         for rd in self.roads:
-            c = sp.spline(rd["pts"], 1.5, rd.get("smooth", True))
+            c = sp.spline(rd["pts"], 1.5, (rd.get("segs") or rd.get("smooth", True)))
             msp.add_lwpolyline(c, dxfattribs={"layer": "ROAD_CENTRELINE"})
             L = [q[0] for q in self.road_geom(rd)]
             Rr = [q[3] for q in self.road_geom(rd)]

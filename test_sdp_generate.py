@@ -247,3 +247,23 @@ assert {b["zone"] for b in pg16.bays} >= {pg16.zones[0]["name"], pg16.zones[1]["
 pg16.delete_zone(1); assert len(pg16.zones) == 1
 os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
 print("ok move copy")
+# one road, curved here and straight there
+pg17 = sc.SdpPage(W()); pg17.q_w.setValue(100), pg17.q_d.setValue(60); pg17.make_rect()
+pg17.start_road(); pg17.trace_done("trace_road", "", [(3, 10), (30, 18), (60, 12), (97, 40)])
+assert pg17.road_flags(pg17.roads[0]) == [True, True, True]
+hit = pg17.road_at((45, 15.5)); assert hit and hit[0] == 0, hit
+pg17.set_road_curve(0, None, False)
+assert pg17.roads[0]["segs"] == [False] * 3
+c = sc.sp.spline(pg17.roads[0]["pts"], 0.5, pg17.road_flags(pg17.roads[0]))
+assert (30.0, 18.0) in [(round(x, 3), round(y, 3)) for x, y in c]          # straight pieces go through the points with corners
+pg17.set_road_curve(0, 2, True)
+assert pg17.roads[0]["segs"] == [False, False, True]
+n = len(pg17.roads[0]["pts"]); pg17.add_road_point(0, 1, (45, 15)); assert len(pg17.roads[0]["pts"]) == n + 1 and len(pg17.roads[0]["segs"]) == n
+pg17.remove_road_point(0, 2); assert len(pg17.roads[0]["pts"]) == n
+pg17.left_sp.setValue(-1)
+assert pg17.bays and not any(pg17._bad)
+# straight road: the bays stand evenly, in a straight row (no fanning)
+pg17.set_road_curve(0, None, False)
+st = pg17.state(); pg18 = sc.SdpPage(W()); pg18.set_state(st); assert pg18.roads[0]["segs"] == [False] * (len(pg18.roads[0]["pts"]) - 1)
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+print("ok straight/curved")

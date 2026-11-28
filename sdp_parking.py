@@ -323,27 +323,39 @@ def block_slots(env, obstacles, w, d, side_gap, front_gap, theta=None):
 
 
 # ---- roads: a spline through the points, a ribbon of road, and bays along its edges
-def spline(pts, step=1.5, smooth=True):
-    """points along the road centreline. smooth: a Catmull-Rom curve through the clicked points; otherwise straight pieces"""
+def _spline_seg(pts, step=1.5, smooth=True):
+    """the road centreline as points, with the control segment and the share along it for each point.
+    smooth: True = a curve through all the points, False = straight pieces, or a list with one flag per piece (True curved, False straight)"""
     pts = [tuple(p) for p in pts]
     if len(pts) < 2:
-        return pts
-    if not smooth or len(pts) == 2:
-        out = [pts[0]]
-        for a, b in zip(pts, pts[1:]):
-            n = max(1, int(math.ceil(math.hypot(b[0] - a[0], b[1] - a[1]) / step)))
-            out += [(a[0] + (b[0] - a[0]) * i / n, a[1] + (b[1] - a[1]) * i / n) for i in range(1, n + 1)]
-        return out
-    P = [pts[0]] + pts + [pts[-1]]
-    out = [pts[0]]
-    for i in range(1, len(P) - 2):
-        p0, p1, p2, p3 = P[i - 1], P[i], P[i + 1], P[i + 2]
-        n = max(2, int(math.ceil(math.hypot(p2[0] - p1[0], p2[1] - p1[1]) / step)))
-        for k in range(1, n + 1):
-            t = k / float(n)
-            t2, t3 = t * t, t * t * t
-            out.append(tuple(0.5 * ((2 * p1[c]) + (-p0[c] + p2[c]) * t + (2 * p0[c] - 5 * p1[c] + 4 * p2[c] - p3[c]) * t2 + (-p0[c] + 3 * p1[c] - 3 * p2[c] + p3[c]) * t3) for c in (0, 1)))
-    return out
+        return pts, [0] * len(pts), [0.0] * len(pts)
+    flags = list(smooth) if isinstance(smooth, (list, tuple)) else [bool(smooth)] * (len(pts) - 1)
+    flags += [flags[-1] if flags else True] * (len(pts) - 1 - len(flags))
+    out, seg, ts = [pts[0]], [0], [0.0]
+    for i in range(len(pts) - 1):
+        p0, p1, p2, p3 = pts[max(i - 1, 0)], pts[i], pts[i + 1], pts[min(i + 2, len(pts) - 1)]
+        ln = math.hypot(p2[0] - p1[0], p2[1] - p1[1])
+        if flags[i] and len(pts) > 2:
+            n = max(2, int(math.ceil(ln / step)))
+            for k in range(1, n + 1):
+                t = k / float(n)
+                t2, t3 = t * t, t * t * t
+                out.append(tuple(0.5 * ((2 * p1[c]) + (-p0[c] + p2[c]) * t + (2 * p0[c] - 5 * p1[c] + 4 * p2[c] - p3[c]) * t2 + (-p0[c] + 3 * p1[c] - 3 * p2[c] + p3[c]) * t3) for c in (0, 1)))
+                seg.append(i)
+                ts.append(t)
+        else:
+            n = max(1, int(math.ceil(ln / step)))
+            for k in range(1, n + 1):
+                t = k / float(n)
+                out.append((p1[0] + (p2[0] - p1[0]) * t, p1[1] + (p2[1] - p1[1]) * t))
+                seg.append(i)
+                ts.append(t)
+    return out, seg, ts
+
+
+def spline(pts, step=1.5, smooth=True):
+    """points along the road centreline. smooth: a Catmull-Rom curve through the clicked points, straight pieces, or one flag per piece"""
+    return _spline_seg(pts, step, smooth)[0]
 
 
 def _tangents(c):
@@ -513,12 +525,8 @@ def push_off(pts, obstacles, clear, pinned, smooth=True, iters=30):
     if len(P) < 2 or not obs:
         return P
     for _ in range(iters):
-        c = spline(P, 1.5, smooth)
-        # which control segment each sample belongs to (Catmull-Rom pieces are in order, equal share per control segment)
-        segs = []
-        for i in range(len(P) - 1):
-            n = max(2, int(math.ceil(math.hypot(P[i + 1][0] - P[i][0], P[i + 1][1] - P[i][1]) / 1.5)))
-            segs += [(i, (k + 1) / float(n)) for k in range(n)]
+        c, sg_, ts_ = _spline_seg(P, 1.5, smooth)
+        segs = list(zip(sg_[1:], ts_[1:]))
         acc = [[0.0, 0.0, 0.0] for _ in P]
         worst = 0.0
         for j in range(1, len(c)):
