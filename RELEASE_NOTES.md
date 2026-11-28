@@ -1,10 +1,11 @@
 # MCP Practice Suite - Release notes
 
-Current version: 1.86.411
+Current version: 1.86.412
 (`MCP_XA_Energy_Setup_x.y.z.exe`) and in Windows' list of installed programs.
 
 ## What is new since the first version (1.0.0)
 
+- **SDP Creator: bend radius on road points, no more flinging of points (1.86.412).** Click a bend point of a road (it turns orange) and pick a 3, 4, 5 or 6 m bend in the road panel (or right-click the point); the road is drawn as a true round bend of that radius and the bays follow it. Fixed: dragging one road point near the blocks used to throw the neighbouring points far away and wreck the parking; neighbours now stay put (the push is damped and limited), and a road end only snaps onto another road within 6 m (pathways 2.5 m).
 - **SDP Creator: shorter roads, delete a corner, quicker edits (1.86.411).** Click a corner to select it (it turns orange), then press Delete to remove it, or right-click a road end and choose 'Cut the road back from this end', so a road can be made shorter. Roads keep two points and areas three. Moving a parking-area corner now re-parks only that area, and the bay checks skip anything too far away to matter, so editing is quicker.
 - **SDP Creator: turning handle for buildings and parking areas.** Click a building (or a parking area's edge) and a pink ring appears round it with a round handle, like the one in the house spacing tool. Drag the handle to turn it (the angle shows beside it; hold Shift to turn in steps of 15 degrees). Grouped buildings turn together; a parking area turns with its bays and is parked again when you let go.
 - **SDP Creator: junction corners are driving radii (2 m, 3 m at most).** The rounded corner where a road or pathway meets another road is now 2 m by default and can be set to 3 m at most (it was up to 20 m, which drew long thin spikes where roads meet at a shallow angle). A road that joins at a very shallow angle no longer gets a corner at all, so no spikes are drawn.

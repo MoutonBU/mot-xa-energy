@@ -245,12 +245,14 @@ class ParkView(PlanView):
                         self.setFocus()
                         self.drag = ("corner",) + h
                         pg.sel_corner = h
+                        pg._sync_rad_box()
                         self.setCursor(Qt.CursorShape.SizeAllCursor)
                         pg.set_hint("Drag the corner to where you want it, or press Delete to remove it.")
                         self.update()
                         return
                     if pg.sel_corner is not None:
                         pg.sel_corner = None
+                        pg._sync_rad_box()
                         self.update()
                     zi = pg.zone_edge_at(w, 7.0 / self._v[0])
                     if zi >= 0:
@@ -351,6 +353,12 @@ class ParkView(PlanView):
                     ri, k = h[1], h[2]
                     piece = max(0, min(k, len(pg.roads[ri]["pts"]) - 2))
                     pt = None
+                    if 0 < k < len(pg.roads[ri]["pts"]) - 1:
+                        pg.sel_corner = h
+                        pg._sync_rad_box()
+                        for R_ in (0, 3, 4, 5, 6):
+                            menu.addAction("Sharp corner here" if R_ == 0 else "%d m bend here" % R_, lambda R_=R_: pg.set_road_radius(ri, k, R_))
+                        menu.addSeparator()
                     if len(pg.roads[ri]["pts"]) > 2:
                         end = k in (0, len(pg.roads[ri]["pts"]) - 1)
                         menu.addAction("Cut the road back from this end" if end else "Remove this bend point", lambda: pg.remove_road_point(ri, k))
@@ -555,6 +563,12 @@ class SdpPage(SitePage):
         fl.addWidget(self._pair("Bays on the left", self.left_sp))
         fl.addWidget(self._pair("Bays on the right", self.right_sp))
         fl.addWidget(self._pair("Bays start at", self.start_sp))
+        self.bend_cb = QComboBox()
+        self.bend_cb.addItems(["Sharp (no radius)", "3 m bend", "4 m bend", "5 m bend", "6 m bend"])
+        self.bend_cb.setEnabled(False)
+        self.bend_cb.setToolTip("Click a bend point of a road on the plan (it turns orange), then pick the bend radius here.")
+        self.bend_cb.activated.connect(lambda ix: self.sel_corner is not None and self.sel_corner[0] == "road" and self.set_road_radius(self.sel_corner[1], self.sel_corner[2], (0, 3, 4, 5, 6)[ix]))
+        fl.addWidget(self._pair("Bend radius at selected point", self.bend_cb))
         self.corner_r = sl.spin(0, 3, 2, 1, " m")
         self.corner_r.setToolTip("The rounded (driving) corner where a road meets another road: 2 m, 3 m at most. 0 = sharp corner.")
         self.corner_r.valueChanged.connect(lambda _v: (None if self._pbusy else (self.refresh_parking(user=True), self.changed())))
@@ -1012,13 +1026,25 @@ class SdpPage(SitePage):
         """the stretches of the road that are thickened to the pushback: only where there are bays on both sides of it"""
         return sp.merge_spans(list(rd.get("_zs", [])), 0.5)
 
+    def rpts(self, rd):
+        """the road's control points with its bend radii (see 'Bend radius' for a selected point)"""
+        return sp.with_radii(rd["pts"], self.road_rad(rd))
+
+    def road_rad(self, rd):
+        n = len(rd["pts"])
+        r = list(rd.get("rad") or [])
+        r = (r + [0.0] * n)[:n]
+        if any(r) or "rad" in rd:
+            rd["rad"] = r
+        return r
+
     def road_geom(self, rd):
-        return sp.road_quads(rd["pts"], rd["w"], (rd.get("segs") or rd.get("smooth", True)), self.road_span(rd), self.road_wide(rd))
+        return sp.road_quads(self.rpts(rd), rd["w"], (rd.get("segs") or rd.get("smooth", True)), self.road_span(rd), self.road_wide(rd))
 
     def road_quads_all(self):
         if not self.roads:
             return []
-        key = repr([(bool(r.get("path")), r["pts"], r["w"], self.path_r.value(), (r.get("segs") or r.get("smooth", True)), r.get("_zs", []), self.r_aisle.value(), self.corner_r.value()) for r in self.roads])
+        key = repr([(bool(r.get("path")), r["pts"], r.get("rad"), r["w"], self.path_r.value(), (r.get("segs") or r.get("smooth", True)), r.get("_zs", []), self.r_aisle.value(), self.corner_r.value()) for r in self.roads])
         if self._rq[0] != key or len(self._rq) < 4:
             quads, owner = [], []
             for i, r in enumerate(self.roads):
@@ -1047,8 +1073,8 @@ class SdpPage(SitePage):
                 for j, o in enumerate(self.roads):
                     if j == i:
                         continue
-                    jn = sp.road_junction(o["pts"], (o.get("segs") or o.get("smooth", True)), q)
-                    if jn and jn[0] <= (3.0 if rd.get("path") else 8.0) and (best is None or jn[0] < best[0]):
+                    jn = sp.road_junction(self.rpts(o), (o.get("segs") or o.get("smooth", True)), q)
+                    if jn and jn[0] <= (2.5 if rd.get("path") else 6.0) and (best is None or jn[0] < best[0]):
                         best = jn
                 if best and best[0] > 0.02:
                     rd["pts"][e] = [round(best[1][0], 3), round(best[1][1], 3)]
@@ -1061,16 +1087,16 @@ class SdpPage(SitePage):
         """the rounded corners where one road meets the side of another"""
         out = []
         for i, rd in enumerate(self.roads):
-            c = sp.spline(rd["pts"], 0.5, (rd.get("segs") or rd.get("smooth", True)))
+            c = sp.spline(self.rpts(rd), 0.5, (rd.get("segs") or rd.get("smooth", True)))
             if len(c) < 8:
                 continue
-            L = sp.road_length(rd["pts"], (rd.get("segs") or rd.get("smooth", True)))
+            L = sp.road_length(self.rpts(rd), (rd.get("segs") or rd.get("smooth", True)))
             for e in (0, -1):
                 q = rd["pts"][e]
                 for j, o in enumerate(self.roads):
                     if j == i:
                         continue
-                    jn = sp.road_junction(o["pts"], (o.get("segs") or o.get("smooth", True)), q)
+                    jn = sp.road_junction(self.rpts(o), (o.get("segs") or o.get("smooth", True)), q)
                     if not jn or jn[0] > 0.6:
                         continue
                     a, b = (c[0], c[min(8, len(c) - 1)]) if e == 0 else (c[-1], c[max(-9, -len(c))])
@@ -1164,7 +1190,7 @@ class SdpPage(SitePage):
         try:
             i = self.road_cb.currentIndex() if sel is None else sel
             self.road_cb.clear()
-            self.road_cb.addItems(["%s %d  (%.1f m wide%s, %.0f m long)" % ("Pathway" if r.get("path") else "Road", k + 1, r["w"], "" if not self.road_span(r) else ", %.1f with bays" % self.road_wide(r), sp.road_length(r["pts"], (r.get("segs") or r.get("smooth", True))))
+            self.road_cb.addItems(["%s %d  (%.1f m wide%s, %.0f m long)" % ("Pathway" if r.get("path") else "Road", k + 1, r["w"], "" if not self.road_span(r) else ", %.1f with bays" % self.road_wide(r), sp.road_length(self.rpts(r), (r.get("segs") or r.get("smooth", True))))
                                    for k, r in enumerate(self.roads)])
             if self.roads:
                 i = max(0, min(i, len(self.roads) - 1))
@@ -1226,14 +1252,14 @@ class SdpPage(SitePage):
             if rd.get("path"):
                 plans.append({"st": [], "dbl": []})
                 continue
-            pl = sp.road_plan(rd["pts"], rd["w"], self.road_flags(rd), r, rd.get("left", 0), rd.get("right", 0), rd.get("start", 0.0), zs)
+            pl = sp.road_plan(self.rpts(rd), rd["w"], self.road_flags(rd), r, rd.get("left", 0), rd.get("right", 0), rd.get("start", 0.0), zs)
             rd["_zs"] = pl["dbl"]
             plans.append(pl)
         self._rq = (None, [], [], [])
         site = self.site_obj()
         ztype = {z["name"]: z.get("type", "Open") for z in self.zones}
         for i, rd in enumerate(self.roads):
-            got = sp.road_place(rd["pts"], rd["w"], site, r, list(self.bays), "Road %d" % (i + 1), i, self.road_flags(rd), plans[i])
+            got = sp.road_place(self.rpts(rd), rd["w"], site, r, list(self.bays), "Road %d" % (i + 1), i, self.road_flags(rd), plans[i])
             for b in got:
                 b["type"] = ztype.get(b.get("rz"), self.road_type.currentText())
             self.bays += got
@@ -1272,7 +1298,7 @@ class SdpPage(SitePage):
         cy = sum(q[1] for q in poly) / len(poly)
         best, ang = 1e18, None
         for rd in self.roads:
-            c = sp.spline(rd["pts"], 2.0, (rd.get("segs") or rd.get("smooth", True)))
+            c = sp.spline(self.rpts(rd), 2.0, (rd.get("segs") or rd.get("smooth", True)))
             for i in range(len(c) - 1):
                 d = sp.seg_pt((cx, cy), c[i], c[i + 1])
                 if d < best:
@@ -1484,7 +1510,7 @@ class SdpPage(SitePage):
         """(road, control piece, point on the centre line) under world point w, or None"""
         best = None
         for i, rd in enumerate(self.roads):
-            c, sg, _t = sp._spline_seg(rd["pts"], 1.0, self.road_flags(rd))
+            c, sg, _t = sp._spline_seg(self.rpts(rd), 1.0, self.road_flags(rd))
             lim = self.road_wide(rd) / 2.0 + tol
             for k in range(len(c) - 1):
                 d = sp.seg_pt(tuple(w), c[k], c[k + 1])
@@ -1519,7 +1545,11 @@ class SdpPage(SitePage):
     def add_road_point(self, i, piece, pt):
         rd = self.roads[i]
         f = self.road_flags(rd)
+        rad = self.road_rad(rd)
         rd["pts"].insert(piece + 1, [round(pt[0], 3), round(pt[1], 3)])
+        if "rad" in rd:
+            rad.insert(piece + 1, 0.0)
+            rd["rad"] = rad
         rd.pop("base", None)
         f.insert(piece + 1, f[piece])
         rd["segs"] = f
@@ -1532,13 +1562,42 @@ class SdpPage(SitePage):
         if len(rd["pts"]) <= 2 or not 0 <= k < len(rd["pts"]):
             return
         f = self.road_flags(rd)
+        rad = self.road_rad(rd)
         del rd["pts"][k]
+        if "rad" in rd:
+            del rad[k]
+            rd["rad"] = rad
         rd.pop("base", None)
         del f[k - 1 if k > 0 else 0]
         rd["segs"] = f
         self.sel_corner = None
         self._roads_changed()
         self.set_hint("Point removed. A road keeps at least two points.")
+
+    def set_road_radius(self, i, k, R):
+        """a round bend of R metres (0 = sharp) at control point k of road i"""
+        if not (0 <= i < len(self.roads)) or not 0 < k < len(self.roads[i]["pts"]) - 1:
+            self.set_hint("Select a bend point in the middle of a road (not an end) to give it a bend radius.")
+            return
+        rad = self.road_rad(self.roads[i])
+        rad[k] = float(R)
+        self.roads[i]["rad"] = rad
+        self.sel_corner = ("road", i, k)
+        self._sync_rad_box()
+        self._roads_changed()
+        self.set_hint("Bend radius %s at the selected point." % ("none (sharp)" if R <= 0 else "%.0f m" % R))
+
+    def _sync_rad_box(self):
+        cb = getattr(self, "bend_cb", None)
+        if cb is None:
+            return
+        h = self.sel_corner
+        ok = h is not None and h[0] == "road" and h[1] < len(self.roads) and 0 < h[2] < len(self.roads[h[1]]["pts"]) - 1
+        cb.setEnabled(bool(ok))
+        cb.blockSignals(True)
+        v = self.road_rad(self.roads[h[1]])[h[2]] if ok else 0.0
+        cb.setCurrentIndex({0: 0, 3: 1, 4: 2, 5: 3, 6: 4}.get(int(round(v)), 0))
+        cb.blockSignals(False)
 
     def remove_corner(self, h):
         """delete the selected corner: a road point (a road keeps 2), a parking or keep-clear area corner (keeps 3)"""
@@ -1768,7 +1827,7 @@ class SdpPage(SitePage):
         for q in z["poly"]:
             d = 1e18
             for rd in self.roads:
-                c = sp.spline(rd["pts"], 2.0, (rd.get("segs") or rd.get("smooth", True)))
+                c = sp.spline(self.rpts(rd), 2.0, (rd.get("segs") or rd.get("smooth", True)))
                 d = min([d] + [sp.seg_pt(tuple(q), c[i], c[i + 1]) for i in range(len(c) - 1)])
             if d > reach:
                 return False
@@ -2067,7 +2126,7 @@ class SdpPage(SitePage):
         for z in self.zones:
             poly(z["poly"], "PARKING_AREAS")
         for rd in self.roads:
-            c = sp.spline(rd["pts"], 1.5, (rd.get("segs") or rd.get("smooth", True)))
+            c = sp.spline(self.rpts(rd), 1.5, (rd.get("segs") or rd.get("smooth", True)))
             msp.add_lwpolyline(c, dxfattribs={"layer": "ROAD_CENTRELINE"})
             L = [q[0] for q in self.road_geom(rd)]
             Rr = [q[3] for q in self.road_geom(rd)]

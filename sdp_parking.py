@@ -411,7 +411,80 @@ def block_slots(env, obstacles, w, d, side_gap, front_gap, theta=None):
 
 
 # ---- roads: a spline through the points, a ribbon of road, and bays along its edges
+class RPts(list):
+    """the control points of a road, with the bend radius asked for at each (0 = none)"""
+    rad = ()
+
+
+def with_radii(pts, rad):
+    """pts carrying a bend radius per point; plain pts when no radius is asked for"""
+    if not rad or not any(rad):
+        return pts
+    q = RPts([list(p) for p in pts])
+    q.rad = [float(x) for x in rad][:len(pts)] + [0.0] * (len(pts) - len(rad))
+    return q
+
+
+def _round_bends(out, seg, ts, P, rad):
+    """cut each asked-for corner (straight pieces round it) and put a circular arc of that radius in its place"""
+    for k in range(1, len(P) - 1):
+        R = rad[k] if k < len(rad) else 0.0
+        if R <= 0.05:
+            continue
+        a, b, c = P[k - 1], P[k], P[k + 1]
+        l1, l2 = math.hypot(a[0] - b[0], a[1] - b[1]), math.hypot(c[0] - b[0], c[1] - b[1])
+        if l1 < 1e-6 or l2 < 1e-6:
+            continue
+        u1, u2 = ((a[0] - b[0]) / l1, (a[1] - b[1]) / l1), ((c[0] - b[0]) / l2, (c[1] - b[1]) / l2)
+        cs = max(-1.0, min(1.0, u1[0] * u2[0] + u1[1] * u2[1]))
+        th = math.acos(cs)                                       # the angle at the corner (pi = straight on)
+        if th > math.pi - 0.03 or th < 0.05:
+            continue
+        t = R / math.tan(th / 2.0)
+        cap = 0.45 * min(l1, l2)
+        if t > cap:
+            t = cap
+            R = t * math.tan(th / 2.0)
+        T1, T2 = (b[0] + u1[0] * t, b[1] + u1[1] * t), (b[0] + u2[0] * t, b[1] + u2[1] * t)
+        bis = (u1[0] + u2[0], u1[1] + u2[1])
+        bl = math.hypot(*bis) or 1.0
+        dc = R / math.sin(th / 2.0)
+        C = (b[0] + bis[0] / bl * dc, b[1] + bis[1] / bl * dc)
+        a1, a2 = math.atan2(T1[1] - C[1], T1[0] - C[0]), math.atan2(T2[1] - C[1], T2[0] - C[0])
+        d = (a2 - a1 + math.pi) % (2 * math.pi) - math.pi
+        n = max(3, int(math.ceil(abs(d) * R / 0.5)))
+        keep = [i for i in range(len(out)) if not ((seg[i] == k - 1 and math.hypot(out[i][0] - b[0], out[i][1] - b[1]) < t + 0.05)
+                                                   or (seg[i] == k and math.hypot(out[i][0] - b[0], out[i][1] - b[1]) < t + 0.05))]
+        at = next((j for j, i in enumerate(keep) if seg[i] <= k - 1 and i > 0 and (j + 1 >= len(keep) or seg[keep[j + 1]] >= k)), None)
+        if at is None:
+            continue
+        arc = [(C[0] + R * math.cos(a1 + d * m / n), C[1] + R * math.sin(a1 + d * m / n)) for m in range(n + 1)]
+        no, ns, nt = [out[i] for i in keep[:at + 1]], [seg[i] for i in keep[:at + 1]], [ts[i] for i in keep[:at + 1]]
+        for m, q in enumerate(arc):
+            no.append(q)
+            ns.append(k - 1 if m <= n // 2 else k)
+            nt.append(1.0 if m <= n // 2 else 0.0)
+        for i in keep[at + 1:]:
+            no.append(out[i]); ns.append(seg[i]); nt.append(ts[i])
+        out[:], seg[:], ts[:] = no, ns, nt
+    return out, seg, ts
+
+
 def _spline_seg(pts, step=1.5, smooth=True):
+    rad = getattr(pts, "rad", None)
+    if rad and any(rad) and len(pts) > 2:
+        P = [tuple(p[:2]) for p in pts]
+        flags = list(smooth) if isinstance(smooth, (list, tuple)) else [bool(smooth)] * (len(P) - 1)
+        flags += [flags[-1] if flags else True] * (len(P) - 1 - len(flags))
+        for k in range(1, len(P) - 1):
+            if k < len(rad) and rad[k] > 0.05:
+                flags[k - 1] = flags[k] = False                  # a pieces meeting at a round bend are straight
+        out, seg, ts = _spline_seg_raw(P, step, flags)
+        return _round_bends(out, seg, ts, P, rad)
+    return _spline_seg_raw(pts, step, smooth)
+
+
+def _spline_seg_raw(pts, step=1.5, smooth=True):
     """the road centreline as points, with the control segment and the share along it for each point.
     smooth: True = a curve through all the points, False = straight pieces, or a list with one flag per piece (True curved, False straight)"""
     pts = [tuple(p) for p in pts]
@@ -606,7 +679,10 @@ def connected(bays, r, quads, qboxes):
     return False
 
 
-def push_off(pts, obstacles, clear, pinned, smooth=True, iters=30):
+MAX_PUSH = 40.0
+
+
+def push_off(pts, obstacles, clear, pinned, smooth=True, iters=60):
     """move the control points of a road away from buildings until the road keeps `clear` metres off them (the pinned points stay, e.g. at the gate).
     Returns the new points"""
     P = [list(p) for p in pts]
@@ -652,14 +728,19 @@ def push_off(pts, obstacles, clear, pinned, smooth=True, iters=30):
                     if wgt > 1e-6:
                         acc[idx][0] += wgt * vx
                         acc[idx][1] += wgt * vy
-                        acc[idx][2] += wgt * wgt
+                        acc[idx][2] += wgt
         if worst < 0.05:
             break
         for idx in range(len(P)):
             if idx in pinned or acc[idx][2] < 1e-9:
                 continue
-            P[idx][0] += acc[idx][0] / acc[idx][2] * 0.8
-            P[idx][1] += acc[idx][1] / acc[idx][2] * 0.8
+            share = min(1.0, acc[idx][2] / 3.0)                  # a point that hardly carries the stretch hardly moves (it used to be flung far away)
+            P[idx][0] += acc[idx][0] / acc[idx][2] * 0.8 * share
+            P[idx][1] += acc[idx][1] / acc[idx][2] * 0.8 * share
+            d0 = math.hypot(P[idx][0] - pts[idx][0], P[idx][1] - pts[idx][1])
+            if d0 > MAX_PUSH:                                    # never carried further than this from where it was put
+                P[idx][0] = pts[idx][0] + (P[idx][0] - pts[idx][0]) / d0 * MAX_PUSH
+                P[idx][1] = pts[idx][1] + (P[idx][1] - pts[idx][1]) / d0 * MAX_PUSH
     return P
 
 

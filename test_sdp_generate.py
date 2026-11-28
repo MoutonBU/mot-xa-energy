@@ -528,3 +528,25 @@ pg31.remove_corner(("zone", 0, 0)); assert len(pg31.zones[0]["poly"]) == 3      
 assert not any(pg31._bad)
 os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
 print("ok road shorten / corner delete")
+
+# ---- bend radius at a selected road point; moving points never flings the others about
+pg32 = sc.SdpPage(W()); pg32.q_w.setValue(160); pg32.q_d.setValue(100); pg32.make_rect()
+pg32.generate(dict(o, count=4))
+pg32.start_road(); pg32.trace_done("trace_road", "", [(5, 50), (40, 60), (80, 52), (155, 50)])
+L0 = sc.sp.road_length(pg32.rpts(pg32.roads[0]), pg32.road_flags(pg32.roads[0]))
+pg32.sel_corner = ("road", 0, 1); pg32._sync_rad_box(); assert pg32.bend_cb.isEnabled()
+pg32.set_road_radius(0, 1, 5)
+assert pg32.roads[0]["rad"] == [0, 5.0, 0, 0] and pg32.bend_cb.currentIndex() == 3
+pg32.set_road_radius(0, 0, 4); assert pg32.roads[0]["rad"][0] == 0          # ends take no radius
+c = sc.sp.spline(pg32.rpts(pg32.roads[0]), 0.5, pg32.road_flags(pg32.roads[0]))
+v_ = pg32.roads[0]["pts"][1]
+assert all(sc.math.hypot(q[0] - v_[0], q[1] - v_[1]) > 0.08 for q in c), "the bend is rounded off the point"
+pg32.add_road_point(0, 1, (60, 56)); assert len(pg32.roads[0]["rad"]) == 5
+pg32.remove_road_point(0, 2); assert len(pg32.roads[0]["rad"]) == 4 and pg32.roads[0]["rad"][1] == 5.0
+pg32.set_road_radius(0, 1, 0); assert pg32.roads[0]["rad"][1] == 0
+# dragging one point near the blocks leaves the others where they were put
+pg32.sel_corner = ("road", 0, 2); pg32.move_corner(("road", 0, 2), 70, 24); pg32.corner_released()
+assert sc.math.hypot(pg32.roads[0]["pts"][1][0] - 40, pg32.roads[0]["pts"][1][1] - 60) < 3.0, pg32.roads[0]["pts"]
+assert not any(pg32._bad), [(pg32.bays[i]["x"], pg32.bays[i]["y"], pg32.bays[i].get("zone"), pg32._bad[i]) for i in range(len(pg32._bad)) if pg32._bad[i]][:3]
+os.system("rm -f ~/MCP_XA_Energy/tools/sdp.json")
+print("ok bend radius / no flinging")
